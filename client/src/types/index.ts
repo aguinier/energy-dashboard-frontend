@@ -385,3 +385,29 @@ export interface CrossCountryMetricsEntry {
 }
 
 export type CrossCountryMetrics = Record<string, Record<string, CrossCountryMetricsEntry>>;
+
+// ============================================================================
+// Forecast Provider Registry Types
+// ============================================================================
+
+export interface ForecastProviderInfo {
+  id: string;
+  type: 'tso' | 'ml';
+  modelName?: string;
+  horizon: string;
+  label: string;
+  shortLabel: string;
+  color: string;
+}
+
+export interface AvailableProvidersResponse {
+  tso: {
+    available: boolean;
+    horizons: string[];
+  };
+  ml: {
+    models: Array<{
+      model_name: string;
+    }>;
+  };
+}
