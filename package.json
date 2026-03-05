@@ -1,0 +1,24 @@
+{
+  "name": "energy-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "European Electricity Dashboard - Beautiful visualization of energy data across Europe",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "build": "npm run build -w client && npm run build -w server",
+    "start": "npm run start -w server"
+  },
+  "devDependencies": {
+    "@types/react-simple-maps": "^3.0.6",
+    "concurrently": "^8.2.2"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.5.0"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+*/node_modules/
+*/dist/
+.git
+*.md
+docker/
+screenshots/
+nul
+start-dev.bat
+start-production.bat

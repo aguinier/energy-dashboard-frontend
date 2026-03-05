@@ -1,0 +1,24 @@
+node_modules/
+*/node_modules/
+dist/
+*/dist/
+.env
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+nul
+
+# Windows scripts
+*.bat
+
+# Claude
+.claude/

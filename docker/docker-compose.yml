@@ -1,0 +1,13 @@
+services:
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: energy-dashboard-frontend
+    ports:
+      - "3001:3001"
+    environment:
+      - ENERGY_DB_PATH=/data/energy_dashboard.db
+    volumes:
+      - ${DB_DIR:-../../data_gathering}:/data:ro
+    restart: unless-stopped
