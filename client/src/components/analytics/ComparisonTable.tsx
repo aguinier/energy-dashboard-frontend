@@ -69,10 +69,11 @@ export function ComparisonTable({ data, className }: ComparisonTableProps) {
     }
   };
 
-  const SortHeader = ({ label, sortKeyName }: { label: string; sortKeyName: SortKey }) => (
+  const SortHeader = ({ label, sortKeyName, title }: { label: string; sortKeyName: SortKey; title?: string }) => (
     <th
-      className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider cursor-pointer hover:text-foreground transition-colors"
+      className="px-4 py-3 text-left text-sm font-medium text-muted-foreground uppercase tracking-wider cursor-pointer hover:text-foreground transition-colors"
       onClick={() => handleSort(sortKeyName)}
+      title={title}
     >
       <div className="flex items-center gap-1">
         {label}
@@ -102,10 +103,10 @@ export function ComparisonTable({ data, className }: ComparisonTableProps) {
           <tr>
             <SortHeader label="Provider" sortKeyName="provider" />
             <SortHeader label="Horizon" sortKeyName="horizon" />
-            <SortHeader label="MAE" sortKeyName="mae" />
-            <SortHeader label="MAPE %" sortKeyName="mape" />
-            <SortHeader label="RMSE" sortKeyName="rmse" />
-            <SortHeader label="Bias" sortKeyName="bias" />
+            <SortHeader label="MAE" sortKeyName="mae" title="Mean Absolute Error" />
+            <SortHeader label="MAPE %" sortKeyName="mape" title="Mean Absolute Percentage Error" />
+            <SortHeader label="RMSE" sortKeyName="rmse" title="Root Mean Square Error" />
+            <SortHeader label="Bias" sortKeyName="bias" title="Forecast Bias" />
             <SortHeader label="Samples" sortKeyName="dataPoints" />
           </tr>
         </thead>

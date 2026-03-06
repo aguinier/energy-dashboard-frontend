@@ -326,7 +326,7 @@ export function LoadChart() {
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">TSO Forecast</p>
-                        <p className="text-lg font-bold text-emerald-400">
+                        <p className="text-lg font-bold text-emerald-600 dark:text-emerald-400">
                           {formatMW(data.tsoForecast)}
                         </p>
                       </div>
@@ -389,11 +389,11 @@ export function LoadChart() {
                           <p className="text-xs text-muted-foreground">
                             TSO Forecast {tsoHorizon === 'week_ahead' ? '(Week-Ahead)' : '(Day-Ahead)'}
                           </p>
-                          <p className="text-lg font-bold text-emerald-400">
+                          <p className="text-lg font-bold text-emerald-600 dark:text-emerald-400">
                             {formatMW(data.tsoForecast)}
                           </p>
                           {tsoHorizon === 'week_ahead' && data.tsoForecastMin != null && data.tsoForecastMax != null && (
-                            <p className="text-xs text-emerald-300">
+                            <p className="text-xs text-emerald-600 dark:text-emerald-300">
                               Range: {formatMW(data.tsoForecastMin)} - {formatMW(data.tsoForecastMax)}
                             </p>
                           )}
@@ -488,7 +488,7 @@ export function LoadChart() {
                   dataKey="forecast"
                   stroke="#F97316"
                   strokeWidth={2}
-                  strokeDasharray="4 2"
+                  strokeDasharray="6 3"
                   dot={false}
                   activeDot={{ r: 6, fill: '#F97316', stroke: 'white', strokeWidth: 2 }}
                   animationDuration={1500}
@@ -502,8 +502,8 @@ export function LoadChart() {
                   type="monotone"
                   dataKey="forecast_d2"
                   stroke="#9333EA"
-                  strokeWidth={2}
-                  strokeDasharray="8 4"
+                  strokeWidth={1.5}
+                  strokeDasharray="2 2"
                   dot={false}
                   activeDot={{ r: 6, fill: '#9333EA', stroke: 'white', strokeWidth: 2 }}
                   animationDuration={1500}

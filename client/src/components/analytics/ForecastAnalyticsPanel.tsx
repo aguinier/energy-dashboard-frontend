@@ -66,7 +66,7 @@ export function ForecastAnalyticsPanel() {
           id: 'ml-d1',
           provider: 'ml',
           horizon: 'd1',
-          horizonLabel: 'D+1 (0-30h)',
+          horizonLabel: 'D+1 (Day-Ahead)',
           metrics: comparisonData.ml.d1,
         });
       }
@@ -75,7 +75,7 @@ export function ForecastAnalyticsPanel() {
           id: 'ml-d2',
           provider: 'ml',
           horizon: 'd2',
-          horizonLabel: 'D+2 (24-54h)',
+          horizonLabel: 'D+2 (Two Days Ahead)',
           metrics: comparisonData.ml.d2,
         });
       }

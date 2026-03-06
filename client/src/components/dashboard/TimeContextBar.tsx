@@ -41,6 +41,12 @@ function formatTimestamp(timestamp: string | null): string {
   }) + ' UTC';
 }
 
+function FreshnessDot({ timestamp }: { timestamp: string }) {
+  const diffHours = (Date.now() - new Date(timestamp).getTime()) / (1000 * 60 * 60);
+  const color = diffHours < 1 ? 'bg-green-500' : diffHours < 6 ? 'bg-amber-500' : 'bg-red-500';
+  return <span className={`inline-block h-2 w-2 rounded-full ${color} mr-1.5`} />;
+}
+
 export function TimeContextBar({ className }: TimeContextBarProps) {
   const { displayRange } = useComputedDateRange();
   const { data: freshness, isLoading } = useDataFreshness();
@@ -71,13 +77,14 @@ export function TimeContextBar({ className }: TimeContextBarProps) {
       <div className="flex items-center gap-2 text-muted-foreground">
         <Clock className="h-4 w-4" />
         {isLoading ? (
-          <span className="text-xs">Loading...</span>
+          <span className="text-sm">Loading...</span>
         ) : latestTimestamp ? (
-          <span className="text-xs" title={formatTimestamp(latestTimestamp)}>
+          <span className="text-sm" title={formatTimestamp(latestTimestamp)}>
+            <FreshnessDot timestamp={latestTimestamp} />
             Latest: <span className="font-medium text-foreground">{formatRelativeTime(latestTimestamp)}</span>
           </span>
         ) : (
-          <span className="text-xs text-muted-foreground/70">Data freshness unavailable</span>
+          <span className="text-sm text-muted-foreground/70">Data freshness unavailable</span>
         )}
       </div>
     </div>

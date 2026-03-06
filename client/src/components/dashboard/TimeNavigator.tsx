@@ -50,7 +50,7 @@ export function TimeNavigator({ className }: TimeNavigatorProps) {
             size="sm"
             className={cn(
               'h-7 px-3 text-xs font-medium',
-              timePreset === preset.value && 'bg-background shadow-sm'
+              timePreset === preset.value && 'bg-primary/15 text-primary shadow-sm'
             )}
             onClick={() => setTimePreset(preset.value as TimePreset)}
           >

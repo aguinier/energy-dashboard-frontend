@@ -104,7 +104,7 @@ export function LayersPanel({ availableLayers, className }: LayersPanelProps) {
                             : 'bg-muted hover:bg-muted/80'
                         )}
                       >
-                        {horizon === 'day_ahead' ? 'Tomorrow' : 'Week Ahead'}
+                        {horizon === 'day_ahead' ? 'Day-Ahead (D+1)' : 'Week Ahead'}
                       </button>
                     ))}
                   </div>

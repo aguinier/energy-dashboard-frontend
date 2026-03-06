@@ -16,12 +16,7 @@ export function DashboardGrid() {
   return (
     <div className="space-y-4">
       {/* Country Title */}
-      <div className="flex items-center gap-2">
-        <h2 className="text-2xl font-bold">{countryName || selectedCountry}</h2>
-        <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-          {selectedCountry}
-        </span>
-      </div>
+      <h2 className="text-2xl font-bold">{countryName || selectedCountry}</h2>
 
       {/* Stats Grid */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -32,7 +27,7 @@ export function DashboardGrid() {
           icon={<Zap className="h-5 w-5" />}
           isLoading={isLoading}
           delay={0}
-          colorClass="bg-blue-500/10 text-blue-500"
+          colorClass="bg-blue-500/15 text-blue-600 dark:text-blue-400"
         />
 
         <StatCard
@@ -51,7 +46,7 @@ export function DashboardGrid() {
                 }
               : undefined
           }
-          colorClass="bg-amber-500/10 text-amber-500"
+          colorClass="bg-amber-500/15 text-amber-600 dark:text-amber-400"
         />
 
         <StatCard
@@ -62,7 +57,7 @@ export function DashboardGrid() {
           isLoading={isLoading}
           decimals={1}
           delay={200}
-          colorClass="bg-green-500/10 text-green-500"
+          colorClass="bg-green-500/15 text-green-600 dark:text-green-400"
         />
 
         <StatCard
@@ -72,7 +67,7 @@ export function DashboardGrid() {
           icon={<Activity className="h-5 w-5" />}
           isLoading={isLoading}
           delay={300}
-          colorClass="bg-purple-500/10 text-purple-500"
+          colorClass="bg-purple-500/15 text-purple-600 dark:text-purple-400"
         />
       </div>
     </div>

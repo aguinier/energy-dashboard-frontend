@@ -57,7 +57,7 @@ export function MetricCard({
     >
       {/* Provider badge */}
       <div className="flex items-center justify-between mb-2">
-        <span className={cn('text-xs font-medium uppercase tracking-wider', colors.text)}>
+        <span className={cn('text-sm font-medium uppercase tracking-wider', colors.text)}>
           {provider === 'tso' ? 'TSO' : 'ML'}
           {horizon && (
             <span className="ml-1 font-normal lowercase">
@@ -71,7 +71,7 @@ export function MetricCard({
       </div>
 
       {/* Metric title */}
-      <div className="text-xs text-muted-foreground mb-1">{title}</div>
+      <div className="text-sm text-muted-foreground mb-1">{title}</div>
 
       {/* Metric value */}
       <div className="flex items-baseline gap-1">

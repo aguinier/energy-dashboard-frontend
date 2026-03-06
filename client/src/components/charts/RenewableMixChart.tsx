@@ -342,7 +342,7 @@ export function RenewableMixChart() {
                                 <div className="h-3 w-3 rounded-full" style={{ backgroundColor: source?.color }} />
                                 <span className="text-muted-foreground">{source?.label}</span>
                               </div>
-                              <span className="font-medium text-emerald-400">{formatMW(Number(p.value))}</span>
+                              <span className="font-medium text-emerald-600 dark:text-emerald-400">{formatMW(Number(p.value))}</span>
                             </div>
                           );
                         })}
@@ -382,7 +382,7 @@ export function RenewableMixChart() {
                     {hasTSOForecast && (
                       <div className="flex justify-between text-sm">
                         <span className="text-emerald-500">TSO Total</span>
-                        <span className="font-bold text-emerald-400">{formatMW(tsoForecastTotal)}</span>
+                        <span className="font-bold text-emerald-600 dark:text-emerald-400">{formatMW(tsoForecastTotal)}</span>
                       </div>
                     )}
                   </div>

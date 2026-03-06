@@ -102,7 +102,7 @@ export function RenewablePieChart() {
         <div className="absolute bottom-0 left-0 right-0">
           <div className="flex flex-wrap justify-center gap-3">
             {pieData.map((entry) => (
-              <div key={entry.name} className="flex items-center gap-1.5 text-xs">
+              <div key={entry.name} className="flex items-center gap-1.5 text-sm">
                 <div
                   className="h-2.5 w-2.5 rounded-full"
                   style={{ backgroundColor: entry.color }}

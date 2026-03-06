@@ -31,7 +31,6 @@ export const TIME_PRESETS = {
   ],
   // Forecast presets (forward-looking)
   forecast: [
-    { value: 'next1d', label: 'Next 1d' },
     { value: 'next24h', label: 'Next 24h' },
     { value: 'next48h', label: 'Next 48h' },
     { value: 'next7d', label: 'Next 7d' },
