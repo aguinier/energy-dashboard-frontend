@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import db from '../config/database.js';
 import writeDb from '../config/writeDatabase.js';
 import { writeAuth } from '../middleware/writeAuth.js';
 import { AppError } from '../middleware/errorHandler.js';
@@ -168,6 +169,135 @@ router.post('/snapshot', writeAuth, (req: Request, res: Response, next: NextFunc
         location_id,
         fetched_at: body.fetched_at,
         rows_submitted: body.rows.length,
+      },
+    });
+  } catch (e) {
+    next(e);
+  }
+});
+
+/**
+ * GET /api/weather/latest
+ *
+ * Public read endpoint. Returns the freshest `weather_observation` rows
+ * for a given (source × location × valid_at range). No auth required —
+ * it's readonly and uses the readonly DB connection.
+ *
+ * Query params:
+ *   country_code   (required) — e.g. "BE"
+ *   zones          (required) — comma-separated zone_ids: "central,north,south,east"
+ *   provider       (required) — "open_meteo_forecast" | "open_meteo_previous_runs" | "open_meteo_archive"
+ *   models         (required) — comma-separated model_ids: "best_match,ecmwf_ifs025,..."
+ *   lead_time_hours (required) — e.g. -1 | 24 | 72 | 0
+ *   valid_from     (required) — ISO-8601 UTC, inclusive
+ *   valid_to       (required) — ISO-8601 UTC, inclusive
+ *
+ * Response:
+ * {
+ *   success: true,
+ *   data: {
+ *     requested_at: "...",
+ *     results: [
+ *       {
+ *         country_code, zone_id,
+ *         provider, model_id, lead_time_hours,
+ *         fetched_at,   // MAX across returned rows (freshness signal)
+ *         rows: [ { valid_at, shortwave_radiation_wm2, ... }, ... ]
+ *       },
+ *       ...  // one entry per (zone × model)
+ *     ]
+ *   }
+ * }
+ */
+router.get('/latest', (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const q = req.query as Record<string, string>;
+    const required = ['country_code', 'zones', 'provider', 'models',
+                      'lead_time_hours', 'valid_from', 'valid_to'];
+    for (const k of required) {
+      if (!q[k]) throw new AppError(`Missing query param: ${k}`, 400, 'BAD_QUERY');
+    }
+    const country = q.country_code;
+    const zones = q.zones.split(',').map(s => s.trim()).filter(Boolean);
+    const models = q.models.split(',').map(s => s.trim()).filter(Boolean);
+    const lead = parseInt(q.lead_time_hours, 10);
+    if (Number.isNaN(lead)) {
+      throw new AppError('lead_time_hours must be an integer', 400, 'BAD_QUERY');
+    }
+
+    // Cap fan-out to avoid accidental DoS.
+    if (zones.length * models.length > 64) {
+      throw new AppError(
+        `Too many (zone × model) combinations (${zones.length} × ${models.length}); max 64.`,
+        400, 'FANOUT_TOO_LARGE',
+      );
+    }
+
+    // Resolve dimension IDs in one go (small joins).
+    const locIdByZone = new Map<string, { id: number; lat: number; lon: number; weight: number | null }>();
+    const locStmt = db.prepare(
+      `SELECT zone_id, location_id, lat, lon, weight FROM weather_location
+       WHERE country_code = ? AND zone_id = ?`,
+    );
+    for (const z of zones) {
+      const row = locStmt.get(country, z) as any;
+      if (!row) continue;
+      locIdByZone.set(z, { id: row.location_id, lat: row.lat, lon: row.lon, weight: row.weight });
+    }
+
+    const srcIdByModel = new Map<string, number>();
+    const srcStmt = db.prepare(
+      `SELECT source_id FROM weather_source
+       WHERE provider = ? AND model_id = ? AND lead_time_hours = ?`,
+    );
+    for (const m of models) {
+      const row = srcStmt.get(q.provider, m, lead) as any;
+      if (row) srcIdByModel.set(m, row.source_id);
+    }
+
+    // Prepare the data-row query (parameterised, run once per combo).
+    const rowStmt = db.prepare(
+      `SELECT valid_at, fetched_at, forecast_run_time, *
+       FROM weather_observation
+       WHERE location_id = ? AND source_id = ?
+         AND valid_at BETWEEN ? AND ?
+       GROUP BY valid_at HAVING MAX(fetched_at)
+       ORDER BY valid_at`,
+    );
+
+    const results: any[] = [];
+    for (const [zoneId, loc] of locIdByZone) {
+      for (const [modelId, srcId] of srcIdByModel) {
+        const rows = rowStmt.all(loc.id, srcId, q.valid_from, q.valid_to) as any[];
+        let fetchedAt: string | null = null;
+        for (const r of rows) {
+          if (r.fetched_at && (fetchedAt === null || r.fetched_at > fetchedAt)) {
+            fetchedAt = r.fetched_at;
+          }
+          // Remove internal cols from the row payload.
+          delete r.source_id;
+          delete r.location_id;
+        }
+        results.push({
+          country_code: country,
+          zone_id: zoneId,
+          provider: q.provider,
+          model_id: modelId,
+          lead_time_hours: lead,
+          lat: loc.lat,
+          lon: loc.lon,
+          weight: loc.weight,
+          fetched_at: fetchedAt,
+          rows,
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        requested_at: new Date().toISOString(),
+        results,
       },
     });
   } catch (e) {
