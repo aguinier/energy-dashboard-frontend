@@ -9,5 +9,7 @@ services:
     environment:
       - ENERGY_DB_PATH=/data/energy_dashboard.db
     volumes:
-      - ${DB_DIR:-../../data_gathering}:/data:ro
+      # rw (not :ro) — SQLite WAL mode needs to create/maintain -shm and -wal sidecars
+      # in the DB directory even for read-only queries.
+      - ${DB_DIR:-../../data_gathering}:/data
     restart: unless-stopped
