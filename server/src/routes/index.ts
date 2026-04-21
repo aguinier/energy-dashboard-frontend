@@ -9,6 +9,7 @@ import tsoForecastRouter from './tsoForecast.js';
 import dataFreshnessRouter from './dataFreshness.js';
 import forecastComparisonRouter from './forecastComparison.js';
 import crossCountryComparisonRouter from './crossCountryComparison.js';
+import weatherRouter from './weather.js';
 
 const router = Router();
 
@@ -23,6 +24,7 @@ router.use('/tso-forecast', tsoForecastRouter);
 router.use('/data-freshness', dataFreshnessRouter);
 router.use('/forecast-comparison', forecastComparisonRouter);
 router.use('/cross-country', crossCountryComparisonRouter);
+router.use('/weather', weatherRouter);
 
 // Health check endpoint
 router.get('/health', (_req, res) => {

@@ -8,6 +8,13 @@ services:
       - "3001:3001"
     environment:
       - ENERGY_DB_PATH=/data/energy_dashboard.db
+      # HELIO_WRITE_TOKEN enables POST /api/weather/snapshot (heliocast
+      # writes per-submission weather snapshots). Unset → writes return 503.
+      - HELIO_WRITE_TOKEN=${HELIO_WRITE_TOKEN:-}
     volumes:
-      - ${DB_DIR:-../../data_gathering}:/data:ro
+      # DB volume is now read-write so POST /api/weather/snapshot can
+      # insert. All existing GET routes use a separate readonly connection
+      # (server/src/config/database.ts); writes go only via the token-
+      # authenticated /api/weather/snapshot endpoint.
+      - ${DB_DIR:-../../data_gathering}:/data
     restart: unless-stopped
