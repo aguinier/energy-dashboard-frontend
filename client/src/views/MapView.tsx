@@ -1,29 +1,17 @@
 import { EuropeMap } from '@/components/map/EuropeMap';
 import { MapMetricSelector } from '@/components/map/MapMetricSelector';
-import { CountryRankings } from '@/components/map/CountryRankings';
 import { useDashboardStore } from '@/store/dashboardStore';
 
+// Landing view — the choropleth is the hero. No sidebar.
+// The metric selector floats at top-center; the legend and hover card live
+// inside <EuropeMap />, anchored to bottom-left and top-right respectively.
 export function MapView() {
   const { goToCountry } = useDashboardStore();
 
   return (
-    <div className="grid grid-cols-[300px_1fr] h-[calc(100vh-64px)] bg-background">
-      {/* Left sidebar */}
-      <aside className="border-r bg-card overflow-hidden flex flex-col">
-        {/* Metric selector */}
-        <MapMetricSelector vertical />
-
-        {/* Country rankings */}
-        <CountryRankings />
-      </aside>
-
-      {/* Map area - fills remaining space */}
-      <main className="relative overflow-hidden">
-        <EuropeMap
-          fullScreen
-          onCountryClick={goToCountry}
-        />
-      </main>
+    <div className="relative flex-1 overflow-hidden bg-background h-[calc(100vh-58px)]">
+      <EuropeMap fullScreen onCountryClick={goToCountry} />
+      <MapMetricSelector floating />
     </div>
   );
 }

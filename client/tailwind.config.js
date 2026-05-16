@@ -7,6 +7,25 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: [
+          "ui-sans-serif",
+          "system-ui",
+          "-apple-system",
+          "BlinkMacSystemFont",
+          "Segoe UI",
+          "Inter",
+          "Roboto",
+          "Helvetica Neue",
+          "sans-serif",
+        ],
+        mono: [
+          "JetBrains Mono",
+          "ui-monospace",
+          "Menlo",
+          "monospace",
+        ],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -41,7 +60,20 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        // Energy-specific colors
+        // able ink shades (matched to inkDim / inkMuted / inkFaint)
+        ink: {
+          DEFAULT: "hsl(var(--foreground))",
+          dim: "hsl(var(--muted-foreground))",
+          muted: "hsl(var(--ink-muted))",
+          faint: "hsl(var(--ink-faint))",
+        },
+        // data-scale colors
+        clean: "hsl(var(--clean))",
+        medium: "hsl(var(--medium))",
+        dirty: "hsl(var(--dirty))",
+        up: "hsl(var(--up))",
+        down: "hsl(var(--down))",
+        // Energy-mix legacy colors (kept — used by existing charts)
         solar: "#FCD34D",
         wind: {
           onshore: "#60A5FA",

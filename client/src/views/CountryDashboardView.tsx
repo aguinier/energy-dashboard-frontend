@@ -1,95 +1,101 @@
 import { lazy, Suspense } from 'react';
-import { DashboardGrid } from '@/components/dashboard/DashboardGrid';
-import { CountryHeader } from '@/components/layout/CountryHeader';
-import { Sidebar } from '@/components/layout/Sidebar';
-import { TimeNavigator } from '@/components/dashboard/TimeNavigator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useDashboardStore } from '@/store/dashboardStore';
+import { useCountries } from '@/hooks/useCountries';
+import { CountryBreadcrumb } from '@/components/dashboard/CountryBreadcrumb';
+import { AbleStatRow } from '@/components/dashboard/AbleStatRow';
+import { RangeSegment } from '@/components/dashboard/RangeSegment';
+import { ModelPicker } from '@/components/dashboard/ModelPicker';
+import { ApiCta } from '@/components/dashboard/ApiCta';
 
-// Lazy load chart components (heavy - contain Recharts)
-const LoadChart = lazy(() => import('@/components/charts/LoadChart').then(m => ({ default: m.LoadChart })));
-const PriceChart = lazy(() => import('@/components/charts/PriceChart').then(m => ({ default: m.PriceChart })));
-const RenewableMixChart = lazy(() => import('@/components/charts/RenewableMixChart').then(m => ({ default: m.RenewableMixChart })));
-const RenewablePieChart = lazy(() => import('@/components/charts/RenewablePieChart').then(m => ({ default: m.RenewablePieChart })));
-const PriceHeatmap = lazy(() => import('@/components/charts/PriceHeatmap').then(m => ({ default: m.PriceHeatmap })));
-const ForecastAnalyticsPanel = lazy(() => import('@/components/analytics').then(m => ({ default: m.ForecastAnalyticsPanel })));
+// Lazy-loaded tab bodies — each is self-contained (chart cards + adapters).
+const PriceTab = lazy(() =>
+  import('@/components/dashboard/PriceTab').then((m) => ({ default: m.PriceTab })),
+);
+const LoadTab = lazy(() =>
+  import('@/components/dashboard/LoadTab').then((m) => ({ default: m.LoadTab })),
+);
+const GenerationTab = lazy(() =>
+  import('@/components/dashboard/GenerationTab').then((m) => ({ default: m.GenerationTab })),
+);
+const ForecastTab = lazy(() =>
+  import('@/components/dashboard/ForecastTab').then((m) => ({ default: m.ForecastTab })),
+);
 
-// Chart loading skeleton
-function ChartSkeleton({ height = 350 }: { height?: number }) {
+function TabSkeleton({ height = 350 }: { height?: number }) {
   return (
-    <div className="rounded-lg border bg-card p-6 animate-pulse">
-      <div className="h-5 w-32 bg-muted rounded mb-2" />
-      <div className="h-4 w-48 bg-muted rounded mb-4" />
-      <div className="w-full bg-muted rounded" style={{ height }} />
+    <div className="animate-pulse rounded-xl border border-border bg-card p-6">
+      <div className="mb-2 h-5 w-32 rounded bg-muted" />
+      <div className="mb-4 h-4 w-48 rounded bg-muted" />
+      <div className="w-full rounded bg-muted" style={{ height }} />
     </div>
   );
 }
 
 export function CountryDashboardView() {
-  const { activeChartTab, setActiveChartTab } = useDashboardStore();
+  const { selectedCountry, activeChartTab, setActiveChartTab } = useDashboardStore();
+  const { data: countries } = useCountries();
+
+  const country = countries?.find((c) => c.country_code === selectedCountry);
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Country Header with back button */}
-      <CountryHeader />
+    <div className="flex-1 overflow-auto bg-background">
+      <div className="mx-auto max-w-[1200px] px-8 pb-14 pt-7">
+        <CountryBreadcrumb />
 
-      {/* Main content with sidebar */}
-      <div className="flex">
-        {/* Alphabetical country sidebar */}
-        <Sidebar />
+        <div className="mb-1 flex items-baseline gap-3.5">
+          <h1 className="m-0 text-[36px] font-medium leading-none tracking-[-0.025em]">
+            {country?.country_name ?? selectedCountry}
+          </h1>
+          <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono-num text-[12px] text-ink-muted">
+            {selectedCountry}
+          </span>
+        </div>
+        <p className="mb-6 mt-2 max-w-[640px] text-[14px] leading-relaxed text-ink-dim">
+          Live electricity load, day-ahead price, generation mix and TSO forecast accuracy.
+          All values from ENTSO-E, EPEX and the local TSO.
+        </p>
 
-        {/* Main content */}
-        <main className="flex-1 overflow-auto">
-          <div className="container mx-auto px-4 py-6 space-y-6">
-        {/* Stats Grid */}
-        <DashboardGrid />
+        <AbleStatRow />
 
-        {/* Time Navigation */}
-        <div className="flex justify-center">
-          <TimeNavigator />
+        <div className="mb-3.5 flex flex-wrap items-center gap-2.5">
+          <Tabs value={activeChartTab} onValueChange={setActiveChartTab} className="flex-shrink-0">
+            <TabsList>
+              <TabsTrigger value="price">Price</TabsTrigger>
+              <TabsTrigger value="load">Load</TabsTrigger>
+              <TabsTrigger value="renewables">Generation</TabsTrigger>
+              <TabsTrigger value="analytics">Forecast accuracy</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <div className="flex-1" />
+          <RangeSegment />
+          <ModelPicker />
         </div>
 
-        {/* Chart Tabs */}
         <Tabs value={activeChartTab} onValueChange={setActiveChartTab}>
-          <TabsList className="grid w-full max-w-lg mx-auto grid-cols-4">
-            <TabsTrigger value="load">Load</TabsTrigger>
-            <TabsTrigger value="price">Price</TabsTrigger>
-            <TabsTrigger value="renewables">Renewables</TabsTrigger>
-            <TabsTrigger value="analytics">Analytics</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="load" className="mt-6">
-            <Suspense fallback={<ChartSkeleton />}>
-              <LoadChart />
+          <TabsContent value="price">
+            <Suspense fallback={<TabSkeleton />}>
+              <PriceTab />
             </Suspense>
           </TabsContent>
-
-          <TabsContent value="price" className="space-y-6 mt-6">
-            <Suspense fallback={<ChartSkeleton />}>
-              <PriceChart />
-            </Suspense>
-            <Suspense fallback={<ChartSkeleton />}>
-              <PriceHeatmap />
+          <TabsContent value="load">
+            <Suspense fallback={<TabSkeleton />}>
+              <LoadTab />
             </Suspense>
           </TabsContent>
-
-          <TabsContent value="renewables" className="space-y-6 mt-6">
-            <Suspense fallback={<ChartSkeleton height={400} />}>
-              <RenewableMixChart />
-            </Suspense>
-            <Suspense fallback={<ChartSkeleton height={300} />}>
-              <RenewablePieChart />
+          <TabsContent value="renewables">
+            <Suspense fallback={<TabSkeleton height={400} />}>
+              <GenerationTab />
             </Suspense>
           </TabsContent>
-
-          <TabsContent value="analytics" className="mt-6">
-            <Suspense fallback={<ChartSkeleton height={400} />}>
-              <ForecastAnalyticsPanel />
+          <TabsContent value="analytics">
+            <Suspense fallback={<TabSkeleton height={400} />}>
+              <ForecastTab />
             </Suspense>
           </TabsContent>
         </Tabs>
-          </div>
-        </main>
+
+        <ApiCta />
       </div>
     </div>
   );
