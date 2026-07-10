@@ -159,15 +159,17 @@ export function AbleLineChart({
     return { pts, fpts, yMin, yMax, bandPath };
   }, [series, padL, ih, iw, padT]);
 
-  // Split into past (solid) / future (dashed) — but in overlay mode draw both fully.
-  const splitAt = overlay ? series.length : Math.min(NOW + 1, series.length);
+  // The actual series draws SOLID wherever it has values — including past
+  // "now". Day-ahead auction prices are published for the whole next day, so
+  // future timestamps can carry real (not forecast) data; truncating at now
+  // silently hid tomorrow's coupled prices. Forecasts stay dashed from NOW.
   const fStart = overlay ? 0 : Math.min(NOW, series.length - 1);
 
   // Filter out null y-values, keep the line continuous across small gaps.
   const compact = (slice: Array<[number, number]>) =>
     slice.filter((p) => Number.isFinite(p[1]));
   const actualPath = (() => {
-    const c = compact(pts.slice(0, splitAt));
+    const c = compact(pts);
     return smooth ? smoothPath(c) : straightPath(c);
   })();
   const forecastPath = (() => {
@@ -383,7 +385,7 @@ export function AbleLineChart({
         )}
 
         {/* Hover */}
-        {h && Number.isFinite(hy) && (
+        {h && (Number.isFinite(hy) || Number.isFinite(hyf)) && (
           <g>
             <line
               x1={hx}
@@ -396,7 +398,7 @@ export function AbleLineChart({
             />
             <circle
               cx={hx}
-              cy={h.future && Number.isFinite(hyf) ? hyf : hy}
+              cy={Number.isFinite(hy) ? hy : hyf}
               r={4}
               fill={T.panel}
               stroke={T.primary}
@@ -416,10 +418,11 @@ export function AbleLineChart({
           }}
         >
           <div className="mb-0.5 text-[10px] opacity-60">
-            {h.future ? 'forecast' : 'actual'} · {new Date(h.ts).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
+            {h.value != null ? (h.future ? 'published' : 'actual') : 'forecast'} ·{' '}
+            {new Date(h.ts).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
           </div>
           <div className="font-semibold">
-            {tipFmt(h.future ? h.forecast ?? 0 : h.value ?? 0)}
+            {tipFmt(h.value ?? h.forecast ?? 0)}
             {unit && <span className="ml-0.5 opacity-60">{unit}</span>}
           </div>
         </div>

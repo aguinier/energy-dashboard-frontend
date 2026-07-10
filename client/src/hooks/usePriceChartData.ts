@@ -51,6 +51,12 @@ export function usePriceChartData(): PriceChartData {
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
   const granularity = getGranularityForPreset(timePreset);
 
+  // Day-ahead auction prices are published ~12:45 CET for the entire next
+  // day. Extend the price window past the preset's end so tomorrow's coupled
+  // prices appear as soon as they exist — otherwise past-anchored presets
+  // (which end at "now") can never show them.
+  const priceEnd = new Date(Math.max(end.getTime(), Date.now() + 36 * 60 * 60 * 1000));
+
   // ML forecast date range (window start to max(window end, now+48h))
   const { start: mlForecastStart, end: mlForecastEnd } = getMLForecastDateRange(start, end, 48);
 
@@ -63,7 +69,7 @@ export function usePriceChartData(): PriceChartData {
           fetchPriceData({
             country: selectedCountry,
             start: start.toISOString(),
-            end: end.toISOString(),
+            end: priceEnd.toISOString(),
             granularity,
           }),
         staleTime: REFRESH_INTERVALS.dashboard,

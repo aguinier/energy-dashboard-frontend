@@ -27,6 +27,10 @@ export function PriceTab() {
       }),
     [priceData, forecastData],
   );
+  const hasFutureCells = useMemo(
+    () => heatmapCells.some((c) => c.future && c.value != null),
+    [heatmapCells],
+  );
 
   return (
     <div className="space-y-3.5">
@@ -54,7 +58,7 @@ export function PriceTab() {
 
       <AbleCard
         title="Price by hour × day"
-        subtitle={hasForecast ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
+        subtitle={hasFutureCells ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
       >
         <AblePriceHeatmap cells={heatmapCells} unit="€/MWh" />
       </AbleCard>
