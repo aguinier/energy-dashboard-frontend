@@ -8,6 +8,8 @@ function scale(val: number, dMin: number, dMax: number, rMin: number, rMax: numb
 interface Datum {
   label: string;
   v: number;
+  /** True when the value is estimated rather than measured — drawn hollow. */
+  extrapolated?: boolean;
 }
 
 interface Props {
@@ -61,7 +63,11 @@ export function AbleAccuracyBars({
               width={bw}
               height={h}
               fill={accent}
-              fillOpacity={0.85}
+              fillOpacity={d.extrapolated ? 0.22 : 0.85}
+              stroke={d.extrapolated ? accent : 'none'}
+              strokeOpacity={d.extrapolated ? 0.7 : 0}
+              strokeWidth={d.extrapolated ? 1 : 0}
+              strokeDasharray={d.extrapolated ? '3,2' : 'none'}
               rx={3}
               style={{
                 transformOrigin: `${x + bw / 2}px ${padT + ih}px`,

@@ -174,29 +174,40 @@ function getMapPriceData(start: string, end: string): MapDataPoint[] {
 }
 
 function getMapRenewableData(start: string, end: string): MapDataPoint[] {
+  // Average renewable output vs average load over the window, aggregated per
+  // country BEFORE joining. The old row-level join matched hours via
+  // date()/strftime() on both sides, which defeats every index and made this
+  // query time out on the full production DB.
   const stmt = db.prepare(`
     SELECT
       r.country_code,
       c.country_name,
-      ROUND(
+      ROUND(r.avg_renewable * 100.0 / NULLIF(l.avg_load, 0), 1) as value,
+      r.latest as timestamp
+    FROM (
+      SELECT
+        country_code,
         AVG(
-          (COALESCE(r.solar_mw, 0) + COALESCE(r.wind_onshore_mw, 0) +
-           COALESCE(r.wind_offshore_mw, 0) + COALESCE(r.hydro_run_mw, 0) +
-           COALESCE(r.hydro_reservoir_mw, 0) + COALESCE(r.biomass_mw, 0) +
-           COALESCE(r.geothermal_mw, 0) + COALESCE(r.other_renewable_mw, 0)) * 100.0 / NULLIF(l.load_mw, 0)
-        ), 1
-      ) as value,
-      MAX(r.timestamp_utc) as timestamp
-    FROM energy_renewable r
-    JOIN countries c ON r.country_code = c.country_code
-    JOIN energy_load l ON r.country_code = l.country_code
-      AND date(r.timestamp_utc) = date(l.timestamp_utc)
-      AND strftime('%H', r.timestamp_utc) = strftime('%H', l.timestamp_utc)
-    WHERE r.timestamp_utc BETWEEN ? AND ?
-    GROUP BY r.country_code, c.country_name
+          COALESCE(solar_mw, 0) + COALESCE(wind_onshore_mw, 0) +
+          COALESCE(wind_offshore_mw, 0) + COALESCE(hydro_run_mw, 0) +
+          COALESCE(hydro_reservoir_mw, 0) + COALESCE(biomass_mw, 0) +
+          COALESCE(geothermal_mw, 0) + COALESCE(other_renewable_mw, 0)
+        ) as avg_renewable,
+        MAX(timestamp_utc) as latest
+      FROM energy_renewable
+      WHERE timestamp_utc BETWEEN ? AND ?
+      GROUP BY country_code
+    ) r
+    JOIN (
+      SELECT country_code, AVG(load_mw) as avg_load
+      FROM energy_load
+      WHERE timestamp_utc BETWEEN ? AND ?
+      GROUP BY country_code
+    ) l ON l.country_code = r.country_code
+    JOIN countries c ON c.country_code = r.country_code
     ORDER BY c.country_name
   `);
-  return stmt.all(start, end) as MapDataPoint[];
+  return stmt.all(start, end, start, end) as MapDataPoint[];
 }
 
 export function getCombinedTimeseries(

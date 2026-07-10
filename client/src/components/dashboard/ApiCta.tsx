@@ -1,18 +1,21 @@
 import { useDashboardStore } from '@/store/dashboardStore';
 
-// Bottom-of-page CTA: surfaces the GET endpoint for whatever tab is active and
-// nudges users toward an API key. Path mirrors the prototype: /v1/<tab>/<XX>.
+const REPO_URL = 'https://github.com/aguinier/energy-dashboard-frontend';
+
+// Bottom-of-page CTA: surfaces the real GET endpoint for whatever tab is
+// active and links to the API docs. The path shown is the one that actually
+// serves the chart above it.
 export function ApiCta() {
   const { selectedCountry, activeChartTab } = useDashboardStore();
 
-  // Map our existing tab keys to the prototype's resource names.
+  // Map tab keys to the real /api resource routes.
   const tabToResource: Record<string, string> = {
     load: 'load',
-    price: 'price',
-    renewables: 'generation',
-    generation: 'generation',
-    analytics: 'forecast',
-    forecast: 'forecast',
+    price: 'prices',
+    renewables: 'renewables',
+    generation: 'renewables',
+    analytics: 'forecasts/load',
+    forecast: 'forecasts/load',
   };
   const resource = tabToResource[activeChartTab] ?? activeChartTab;
 
@@ -25,11 +28,14 @@ export function ApiCta() {
         </div>
       </div>
       <code className="rounded-md border border-border bg-secondary px-3 py-2.5 font-mono-num text-[12px] text-foreground">
-        <span className="text-ink-muted">GET</span> /v1/{resource}/
+        <span className="text-ink-muted">GET</span> /api/{resource}?country=
         <span className="text-primary">{selectedCountry}</span>
       </code>
-      <button className="cursor-pointer rounded-md border-none bg-foreground px-4 py-2.5 text-[13px] font-medium text-background">
-        Get API key →
+      <button
+        onClick={() => window.open(`${REPO_URL}#readme`, '_blank')}
+        className="cursor-pointer rounded-md border-none bg-foreground px-4 py-2.5 text-[13px] font-medium text-background"
+      >
+        API docs →
       </button>
     </div>
   );

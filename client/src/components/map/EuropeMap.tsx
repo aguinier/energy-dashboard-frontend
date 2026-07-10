@@ -4,7 +4,6 @@ import { ChartWrapper } from '@/components/charts/ChartWrapper';
 import { useMapData } from '@/hooks/useDashboardData';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { usePrefetchCountry } from '@/hooks/usePrefetch';
-import { formatMW, formatPrice, formatPercentage } from '@/lib/formatters';
 import { MAP_METRICS } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
@@ -23,11 +22,15 @@ const COUNTRY_NAME_MAP: Record<string, string> = {
   'Malta': 'MT', 'Cyprus': 'CY',
 };
 
-// able data-scale colors. Diverging from clean (green) → medium (amber) → dirty (terracotta).
-// For renewables, the scale is inverted: high = clean, low = dirty.
+// able data-scale colors.
+// Load is a magnitude → single-hue teal ramp, light → dark.
+// Price / renewable share carry real polarity (cheap/expensive, clean/dirty)
+// → diverging clean (green) → medium (amber) → dirty (terracotta).
 const CLEAN = '#2C8A6B';
 const MEDIUM = '#C99A2A';
 const DIRTY = '#8E3D2C';
+const LOAD_LOW = '#CFE3DC';
+const LOAD_HIGH = '#12503F';
 const NO_DATA = '#EDEBE3';
 
 function lerp(a: string, b: string, t: number): string {
@@ -42,18 +45,33 @@ function lerp(a: string, b: string, t: number): string {
 }
 
 function dataColor(metric: MetricType, value: number, min: number, max: number): string {
-  if (max === min) return MEDIUM;
+  if (max === min) return metric === 'load' ? lerp(LOAD_LOW, LOAD_HIGH, 0.5) : MEDIUM;
   let t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  if (metric === 'load') return lerp(LOAD_LOW, LOAD_HIGH, t); // magnitude: one hue
   if (metric === 'renewable_pct') t = 1 - t; // higher renewable = cleaner
   if (t < 0.5) return lerp(CLEAN, MEDIUM, t * 2);
   return lerp(MEDIUM, DIRTY, (t - 0.5) * 2);
 }
 
-function formatValue(value: number, metric: MetricType): string {
+// Number-only formatters — the unit is rendered once, in its own muted span.
+function formatHoverValue(value: number, metric: MetricType): string {
   switch (metric) {
-    case 'load': return formatMW(value);
-    case 'price': return formatPrice(value);
-    case 'renewable_pct': return formatPercentage(value);
+    case 'load': return (value / 1000).toFixed(value >= 10000 ? 1 : 2);
+    case 'price': return value.toFixed(2);
+    case 'renewable_pct': return value.toFixed(1);
+    default: return value.toString();
+  }
+}
+
+function hoverUnit(metric: MetricType, fallback?: string): string {
+  return metric === 'load' ? 'GW' : fallback ?? '';
+}
+
+function formatLegendValue(value: number, metric: MetricType): string {
+  switch (metric) {
+    case 'load': return (value / 1000).toFixed(value >= 10000 ? 0 : 1);
+    case 'price': return value.toFixed(0);
+    case 'renewable_pct': return value.toFixed(0);
     default: return value.toString();
   }
 }
@@ -108,7 +126,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     <div className={cn('relative', fullScreen ? 'h-full w-full' : 'h-full min-h-[400px]')}>
       <ComposableMap
         projection="geoMercator"
-        projectionConfig={{ center: [12, 55], scale: fullScreen ? 380 : 260 }}
+        projectionConfig={{ center: [12, 55], scale: fullScreen ? 440 : 260 }}
         width={1000}
         height={fullScreen ? 650 : 420}
         style={{ width: '100%', height: '100%', shapeRendering: 'geometricPrecision' }}
@@ -159,9 +177,9 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
             </span>
           </div>
           <div className="num text-[26px] font-medium text-foreground">
-            {formatValue(hoveredCountry.value, mapMetric)}
+            {formatHoverValue(hoveredCountry.value, mapMetric)}
             <span className="ml-1 font-mono-num text-[11px] text-ink-muted">
-              {metricInfo?.unit}
+              {hoverUnit(mapMetric, metricInfo?.unit)}
             </span>
           </div>
           <p className="mt-1 text-xs text-ink-dim">{metricInfo?.label}</p>
@@ -173,25 +191,48 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         </div>
       )}
 
+      {/* Empty state — the API returned no countries for this metric */}
+      {!isLoading && dataMap.size === 0 && (
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[10px] border border-border bg-card px-5 py-4 text-center shadow-[0_4px_20px_rgba(0,0,0,0.06)]">
+          <div className="text-[13px] font-medium text-foreground">
+            No {metricInfo?.label.toLowerCase() ?? 'metric'} data right now
+          </div>
+          <p className="mt-1 text-[12px] text-ink-dim">
+            Pick another metric above, or check back after the next ENTSO-E sync.
+          </p>
+        </div>
+      )}
+
       {/* Bottom-left legend */}
       <div className="absolute bottom-5 left-5 min-w-[280px] rounded-[10px] border border-border bg-card p-3.5 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
         <div className="mb-1.5 flex items-baseline justify-between">
           <span className="text-xs font-medium text-foreground">{metricInfo?.label}</span>
-          <span className="font-mono-num text-[10.5px] text-ink-muted">{metricInfo?.unit}</span>
+          <span className="font-mono-num text-[10.5px] text-ink-muted">
+            {mapMetric === 'load' ? 'GW' : metricInfo?.unit}
+          </span>
         </div>
         <div
           className="mb-1 h-2 rounded"
           style={{
             background:
-              mapMetric === 'renewable_pct'
+              mapMetric === 'load'
+                ? `linear-gradient(90deg, ${LOAD_LOW}, ${LOAD_HIGH})`
+                : mapMetric === 'renewable_pct'
                 ? `linear-gradient(90deg, ${DIRTY}, ${MEDIUM}, ${CLEAN})`
                 : `linear-gradient(90deg, ${CLEAN}, ${MEDIUM}, ${DIRTY})`,
           }}
         />
         <div className="flex justify-between font-mono-num text-[10.5px] text-ink-muted">
-          <span>{formatValue(min, mapMetric)}</span>
-          <span>{formatValue((min + max) / 2, mapMetric)}</span>
-          <span>{formatValue(max, mapMetric)}</span>
+          <span>{formatLegendValue(min, mapMetric)}</span>
+          <span>{formatLegendValue((min + max) / 2, mapMetric)}</span>
+          <span>{formatLegendValue(max, mapMetric)}</span>
+        </div>
+        <div className="mt-2 flex items-center gap-1.5 border-t border-input pt-2">
+          <span
+            className="inline-block h-2.5 w-2.5 rounded-sm border border-border"
+            style={{ background: NO_DATA }}
+          />
+          <span className="font-mono-num text-[10px] text-ink-muted">no data</span>
         </div>
       </div>
     </div>

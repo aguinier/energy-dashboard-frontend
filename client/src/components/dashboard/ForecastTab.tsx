@@ -19,10 +19,12 @@ import { useDashboardStore } from '@/store/dashboardStore';
 import { getDateRangeForPreset } from '@/hooks/useDashboardData';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { adaptLoadSeries } from '@/lib/chartAdapters';
+import { formatGwAxis } from '@/lib/chartTicks';
 import { cn } from '@/lib/utils';
 
 // Synthetic horizon multipliers from the prototype. Real backend doesn't yet
-// supply D+3/D+5/D+7 error breakdown for ML models — extrapolated from D+1.
+// supply per-horizon error breakdown beyond D+1 — everything after index 0 is
+// extrapolated and must render as an estimate (hollow bars), not a measurement.
 const HORIZON_LABELS = ['D+1', 'D+2', 'D+3', 'D+5', 'D+7'];
 const HORIZON_FACTORS = [1, 1.15, 1.3, 1.55, 1.9];
 
@@ -52,16 +54,20 @@ function StatCell({
         <span className="num text-[26px] font-medium text-foreground">{value}</span>
         <span className="text-[11px] text-ink-muted">{unit}</span>
       </div>
-      <div className="mt-2 flex items-center justify-between">
-        <span
-          className={cn(
-            'font-mono-num text-[11px]',
-            good == null ? 'text-ink-muted' : good ? 'text-up' : 'text-down',
-          )}
-        >
-          {delta ?? '—'}
-          <span className="ml-1 text-ink-muted">24h</span>
-        </span>
+      <div className="mt-2 flex min-h-[22px] items-center justify-between">
+        {delta != null ? (
+          <span
+            className={cn(
+              'font-mono-num text-[11px]',
+              good == null ? 'text-ink-muted' : good ? 'text-up' : 'text-down',
+            )}
+          >
+            {delta}
+            <span className="ml-1 text-ink-muted">24h</span>
+          </span>
+        ) : (
+          <span />
+        )}
         {spark && spark.length > 1 && (
           <AbleSparkline values={spark} width={70} height={22} />
         )}
@@ -122,6 +128,7 @@ export function ForecastTab() {
           bars: HORIZON_LABELS.map((label, i) => ({
             label,
             v: m.mape * HORIZON_FACTORS[i],
+            extrapolated: i > 0,
           })),
         };
       }),
@@ -140,6 +147,7 @@ export function ForecastTab() {
   const horizonBars = HORIZON_LABELS.map((label, i) => ({
     label,
     v: activeModel.mape * HORIZON_FACTORS[i],
+    extrapolated: i > 0,
   }));
 
   // Overlay chart data — pair forecasted vs actual for the past window.
@@ -186,7 +194,7 @@ export function ForecastTab() {
             <div>
               <div className="text-[13.5px] font-medium">Compare forecast models</div>
               <div className="mt-0.5 font-mono-num text-[11px] text-ink-muted">
-                MAPE % by horizon · illustrative (D+3/D+5/D+7 extrapolated from D+1)
+                MAPE % by horizon · solid = measured, hollow = extrapolated from D+1
               </div>
             </div>
             <div className="font-mono-num text-[10.5px] text-ink-muted">
@@ -230,14 +238,14 @@ export function ForecastTab() {
       <div className="grid gap-3.5 md:grid-cols-2">
         <AbleCard
           title="Error by horizon"
-          subtitle={`MAPE % · day vs week ahead · ${activeModel.name} ${activeModel.version}`}
+          subtitle={`MAPE % · ${activeModel.name} ${activeModel.version} · hollow = extrapolated`}
         >
           <AbleAccuracyBars data={horizonBars} />
         </AbleCard>
 
         <AbleCard
           title="Forecast vs actual"
-          subtitle="overlay · past 7 days · solid = actual, dashed = forecast"
+          subtitle="GW · past 7 days · solid = actual, dashed = forecast"
         >
           {overlayQuery.isLoading ? (
             <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
@@ -248,7 +256,7 @@ export function ForecastTab() {
               series={overlaySeries}
               overlay
               height={180}
-              formatAxis={(v) => (v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v.toFixed(0))}
+              formatAxis={formatGwAxis}
               formatTooltip={(v) => (v >= 1000 ? `${(v / 1000).toFixed(2)} GW` : `${v.toFixed(0)} MW`)}
             />
           )}

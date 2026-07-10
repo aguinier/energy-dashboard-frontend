@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { niceTicks, formatGwAxis } from '@/lib/chartTicks';
 
 // Port of Charts.StackedMix — stacked smoothed area for renewable generation
 // by source (solar / wind / hydro / biomass).
@@ -20,8 +21,10 @@ interface Props {
   colors?: { solar: string; wind: string; hydro: string; biomass: string };
 }
 
+// Validated palette (dataviz six checks): solar darkened from #F0B92B, which
+// sat outside the lightness band at 1.75:1 contrast on the white card.
 const DEFAULT_COLORS = {
-  solar: '#F0B92B',
+  solar: '#D9A114',
   wind: '#4D89C9',
   hydro: '#2FA39C',
   biomass: '#73A35F',
@@ -162,9 +165,9 @@ export function AbleStackedMix({
           opacity={0.8}
         />
 
-        {[0.25, 0.5, 0.75, 1].map((f, i) => {
-          const y = padT + ih - f * ih;
-          const v = yMax * f;
+        {niceTicks(0, yMax, 4).map((v, i) => {
+          if (v === 0) return null;
+          const y = padT + ih - scale(v, 0, yMax, 0, ih);
           return (
             <g key={i}>
               <line
@@ -184,7 +187,7 @@ export function AbleStackedMix({
                 textAnchor="end"
                 fontFamily="'JetBrains Mono', monospace"
               >
-                {(v / 1000).toFixed(1) + 'k'}
+                {formatGwAxis(v)}
               </text>
             </g>
           );

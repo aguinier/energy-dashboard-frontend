@@ -67,7 +67,8 @@ export function AbleStatRow() {
         overview?.loadChange24h != null
           ? `${overview.loadChange24h >= 0 ? '+' : ''}${overview.loadChange24h.toFixed(2)}%`
           : undefined,
-      good: overview?.loadChange24h != null ? overview.loadChange24h >= 0 : undefined,
+      // Load moving up or down carries no valence — leave it neutral ink.
+      good: undefined,
       spark: loadSpark,
     },
     {
@@ -108,22 +109,20 @@ export function AbleStatRow() {
             </span>
             <span className="text-[11px] text-ink-muted">{it.unit}</span>
           </div>
-          <div className="mt-2 flex items-center justify-between">
-            <span
-              className={cn(
-                'font-mono-num text-[11px]',
-                it.delta == null
-                  ? 'text-ink-muted'
-                  : it.good == null
-                  ? 'text-ink-muted'
-                  : it.good
-                  ? 'text-up'
-                  : 'text-down',
-              )}
-            >
-              {it.delta ?? '—'}
-              <span className="ml-1 text-ink-muted">24h</span>
-            </span>
+          <div className="mt-2 flex min-h-[22px] items-center justify-between">
+            {it.delta != null ? (
+              <span
+                className={cn(
+                  'font-mono-num text-[11px]',
+                  it.good == null ? 'text-ink-muted' : it.good ? 'text-up' : 'text-down',
+                )}
+              >
+                {it.delta}
+                <span className="ml-1 text-ink-muted">24h</span>
+              </span>
+            ) : (
+              <span />
+            )}
             {it.spark.length > 1 && (
               <AbleSparkline values={it.spark} width={70} height={22} />
             )}

@@ -56,12 +56,15 @@ export const FORECAST_MODELS: ForecastModel[] = [
   },
 ];
 
+// Validated for colorblind separation (worst adjacent pair ΔE ≥ 22 deutan/protan).
+// Ensemble is ochre, not a second green — a deuteranope couldn't split the old
+// ensemble green from the baseline gray, or internal teal from ensemble.
 export const MODEL_KIND_COLOR: Record<ForecastModel['kind'], string> = {
   internal: '#1F6B5C',
-  'third-party': '#4A6FA5',
-  official: '#7D6B99',
-  baseline: '#8B8980',
-  ensemble: '#2C8A6B',
+  'third-party': '#5B8BC4',
+  official: '#6E4D7E',
+  baseline: '#ABA79C',
+  ensemble: '#8F6E1F',
 };
 
 export const MODEL_KIND_LABEL: Record<ForecastModel['kind'], string> = {

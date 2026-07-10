@@ -1,12 +1,14 @@
 // Grouped multi-model comparison bars — port of MultiModelBars from app.jsx.
 
+import { niceTicks } from '@/lib/chartTicks';
+
 interface ModelSeries {
   id: string;
   name: string;
   version: string;
   mape: number;
   color: string;
-  bars: Array<{ label: string; v: number }>;
+  bars: Array<{ label: string; v: number; extrapolated?: boolean }>;
 }
 
 interface Props {
@@ -34,10 +36,13 @@ export function AbleMultiModelBars({ series, width = 680, height = 200 }: Props)
   const groupW = iw / Math.max(1, horizons.length);
   const barW = Math.max(2, (groupW - 16) / series.length);
 
+  const ticks = niceTicks(0, mx, 4).filter((v) => v > 0);
+  const tickStep = ticks.length > 1 ? ticks[1] - ticks[0] : ticks[0] ?? 1;
+
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="block h-auto w-full">
-      {[0.25, 0.5, 0.75, 1].map((f, i) => {
-        const y = padT + ih - f * ih;
+      {ticks.map((v, i) => {
+        const y = padT + ih - (v / mx) * ih;
         return (
           <g key={i}>
             <line
@@ -56,7 +61,7 @@ export function AbleMultiModelBars({ series, width = 680, height = 200 }: Props)
               textAnchor="end"
               fontFamily="'JetBrains Mono', monospace"
             >
-              {(f * mx).toFixed(1)}%
+              {v.toFixed(tickStep < 1 ? 1 : 0)}%
             </text>
           </g>
         );
@@ -77,9 +82,14 @@ export function AbleMultiModelBars({ series, width = 680, height = 200 }: Props)
             </text>
             {series.map((s, si) => {
               const x = gx + si * barW;
-              const v = s.bars[gi]?.v ?? 0;
+              const bar = s.bars[gi];
+              const v = bar?.v ?? 0;
+              const extrapolated = bar?.extrapolated ?? false;
               const h = (v / mx) * ih;
               const y = padT + ih - h;
+              // Extrapolated values are estimates, not measurements — render
+              // them hollow (tinted fill + dashed outline) so they can't be
+              // mistaken for real data.
               return (
                 <rect
                   key={s.id}
@@ -88,7 +98,11 @@ export function AbleMultiModelBars({ series, width = 680, height = 200 }: Props)
                   width={Math.max(1, barW - 2)}
                   height={h}
                   fill={s.color}
-                  fillOpacity={0.85}
+                  fillOpacity={extrapolated ? 0.22 : 0.85}
+                  stroke={extrapolated ? s.color : 'none'}
+                  strokeOpacity={extrapolated ? 0.7 : 0}
+                  strokeWidth={extrapolated ? 1 : 0}
+                  strokeDasharray={extrapolated ? '3,2' : 'none'}
                   rx={2}
                   style={{
                     transformOrigin: `${x + barW / 2}px ${padT + ih}px`,

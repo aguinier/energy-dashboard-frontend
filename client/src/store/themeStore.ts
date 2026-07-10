@@ -24,7 +24,9 @@ function applyTheme(theme: Theme) {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set) => ({
-      theme: 'system',
+      // Light is the designed mode; dark is a coarse retune. Don't hand
+      // dark-OS visitors the unfinished one by default.
+      theme: 'light',
       setTheme: (theme) => {
         applyTheme(theme);
         set({ theme });

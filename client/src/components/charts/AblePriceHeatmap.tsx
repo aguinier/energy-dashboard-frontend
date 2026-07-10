@@ -33,8 +33,11 @@ export function AblePriceHeatmap({
     );
   }
 
-  const days = 7;
   const hrs = 24;
+  // Only render the future rows (+1d/+2d) when a forecast actually fills them —
+  // otherwise they're two rows of permanently-empty dotted cells.
+  const hasFutureData = cells.some((c) => c.future && c.value != null);
+  const days = hasFutureData ? 7 : 5;
   const cw = (width - 40) / hrs;
   const ch = (height - 20) / days;
 
@@ -76,7 +79,7 @@ export function AblePriceHeatmap({
           />
         );
       })}
-      {DAY_LABELS.map((l, d) => (
+      {DAY_LABELS.slice(0, days).map((l, d) => (
         <text
           key={d}
           x={34}

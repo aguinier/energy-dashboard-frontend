@@ -12,11 +12,11 @@ export function PriceTab() {
   const { data: countries } = useCountries();
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const country = countries?.find((c) => c.country_code === selectedCountry);
-
   const { series, nowIndex } = useMemo(
     () => adaptPriceSeries(priceData, forecastData),
     [priceData, forecastData],
   );
+  const hasForecast = useMemo(() => series.some((p) => p.forecast != null), [series]);
 
   const heatmapCells = useMemo(
     () =>
@@ -32,7 +32,9 @@ export function PriceTab() {
     <div className="space-y-3.5">
       <AbleCard
         title="Day-ahead spot price"
-        subtitle={`€/MWh · ${country?.country_name ?? selectedCountry} · EPEX`}
+        subtitle={`€/MWh · ${country?.country_name ?? selectedCountry} · EPEX${
+          hasForecast ? ' · dashed = able-ml forecast' : ''
+        }`}
       >
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-[12px] text-ink-muted">
@@ -50,7 +52,10 @@ export function PriceTab() {
         )}
       </AbleCard>
 
-      <AbleCard title="Price by hour × day" subtitle="darker = higher · past 4d + next 2d">
+      <AbleCard
+        title="Price by hour × day"
+        subtitle={hasForecast ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
+      >
         <AblePriceHeatmap cells={heatmapCells} unit="€/MWh" />
       </AbleCard>
     </div>

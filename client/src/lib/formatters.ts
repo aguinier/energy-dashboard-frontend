@@ -29,7 +29,13 @@ export function formatNumber(value: number | null | undefined, options?: {
 }
 
 export function formatMW(value: number | null | undefined): string {
-  return formatNumber(value, { decimals: 0, suffix: ' MW', compact: true });
+  if (value === null || value === undefined) return '-';
+  // Country-scale power reads in GW; "25.2K MW" does not.
+  if (Math.abs(value) >= 1000) {
+    const gw = value / 1000;
+    return `${gw.toFixed(Math.abs(gw) >= 10 ? 1 : 2)} GW`;
+  }
+  return `${Math.round(value).toLocaleString()} MW`;
 }
 
 export function formatPrice(value: number | null | undefined): string {

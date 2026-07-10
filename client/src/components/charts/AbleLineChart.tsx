@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { niceTicks } from '@/lib/chartTicks';
 
 // Typed port of the able prototype's <LineChart>. Single-series chart with
 // optional dashed forecast overlay, future-region shading, "now" pill marker
@@ -174,16 +175,28 @@ export function AbleLineChart({
     return smooth ? smoothPath(c) : straightPath(c);
   })();
 
-  const yTicks: number[] = [];
-  for (let i = 0; i <= 4; i++) {
-    yTicks.push(yMin + ((yMax - yMin) * i) / 4);
-  }
+  const yTicks = niceTicks(yMin, yMax, 4);
 
-  // Day-marker X ticks anchored to NOW.
+  // Day-marker X ticks anchored to NOW, thinned so labels never collide.
   const xTicks: number[] = [];
   for (let i = NOW % 24; i < series.length; i += 24) {
     if (i >= 0) xTicks.push(i);
   }
+  const xStride = Math.ceil(xTicks.length / 9);
+  const visibleXTicks =
+    xStride > 1
+      ? xTicks.filter((i) => i === NOW || Math.round((i - NOW) / 24) % xStride === 0)
+      : xTicks;
+  // Long windows label as "8 Jul", short ones as weekday "Wed 8".
+  const spanDays = series.length / 24;
+  const xLabelFor = (i: number): string => {
+    if (i === NOW) return 'now';
+    const d = new Date(series[i].ts);
+    if (Number.isNaN(d.getTime())) return '';
+    return spanDays > 12
+      ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+      : `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${d.getDate()}`;
+  };
 
   const nowX = pts[NOW] ? pts[NOW][0] : padL + iw;
 
@@ -207,7 +220,7 @@ export function AbleLineChart({
         className="flex items-center justify-center text-[12px] text-ink-muted"
         style={{ height }}
       >
-        No data for this window.
+        No data in this window — try a longer range like 30d.
       </div>
     );
   }
@@ -243,17 +256,27 @@ export function AbleLineChart({
         {yTicks.map((v, i) => {
           const y = padT + ih - scale(v, yMin, yMax, 0, ih);
           return (
-            <text
-              key={i}
-              x={padL - 8}
-              y={y + 4}
-              fill={T.inkMuted}
-              fontSize="10"
-              textAnchor="end"
-              fontFamily="'JetBrains Mono', monospace"
-            >
-              {formatAxis(v)}
-            </text>
+            <g key={i}>
+              <line
+                x1={padL}
+                x2={padL + iw}
+                y1={y}
+                y2={y}
+                stroke={T.rule}
+                strokeWidth={1}
+                opacity={0.5}
+              />
+              <text
+                x={padL - 8}
+                y={y + 4}
+                fill={T.inkMuted}
+                fontSize="10"
+                textAnchor="end"
+                fontFamily="'JetBrains Mono', monospace"
+              >
+                {formatAxis(v)}
+              </text>
+            </g>
           );
         })}
 
@@ -266,11 +289,8 @@ export function AbleLineChart({
           strokeWidth={1}
         />
 
-        {xTicks.map((i) => {
+        {visibleXTicks.map((i) => {
           const x = padL + (i / Math.max(1, series.length - 1)) * iw;
-          const dayOffset = Math.round((i - NOW) / 24);
-          const label =
-            i === NOW ? 'now' : dayOffset > 0 ? `+${dayOffset}d` : `${dayOffset}d`;
           return (
             <text
               key={i}
@@ -281,7 +301,7 @@ export function AbleLineChart({
               textAnchor="middle"
               fontFamily="'JetBrains Mono', monospace"
             >
-              {label}
+              {xLabelFor(i)}
             </text>
           );
         })}

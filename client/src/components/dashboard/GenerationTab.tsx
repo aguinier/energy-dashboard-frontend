@@ -10,8 +10,9 @@ import {
 } from '@/hooks/useDashboardData';
 import { adaptRenewableMixSeries } from '@/lib/chartAdapters';
 
+// Keep in sync with AbleStackedMix DEFAULT_COLORS (validated palette).
 const SOURCE_COLORS = {
-  solar: '#F0B92B',
+  solar: '#D9A114',
   wind: '#4D89C9',
   hydro: '#2FA39C',
   biomass: '#73A35F',
@@ -58,7 +59,7 @@ export function GenerationTab() {
 
   return (
     <div className="space-y-3.5">
-      <AbleCard title="Generation mix" subtitle="stacked MW by source">
+      <AbleCard title="Generation mix" subtitle="GW · stacked by source · ENTSO-E">
         {isLoading ? (
           <div className="flex h-[220px] items-center justify-center text-[12px] text-ink-muted">
             Loading…
@@ -91,7 +92,7 @@ export function GenerationTab() {
       </AbleCard>
 
       <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
-        <AbleCard title="Right now" subtitle="share of generation">
+        <AbleCard title="Right now" subtitle="share of load · nuclear & gas estimated">
           <div className="flex justify-center py-2">
             <AbleDonut values={donutValues} colors={SOURCE_COLORS} />
           </div>
