@@ -342,7 +342,9 @@ export function AbleLineChart({
           />
         )}
 
-        {/* Actual line */}
+        {/* Actual line — pathLength normalizes the draw-on animation so it
+            always covers the full path; a fixed dasharray left anything past
+            that many units invisible on long windows. */}
         {actualPath && (
           <path
             d={actualPath}
@@ -351,9 +353,10 @@ export function AbleLineChart({
             strokeWidth={2}
             strokeLinecap="round"
             strokeLinejoin="round"
+            pathLength={1}
             style={{
-              strokeDasharray: 2400,
-              strokeDashoffset: 2400,
+              strokeDasharray: 1,
+              strokeDashoffset: 1,
               animation: 'chartDraw 0.9s cubic-bezier(0.4, 0, 0.2, 1) forwards',
             }}
           />

@@ -23,21 +23,19 @@ export function AbleHeader() {
   const isActive = (k: string) =>
     k === 'map' ? currentView === 'map' || currentView === 'country' : false;
 
-  // Pick the freshest stamp we know of for the pulse indicator.
-  const latestStamp = freshness
-    ? [
-        freshness.load,
-        freshness.price,
-        freshness.generation,
-        freshness.tsoLoadForecast,
-        freshness.tsoGenerationForecast,
-      ]
+  // Pulse recency comes from the MEASURED series only (load/generation).
+  // Price and TSO-forecast stamps sit up to a day in the future by design
+  // (day-ahead auction), so "max of all stamps" produced nonsense like
+  // "sync 23 hours ago" while holding tomorrow's prices — and clamping
+  // future stamps to now would mask a genuinely dead pipeline instead.
+  const latestMeasured = freshness
+    ? [freshness.load, freshness.generation]
         .filter((x): x is string => !!x)
         .sort()
         .at(-1)
     : null;
-  const liveLabel = latestStamp
-    ? `Live · ENTSO-E sync ${formatDistanceToNowStrict(new Date(latestStamp))} ago`
+  const liveLabel = latestMeasured
+    ? `Live · ENTSO-E sync ${formatDistanceToNowStrict(new Date(latestMeasured))} ago`
     : 'Live · ENTSO-E';
 
   return (
