@@ -10,6 +10,7 @@ import {
   getDateRangeForPreset,
   getGranularityForPreset,
   getMLForecastDateRange,
+  getPriceWindowEnd,
 } from './useDashboardData';
 import type {
   PriceDataPoint,
@@ -51,11 +52,9 @@ export function usePriceChartData(): PriceChartData {
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
   const granularity = getGranularityForPreset(timePreset);
 
-  // Day-ahead auction prices are published ~12:45 CET for the entire next
-  // day. Extend the price window past the preset's end so tomorrow's coupled
-  // prices appear as soon as they exist — otherwise past-anchored presets
-  // (which end at "now") can never show them.
-  const priceEnd = new Date(Math.max(end.getTime(), Date.now() + 36 * 60 * 60 * 1000));
+  // Shared with usePriceData — both hooks use the same ['prices', …] query
+  // key, so their windows must be identical (see getPriceWindowEnd).
+  const priceEnd = getPriceWindowEnd(end);
 
   // ML forecast date range (window start to max(window end, now+48h))
   const { start: mlForecastStart, end: mlForecastEnd } = getMLForecastDateRange(start, end, 48);

@@ -278,6 +278,17 @@ export function useLoadData() {
   });
 }
 
+/**
+ * Day-ahead auctions publish the whole next day's prices ~12:45 CET, so the
+ * price window always extends past the preset's end. Every caller that shares
+ * the ['prices', …] query key MUST use this — the key doesn't encode the
+ * window, so two hooks with different windows silently poison each other's
+ * cache (that bug hid tomorrow's prices even after the chart fix).
+ */
+export function getPriceWindowEnd(end: Date): Date {
+  return new Date(Math.max(end.getTime(), Date.now() + 36 * 60 * 60 * 1000));
+}
+
 export function usePriceData() {
   const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
@@ -285,7 +296,13 @@ export function usePriceData() {
 
   return useQuery({
     queryKey: ['prices', selectedCountry, timePreset, timeOffset, granularity],
-    queryFn: () => fetchPriceData({ country: selectedCountry, start: start.toISOString(), end: end.toISOString(), granularity }),
+    queryFn: () =>
+      fetchPriceData({
+        country: selectedCountry,
+        start: start.toISOString(),
+        end: getPriceWindowEnd(end).toISOString(),
+        granularity,
+      }),
     staleTime: REFRESH_INTERVALS.dashboard,
   });
 }

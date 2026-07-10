@@ -26,6 +26,15 @@ function lastN(values: Array<number | null | undefined>, n: number): number[] {
     .slice(-n);
 }
 
+// The price window now extends into tomorrow (published auction), but the
+// stat tile's spark is a *recent trend* — keep it to points at or before now.
+function isPast(ts: string | undefined): boolean {
+  if (!ts) return true;
+  const iso = ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
+  const t = new Date(iso).getTime();
+  return !Number.isFinite(t) || t <= Date.now();
+}
+
 export function AbleStatRow() {
   const { data: overview, isLoading } = useDashboardOverview();
   const { data: load } = useLoadData();
@@ -33,7 +42,10 @@ export function AbleStatRow() {
   const { data: renewable } = useRenewableData();
 
   const loadSpark = lastN(load?.map((p) => p.load ?? p.avg_load ?? null) ?? [], 48);
-  const priceSpark = lastN(price?.map((p) => p.price) ?? [], 48);
+  const priceSpark = lastN(
+    price?.filter((p) => isPast(p.timestamp)).map((p) => p.price) ?? [],
+    48,
+  );
   const renewableSpark = lastN(
     renewable?.map((p) => {
       const total = (p.solar ?? 0) + (p.wind_onshore ?? 0) + (p.wind_offshore ?? 0) + (p.hydro ?? 0) + (p.biomass ?? 0);
