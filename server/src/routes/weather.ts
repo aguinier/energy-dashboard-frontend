@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import db from '../config/database.js';
-import writeDb from '../config/writeDatabase.js';
+import { getWriteDb } from '../config/writeDatabase.js';
 import { writeAuth } from '../middleware/writeAuth.js';
 import { AppError } from '../middleware/errorHandler.js';
 
@@ -68,7 +68,7 @@ interface SnapshotPayload {
 }
 
 function lookupSourceId(provider: string, model_id: string, lead: number): number | null {
-  const row = writeDb.prepare(
+  const row = getWriteDb().prepare(
     `SELECT source_id FROM weather_source
      WHERE provider = ? AND model_id = ? AND lead_time_hours = ?`
   ).get(provider, model_id, lead) as { source_id: number } | undefined;
@@ -76,7 +76,7 @@ function lookupSourceId(provider: string, model_id: string, lead: number): numbe
 }
 
 function lookupLocationId(country_code: string, zone_id: string): number | null {
-  const row = writeDb.prepare(
+  const row = getWriteDb().prepare(
     `SELECT location_id FROM weather_location
      WHERE country_code = ? AND zone_id = ?`
   ).get(country_code, zone_id) as { location_id: number } | undefined;
@@ -136,9 +136,9 @@ router.post('/snapshot', writeAuth, (req: Request, res: Response, next: NextFunc
     ];
     const placeholders = cols.map(() => '?').join(',');
     const sql = `INSERT OR IGNORE INTO weather_observation (${cols.join(',')}) VALUES (${placeholders})`;
-    const stmt = writeDb.prepare(sql);
+    const stmt = getWriteDb().prepare(sql);
 
-    const runTx = writeDb.transaction((rows: SnapshotPayload['rows']) => {
+    const runTx = getWriteDb().transaction((rows: SnapshotPayload['rows']) => {
       let inserted = 0;
       for (const row of rows) {
         if (!row.valid_at || typeof row.valid_at !== 'string') continue;
