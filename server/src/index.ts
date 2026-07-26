@@ -32,6 +32,14 @@ app.use(cors({
   credentials: true,
 }));
 app.use(compression());
+
+// Bulk forecast ingest needs a bigger body than the 100kb default: one
+// net-position run is ~456 points with nine quantiles each, roughly 250kb.
+// Scoped to that path and mounted first, so body-parser marks the body as
+// read and the global 100kb limit below still applies to every other route.
+// The route is token-gated and enforces its own row cap.
+app.use('/api/forecasts/net-position', express.json({ limit: '4mb' }));
+
 app.use(express.json());
 
 // API Routes

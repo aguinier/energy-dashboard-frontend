@@ -19,6 +19,12 @@ export function ApiCta() {
   };
   const resource = tabToResource[activeChartTab] ?? activeChartTab;
 
+  // Most data routes take ?country=, but some take the code in the path
+  // (net-position, data-freshness, tso-forecast). Showing the wrong shape
+  // would hand out a URL that 404s.
+  const pathParamResources = new Set(['net-position']);
+  const usesPathParam = pathParamResources.has(resource);
+
   return (
     <div className="mt-7 flex flex-wrap items-center gap-5 rounded-xl border border-border bg-card px-6 py-5">
       <div className="min-w-[280px] flex-1">
@@ -28,7 +34,8 @@ export function ApiCta() {
         </div>
       </div>
       <code className="rounded-md border border-border bg-secondary px-3 py-2.5 font-mono-num text-[12px] text-foreground">
-        <span className="text-ink-muted">GET</span> /api/{resource}?country=
+        <span className="text-ink-muted">GET</span> /api/{resource}
+        {usesPathParam ? '/' : '?country='}
         <span className="text-primary">{selectedCountry}</span>
       </code>
       <button

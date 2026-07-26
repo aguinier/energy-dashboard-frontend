@@ -34,6 +34,7 @@ import type {
   RollingAccuracyResponse,
   CrossCountryMetrics,
   CrossCountryMetricsEntry,
+  NetPositionResponse,
 } from '@/types';
 
 const api = axios.create({
@@ -447,6 +448,23 @@ export async function fetchCrossCountryMetrics(params?: {
     { params }
   );
   return pivotMetrics(data.data);
+}
+
+/**
+ * Day-ahead net position plus the newest forecast vintage, in one call.
+ * The band arrives nested per forecast row, so there is nothing to join here.
+ */
+export async function fetchNetPosition(params: {
+  country: string;
+  start: string;
+  end: string;
+}): Promise<NetPositionResponse> {
+  const { country, ...query } = params;
+  const { data } = await api.get<ApiResponse<NetPositionResponse>>(
+    `/net-position/${country}`,
+    { params: query },
+  );
+  return data.data;
 }
 
 export default api;

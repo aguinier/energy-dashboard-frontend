@@ -10,6 +10,7 @@ const {
   getNetPosition,
   getNetPositionActuals,
   getNetPositionForecast,
+  getLastSeen,
   resolveBiddingZone,
 } = await import('./netPositionService.js');
 
@@ -187,5 +188,38 @@ describe('getNetPosition', () => {
     expect(out.actual).toHaveLength(3);
     expect(out.forecast).toHaveLength(1);
     expect(out.meta.bidding_zone).toBe('BE');
+  });
+});
+
+describe('getLastSeen', () => {
+  let db: DatabaseType;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(SCHEMA);
+    const ins = db.prepare(
+      'INSERT INTO net_position (country_code, timestamp_utc, net_position_mw) VALUES (?, ?, ?)'
+    );
+    // GR went silent in March; no recent query window will contain this.
+    ins.run('GR', '2026-03-14 22:00:00', 120.0);
+    ins.run('BE', '2026-07-26 06:00:00', -980.0);
+  });
+
+  it('reports the last published hour even when it predates every window', () => {
+    expect(getLastSeen('GR', db)).toBe('2026-03-14T22:00:00');
+  });
+
+  it('is null for a zone that never published', () => {
+    expect(getLastSeen('MT', db)).toBeNull();
+  });
+
+  it('rides the DE_LU mapping like the other reads', () => {
+    expect(getLastSeen('LU', db)).toBe(getLastSeen('DE', db));
+  });
+
+  it('surfaces on the combined payload so the UI can name the date', () => {
+    const out = getNetPosition('GR', '2026-07-20 00:00:00', '2026-07-27 00:00:00', db);
+    expect(out.actual).toEqual([]);
+    expect(out.meta.last_seen).toBe('2026-03-14T22:00:00');
   });
 });

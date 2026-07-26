@@ -411,3 +411,35 @@ export interface AvailableProvidersResponse {
     }>;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Net position (day-ahead, per bidding zone). Positive = net exporter.
+// ---------------------------------------------------------------------------
+
+export interface NetPositionActualPoint {
+  timestamp: string;
+  net_position_mw: number;
+}
+
+export interface NetPositionForecastPoint {
+  timestamp: string;
+  p50: number;
+  /** null when the backend has no forecast_quantiles table yet. */
+  p10: number | null;
+  p90: number | null;
+}
+
+export interface NetPositionResponse {
+  actual: NetPositionActualPoint[];
+  forecast: NetPositionForecastPoint[];
+  meta: {
+    /** Zone actually queried — DE and LU both report DE_LU. */
+    bidding_zone: string;
+    model_name: string | null;
+    model_version: string | null;
+    generated_at: string | null;
+    has_band: boolean;
+    /** Newest published hour for this zone, ignoring the query window. */
+    last_seen: string | null;
+  };
+}

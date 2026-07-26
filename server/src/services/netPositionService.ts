@@ -7,6 +7,9 @@ import {
   NetPositionResponse,
 } from '../types/index.js';
 
+/** Forecast metadata, before the window-independent last_seen is attached. */
+type ForecastMeta = Omit<NetPositionResponse['meta'], 'last_seen'>;
+
 /**
  * Net positions are published per BIDDING ZONE, which is not always the
  * two-letter country code. Germany's is DE_LU, the Core CCR zone covering
@@ -78,7 +81,7 @@ export function getNetPositionActuals(
 export function getNetPositionForecast(
   countryCode: string,
   db: DatabaseType = defaultDb
-): { points: NetPositionForecastPoint[]; meta: NetPositionResponse['meta'] } {
+): { points: NetPositionForecastPoint[]; meta: ForecastMeta } {
   const code = storageCode(countryCode);
 
   const latest = db
@@ -93,7 +96,7 @@ export function getNetPositionForecast(
     | { generated_at: string; model_name: string; model_version: string }
     | undefined;
 
-  const meta: NetPositionResponse['meta'] = {
+  const meta: ForecastMeta = {
     bidding_zone: resolveBiddingZone(countryCode),
     model_name: latest?.model_name ?? null,
     model_version: latest?.model_version ?? null,
@@ -144,6 +147,24 @@ export function getNetPositionForecast(
   return { points: rows, meta };
 }
 
+/**
+ * Newest published hour for this zone, ignoring the query window.
+ *
+ * Needed to tell "nothing in the last 7 days" apart from "this zone stopped
+ * publishing in March". Both look identical inside the window, and only the
+ * unbounded maximum can name the date - GR and IE both went silent on
+ * 2026-03-14, which no recent window will ever contain.
+ */
+export function getLastSeen(
+  countryCode: string,
+  db: DatabaseType = defaultDb
+): string | null {
+  const row = db
+    .prepare(`SELECT MAX(timestamp_utc) AS last FROM net_position WHERE country_code = ?`)
+    .get(storageCode(countryCode)) as { last: string | null } | undefined;
+  return row?.last ? row.last.replace(' ', 'T') : null;
+}
+
 export function getNetPosition(
   countryCode: string,
   start: string,
@@ -152,5 +173,9 @@ export function getNetPosition(
 ): NetPositionResponse {
   const actual = getNetPositionActuals(countryCode, start, end, db);
   const { points, meta } = getNetPositionForecast(countryCode, db);
-  return { actual, forecast: points, meta };
+  return {
+    actual,
+    forecast: points,
+    meta: { ...meta, last_seen: getLastSeen(countryCode, db) },
+  };
 }

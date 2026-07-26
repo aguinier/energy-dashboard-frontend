@@ -21,6 +21,9 @@ const GenerationTab = lazy(() =>
 const ForecastTab = lazy(() =>
   import('@/components/dashboard/ForecastTab').then((m) => ({ default: m.ForecastTab })),
 );
+const NetPositionTab = lazy(() =>
+  import('@/components/dashboard/NetPositionTab').then((m) => ({ default: m.NetPositionTab })),
+);
 
 function TabSkeleton({ height = 350 }: { height?: number }) {
   return (
@@ -64,6 +67,7 @@ export function CountryDashboardView() {
               <TabsTrigger value="price">Price</TabsTrigger>
               <TabsTrigger value="load">Load</TabsTrigger>
               <TabsTrigger value="renewables">Generation</TabsTrigger>
+              <TabsTrigger value="net-position">Net position</TabsTrigger>
               <TabsTrigger value="analytics">Forecast accuracy</TabsTrigger>
             </TabsList>
           </Tabs>
@@ -86,6 +90,11 @@ export function CountryDashboardView() {
           <TabsContent value="renewables">
             <Suspense fallback={<TabSkeleton height={400} />}>
               <GenerationTab />
+            </Suspense>
+          </TabsContent>
+          <TabsContent value="net-position">
+            <Suspense fallback={<TabSkeleton />}>
+              <NetPositionTab />
             </Suspense>
           </TabsContent>
           <TabsContent value="analytics">

@@ -10,6 +10,7 @@ import type {
   ForecastDataPoint,
   RenewableDataPoint,
   TSOLoadForecastDataPoint,
+  NetPositionResponse,
 } from '@/types';
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -133,6 +134,70 @@ export function adaptLoadSeries(opts: {
     forecastAltMin: (p) => p.forecast_min_mw,
     forecastAltMax: (p) => p.forecast_max_mw,
   });
+}
+
+/**
+ * Net position → line series carrying all three regimes on one axis:
+ *
+ *   observed            actuals up to now
+ *   published day-ahead the same series past now — this is a market outcome
+ *                       that is already known, not a prediction
+ *   model forecast      Chronos D+2 as `forecast`, with p10/p90 as the band
+ *
+ * Hours with neither are left null on purpose. Between the end of the
+ * published day-ahead run and the start of D+2 there is routinely a real hole
+ * — tomorrow's net position is not published until after market coupling
+ * (~13:00 CET), so every morning has one. Filling it would put a line on the
+ * chart that no data supports.
+ */
+export function adaptNetPositionSeries(
+  data: NetPositionResponse | undefined,
+  now: Date = new Date(),
+): { series: AbleSeriesPoint[]; nowIndex: number } {
+  const actual = data?.actual ?? [];
+  const forecast = data?.forecast ?? [];
+
+  const allTs: number[] = [];
+  for (const p of actual) if (p.timestamp) allTs.push(hourKey(p.timestamp));
+  for (const p of forecast) if (p.timestamp) allTs.push(hourKey(p.timestamp));
+  if (allTs.length === 0) return { series: [], nowIndex: 0 };
+
+  const tStart = Math.min(...allTs);
+  const tEnd = Math.max(...allTs);
+  const nowMs = now.getTime();
+
+  const points: AbleSeriesPoint[] = [];
+  for (let t = tStart; t <= tEnd; t += HOUR_MS) {
+    points.push({
+      ts: new Date(t).toISOString(),
+      future: t > nowMs,
+      value: null,
+      forecast: null,
+    });
+  }
+  const idxOf = (ts: number) => Math.round((ts - tStart) / HOUR_MS);
+
+  for (const p of actual) {
+    if (!p.timestamp) continue;
+    const i = idxOf(hourKey(p.timestamp));
+    if (i < 0 || i >= points.length) continue;
+    if (Number.isFinite(p.net_position_mw)) points[i].value = p.net_position_mw;
+  }
+
+  for (const p of forecast) {
+    if (!p.timestamp) continue;
+    const i = idxOf(hourKey(p.timestamp));
+    if (i < 0 || i >= points.length) continue;
+    if (Number.isFinite(p.p50)) points[i].forecast = p.p50;
+    if (p.p10 != null && Number.isFinite(p.p10)) points[i].min = p.p10;
+    if (p.p90 != null && Number.isFinite(p.p90)) points[i].max = p.p90;
+  }
+
+  let nowIndex = points.findIndex((p) => new Date(p.ts).getTime() > nowMs);
+  if (nowIndex === -1) nowIndex = points.length - 1;
+  else nowIndex = Math.max(0, nowIndex - 1);
+
+  return { series: points, nowIndex };
 }
 
 /** Renewable mix → stacked series for AbleStackedMix. */

@@ -219,6 +219,8 @@ export interface NetPositionResponse {
     generated_at: string | null;
     /** False when only the median is available. */
     has_band: boolean;
+    /** Newest published hour for this zone, ignoring the query window. */
+    last_seen: string | null;
   };
 }
 
