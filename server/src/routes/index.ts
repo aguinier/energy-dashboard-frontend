@@ -10,6 +10,8 @@ import dataFreshnessRouter from './dataFreshness.js';
 import forecastComparisonRouter from './forecastComparison.js';
 import crossCountryComparisonRouter from './crossCountryComparison.js';
 import weatherRouter from './weather.js';
+import netPositionRouter from './netPosition.js';
+import netPositionIngestRouter from './netPositionIngest.js';
 
 const router = Router();
 
@@ -20,6 +22,10 @@ router.use('/prices', pricesRouter);
 router.use('/renewables', renewablesRouter);
 router.use('/dashboard', dashboardRouter);
 router.use('/forecasts', forecastRouter);
+// Write path for the workstation's Chronos net-position run. Mounted under the
+// same /forecasts prefix, before nothing else claims POST /net-position.
+router.use('/forecasts', netPositionIngestRouter);
+router.use('/net-position', netPositionRouter);
 router.use('/tso-forecast', tsoForecastRouter);
 router.use('/data-freshness', dataFreshnessRouter);
 router.use('/forecast-comparison', forecastComparisonRouter);

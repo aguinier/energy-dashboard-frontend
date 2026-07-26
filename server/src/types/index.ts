@@ -190,3 +190,48 @@ export interface ApiError {
   error: string;
   code?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Net position (day-ahead, per bidding zone). Positive = net exporter.
+// ---------------------------------------------------------------------------
+
+export interface NetPositionActualPoint {
+  timestamp: string;
+  net_position_mw: number;
+}
+
+export interface NetPositionForecastPoint {
+  timestamp: string;
+  p50: number;
+  /** null when the deployment has no forecast_quantiles table yet. */
+  p10: number | null;
+  p90: number | null;
+}
+
+export interface NetPositionResponse {
+  actual: NetPositionActualPoint[];
+  forecast: NetPositionForecastPoint[];
+  meta: {
+    /** Zone actually queried - DE and LU both report DE_LU. */
+    bidding_zone: string;
+    model_name: string | null;
+    model_version: string | null;
+    generated_at: string | null;
+    /** False when only the median is available. */
+    has_band: boolean;
+  };
+}
+
+export interface NetPositionForecastIngestRow {
+  country_code: string;
+  target_timestamp_utc: string;
+  horizon_hours: number;
+  forecast_value: number;
+  quantiles?: Record<string, number>;
+}
+
+export interface NetPositionForecastIngestPayload {
+  model: { name: string; version: string };
+  generated_at: string;
+  rows: NetPositionForecastIngestRow[];
+}
