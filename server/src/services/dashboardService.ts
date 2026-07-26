@@ -136,6 +136,8 @@ export function getMapData(
       return getMapPriceData(start, end);
     case 'renewable_pct':
       return getMapRenewableData(start, end);
+    case 'net_position':
+      return getMapNetPositionData(start, end);
     default:
       return getMapLoadData(start, end);
   }
@@ -155,6 +157,52 @@ function getMapLoadData(start: string, end: string): MapDataPoint[] {
     ORDER BY c.country_name
   `);
   return stmt.all(start, end) as MapDataPoint[];
+}
+
+/**
+ * Average net position per country over the window (MW, positive = exporter).
+ *
+ * Averaged like the other map metrics, so this reads as "net exporter over
+ * this period" rather than at one instant. Intraday sign flips partly cancel,
+ * which is why the legend labels it as an average.
+ *
+ * DE_LU is one bidding zone stored under 'DE', so Luxembourg is forced to
+ * Germany's value. LU also carries ~180 rows of its own, which are an ingest
+ * artifact from before the zone mapping existed: left alone they rendered LU
+ * at -6201 MW next to DE at +355 MW, two contradictory colours for one zone.
+ * Overwriting is deliberate - a hole would at least read as missing, but a
+ * wrong number reads as fact.
+ */
+function getMapNetPositionData(start: string, end: string): MapDataPoint[] {
+  const stmt = db.prepare(`
+    SELECT
+      n.country_code,
+      c.country_name,
+      ROUND(AVG(n.net_position_mw), 0) as value,
+      MAX(n.timestamp_utc) as timestamp
+    FROM net_position n
+    JOIN countries c ON n.country_code = c.country_code
+    WHERE n.timestamp_utc BETWEEN ? AND ?
+    GROUP BY n.country_code, c.country_name
+    ORDER BY c.country_name
+  `);
+  const rows = stmt.all(start, end) as MapDataPoint[];
+
+  const de = rows.find((r) => r.country_code === 'DE');
+  if (!de) return rows;
+
+  const existingLu = rows.find((r) => r.country_code === 'LU');
+  if (existingLu) {
+    existingLu.value = de.value;
+    existingLu.timestamp = de.timestamp;
+    return rows;
+  }
+
+  const lu = db
+    .prepare(`SELECT country_name FROM countries WHERE country_code = 'LU'`)
+    .get() as { country_name: string } | undefined;
+  if (lu) rows.push({ ...de, country_code: 'LU', country_name: lu.country_name });
+  return rows;
 }
 
 function getMapPriceData(start: string, end: string): MapDataPoint[] {

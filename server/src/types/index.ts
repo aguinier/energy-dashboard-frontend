@@ -159,7 +159,7 @@ export interface ForecastAccuracyMetrics {
 // Query parameter types
 export type Granularity = 'hourly' | 'daily' | 'weekly' | 'monthly';
 export type TimeRange = '24h' | '7d' | '30d' | '90d' | '1y' | 'custom';
-export type MetricType = 'load' | 'price' | 'renewable_pct';
+export type MetricType = 'load' | 'price' | 'renewable_pct' | 'net_position';
 
 export interface TimeRangeParams {
   start?: string;

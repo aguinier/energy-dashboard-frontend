@@ -5,6 +5,7 @@ import { useMapData } from '@/hooks/useDashboardData';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { usePrefetchCountry } from '@/hooks/usePrefetch';
 import { MAP_METRICS } from '@/lib/constants';
+import { divergingT, symmetricBound } from '@/lib/divergingScale';
 import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
 
@@ -33,6 +34,13 @@ const LOAD_LOW = '#CFE3DC';
 const LOAD_HIGH = '#12503F';
 const NO_DATA = '#EDEBE3';
 
+// Net position is the one signed metric: amber = importing, blue = exporting,
+// meeting at a near-neutral zero. Amber/blue rather than red/green so the two
+// directions stay distinguishable for red-green colour blindness.
+const IMPORT_STRONG = '#B45309';
+const NEUTRAL_ZERO = '#F4F1EC';
+const EXPORT_STRONG = '#14506E';
+
 function lerp(a: string, b: string, t: number): string {
   const ah = parseInt(a.slice(1), 16);
   const bh = parseInt(b.slice(1), 16);
@@ -45,6 +53,15 @@ function lerp(a: string, b: string, t: number): string {
 }
 
 function dataColor(metric: MetricType, value: number, min: number, max: number): string {
+  // Net position is signed, so it cannot use the min→max normalisation below:
+  // that would place 0 MW wherever it happens to fall in the range. See
+  // divergingScale.ts.
+  if (metric === 'net_position') {
+    const t = divergingT(value, symmetricBound(min, max));
+    return t < 0.5
+      ? lerp(IMPORT_STRONG, NEUTRAL_ZERO, t * 2)
+      : lerp(NEUTRAL_ZERO, EXPORT_STRONG, (t - 0.5) * 2);
+  }
   if (max === min) return metric === 'load' ? lerp(LOAD_LOW, LOAD_HIGH, 0.5) : MEDIUM;
   let t = Math.max(0, Math.min(1, (value - min) / (max - min)));
   if (metric === 'load') return lerp(LOAD_LOW, LOAD_HIGH, t); // magnitude: one hue
@@ -59,12 +76,16 @@ function formatHoverValue(value: number, metric: MetricType): string {
     case 'load': return (value / 1000).toFixed(value >= 10000 ? 1 : 2);
     case 'price': return value.toFixed(2);
     case 'renewable_pct': return value.toFixed(1);
+    case 'net_position':
+      return (Math.abs(value) >= 1000 ? (value / 1000).toFixed(2) : value.toFixed(0));
     default: return value.toString();
   }
 }
 
 function hoverUnit(metric: MetricType, fallback?: string): string {
-  return metric === 'load' ? 'GW' : fallback ?? '';
+  if (metric === 'load') return 'GW';
+  if (metric === 'net_position') return 'MW';
+  return fallback ?? '';
 }
 
 function formatLegendValue(value: number, metric: MetricType): string {
@@ -72,6 +93,8 @@ function formatLegendValue(value: number, metric: MetricType): string {
     case 'load': return (value / 1000).toFixed(value >= 10000 ? 0 : 1);
     case 'price': return value.toFixed(0);
     case 'renewable_pct': return value.toFixed(0);
+    case 'net_position':
+      return (Math.abs(value) >= 1000 ? (value / 1000).toFixed(1) + 'k' : value.toFixed(0));
     default: return value.toString();
   }
 }
@@ -206,7 +229,11 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
       {/* Bottom-left legend */}
       <div className="absolute bottom-5 left-5 min-w-[280px] rounded-[10px] border border-border bg-card p-3.5 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
         <div className="mb-1.5 flex items-baseline justify-between">
-          <span className="text-xs font-medium text-foreground">{metricInfo?.label}</span>
+          <span className="text-xs font-medium text-foreground">
+            {/* Named as an average: the map aggregates over the window, and for
+                a signed quantity that is a different claim from "right now". */}
+            {mapMetric === 'net_position' ? 'Avg net position' : metricInfo?.label}
+          </span>
           <span className="font-mono-num text-[10.5px] text-ink-muted">
             {mapMetric === 'load' ? 'GW' : metricInfo?.unit}
           </span>
@@ -217,16 +244,34 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
             background:
               mapMetric === 'load'
                 ? `linear-gradient(90deg, ${LOAD_LOW}, ${LOAD_HIGH})`
+                : mapMetric === 'net_position'
+                ? `linear-gradient(90deg, ${IMPORT_STRONG}, ${NEUTRAL_ZERO} 50%, ${EXPORT_STRONG})`
                 : mapMetric === 'renewable_pct'
                 ? `linear-gradient(90deg, ${DIRTY}, ${MEDIUM}, ${CLEAN})`
                 : `linear-gradient(90deg, ${CLEAN}, ${MEDIUM}, ${DIRTY})`,
           }}
         />
-        <div className="flex justify-between font-mono-num text-[10.5px] text-ink-muted">
-          <span>{formatLegendValue(min, mapMetric)}</span>
-          <span>{formatLegendValue((min + max) / 2, mapMetric)}</span>
-          <span>{formatLegendValue(max, mapMetric)}</span>
-        </div>
+        {mapMetric === 'net_position' ? (
+          <>
+            {/* Ends are ±bound, so the centre tick is a true zero rather than
+                the midpoint of the data range. */}
+            <div className="flex justify-between font-mono-num text-[10.5px] text-ink-muted">
+              <span>−{formatLegendValue(symmetricBound(min, max), mapMetric)}</span>
+              <span>0</span>
+              <span>+{formatLegendValue(symmetricBound(min, max), mapMetric)}</span>
+            </div>
+            <div className="flex justify-between text-[10px] text-ink-muted">
+              <span>importing</span>
+              <span>exporting</span>
+            </div>
+          </>
+        ) : (
+          <div className="flex justify-between font-mono-num text-[10.5px] text-ink-muted">
+            <span>{formatLegendValue(min, mapMetric)}</span>
+            <span>{formatLegendValue((min + max) / 2, mapMetric)}</span>
+            <span>{formatLegendValue(max, mapMetric)}</span>
+          </div>
+        )}
         <div className="mt-2 flex items-center gap-1.5 border-t border-input pt-2">
           <span
             className="inline-block h-2.5 w-2.5 rounded-sm border border-border"

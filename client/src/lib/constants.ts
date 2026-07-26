@@ -63,6 +63,7 @@ export const MAP_METRICS = [
   { value: 'load', label: 'Electricity Load', unit: 'MW' },
   { value: 'price', label: 'Energy Price', unit: 'EUR/MWh' },
   { value: 'renewable_pct', label: 'Renewable %', unit: '%' },
+  { value: 'net_position', label: 'Net position', unit: 'MW' },
 ] as const;
 
 export const ANIMATION_DURATION = {

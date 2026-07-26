@@ -187,3 +187,61 @@ Steps 1–3 are workstation-only. Step 4 is the only one touching prod.
   `forecasts` already holds, but it is the first time the workstation writes to
   prod at all.
 - GR/IE staleness is displayed honestly here but not diagnosed.
+
+---
+
+# Addendum — net position on the map (2026-07-26)
+
+Shipped after the country tab. The map was listed as a non-goal above; that was
+reversed once the tab landed and the map turned out to be where people look
+first.
+
+## Why the map needed a design change, not just a menu entry
+
+Every existing map metric is sequential: `t = (v - min) / (max - min)`, one hue,
+more = darker. Net position is signed and zero is meaningful. On an hour when
+most of Europe is importing — say `[-5000, +2000]` — that formula puts 0 MW at
+**71% of the ramp**, painting a perfectly balanced country as a strong exporter.
+
+`client/src/lib/divergingScale.ts` fixes the two properties that matter:
+
+- **anchored** — 0 always maps to exactly 0.5, so the sign is never misread
+- **symmetric** — domain is `[-bound, +bound]` with `bound = max(|min|, |max|)`,
+  so equal magnitudes in opposite directions look equally intense
+
+The position is `0.5 + 0.5 · sign(v) · √(|v|/bound)`. The square root matters
+because Germany runs ±10 GW while Slovenia moves a couple of hundred MW; on a
+linear symmetric ramp every small country collapses onto the near-white
+midpoint. Nothing is clipped and rank and sign are preserved — only spacing is
+compressed — so legend ticks still carry real MW.
+
+Colours are amber (importing) and blue (exporting) rather than red/green, so
+the two directions stay distinguishable with red-green colour blindness.
+
+## Honest labelling
+
+The legend reads **"Avg net position"**, not "Net position". `getMapData()`
+averages over the selected window, which for a signed quantity is a different
+claim from "right now" — a country importing at 8pm and exporting at noon shows
+as its net balance. That is the more useful summary, but it must not be
+presented as an instantaneous value.
+
+## DE_LU on the map
+
+Luxembourg is forced to Germany's value. LU carries ~180 rows of its own, an
+ingest artifact from before the zone mapping existed; left alone the map
+rendered **LU at −6201 MW next to DE at +355 MW** — two contradictory colours
+for one bidding zone. Overwriting is deliberate: a hole would at least read as
+missing data, but a wrong number reads as fact.
+
+## Gotcha found in build
+
+`routes/dashboard.ts` validates the metric against a **hardcoded runtime
+whitelist**, separate from the `MetricType` union. Widening the type compiled
+clean and still returned 400 at runtime. Any future metric has to be added in
+both places.
+
+## Not done
+
+Cross-border flow arrows, and a forecast (D+2) mode for the map. Both were
+considered and deferred; both build on this diverging scale.

@@ -49,7 +49,7 @@ router.get('/overview', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unkno
 router.get('/map', cacheMiddleware(TTL.LONG), (req: Request<object, unknown, unknown, MapQuery>, res) => {
   const { metric = 'load', timeRange = '24h' } = req.query;
 
-  const validMetrics: MetricType[] = ['load', 'price', 'renewable_pct'];
+  const validMetrics: MetricType[] = ['load', 'price', 'renewable_pct', 'net_position'];
   if (!validMetrics.includes(metric)) {
     throw new AppError(
       `Invalid metric. Must be one of: ${validMetrics.join(', ')}`,

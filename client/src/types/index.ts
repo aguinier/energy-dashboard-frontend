@@ -96,7 +96,7 @@ export type TimePreset =
   | 'next1d' | 'next24h' | 'next48h' | 'next7d';
 
 export type Granularity = 'hourly' | 'daily' | 'weekly' | 'monthly';
-export type MetricType = 'load' | 'price' | 'renewable_pct';
+export type MetricType = 'load' | 'price' | 'renewable_pct' | 'net_position';
 
 // Forecast types
 export type ForecastType =

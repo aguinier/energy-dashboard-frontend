@@ -11,6 +11,7 @@ const METRICS: { value: MetricType; label: string; unit: string }[] = [
   { value: 'price', label: 'Day-ahead price', unit: '€/MWh' },
   { value: 'renewable_pct', label: 'Renewable share', unit: '%' },
   { value: 'load', label: 'Electricity load', unit: 'MW' },
+  { value: 'net_position', label: 'Net position', unit: 'MW' },
 ];
 
 interface MapMetricSelectorProps {
