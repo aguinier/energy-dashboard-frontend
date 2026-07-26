@@ -223,3 +223,41 @@ describe('getLastSeen', () => {
     expect(out.meta.last_seen).toBe('2026-03-14T22:00:00');
   });
 });
+
+describe('net position model pinning', () => {
+  let db: DatabaseType;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(SCHEMA);
+  });
+
+  function seedModel(model: string, generatedAt: string, value: number) {
+    db.prepare(
+      `INSERT INTO forecasts
+         (country_code, forecast_type, target_timestamp_utc, generated_at,
+          horizon_hours, forecast_value, model_name, model_version)
+       VALUES ('BE','net_position','2026-07-28 00:00:00',?,40,?,?,'v')`
+    ).run(generatedAt, value, model);
+  }
+
+  it('ignores an unregistered model even when it is the newest run', () => {
+    // V011 lost to V010 on 2026-07-25 (+11.7% pooled MAE). Running it must not
+    // put it on the dashboard just by being more recent.
+    seedModel('chronos-2-V010', '2026-07-26 07:00:00', -57.2);
+    seedModel('chronos-2-V011', '2026-07-26 09:00:00', 999.9);
+
+    const { points, meta } = getNetPositionForecast('BE', db);
+    expect(meta.model_name).toBe('chronos-2-V010');
+    expect(points[0].p50).toBe(-57.2);
+  });
+
+  it('still takes the newest vintage of the registered model', () => {
+    seedModel('chronos-2-V010', '2026-07-26 06:00:00', -100);
+    seedModel('chronos-2-V010', '2026-07-26 07:00:00', -57.2);
+
+    const { points } = getNetPositionForecast('BE', db);
+    expect(points).toHaveLength(1);
+    expect(points[0].p50).toBe(-57.2);
+  });
+});

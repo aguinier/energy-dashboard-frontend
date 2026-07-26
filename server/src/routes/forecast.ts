@@ -13,12 +13,14 @@ interface ForecastQuery {
   end?: string;
   granularity?: Granularity;
   horizon?: string; // 1 for D+1, 2 for D+2
+  /** Model id from the registry. Omit for the type's production model. */
+  model?: string;
 }
 
 // GET /api/forecasts - Get forecast data with filters
 // Query params: country, type, start, end, granularity, horizon (optional: 1 for D+1, 2 for D+2)
 router.get('/', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknown, unknown, ForecastQuery>, res) => {
-  const { country, type, start, end, granularity = 'hourly', horizon } = req.query;
+  const { country, type, start, end, granularity = 'hourly', horizon, model } = req.query;
 
   if (!country) {
     throw new AppError('Country code is required', 400, 'MISSING_COUNTRY');
@@ -35,7 +37,9 @@ router.get('/', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknown, unkn
   // Parse horizon parameter
   const horizonDays = horizon ? parseInt(horizon, 10) : undefined;
 
-  const data = forecastService.getForecastData(country, type, startDate, endDate, granularity, horizonDays);
+  const data = forecastService.getForecastData(
+    country, type, startDate, endDate, granularity, horizonDays, model
+  );
 
   res.json({
     success: true,
@@ -46,6 +50,10 @@ router.get('/', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknown, unkn
       granularity,
       forecastType: type,
       horizon: horizonDays,
+      // Which model actually served. A fallback must be visible, not passed
+      // off as the production model.
+      model: data[0]?.model_name ?? null,
+      modelRequested: model ?? null,
     },
   });
 });

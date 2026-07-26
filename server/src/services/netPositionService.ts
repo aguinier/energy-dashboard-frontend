@@ -1,6 +1,7 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
 import { normalizeTimestamp } from '../utils/timestamp.js';
+import { resolveModelName } from '../config/forecastModels.js';
 import {
   NetPositionActualPoint,
   NetPositionForecastPoint,
@@ -80,19 +81,25 @@ export function getNetPositionActuals(
  */
 export function getNetPositionForecast(
   countryCode: string,
-  db: DatabaseType = defaultDb
+  db: DatabaseType = defaultDb,
+  modelId?: string
 ): { points: NetPositionForecastPoint[]; meta: ForecastMeta } {
   const code = storageCode(countryCode);
+  // Pin to the registered model. Selecting purely on generated_at let any
+  // newer run take over the display by being newer - including V011, rejected
+  // on evidence 2026-07-25 at +11.7% pooled MAE. A model must be registered.
+  const modelName = resolveModelName('net_position', modelId);
 
   const latest = db
     .prepare(
       `SELECT generated_at, model_name, model_version
          FROM forecasts
         WHERE country_code = ? AND forecast_type = 'net_position'
+          AND model_name = ?
         ORDER BY generated_at DESC
         LIMIT 1`
     )
-    .get(code) as
+    .get(code, modelName) as
     | { generated_at: string; model_name: string; model_version: string }
     | undefined;
 
@@ -116,10 +123,10 @@ export function getNetPositionForecast(
                 forecast_value as p50
            FROM forecasts
           WHERE country_code = ? AND forecast_type = 'net_position'
-            AND generated_at = ?
+            AND model_name = ? AND generated_at = ?
           ORDER BY target_timestamp_utc`
       )
-      .all(code, latest.generated_at) as Array<{ timestamp: string; p50: number }>;
+      .all(code, modelName, latest.generated_at) as Array<{ timestamp: string; p50: number }>;
     return { points: rows.map((r) => ({ ...r, p10: null, p90: null })), meta };
   }
 
@@ -138,11 +145,11 @@ export function getNetPositionForecast(
              AND q.generated_at         = f.generated_at
              AND q.model_name           = f.model_name
       WHERE f.country_code = ? AND f.forecast_type = 'net_position'
-        AND f.generated_at = ?
+        AND f.model_name = ? AND f.generated_at = ?
       GROUP BY f.target_timestamp_utc, f.forecast_value
       ORDER BY f.target_timestamp_utc`
     )
-    .all(code, latest.generated_at) as NetPositionForecastPoint[];
+    .all(code, modelName, latest.generated_at) as NetPositionForecastPoint[];
 
   return { points: rows, meta };
 }

@@ -1,6 +1,7 @@
 import db from '../config/database.js';
 import { ForecastDataPoint, ForecastType, Granularity } from '../types/index.js';
 import { normalizeTimestamp } from '../utils/timestamp.js';
+import { resolveModelCandidates } from '../config/forecastModels.js';
 
 // Helper to normalize timestamps for the forecasts table which uses 'T' format
 function normalizeForForecastsTable(isoTimestamp: string): string {
@@ -14,12 +15,41 @@ export function getForecastData(
   start: string,
   end: string,
   granularity: Granularity = 'hourly',
-  horizon?: number
+  horizon?: number,
+  modelId?: string
 ): ForecastDataPoint[] {
   const upperCode = countryCode.toUpperCase();
+  // Try the production model first, then the other registered ml models.
+  // catboost and xgboost cover disjoint country sets, so an absolute pin would
+  // blank AT/BE/FR for load rather than harmonise them. Callers can read
+  // model_name off the returned rows to label what actually served.
+  const candidates = resolveModelCandidates(forecastType, modelId)
+    .filter((m) => m.modelName)
+    .map((m) => m.modelName as string);
+
+  for (const candidate of candidates) {
+    const rows = queryForecasts(
+      upperCode, forecastType, start, end, granularity, horizon, candidate
+    );
+    if (rows.length > 0) return rows;
+  }
+  return [];
+}
+
+function queryForecasts(
+  upperCode: string,
+  forecastType: ForecastType,
+  start: string,
+  end: string,
+  granularity: Granularity,
+  horizon: number | undefined,
+  modelName: string
+): ForecastDataPoint[] {
   // Use forecast-specific normalization that keeps 'T' format
   const normalizedStart = normalizeForForecastsTable(start);
   const normalizedEnd = normalizeForForecastsTable(end);
+
+  const modelClause = 'AND model_name = ?';
 
   // Build horizon filter clause (D+1 = 0-30h, D+2 = 24-54h)
   let horizonClause = '';
@@ -45,6 +75,7 @@ export function getForecastData(
       WHERE country_code = ?
         AND forecast_type = ?
         AND target_timestamp_utc BETWEEN ? AND ?
+        ${modelClause}
         ${horizonClause}
         AND generated_at = (
           SELECT MAX(f2.generated_at)
@@ -52,11 +83,14 @@ export function getForecastData(
           WHERE f2.country_code = f1.country_code
             AND f2.forecast_type = f1.forecast_type
             AND f2.target_timestamp_utc = f1.target_timestamp_utc
+            ${modelClause.replace('model_name', 'f2.model_name')}
             ${horizonClause}
         )
       ORDER BY target_timestamp_utc
     `);
-    return stmt.all(upperCode, forecastType, normalizedStart, normalizedEnd) as ForecastDataPoint[];
+    return stmt.all(
+      upperCode, forecastType, normalizedStart, normalizedEnd, modelName, modelName
+    ) as ForecastDataPoint[];
   }
 
   // Aggregated queries for daily/weekly/monthly
@@ -72,11 +106,14 @@ export function getForecastData(
     WHERE country_code = ?
       AND forecast_type = ?
       AND target_timestamp_utc BETWEEN ? AND ?
+      ${modelClause}
       ${horizonClause}
     GROUP BY ${groupByClause}
     ORDER BY timestamp
   `);
-  return stmt.all(upperCode, forecastType, normalizedStart, normalizedEnd) as ForecastDataPoint[];
+  return stmt.all(
+    upperCode, forecastType, normalizedStart, normalizedEnd, modelName
+  ) as ForecastDataPoint[];
 }
 
 export function getLatestForecast(
