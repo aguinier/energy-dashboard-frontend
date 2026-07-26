@@ -63,10 +63,14 @@ Payload:
       "target_timestamp_utc": "2026-07-28T00:00:00Z",
       "horizon_hours": 40,
       "forecast_value": -57.2,
-      "quantiles": { "0.1": -166.5, "0.5": -57.2, "0.9": 56.1 } }
+      "quantiles": { "0.1": -166.5, "0.2": -134.0, "0.5": -57.2,
+                     "0.8": 21.4, "0.9": 56.1 } }
   ]
 }
 ```
+
+The model emits **9 quantiles per point** (19,872 quantile rows / 2,208 points).
+All nine are stored; the chart uses only p10/p50/p90.
 
 **Idempotency is required, not optional.** The write deletes then inserts per
 `(country_code, forecast_type, model_name, generated_at)` inside one
@@ -92,12 +96,21 @@ One combined endpoint:
 
 ```
 GET /api/net-position/:countryCode?start=&end=
-  -> { actual: [...], forecast: [...], quantiles: [...], meta: {...} }
+  -> {
+       actual:   [ { timestamp_utc, net_position_mw } ],
+       forecast: [ { target_timestamp_utc, p10, p50, p90 } ],
+       meta:     { model_name, model_version, generated_at, bidding_zone }
+     }
 ```
 
-Combined rather than split, so the chart has a single loading state for what
-is visually one picture. `meta` carries the model name/version, `generated_at`,
-and the bidding zone actually used (`DE_LU` for DE and LU).
+Combined rather than split, so the chart has a single loading state for what is
+visually one picture. The band is **nested into each forecast row as p10/p50/p90
+rather than returned as a separate quantiles array** — the chart would otherwise
+have to join two lists by timestamp on every render. The full nine-quantile set
+stays in the database and is not exposed by this endpoint.
+
+`meta.bidding_zone` is the zone actually queried, so DE and LU both report
+`DE_LU` and the UI can say so without hardcoding the mapping.
 
 ## UI
 
