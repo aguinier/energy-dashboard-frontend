@@ -5,6 +5,7 @@ import { useNetPositionData } from '@/hooks/useNetPositionData';
 import { useCountries } from '@/hooks/useCountries';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { adaptNetPositionSeries } from '@/lib/chartAdapters';
+import { useModelSelection } from '@/hooks/useForecastModels';
 
 /** Countries whose net position is folded into a multi-country bidding zone. */
 const SHARED_ZONE_NOTE: Record<string, string> = {
@@ -28,7 +29,16 @@ export function NetPositionTab() {
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const country = countries?.find((c) => c.country_code === selectedCountry);
 
-  const { series, nowIndex } = useMemo(() => adaptNetPositionSeries(data), [data]);
+  // Respect the picker like every other tab. Previously this ignored it, so
+  // hiding the forecast changed the load chart and did nothing here.
+  const { hidden: forecastHidden } = useModelSelection('net_position');
+
+  const shown = useMemo(
+    () => (forecastHidden && data ? { ...data, forecast: [] } : data),
+    [data, forecastHidden],
+  );
+
+  const { series, nowIndex } = useMemo(() => adaptNetPositionSeries(shown), [shown]);
 
   const latest = useMemo(() => {
     const withValue = (data?.actual ?? []).filter((p) => p.net_position_mw != null);
@@ -53,7 +63,7 @@ export function NetPositionTab() {
     country?.country_name ?? selectedCountry,
     'ENTSO-E day-ahead',
   ];
-  if (data?.meta.generated_at) {
+  if (!forecastHidden && data?.meta.generated_at) {
     subtitleParts.push(
       `forecast ${data.meta.model_name ?? 'model'} · generated ${new Date(
         data.meta.generated_at,
@@ -119,8 +129,8 @@ export function NetPositionTab() {
                   </span>
                 </span>
               )}
-              {data?.meta.has_band && <span>shaded band = p10–p90</span>}
-              {data && !data.meta.has_band && data.forecast.length > 0 && (
+              {!forecastHidden && data?.meta.has_band && <span>shaded band = p10–p90</span>}
+              {!forecastHidden && data && !data.meta.has_band && data.forecast.length > 0 && (
                 <span>median only — no uncertainty band stored</span>
               )}
             </div>

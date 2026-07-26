@@ -9,6 +9,7 @@ import {
   fetchTSOLoadForecastAccuracy,
 } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
+import { useModelSelection } from './useForecastModels';
 import {
   getDateRangeForPreset,
   getGranularityForPreset,
@@ -75,11 +76,15 @@ export function useLoadChartData(): LoadChartData {
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
-  const showForecast = useDashboardStore((s) => s.showForecast);
   const showComparisonMode = useDashboardStore((s) => s.showComparisonMode);
-  const showTSOForecast = useDashboardStore((s) => s.showTSOForecast);
   const showTSOComparisonMode = useDashboardStore((s) => s.showTSOComparisonMode);
-  const tsoHorizon = useDashboardStore((s) => s.layers.tso.horizon) as TSOHorizon;
+
+  // The picker is the single source of truth for which model this chart shows.
+  const { selected } = useModelSelection('load');
+  const showForecast = selected?.source === 'ml';
+  const showTSOForecast = selected?.source === 'tso';
+  const tsoHorizon = (selected?.tsoHorizon ?? 'day_ahead') as TSOHorizon;
+  const modelId = selected?.source === 'ml' ? selected.id : undefined;
   const selectedMLHorizons = useDashboardStore((s) => s.selectedMLHorizons);
 
   // Calculate date ranges
@@ -109,7 +114,7 @@ export function useLoadChartData(): LoadChartData {
       },
       // Query 1: ML forecast data
       {
-        queryKey: ['forecast', selectedCountry, 'load', timePreset, timeOffset, granularity],
+        queryKey: ['forecast', selectedCountry, 'load', timePreset, timeOffset, granularity, modelId],
         queryFn: () =>
           fetchForecastData({
             country: selectedCountry,
@@ -117,6 +122,7 @@ export function useLoadChartData(): LoadChartData {
             start: mlForecastStart,
             end: mlForecastEnd,
             granularity,
+            model: modelId,
           }),
         enabled: showForecast,
         staleTime: REFRESH_INTERVALS.dashboard,

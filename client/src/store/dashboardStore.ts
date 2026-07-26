@@ -91,6 +91,11 @@ interface DashboardState {
   activeChartTab: string;
   setActiveChartTab: (tab: string) => void;
 
+  // Forecast model chosen per forecast type. null = forecast hidden for that
+  // type. Absent = use the type's production model from the server registry.
+  selectedModelByType: Record<string, string | null>;
+  setSelectedModel: (forecastType: string, modelId: string | null) => void;
+
   // Forecast visibility (ML forecasts)
   showForecast: boolean;
   setShowForecast: (show: boolean) => void;
@@ -264,6 +269,12 @@ export const useDashboardStore = create<DashboardState>()(
       // Active chart tab
       activeChartTab: 'load',
       setActiveChartTab: (tab) => set({ activeChartTab: tab }),
+
+      selectedModelByType: {},
+      setSelectedModel: (forecastType, modelId) =>
+        set((state) => ({
+          selectedModelByType: { ...state.selectedModelByType, [forecastType]: modelId },
+        })),
 
       // Forecast visibility
       showForecast: false,
@@ -523,6 +534,7 @@ export const useDashboardStore = create<DashboardState>()(
         timePreset: state.timePreset,
         timeAnchor: state.timeAnchor,
         mapMetric: state.mapMetric,
+        selectedModelByType: state.selectedModelByType,
         comparisonCountries: state.comparisonCountries,
         sidebarOpen: state.sidebarOpen,
         // Legacy forecast state (kept for backward compatibility)

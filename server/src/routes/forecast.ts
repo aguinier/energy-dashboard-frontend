@@ -2,6 +2,7 @@ import { Router, Request } from 'express';
 import * as forecastService from '../services/forecastService.js';
 import { cacheMiddleware, TTL } from '../middleware/cache.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { FORECAST_MODELS, getTypeConfig } from '../config/forecastModels.js';
 import { ForecastType, Granularity } from '../types/index.js';
 
 const router = Router();
@@ -16,6 +17,28 @@ interface ForecastQuery {
   /** Model id from the registry. Omit for the type's production model. */
   model?: string;
 }
+
+/**
+ * GET /forecasts/models[?type=load]
+ *
+ * The model registry: which models may serve which forecast type, and which is
+ * production. The picker renders from this rather than hardcoding a list, so a
+ * model can only appear in the UI by being registered here.
+ */
+router.get('/models', cacheMiddleware(TTL.LONG), (req: Request<object, unknown, unknown, { type?: string }>, res) => {
+  const { type } = req.query;
+
+  if (type) {
+    const cfg = getTypeConfig(type);
+    if (!cfg) {
+      throw new AppError(`Unknown forecast type: ${type}`, 400, 'UNKNOWN_FORECAST_TYPE');
+    }
+    res.json({ success: true, data: { [type]: cfg } });
+    return;
+  }
+
+  res.json({ success: true, data: FORECAST_MODELS });
+});
 
 // GET /api/forecasts - Get forecast data with filters
 // Query params: country, type, start, end, granularity, horizon (optional: 1 for D+1, 2 for D+2)

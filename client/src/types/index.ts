@@ -443,3 +443,26 @@ export interface NetPositionResponse {
     last_seen: string | null;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Forecast model registry — served by GET /api/forecasts/models.
+// The picker renders from this, so a model can only reach the UI by being
+// registered server-side.
+// ---------------------------------------------------------------------------
+
+export type ForecastSource = 'ml' | 'tso';
+
+export interface ForecastModel {
+  id: string;
+  label: string;
+  source: ForecastSource;
+  modelName?: string;
+  tsoHorizon?: 'day_ahead' | 'week_ahead';
+}
+
+export interface ForecastTypeConfig {
+  production: string;
+  models: ForecastModel[];
+}
+
+export type ForecastModelRegistry = Record<string, ForecastTypeConfig>;

@@ -96,3 +96,16 @@ export const REFRESH_INTERVALS = {
   dashboard: 300000,   // 5 minutes
   map: 600000,         // 10 minutes
 } as const;
+
+/**
+ * Primary forecast type per country-view tab. The model picker renders the
+ * registry entry for whichever tab is active, so the models offered always
+ * match the data on screen.
+ */
+export const TAB_FORECAST_TYPE: Record<string, string> = {
+  price: 'price',
+  load: 'load',
+  renewables: 'solar',
+  'net-position': 'net_position',
+  analytics: 'load',
+};

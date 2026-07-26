@@ -35,6 +35,7 @@ import type {
   CrossCountryMetrics,
   CrossCountryMetricsEntry,
   NetPositionResponse,
+  ForecastModelRegistry,
 } from '@/types';
 
 const api = axios.create({
@@ -172,6 +173,8 @@ export async function fetchForecastData(params: {
   end?: string;
   granularity?: Granularity;
   horizon?: MLHorizon;
+  /** Registry model id. Omit for the type's production model. */
+  model?: string;
 }): Promise<ForecastDataPoint[]> {
   const { data } = await api.get<ApiResponse<ForecastDataPoint[]>>('/forecasts', { params });
   return data.data;
@@ -464,6 +467,12 @@ export async function fetchNetPosition(params: {
     `/net-position/${country}`,
     { params: query },
   );
+  return data.data;
+}
+
+/** The server-side model registry: which models may serve which forecast type. */
+export async function fetchForecastModels(): Promise<ForecastModelRegistry> {
+  const { data } = await api.get<ApiResponse<ForecastModelRegistry>>('/forecasts/models');
   return data.data;
 }
 

@@ -1,15 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AbleCard } from './AbleCard';
 import { AbleAccuracyBars } from '@/components/charts/AbleAccuracyBars';
-import { AbleMultiModelBars } from '@/components/charts/AbleMultiModelBars';
 import { AbleLineChart } from '@/components/charts/AbleLineChart';
 import { AbleSparkline } from '@/components/charts/AbleSparkline';
-import {
-  FORECAST_MODELS,
-  MODEL_KIND_COLOR,
-  type ModelId,
-} from './ModelPicker';
 import {
   fetchTSOForecastMetrics,
   fetchTSOLoadForecastAccuracy,
@@ -22,9 +16,11 @@ import { adaptLoadSeries } from '@/lib/chartAdapters';
 import { formatGwAxis } from '@/lib/chartTicks';
 import { cn } from '@/lib/utils';
 
-// Synthetic horizon multipliers from the prototype. Real backend doesn't yet
-// supply per-horizon error breakdown beyond D+1 — everything after index 0 is
-// extrapolated and must render as an estimate (hollow bars), not a measurement.
+// Synthetic horizon multipliers from the prototype. The backend supplies error
+// only at D+1, so everything after index 0 is extrapolated and renders hollow.
+// The D+1 anchor is now the MEASURED mape from /tso-forecast/metrics. It used
+// to be a hardcoded constant (2.4) rendered solid under a "solid = measured"
+// caption, which made an invented number look like a measurement.
 const HORIZON_LABELS = ['D+1', 'D+2', 'D+3', 'D+5', 'D+7'];
 const HORIZON_FACTORS = [1, 1.15, 1.3, 1.55, 1.9];
 
@@ -110,43 +106,12 @@ export function ForecastTab() {
 
   const loadMetrics = metricsQuery.data?.load;
 
-  // Multi-model comparison panel state — local to this tab.
-  const [selected, setSelected] = useState<ModelId[]>(['able-ml', 'tso-d1']);
-  const toggle = (id: ModelId) =>
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-
-  const compareSeries = useMemo(
-    () =>
-      selected.map((id) => {
-        const m = FORECAST_MODELS.find((x) => x.id === id)!;
-        return {
-          id: m.id,
-          name: m.name,
-          version: m.version,
-          mape: m.mape,
-          color: MODEL_KIND_COLOR[m.kind],
-          bars: HORIZON_LABELS.map((label, i) => ({
-            label,
-            v: m.mape * HORIZON_FACTORS[i],
-            extrapolated: i > 0,
-          })),
-        };
-      }),
-    [selected],
-  );
-
-  // Bars for the bottom-left "Error by horizon" chart — drawn from the
-  // currently-active model in the ModelPicker (defaults to able-ml).
-  const layers = useDashboardStore((s) => s.layers);
-  const activeId: ModelId = layers.tso.enabled
-    ? layers.tso.horizon === 'week_ahead'
-      ? 'tso-d7'
-      : 'tso-d1'
-    : 'able-ml';
-  const activeModel = FORECAST_MODELS.find((m) => m.id === activeId)!;
-  const horizonBars = HORIZON_LABELS.map((label, i) => ({
+  // Error by horizon, anchored on the measured D+1 mape. No measurement means
+  // no bars — an empty chart is honest, an invented one is not.
+  const measuredMape = loadMetrics?.mape ?? null;
+  const horizonBars = measuredMape == null ? [] : HORIZON_LABELS.map((label, i) => ({
     label,
-    v: activeModel.mape * HORIZON_FACTORS[i],
+    v: measuredMape * HORIZON_FACTORS[i],
     extrapolated: i > 0,
   }));
 
@@ -189,48 +154,18 @@ export function ForecastTab() {
 
       {/* Compare forecast models */}
       <div className="rounded-xl border border-border bg-card">
-        <div className="px-[18px] pb-2 pt-4">
-          <div className="flex items-baseline justify-between">
-            <div>
-              <div className="text-[13.5px] font-medium">Compare forecast models</div>
-              <div className="mt-0.5 font-mono-num text-[11px] text-ink-muted">
-                MAPE % by horizon · solid = measured, hollow = extrapolated from D+1
-              </div>
-            </div>
-            <div className="font-mono-num text-[10.5px] text-ink-muted">
-              {selected.length} selected
-            </div>
+        <div className="px-[18px] pb-[18px] pt-4">
+          <div className="text-[13.5px] font-medium">Compare forecast models</div>
+          <div className="mt-0.5 font-mono-num text-[11px] text-ink-muted">
+            not available yet
           </div>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {FORECAST_MODELS.map((m) => {
-              const active = selected.includes(m.id);
-              return (
-                <button
-                  key={m.id}
-                  onClick={() => toggle(m.id)}
-                  className={cn(
-                    'flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 font-sans text-[11.5px]',
-                    active
-                      ? 'border-foreground bg-foreground text-background'
-                      : 'border-border bg-transparent text-ink-dim',
-                  )}
-                >
-                  <span
-                    className="h-2 w-2 rounded-sm"
-                    style={{
-                      background: MODEL_KIND_COLOR[m.kind],
-                      opacity: active ? 1 : 0.5,
-                    }}
-                  />
-                  {m.name}
-                  <span className="font-mono-num text-[9.5px] opacity-65">{m.version}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <div className="px-[18px] pb-[18px] pt-1.5">
-          <AbleMultiModelBars series={compareSeries} />
+          <p className="mt-3 max-w-[520px] text-[12px] leading-relaxed text-ink-dim">
+            This panel used to plot per-model MAPE from hardcoded constants rather
+            than measurements. Per-model accuracy needs the accuracy endpoints to
+            accept a model, which they do not yet — so it shows nothing instead of
+            numbers that were never measured. Single-model error is below, anchored
+            on the measured D+1 figure.
+          </p>
         </div>
       </div>
 
@@ -238,7 +173,11 @@ export function ForecastTab() {
       <div className="grid gap-3.5 md:grid-cols-2">
         <AbleCard
           title="Error by horizon"
-          subtitle={`MAPE % · ${activeModel.name} ${activeModel.version} · hollow = extrapolated`}
+          subtitle={
+            measuredMape == null
+              ? "no measured error for this window"
+              : "MAPE % · D+1 measured, later horizons extrapolated (hollow)"
+          }
         >
           <AbleAccuracyBars data={horizonBars} />
         </AbleCard>
