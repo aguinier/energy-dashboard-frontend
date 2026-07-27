@@ -1721,6 +1721,10 @@ git commit -m "fix(api): fail loudly on a malformed response envelope"
 
 Beyond the persist versioning below, audit `timeRange`'s remaining readers and decide per call site whether each should read the computed range from `getDateRangeForPreset(timePreset, timeOffset)` instead. If removing `timeRange` entirely is larger than this task can safely carry, narrow it to the overview path and record what remains — do not leave the reader believing the duplication is gone when it is not.
 
+**The `layers` slice is now fully dead — established by the Task 22 review.** After Task 22, no component reads `layers` (`LoadTab` was the last reader) and no component calls any of its five mutating actions (`toggleLayer`, `showAllLayers`, `showActualsOnly`, `setLayerAccuracy`, `setTSOHorizon` — zero call sites outside `dashboardStore.ts`). It can be removed as one unit: the state, `DEFAULT_LAYERS`, all five actions, the `LayersState` type in `types/index.ts`, and the `partialize` entry, with no callers to chase.
+
+**One trap when removing it:** those actions also write four *independent* legacy fields as a side effect — `showForecast`, `showTSOForecast`, `showComparisonMode`, `showTSOComparisonMode`. Those four are still separately live through their own actions (`setShowComparisonMode`, `toggleComparisonMode`, `setShowTSOComparisonMode`, `toggleTSOComparisonMode`). Deleting `layers` must not delete them. Check which of the four still have real readers before deciding their fate — that is a separate judgement from removing `layers`.
+
 **Files:**
 - Modify: `client/src/store/dashboardStore.ts:528-559`
 - Test: `client/src/store/migrate.test.ts` (create)
