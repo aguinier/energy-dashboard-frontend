@@ -959,7 +959,6 @@ export const MAP_METRICS = [
 
 Every entry declares `legendLabel`. Omitting it on three of four would make
 `metricInfo?.legendLabel` a type error against the `as const` union.
-```
 
 - [ ] **Step 4: Run test to verify it passes**
 
