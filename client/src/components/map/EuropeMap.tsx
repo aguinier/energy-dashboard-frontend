@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useId, memo } from 'react';
+import { useState, useEffect, useMemo, useCallback, useId, useRef, memo } from 'react';
 import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
 import { ChartWrapper } from '@/components/charts/ChartWrapper';
 import { useMapData } from '@/hooks/useDashboardData';
@@ -10,6 +10,28 @@ import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
 
 const EUROPE_GEO_URL = '/europe.topojson';
+
+// The desktop viewBox (1000x650) is landscape. Below this container width the
+// map's container turns portrait (phones, and most tablets in portrait), and
+// a landscape viewBox scaled with preserveAspectRatio="xMidYMid meet" (the
+// ComposableMap default) only fits the *width* of a portrait box, centering
+// vertically and leaving hundreds of px of dead space above/below — the map
+// looks tiny even though the <svg> element itself spans the full width.
+// Below the breakpoint we swap to a narrow viewBox sized to the *measured*
+// container aspect ratio (via ResizeObserver, not a guessed header offset),
+// so "meet" binds evenly on both axes instead of just one.
+const DESKTOP_MIN_WIDTH = 1024;
+const DESKTOP_VIEWBOX = { width: 1000, height: 650, scale: 440 };
+// Reference width for the narrow viewBox. The resulting on-screen ink % is
+// independent of the absolute number chosen here (only the scale/width
+// ratio matters — see EuropeMap tuning notes) so this is just a convenient
+// unit; height is derived per-render from the measured container aspect.
+const NARROW_VIEWBOX_WIDTH = 420;
+// Empirically tuned (see task-11 follow-up report) so Europe's ink — Iceland
+// to Turkey, Norway to Malta, all confirmed unclipped — fills ~95% of the
+// narrow viewBox width, instead of the ~39% the old fixed 1000-wide viewBox
+// produced once scaled down to fit a phone screen.
+const NARROW_SCALE = 305;
 
 const COUNTRY_NAME_MAP: Record<string, string> = {
   'Germany': 'DE', 'France': 'FR', 'Italy': 'IT', 'Spain': 'ES', 'United Kingdom': 'GB',
@@ -146,24 +168,59 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     return name ? (COUNTRY_NAME_MAP[name] || null) : null;
   };
 
-  const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth));
-  useEffect(() => {
-    const onResize = () => setVw(window.innerWidth);
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+  // Measure the actual rendered container (not window.innerWidth minus a
+  // guessed header height) so the viewBox aspect always matches reality,
+  // whether this is the full-screen map view or a docked chart card.
+  // Belt-and-suspenders: ResizeObserver is the primary signal, but it only
+  // guarantees delivery before the next paint — some embedding contexts
+  // (e.g. an inactive/non-compositing tab) can delay or skip that, so a
+  // window `resize` listener re-measures directly too, and the initial
+  // state is seeded from window.innerWidth/innerHeight for a same-render
+  // best guess rather than defaulting to the desktop numbers.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerSize, setContainerSize] = useState(() => ({
+    width: typeof window === 'undefined' ? 1440 : window.innerWidth,
+    height: typeof window === 'undefined' ? 900 : window.innerHeight,
+  }));
+  const measureContainer = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    if (width > 0 && height > 0) setContainerSize({ width, height });
   }, []);
+  useEffect(() => {
+    measureContainer();
+    const el = containerRef.current;
+    const ro = el && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measureContainer) : undefined;
+    ro?.observe(el!);
+    window.addEventListener('resize', measureContainer);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measureContainer);
+    };
+  }, [measureContainer]);
 
-  // Narrow viewports need a smaller scale to fit Europe, but the previous fixed
-  // 440 left the map a thumbnail in a sea of whitespace on phones.
-  const projectionScale = fullScreen ? (vw < 640 ? 300 : vw < 1024 ? 380 : 440) : 260;
+  const isDesktop = containerSize.width >= DESKTOP_MIN_WIDTH;
+
+  // Narrow viewports get a portrait-ish viewBox (width fixed, height derived
+  // from the measured aspect ratio) plus a raised scale — see the constants
+  // above for why lowering scale on a landscape viewBox (the old approach)
+  // made things worse, not better.
+  const projectionScale = fullScreen ? (isDesktop ? DESKTOP_VIEWBOX.scale : NARROW_SCALE) : 260;
+  const mapWidth = fullScreen && !isDesktop ? NARROW_VIEWBOX_WIDTH : DESKTOP_VIEWBOX.width;
+  const mapHeight = !fullScreen
+    ? 420
+    : isDesktop
+      ? DESKTOP_VIEWBOX.height
+      : Math.round(NARROW_VIEWBOX_WIDTH * (containerSize.height / containerSize.width));
 
   const mapContent = (
-    <div className={cn('relative', fullScreen ? 'h-full w-full' : 'h-full min-h-[400px]')}>
+    <div ref={containerRef} className={cn('relative', fullScreen ? 'h-full w-full' : 'h-full min-h-[400px]')}>
       <ComposableMap
         projection="geoMercator"
         projectionConfig={{ center: [12, 55], scale: projectionScale }}
-        width={1000}
-        height={fullScreen ? (vw < 640 ? 520 : 650) : 420}
+        width={mapWidth}
+        height={mapHeight}
         style={{ width: '100%', height: '100%', shapeRendering: 'geometricPrecision' }}
       >
         <defs>
@@ -206,9 +263,17 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         </Geographies>
       </ComposableMap>
 
-      {/* Top-right hover card */}
+      {/* Hover card — top-right on desktop. On narrow viewports the floating
+          metric selector (MapMetricSelector `floating`) is centered across
+          the top of this same container, so top-5 there would sit right
+          under/over it; drop the card below the selector instead. */}
       {hoveredCountry && (
-        <div className="pointer-events-none absolute right-5 top-5 min-w-[260px] rounded-[10px] border border-border bg-card px-4 py-3.5 shadow-[0_4px_20px_rgba(0,0,0,0.06)]">
+        <div
+          className={cn(
+            'pointer-events-none absolute min-w-[260px] rounded-[10px] border border-border bg-card px-4 py-3.5 shadow-[0_4px_20px_rgba(0,0,0,0.06)]',
+            isDesktop ? 'right-5 top-5' : 'right-3 top-16',
+          )}
+        >
           <div className="mb-2 flex items-baseline gap-2">
             <span className="font-mono-num text-[11px] text-ink-muted">
               {hoveredCountry.country_code}
