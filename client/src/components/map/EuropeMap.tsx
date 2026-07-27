@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useId, memo } from 'react';
+import { useState, useEffect, useMemo, useCallback, useId, memo } from 'react';
 import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
 import { ChartWrapper } from '@/components/charts/ChartWrapper';
 import { useMapData } from '@/hooks/useDashboardData';
@@ -146,13 +146,24 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     return name ? (COUNTRY_NAME_MAP[name] || null) : null;
   };
 
+  const [vw, setVw] = useState(() => (typeof window === 'undefined' ? 1440 : window.innerWidth));
+  useEffect(() => {
+    const onResize = () => setVw(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Narrow viewports need a smaller scale to fit Europe, but the previous fixed
+  // 440 left the map a thumbnail in a sea of whitespace on phones.
+  const projectionScale = fullScreen ? (vw < 640 ? 300 : vw < 1024 ? 380 : 440) : 260;
+
   const mapContent = (
     <div className={cn('relative', fullScreen ? 'h-full w-full' : 'h-full min-h-[400px]')}>
       <ComposableMap
         projection="geoMercator"
-        projectionConfig={{ center: [12, 55], scale: fullScreen ? 440 : 260 }}
+        projectionConfig={{ center: [12, 55], scale: projectionScale }}
         width={1000}
-        height={fullScreen ? 650 : 420}
+        height={fullScreen ? (vw < 640 ? 520 : 650) : 420}
         style={{ width: '100%', height: '100%', shapeRendering: 'geometricPrecision' }}
       >
         <defs>

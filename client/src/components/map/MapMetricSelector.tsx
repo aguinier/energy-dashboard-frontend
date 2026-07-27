@@ -53,7 +53,7 @@ export function MapMetricSelector({ floating, vertical, className }: MapMetricSe
   }
 
   const wrapperCls = floating
-    ? 'absolute top-5 left-1/2 -translate-x-1/2 z-[5] flex gap-0.5 p-[3px] bg-card rounded-[10px] border border-border shadow-[0_4px_16px_rgba(0,0,0,0.05)]'
+    ? 'absolute top-3 left-1/2 -translate-x-1/2 z-[5] flex max-w-[calc(100vw-1.5rem)] gap-0.5 overflow-x-auto p-[3px] bg-card rounded-[10px] border border-border shadow-[0_4px_16px_rgba(0,0,0,0.05)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
     : 'inline-flex gap-0.5 p-[3px] bg-card rounded-[10px] border border-border';
 
   return (
@@ -65,7 +65,7 @@ export function MapMetricSelector({ floating, vertical, className }: MapMetricSe
             key={value}
             onClick={() => setMapMetric(value)}
             className={cn(
-              'flex items-baseline gap-1.5 px-3.5 py-[7px] rounded-[7px] text-[13px] border-none cursor-pointer transition-colors',
+              'flex items-baseline gap-1.5 px-3.5 py-[7px] rounded-[7px] text-[13px] border-none cursor-pointer transition-colors whitespace-nowrap shrink-0',
               active
                 ? 'bg-foreground text-background font-medium'
                 : 'bg-transparent text-ink-dim font-normal hover:text-foreground',
