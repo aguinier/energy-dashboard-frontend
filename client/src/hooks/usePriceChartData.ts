@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { useDashboardStore } from '@/store/dashboardStore';
 import {
@@ -26,6 +27,8 @@ export interface PriceChartData {
   // ML forecast data
   forecastData: ForecastDataPoint[] | undefined;
   isLoadingForecast: boolean;
+  /** `meta.model` from the most recent forecast response — which model actually served. */
+  servedModelId: string | null;
 
   // ML comparison data
   comparisonData: ForecastComparisonData | undefined;
@@ -47,6 +50,7 @@ export function usePriceChartData(): PriceChartData {
   const timeOffset = useDashboardStore((s) => s.timeOffset);
   const showForecast = useDashboardStore((s) => s.showForecast);
   const showComparisonMode = useDashboardStore((s) => s.showComparisonMode);
+  const setServedModel = useDashboardStore((s) => s.setServedModel);
 
   // Calculate date ranges
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
@@ -105,14 +109,25 @@ export function usePriceChartData(): PriceChartData {
 
   const [priceQuery, forecastQuery, comparisonQuery] = queries;
 
+  const forecastData = forecastQuery.data?.points;
+  // Only meaningful while the query that produced it was actually enabled —
+  // React Query keeps the last cached response around after `enabled` flips
+  // to false, and a stale id must not be attributed to a hidden forecast.
+  const servedModelId = showForecast ? forecastQuery.data?.servedModelId ?? null : null;
+
+  useEffect(() => {
+    setServedModel('price', servedModelId);
+  }, [setServedModel, servedModelId]);
+
   return {
     // Actual price data
     priceData: priceQuery.data,
     isLoadingPrice: priceQuery.isLoading,
 
     // ML forecast data
-    forecastData: forecastQuery.data,
+    forecastData,
     isLoadingForecast: forecastQuery.isLoading,
+    servedModelId,
 
     // ML comparison data
     comparisonData: comparisonQuery.data,

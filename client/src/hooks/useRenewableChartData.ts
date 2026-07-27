@@ -185,11 +185,11 @@ export function useRenewableChartData(): RenewableChartData {
     isLoadingRenewable: renewableQuery.isLoading,
 
     // ML forecast data
-    solarForecast: solarQuery.data,
-    windOnshoreForecast: windOnshoreQuery.data,
-    windOffshoreForecast: windOffshoreQuery.data,
-    hydroForecast: hydroQuery.data,
-    biomassForecast: biomassQuery.data,
+    solarForecast: solarQuery.data?.points,
+    windOnshoreForecast: windOnshoreQuery.data?.points,
+    windOffshoreForecast: windOffshoreQuery.data?.points,
+    hydroForecast: hydroQuery.data?.points,
+    biomassForecast: biomassQuery.data?.points,
 
     // TSO generation forecast
     tsoGenerationForecast: tsoGenQuery.data,

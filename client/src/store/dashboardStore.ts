@@ -96,6 +96,14 @@ interface DashboardState {
   selectedModelByType: Record<string, string | null>;
   setSelectedModel: (forecastType: string, modelId: string | null) => void;
 
+  // Model that actually served the most recent forecast response, per type.
+  // Populated by the data hooks (useLoadChartData, usePriceChartData) from
+  // `meta.model`, not persisted — it describes the last network response, not
+  // a preference. ModelPicker reads this to show the model that truly served
+  // rather than the provisional/production label when the server fell back.
+  servedModelByType: Record<string, string | null>;
+  setServedModel: (forecastType: string, modelId: string | null) => void;
+
   // Forecast visibility (ML forecasts)
   showForecast: boolean;
   setShowForecast: (show: boolean) => void;
@@ -275,6 +283,14 @@ export const useDashboardStore = create<DashboardState>()(
         set((state) => ({
           selectedModelByType: { ...state.selectedModelByType, [forecastType]: modelId },
         })),
+
+      servedModelByType: {},
+      setServedModel: (forecastType, modelId) =>
+        set((state) =>
+          state.servedModelByType[forecastType] === modelId
+            ? state
+            : { servedModelByType: { ...state.servedModelByType, [forecastType]: modelId } },
+        ),
 
       // Forecast visibility
       showForecast: false,

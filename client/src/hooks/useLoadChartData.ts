@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { useDashboardStore } from '@/store/dashboardStore';
 import {
@@ -44,6 +45,8 @@ export interface LoadChartData {
   // ML forecast data
   forecastData: ForecastDataPoint[] | undefined;
   isLoadingForecast: boolean;
+  /** `meta.model` from the most recent forecast response — which model actually served. */
+  servedModelId: string | null;
 
   // ML multi-horizon data
   multiHorizonData: MultiHorizonForecastDataPoint[] | undefined;
@@ -78,6 +81,7 @@ export function useLoadChartData(): LoadChartData {
   const timeOffset = useDashboardStore((s) => s.timeOffset);
   const showComparisonMode = useDashboardStore((s) => s.showComparisonMode);
   const showTSOComparisonMode = useDashboardStore((s) => s.showTSOComparisonMode);
+  const setServedModel = useDashboardStore((s) => s.setServedModel);
 
   // The picker is the single source of truth for which model this chart shows.
   const { selected, requestModelId } = useModelSelection('load');
@@ -189,14 +193,25 @@ export function useLoadChartData(): LoadChartData {
 
   const [loadQuery, forecastQuery, comparisonQuery, multiHorizonQuery, tsoForecastQuery, tsoAccuracyQuery] = queries;
 
+  const forecastData = forecastQuery.data?.points;
+  // Only meaningful while an ML model is actually the active selection — a TSO
+  // pick disables this query but React Query keeps the last cached response,
+  // and that stale id must not be attributed to a TSO model's label.
+  const servedModelId = showForecast ? forecastQuery.data?.servedModelId ?? null : null;
+
+  useEffect(() => {
+    setServedModel('load', servedModelId);
+  }, [setServedModel, servedModelId]);
+
   return {
     // Actual load data
     loadData: loadQuery.data,
     isLoadingLoad: loadQuery.isLoading,
 
     // ML forecast data
-    forecastData: forecastQuery.data,
+    forecastData,
     isLoadingForecast: forecastQuery.isLoading,
+    servedModelId,
 
     // ML multi-horizon data
     multiHorizonData: multiHorizonQuery.data,

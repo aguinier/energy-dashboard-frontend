@@ -166,6 +166,12 @@ export async function fetchCombinedTimeseries(params: {
 }
 
 // Forecast Data
+export interface ForecastFetchResult {
+  points: ForecastDataPoint[];
+  /** `meta.model` — which model the server actually read. */
+  servedModelId: string | null;
+}
+
 export async function fetchForecastData(params: {
   country: string;
   type: ForecastType;
@@ -173,11 +179,14 @@ export async function fetchForecastData(params: {
   end?: string;
   granularity?: Granularity;
   horizon?: MLHorizon;
-  /** Registry model id. Omit for the type's production model. */
+  /** Registry model id. Omit to let the server choose one with data. */
   model?: string;
-}): Promise<ForecastDataPoint[]> {
-  const { data } = await api.get<ApiResponse<ForecastDataPoint[]>>('/forecasts', { params });
-  return data.data;
+}): Promise<ForecastFetchResult> {
+  const { data } = await api.get<ApiResponse<ForecastDataPoint[]> & { meta?: { model?: string | null } }>(
+    '/forecasts',
+    { params },
+  );
+  return { points: data.data, servedModelId: data.meta?.model ?? null };
 }
 
 // Multi-horizon forecast data (D+1 and D+2 for overlay view)
