@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { niceTicks, timeTicks, HOURLY_PRESETS } from '@/lib/chartTicks';
+import { niceTicks, timeTicks, HOURLY_PRESETS, MEDIUM_SPAN_HOURS } from '@/lib/chartTicks';
 
 // Typed port of the able prototype's <LineChart>. Single-series chart with
 // optional dashed forecast overlay, future-region shading, "now" pill marker
@@ -182,24 +182,28 @@ export function AbleLineChart({
 
   const yTicks = niceTicks(yMin, yMax, 4);
 
-  // Sub-day windows (24h and its siblings) get hour ticks from timeTicks —
-  // the day-anchored derivation below produces at most one tick when the
-  // series itself only spans ~24 hourly points, which is the original bug
-  // (24h rendered no x-axis labels at all).
+  // Sub-day windows (24h and its siblings) get hour/day+hour ticks from
+  // timeTicks — the day-anchored derivation below produces at most one tick
+  // when the series itself only spans ~24 hourly points, which is the
+  // original bug (24h rendered no x-axis labels at all).
   //
   // Guarded on actual span, not just `preset`: NetPositionTab always extends
   // its fetch window to now+3d regardless of preset (see
-  // useNetPositionData.ts), so on the "24h" preset its series can still span
-  // ~4 days. Keying off preset alone would put hour-only labels (no day
-  // context) across those 4 days, which is ambiguous, not a fix. Everything
-  // longer than ~1.5 days keeps the existing day-marker derivation verbatim,
-  // so 7d/30d render exactly as before.
+  // useNetPositionData.ts), and Load/Price forecast overlays stretch the
+  // merged actual+forecast grid further still (see MEDIUM_SPAN_HOURS's doc
+  // comment in chartTicks.ts for the measured per-tab spans). Keying off
+  // preset alone would put hour-only labels (no day context) across several
+  // days, which is ambiguous, not a fix — timeTicks itself picks hour vs.
+  // day+hour based on this same span. Only once the span exceeds
+  // MEDIUM_SPAN_HOURS does this fall back to the existing day-marker
+  // derivation verbatim, so 7d/30d render exactly as before.
   const spanHours =
     series.length > 1
       ? (new Date(series[series.length - 1].ts).getTime() - new Date(series[0].ts).getTime()) /
         3_600_000
       : 0;
-  const useHourTicks = !!preset && HOURLY_PRESETS.has(preset) && spanHours > 0 && spanHours <= 36;
+  const useHourTicks =
+    !!preset && HOURLY_PRESETS.has(preset) && spanHours > 0 && spanHours <= MEDIUM_SPAN_HOURS;
 
   let visibleXTicks: number[];
   let xLabelFor: (i: number) => string;
