@@ -29,7 +29,7 @@ const LEGEND: Array<{ key: keyof typeof SOURCE_COLORS; label: string }> = [
 
 export function GenerationTab() {
   const { renewableData, isLoading } = useRenewableChartData();
-  const { data: mix } = useRenewableMix();
+  const { data: mix, isLoading: mixLoading, isError: mixError } = useRenewableMix();
   const { data: overview } = useDashboardOverview();
 
   const { series, nowIndex } = useMemo(
@@ -92,14 +92,34 @@ export function GenerationTab() {
       </AbleCard>
 
       <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
-        <AbleCard title="Right now" subtitle="share of load · nuclear & gas estimated">
-          <div className="flex justify-center py-2">
-            <AbleDonut values={donutValues} colors={SOURCE_COLORS} />
-          </div>
+        <AbleCard title="Right now" subtitle="share of load · measured sources only">
+          {mixLoading ? (
+            <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
+              Loading…
+            </div>
+          ) : mixError || !mix ? (
+            <div className="flex h-[180px] items-center justify-center text-center text-[12px] text-ink-muted">
+              Generation mix unavailable.
+            </div>
+          ) : (
+            <div className="flex justify-center py-2">
+              <AbleDonut values={donutValues} colors={SOURCE_COLORS} />
+            </div>
+          )}
         </AbleCard>
 
-        <AbleCard title="By source" subtitle="GW · current">
-          <SourceTable mix={mix} overview={overview} />
+        <AbleCard title="By source" subtitle="GW · window average">
+          {mixLoading ? (
+            <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
+              Loading…
+            </div>
+          ) : mixError || !mix ? (
+            <div className="flex h-[180px] items-center justify-center text-center text-[12px] text-ink-muted">
+              Generation mix unavailable.
+            </div>
+          ) : (
+            <SourceTable mix={mix} overview={overview} />
+          )}
         </AbleCard>
       </div>
     </div>
