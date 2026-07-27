@@ -10,6 +10,7 @@ import {
   fetchTSOLoadForecastAccuracy,
 } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
+import { maskServedModel } from '@/lib/servedModel';
 import { useModelSelection } from './useForecastModels';
 import {
   getDateRangeForPreset,
@@ -194,10 +195,9 @@ export function useLoadChartData(): LoadChartData {
   const [loadQuery, forecastQuery, comparisonQuery, multiHorizonQuery, tsoForecastQuery, tsoAccuracyQuery] = queries;
 
   const forecastData = forecastQuery.data?.points;
-  // Only meaningful while an ML model is actually the active selection — a TSO
-  // pick disables this query but React Query keeps the last cached response,
-  // and that stale id must not be attributed to a TSO model's label.
-  const servedModelId = showForecast ? forecastQuery.data?.servedModelId ?? null : null;
+  // Masked by the same flag that gates the query above (`enabled: showForecast`)
+  // — see maskServedModel's doc comment for why this can't just read the data.
+  const servedModelId = maskServedModel(showForecast, forecastQuery.data?.servedModelId);
 
   useEffect(() => {
     setServedModel('load', servedModelId);

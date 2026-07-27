@@ -7,6 +7,7 @@ import {
   fetchForecastComparison,
 } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
+import { maskServedModel } from '@/lib/servedModel';
 import {
   getDateRangeForPreset,
   getGranularityForPreset,
@@ -110,10 +111,9 @@ export function usePriceChartData(): PriceChartData {
   const [priceQuery, forecastQuery, comparisonQuery] = queries;
 
   const forecastData = forecastQuery.data?.points;
-  // Only meaningful while the query that produced it was actually enabled —
-  // React Query keeps the last cached response around after `enabled` flips
-  // to false, and a stale id must not be attributed to a hidden forecast.
-  const servedModelId = showForecast ? forecastQuery.data?.servedModelId ?? null : null;
+  // Masked by the same flag that gates the query above (`enabled: showForecast`)
+  // — see maskServedModel's doc comment for why this can't just read the data.
+  const servedModelId = maskServedModel(showForecast, forecastQuery.data?.servedModelId);
 
   useEffect(() => {
     setServedModel('price', servedModelId);
