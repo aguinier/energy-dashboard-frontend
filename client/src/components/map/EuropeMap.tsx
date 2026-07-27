@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, memo } from 'react';
+import { useState, useMemo, useCallback, useId, memo } from 'react';
 import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
 import { ChartWrapper } from '@/components/charts/ChartWrapper';
 import { useMapData } from '@/hooks/useDashboardData';
@@ -32,7 +32,9 @@ const MEDIUM = '#C99A2A';
 const DIRTY = '#8E3D2C';
 const LOAD_LOW = '#CFE3DC';
 const LOAD_HIGH = '#12503F';
-const NO_DATA = '#EDEBE3';
+// No-data must not sit on the same beige axis as the diverging scale's zero,
+// or a balanced country and a missing one read identically.
+const NO_DATA = '#E4E0D6';
 
 // Net position is the one signed metric: amber = importing, blue = exporting,
 // meeting at a near-neutral zero. Amber/blue rather than red/green so the two
@@ -107,6 +109,9 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
   const prefetchCountry = usePrefetchCountry();
 
   const [hoveredCountry, setHoveredCountry] = useState<MapDataPoint | null>(null);
+  // Unique per mounted instance — the map can render both docked (ChartWrapper)
+  // and full-screen at once, and a hardcoded pattern id would collide.
+  const noDataHatchId = `no-data-hatch-${useId()}`;
 
   const handleCountryClick = useCallback((countryCode: string) => {
     prefetchCountry(countryCode);
@@ -127,8 +132,10 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     if (!mapData || mapData.length === 0) {
       return { min: 0, max: 100, dataMap: new Map<string, MapDataPoint>() };
     }
-    const values = mapData.map((d) => d.value).filter((v) => v != null);
-    const dataMap = new Map(mapData.map((d) => [d.country_code, d]));
+    const usable = mapData.filter((d) => d.value != null && Number.isFinite(d.value));
+    const values = usable.map((d) => d.value);
+    const dataMap = new Map(usable.map((d) => [d.country_code, d]));
+    if (values.length === 0) return { min: 0, max: 100, dataMap };
     return { min: Math.min(...values), max: Math.max(...values), dataMap };
   }, [mapData]);
 
@@ -148,6 +155,12 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         height={fullScreen ? 650 : 420}
         style={{ width: '100%', height: '100%', shapeRendering: 'geometricPrecision' }}
       >
+        <defs>
+          <pattern id={noDataHatchId} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="6" height="6" fill={NO_DATA} />
+            <line x1="0" y1="0" x2="0" y2="6" stroke="#CFCABE" strokeWidth="1.5" />
+          </pattern>
+        </defs>
         <Geographies geography={EUROPE_GEO_URL}>
           {({ geographies }) =>
             geographies.map((geo) => {
@@ -160,13 +173,13 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                 <Geography
                   key={geo.rsmKey}
                   geography={geo}
-                  fill={has ? dataColor(mapMetric, d!.value, min, max) : NO_DATA}
+                  fill={has ? dataColor(mapMetric, d!.value, min, max) : `url(#${noDataHatchId})`}
                   stroke={isHover || isSelected ? 'hsl(var(--foreground))' : '#FFFFFF'}
                   strokeWidth={isHover ? 2.4 : isSelected ? 1.6 : 1.2}
                   style={{
                     default: {
                       outline: 'none',
-                      opacity: has ? (hoveredCountry && !isHover ? 0.55 : 1) : 0.55,
+                      opacity: hoveredCountry && !isHover ? 0.55 : 1,
                       transition: 'fill-opacity 0.15s, stroke-width 0.15s',
                     },
                     hover: { outline: 'none', cursor: has ? 'pointer' : 'default' },
@@ -265,10 +278,15 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           </div>
         )}
         <div className="mt-2 flex items-center gap-1.5 border-t border-input pt-2">
-          <span
-            className="inline-block h-2.5 w-2.5 rounded-sm border border-border"
-            style={{ background: NO_DATA }}
-          />
+          <svg width="10" height="10" className="rounded-sm border border-border">
+            <defs>
+              <pattern id={`${noDataHatchId}-legend`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <rect width="6" height="6" fill={NO_DATA} />
+                <line x1="0" y1="0" x2="0" y2="6" stroke="#CFCABE" strokeWidth="1.5" />
+              </pattern>
+            </defs>
+            <rect width="10" height="10" fill={`url(#${noDataHatchId}-legend)`} />
+          </svg>
           <span className="font-mono-num text-[10px] text-ink-muted">no data</span>
         </div>
       </div>
