@@ -197,10 +197,14 @@ AT/BE/FR and price for BE/DE/ES/FR/PT."
 
 With Task 1 the server may serve a non-production model. The picker must say so rather than displaying the production label over someone else's data.
 
+**Scope note added after Task 1 review.** This task matters for the **price** tab as much as load. `usePriceChartData.ts:80` never sent a `model=` param, so the price chart was already being served by the fallback — it was never blank. But `ModelPicker` is rendered unconditionally in `CountryDashboardView.tsx:76` and labels the active tab's *production* model, so on the Price tab for BE/DE/ES/FR/PT it reads "able-ml · catboost" over a chart drawn from xgboost data. That is exactly the silent substitution the Global Constraints forbid. Both hooks must therefore surface `servedModelId`.
+
 **Files:**
 - Modify: `client/src/services/api.ts:169-181`
 - Modify: `client/src/hooks/useLoadChartData.ts`
+- Modify: `client/src/hooks/usePriceChartData.ts:76-89`
 - Modify: `client/src/components/dashboard/ModelPicker.tsx`
+- Modify: `client/src/views/CountryDashboardView.tsx:76`
 - Test: `client/src/lib/servedModel.test.ts` (create)
 - Create: `client/src/lib/servedModel.ts`
 
@@ -305,26 +309,38 @@ export async function fetchForecastData(params: {
 }
 ```
 
-- [ ] **Step 6: Thread it through the hook**
+- [ ] **Step 6: Thread it through both hooks**
 
-In `client/src/hooks/useLoadChartData.ts`, the forecast query's `queryFn` now resolves to `ForecastFetchResult`. Update the consumer so `forecastData` stays a point array and the served id is exposed:
+`fetchForecastData` now resolves to `ForecastFetchResult`, so every caller must unwrap `.points`. There are two: `useLoadChartData.ts` and `usePriceChartData.ts`. In each, the forecast query's consumer becomes:
 
 ```ts
-  const forecastQuery = /* existing useQuery, unchanged options */;
   const forecastData = forecastQuery.data?.points ?? [];
   const servedModelId = forecastQuery.data?.servedModelId ?? null;
 ```
 
-Add `servedModelId` to the hook's return object.
+Add `servedModelId` to both hooks' return objects. Leave the `queryKey` and query options untouched.
 
 - [ ] **Step 7: Show it in the picker**
 
-In `client/src/components/dashboard/ModelPicker.tsx`, accept an optional `servedModelId` prop and render `servedLabel(models, servedModelId, selected)` as the button text instead of `selected.label`. Where the button is rendered in `CountryDashboardView.tsx`, pass `servedModelId` through from `useLoadChartData()`.
+In `client/src/components/dashboard/ModelPicker.tsx`, accept an optional `servedModelId?: string | null` prop and render `servedLabel(models, servedModelId ?? null, selected)` as the button text instead of `selected.label`.
+
+`CountryDashboardView.tsx:76` renders one `<ModelPicker />` for whichever tab is active, so it must pass the served id from the hook matching the active tab. Both hooks are already called in that view; select between them on `activeChartTab`:
+
+```tsx
+const servedModelId =
+  activeChartTab === 'price' ? priceServedModelId : loadServedModelId;
+```
+
+and pass `<ModelPicker servedModelId={servedModelId} />`. Tabs with no ML forecast path (generation, forecast accuracy) pass `null`, which falls back to the provisional label — the existing behaviour.
 
 - [ ] **Step 8: Verify**
 
 Run: `npx tsc -b client` → exit 0.
-In the browser, open France → Load. The picker must read **able-ml · xgboost**, not catboost.
+
+In the browser:
+- France → **Load**: picker reads **able-ml · xgboost**, not catboost
+- Belgium → **Price**: picker reads **able-ml · xgboost** (BE has no catboost price data), not catboost
+- Germany → **Load**: picker still reads **able-ml · catboost** (DE has catboost load data) — the fallback must not fire where it is not needed
 
 - [ ] **Step 9: Commit**
 
