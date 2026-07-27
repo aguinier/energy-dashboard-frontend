@@ -8,21 +8,14 @@ import {
   fetchTSOForecastMetrics,
   fetchTSOLoadForecastAccuracy,
 } from '@/services/api';
+import { buildHorizonBars } from './horizonBars';
 import { useLoadChartData } from '@/hooks/useLoadChartData';
 import { useDashboardStore } from '@/store/dashboardStore';
-import { getDateRangeForPreset } from '@/hooks/useDashboardData';
+import { getDateRangeForPreset, useForecastComparisonSummary } from '@/hooks/useDashboardData';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { adaptLoadSeries } from '@/lib/chartAdapters';
 import { formatGwAxis } from '@/lib/chartTicks';
 import { cn } from '@/lib/utils';
-
-// Synthetic horizon multipliers from the prototype. The backend supplies error
-// only at D+1, so everything after index 0 is extrapolated and renders hollow.
-// The D+1 anchor is now the MEASURED mape from /tso-forecast/metrics. It used
-// to be a hardcoded constant (2.4) rendered solid under a "solid = measured"
-// caption, which made an invented number look like a measurement.
-const HORIZON_LABELS = ['D+1', 'D+2', 'D+3', 'D+5', 'D+7'];
-const HORIZON_FACTORS = [1, 1.15, 1.3, 1.55, 1.9];
 
 function StatCell({
   label,
@@ -106,14 +99,10 @@ export function ForecastTab() {
 
   const loadMetrics = metricsQuery.data?.load;
 
-  // Error by horizon, anchored on the measured D+1 mape. No measurement means
-  // no bars — an empty chart is honest, an invented one is not.
-  const measuredMape = loadMetrics?.mape ?? null;
-  const horizonBars = measuredMape == null ? [] : HORIZON_LABELS.map((label, i) => ({
-    label,
-    v: measuredMape * HORIZON_FACTORS[i],
-    extrapolated: i > 0,
-  }));
+  // Error by horizon — measured only. Horizons with no stored forecast (D+3/D+5/D+7,
+  // since forecasts.horizon_hours tops out at 63h) are simply absent, not invented.
+  const { data: summary } = useForecastComparisonSummary();
+  const horizonBars = buildHorizonBars(summary, 'load');
 
   // Overlay chart data — pair forecasted vs actual for the past window.
   const { loadData, forecastData } = useLoadChartData();
@@ -173,11 +162,7 @@ export function ForecastTab() {
       <div className="grid gap-3.5 md:grid-cols-2">
         <AbleCard
           title="Error by horizon"
-          subtitle={
-            measuredMape == null
-              ? "no measured error for this window"
-              : "MAPE % · D+1 measured, later horizons extrapolated (hollow)"
-          }
+          subtitle="MAPE % · measured over the selected window"
         >
           <AbleAccuracyBars data={horizonBars} />
         </AbleCard>
