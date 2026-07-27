@@ -3,6 +3,7 @@ import { AbleCard } from './AbleCard';
 import { AbleStackedMix } from '@/components/charts/AbleStackedMix';
 import { AbleDonut } from '@/components/charts/AbleDonut';
 import { SourceTable } from './SourceTable';
+import { buildSourceRows } from './sourceRows';
 import { useRenewableChartData } from '@/hooks/useRenewableChartData';
 import {
   useDashboardOverview,
@@ -16,8 +17,7 @@ const SOURCE_COLORS = {
   wind: '#4D89C9',
   hydro: '#2FA39C',
   biomass: '#73A35F',
-  nuclear: '#8A6FB5',
-  gas: '#8D8579',
+  unattributed: '#D8D4CC',
 };
 
 const LEGEND: Array<{ key: keyof typeof SOURCE_COLORS; label: string }> = [
@@ -37,24 +37,18 @@ export function GenerationTab() {
     [renewableData],
   );
 
-  // Donut input — combines renewable mix with derived nuclear / gas+other.
-  const load = overview?.currentLoad ?? 0;
-  const renPct = overview?.renewablePercentage ?? 0;
+  // Donut input — measured renewable mix plus the unattributed remainder of
+  // load. Derived from buildSourceRows so the donut and SourceTable can never
+  // disagree about what the remainder is.
+  const { rows, unattributedMw } = useMemo(
+    () => buildSourceRows(mix, overview?.currentLoad ?? null),
+    [mix, overview?.currentLoad],
+  );
+
   const donutValues = [
-    { key: 'solar', value: mix?.solar ?? 0, isGreen: true },
-    {
-      key: 'wind',
-      value: (mix?.wind_onshore ?? 0) + (mix?.wind_offshore ?? 0),
-      isGreen: true,
-    },
-    { key: 'hydro', value: mix?.hydro ?? 0, isGreen: true },
-    { key: 'biomass', value: mix?.biomass ?? 0, isGreen: true },
-    { key: 'nuclear', value: load * 0.2, isGreen: false },
-    {
-      key: 'gas',
-      value: Math.max(0, load * (1 - renPct / 100 - 0.2)),
-      isGreen: false,
-    },
+    ...rows.map((r) => ({ key: r.key, value: r.mw, isGreen: true })),
+    // The rest of load. Not "gas" — nothing in the DB says what it is.
+    { key: 'unattributed', value: unattributedMw ?? 0, isGreen: false },
   ];
 
   return (
