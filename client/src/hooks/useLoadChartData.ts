@@ -80,11 +80,14 @@ export function useLoadChartData(): LoadChartData {
   const showTSOComparisonMode = useDashboardStore((s) => s.showTSOComparisonMode);
 
   // The picker is the single source of truth for which model this chart shows.
-  const { selected } = useModelSelection('load');
+  const { selected, requestModelId } = useModelSelection('load');
   const showForecast = selected?.source === 'ml';
   const showTSOForecast = selected?.source === 'tso';
   const tsoHorizon = (selected?.tsoHorizon ?? 'day_ahead') as TSOHorizon;
-  const modelId = selected?.source === 'ml' ? selected.id : undefined;
+
+  // Pin only what the user pinned; otherwise let the server pick a model that
+  // has data for this country.
+  const modelId = selected?.source === 'ml' ? requestModelId : undefined;
   const selectedMLHorizons = useDashboardStore((s) => s.selectedMLHorizons);
 
   // Calculate date ranges
