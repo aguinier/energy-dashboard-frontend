@@ -747,17 +747,23 @@ Expected: FAIL — cannot find module `./horizonBars`
 
 Create `client/src/components/dashboard/horizonBars.ts`:
 
+The existing types already model this precisely — `ForecastComparisonSummary` is `{ [forecastType: string]: ForecastComparisonResponse }` (`types/index.ts:305`), and `ForecastComparisonResponse` carries `tso: TSOProviderMetrics` and `ml: MLProviderMetrics` (`types/index.ts:288`). No casting is needed; read those two interfaces and type against them directly.
+
 ```ts
 import type { ForecastComparisonSummary } from '@/types';
 
 export interface HorizonBar {
   label: string;
   v: number;
-  extrapolated?: boolean;
 }
 
-interface MetricLike { mape?: number | null; dataPoints?: number | null }
+/** The per-horizon metric shape shared by TSOProviderMetrics and MLProviderMetrics. */
+interface MetricLike {
+  mape?: number | null;
+  dataPoints?: number | null;
+}
 
+/** A bar only exists when a measurement backs it: a mape AND at least one sample. */
 function bar(label: string, m: MetricLike | undefined): HorizonBar | null {
   if (!m || m.mape == null || !m.dataPoints) return null;
   return { label, v: m.mape };
@@ -766,18 +772,16 @@ function bar(label: string, m: MetricLike | undefined): HorizonBar | null {
 /**
  * Measured MAPE by horizon.
  *
- * The previous version multiplied a measured D+1 figure by fixed factors to
- * produce D+2/D+3/D+5/D+7. `forecasts.horizon_hours` tops out at 63h, so
- * anything past D+2 has no underlying forecast and cannot be measured at all.
- * Only horizons with stored samples appear.
+ * The previous version multiplied a measured D+1 figure by fixed factors
+ * [1, 1.15, 1.3, 1.55, 1.9] to produce D+2/D+3/D+5/D+7. `forecasts.horizon_hours`
+ * tops out at 63h, so anything past D+2 has no underlying forecast and cannot be
+ * measured at all. Only horizons with stored samples appear.
  */
 export function buildHorizonBars(
   summary: ForecastComparisonSummary | undefined,
   forecastType: string,
 ): HorizonBar[] {
-  const t = (summary as Record<string, never> | undefined)?.[forecastType] as
-    | { tso?: { dayAhead?: MetricLike; weekAhead?: MetricLike }; ml?: { d1?: MetricLike; d2?: MetricLike } }
-    | undefined;
+  const t = summary?.[forecastType];
   if (!t) return [];
 
   return [
@@ -789,6 +793,8 @@ export function buildHorizonBars(
 }
 ```
 
+Note `HorizonBar` has no `extrapolated` field. `AbleAccuracyBars`' `Datum` keeps its optional `extrapolated?` prop — nothing passes it any more, and removing it from that component is out of scope here.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npm test -w client -- horizonBars`
@@ -796,28 +802,23 @@ Expected: PASS — 5 tests
 
 - [ ] **Step 5: Wire it into ForecastTab**
 
-In `client/src/components/dashboard/ForecastTab.tsx`: delete the `HORIZON_LABELS` / `HORIZON_FACTORS` constants and their comment block (lines 19-25). Add a summary query alongside the existing ones:
+In `client/src/components/dashboard/ForecastTab.tsx`: delete the `HORIZON_LABELS` / `HORIZON_FACTORS` constants and their comment block (lines 19-25).
+
+**Do not write a new `useQuery` for the summary** — `useForecastComparisonSummary()` already exists at `client/src/hooks/useDashboardData.ts:627` and keys on exactly the country/preset/offset this tab uses. Call it:
 
 ```ts
-  const summaryQuery = useQuery({
-    queryKey: ['forecast-tab', 'summary', selectedCountry, timePreset, timeOffset],
-    queryFn: () =>
-      fetchForecastComparisonSummary({
-        countryCode: selectedCountry,
-        start: start.toISOString(),
-        end: end.toISOString(),
-      }),
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
+  const { data: summary } = useForecastComparisonSummary();
 ```
 
 Replace the `horizonBars` computation (lines 109-115) with:
 
 ```ts
-  const horizonBars = buildHorizonBars(summaryQuery.data, 'load');
+  const horizonBars = buildHorizonBars(summary, 'load');
 ```
 
-Change the card subtitle to `"MAPE % · measured over the selected window"` and drop the conditional that mentioned extrapolation. Import `buildHorizonBars` from `./horizonBars` and `fetchForecastComparisonSummary` from `@/services/api` (it already exists — verify the exported name and adapt if it differs).
+`measuredMape` may now be unused — if nothing else in the component reads it, delete it too rather than leaving a dead binding.
+
+Change the card subtitle to `"MAPE % · measured over the selected window"` and drop the conditional that mentioned extrapolation. Import `buildHorizonBars` from `./horizonBars` and `useForecastComparisonSummary` from `@/hooks/useDashboardData`.
 
 - [ ] **Step 6: Verify**
 
