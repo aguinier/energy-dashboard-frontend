@@ -2096,6 +2096,158 @@ git commit -m "docs: correct CLAUDE.md to the current structure and data limits"
 
 ---
 
+# Phase 6 — follow-ups found during execution
+
+### Task 21: Stop reporting unmeasurable accuracy as perfect accuracy
+
+Found by the Task 6 review. Two defects in `calculateMetrics` and the accuracy SQL, both instances of the first Global Constraint — a number the data does not support is presented as a measurement.
+
+1. **Zero paired points returns zeros.** `calculateMetrics` returns `{ mae: 0, mape: 0, rmse: 0, dataPoints: 0 }` for an empty window (`tsoForecastService.ts:369-371`). The stat strip's `!= null` guards then render "MAE 0 MW", "MAPE 0%", "RMSE 0" — which reads as a *flawless* forecast when in fact nothing was measured. Task 6's new caveat now sits directly beneath, saying "Only 0 paired points in this window", making the contradiction plainer.
+
+2. **Non-positive actuals count as zero error.** The accuracy SQL uses `CASE WHEN a.actual_value > 0 THEN 100.0 * ABS(...) / a.actual_value ELSE 0 END` at four sites (`tsoForecastService.ts:212, 251, 291, 336`). A point whose actual is 0 or negative is unmeasurable as a percentage, but it contributes a **0** to the mean — pulling MAPE down. Load is almost always positive so this barely shows there, but generation accuracy (solar overnight is exactly 0) is systematically understated. The percentage is already `ABS`-wrapped, so there is no sign-cancellation bug — only this.
+
+**Files:**
+- Modify: `server/src/services/tsoForecastService.ts:212, 251, 291, 336, 369-383`
+- Modify: `client/src/types/index.ts:174-179` (`TSOForecastAccuracyMetrics`)
+- Modify: `client/src/components/dashboard/ForecastTab.tsx` (stat strip null rendering)
+- Test: `server/src/services/tsoForecastService.test.ts` (create)
+
+**Interfaces:**
+- Produces: `TSOForecastAccuracyMetrics` becomes `{ mae: number | null; mape: number | null; rmse: number | null; dataPoints: number; mapeSamples: number }`. `mapeSamples` is the count of points that actually had a positive actual — it may be lower than `dataPoints`, and the UI must say so rather than implying MAPE covered every point.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `server/src/services/tsoForecastService.test.ts`:
+
+```ts
+import { describe, it, expect } from 'vitest';
+import { calculateMetrics } from './tsoForecastService.js';
+
+const pt = (actual: number, forecast: number) => ({
+  timestamp: '2026-07-27T00:00:00Z',
+  forecast_value: forecast,
+  actual_value: actual,
+  error: actual - forecast,
+  error_pct: actual > 0 ? Math.abs(actual - forecast) / actual * 100 : null,
+});
+
+describe('calculateMetrics', () => {
+  it('returns null metrics when there are no paired points', () => {
+    const m = calculateMetrics([]);
+    expect(m).toEqual({ mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 });
+  });
+
+  it('computes mae and rmse over every paired point', () => {
+    const m = calculateMetrics([pt(100, 90), pt(100, 110)]);
+    expect(m.mae).toBe(10);
+    expect(m.rmse).toBe(10);
+    expect(m.dataPoints).toBe(2);
+  });
+
+  it('excludes non-positive actuals from mape instead of scoring them zero', () => {
+    // The 0-actual point is unmeasurable as a percentage. Counting it as 0%
+    // would halve the reported mape.
+    const m = calculateMetrics([pt(100, 90), pt(0, 50)]);
+    expect(m.mape).toBe(10);
+    expect(m.mapeSamples).toBe(1);
+    expect(m.dataPoints).toBe(2);
+  });
+
+  it('returns a null mape when no point has a positive actual', () => {
+    const m = calculateMetrics([pt(0, 50)]);
+    expect(m.mape).toBeNull();
+    expect(m.mapeSamples).toBe(0);
+    expect(m.mae).toBe(50);
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npm test -w server -- tsoForecastService`
+Expected: FAIL — `calculateMetrics` is not exported
+
+- [ ] **Step 3: Implement**
+
+Export `calculateMetrics` and rewrite it in `server/src/services/tsoForecastService.ts`:
+
+```ts
+/**
+ * Accuracy metrics over paired forecast/actual points.
+ *
+ * Returns nulls rather than zeros for an empty window: zeros render as
+ * "MAE 0 MW / MAPE 0%", which reads as a flawless forecast when nothing was
+ * measured at all.
+ *
+ * `mape` covers only points with a positive actual — a percentage error is
+ * undefined at zero. Those points previously contributed 0, which understated
+ * mape wherever actuals legitimately hit zero (solar overnight).
+ */
+export function calculateMetrics(data: ForecastAccuracyDataPoint[]) {
+  if (data.length === 0) {
+    return { mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 };
+  }
+
+  const n = data.length;
+  const round2 = (x: number) => Math.round(x * 100) / 100;
+
+  const mae = data.reduce((sum, d) => sum + Math.abs(d.error), 0) / n;
+  const rmse = Math.sqrt(data.reduce((sum, d) => sum + d.error * d.error, 0) / n);
+
+  const pctPoints = data.filter((d) => d.error_pct != null);
+  const mape = pctPoints.length
+    ? pctPoints.reduce((sum, d) => sum + (d.error_pct as number), 0) / pctPoints.length
+    : null;
+
+  return {
+    mae: round2(mae),
+    mape: mape == null ? null : round2(mape),
+    rmse: round2(rmse),
+    dataPoints: n,
+    mapeSamples: pctPoints.length,
+  };
+}
+```
+
+Change `error_pct` to `number | null` in the `ForecastAccuracyDataPoint` interface (`tsoForecastService.ts:26-32`), and at all four SQL sites replace `ELSE 0` with `ELSE NULL`:
+
+```sql
+        CASE
+          WHEN a.actual_value > 0 THEN ROUND(100.0 * ABS(a.actual_value - f.forecast_value) / a.actual_value, 2)
+          ELSE NULL
+        END as error_pct
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npm test -w server -- tsoForecastService`
+Expected: PASS — 4 tests
+
+- [ ] **Step 5: Render nulls as absent on the client**
+
+Update `TSOForecastAccuracyMetrics` in `client/src/types/index.ts` to `mae/mape/rmse: number | null` plus `mapeSamples: number`. In `ForecastTab.tsx`'s stat strip, a null metric renders `—`, not `0`. Where the MAPE card is rendered, if `mapeSamples < dataPoints` append a note that MAPE covers only `mapeSamples` of `dataPoints` points.
+
+Fix any resulting type errors in `buildHorizonBars` — `bar()` already guards `m.mape == null`, so it needs no change, but confirm.
+
+- [ ] **Step 6: Verify**
+
+Run: `npx tsc -b client && npm test -w client && npm test -w server`
+
+In the browser, pick a country and a window with no TSO forecast coverage: the stat cards must show `—`, not `0`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add server/src/services/tsoForecastService.ts server/src/services/tsoForecastService.test.ts client/src/types/index.ts client/src/components/dashboard/ForecastTab.tsx
+git commit -m "fix(accuracy): report unmeasurable accuracy as absent, not as zero
+
+An empty window returned mae/mape/rmse of 0, which renders as a flawless
+forecast. Non-positive actuals also contributed 0% to mape, understating it
+wherever actuals legitimately hit zero."
+```
+
+---
+
 ## Out of scope — carried forward
 
 These were found during the audit but are not fixed by this plan.
