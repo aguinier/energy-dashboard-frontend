@@ -17,6 +17,9 @@ import { adaptLoadSeries } from '@/lib/chartAdapters';
 import { formatGwAxis } from '@/lib/chartTicks';
 import { cn } from '@/lib/utils';
 
+/** Below this many paired points, MAPE/MAE/RMSE are too noisy to report plainly. */
+const MIN_RELIABLE_SAMPLES = 48;
+
 function StatCell({
   label,
   value,
@@ -117,28 +120,36 @@ export function ForecastTab() {
   return (
     <div className="space-y-3.5">
       {/* 4-stat strip — MAE / MAPE / RMSE / Bias */}
-      <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card md:grid-cols-4">
-        <StatCell
-          label="MAE"
-          value={loadMetrics?.mae != null ? loadMetrics.mae.toFixed(0) : '—'}
-          unit="MW"
-        />
-        <StatCell
-          label="MAPE"
-          value={loadMetrics?.mape != null ? loadMetrics.mape.toFixed(2) : '—'}
-          unit="%"
-        />
-        <StatCell
-          label="RMSE"
-          value={loadMetrics?.rmse != null ? loadMetrics.rmse.toFixed(0) : '—'}
-          unit="MW"
-        />
-        <StatCell
-          label="Samples"
-          value={loadMetrics?.dataPoints != null ? loadMetrics.dataPoints.toString() : '—'}
-          unit=""
-          last
-        />
+      <div>
+        <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card md:grid-cols-4">
+          <StatCell
+            label="MAE"
+            value={loadMetrics?.mae != null ? loadMetrics.mae.toFixed(0) : '—'}
+            unit="MW"
+          />
+          <StatCell
+            label="MAPE"
+            value={loadMetrics?.mape != null ? loadMetrics.mape.toFixed(2) : '—'}
+            unit="%"
+          />
+          <StatCell
+            label="RMSE"
+            value={loadMetrics?.rmse != null ? loadMetrics.rmse.toFixed(0) : '—'}
+            unit="MW"
+          />
+          <StatCell
+            label="Samples"
+            value={loadMetrics?.dataPoints != null ? loadMetrics.dataPoints.toString() : '—'}
+            unit=""
+            last
+          />
+        </div>
+        {loadMetrics?.dataPoints != null && loadMetrics.dataPoints < MIN_RELIABLE_SAMPLES && (
+          <p className="mt-2 text-[11px] text-ink-muted">
+            Only {loadMetrics.dataPoints} paired points in this window — these figures are
+            indicative, not a stable estimate. Widen the range for a firmer read.
+          </p>
+        )}
       </div>
 
       {/* Compare forecast models */}
@@ -152,8 +163,7 @@ export function ForecastTab() {
             This panel used to plot per-model MAPE from hardcoded constants rather
             than measurements. Per-model accuracy needs the accuracy endpoints to
             accept a model, which they do not yet — so it shows nothing instead of
-            numbers that were never measured. Single-model error is below, anchored
-            on the measured D+1 figure.
+            numbers that were never measured. Measured error by horizon is below.
           </p>
         </div>
       </div>
