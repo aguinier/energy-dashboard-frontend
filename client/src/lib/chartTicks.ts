@@ -25,3 +25,36 @@ export function formatGwAxis(mw: number): string {
   if (Math.abs(gw) >= 1) return gw.toFixed(1).replace(/\.0$/, '');
   return gw.toFixed(1);
 }
+
+/** Presets whose window is short enough that the hour, not the date, is the useful label. */
+export const HOURLY_PRESETS = new Set(['24h', 'today', 'next24h', 'next1d']);
+
+/**
+ * Evenly spaced X-axis ticks for a timestamp series. Sub-day windows are
+ * labelled by hour — a 24h chart with only date ticks (or none, as before)
+ * cannot tell you when the peak occurred.
+ */
+export function timeTicks(
+  timestamps: string[],
+  preset: string,
+  target = 5,
+): { index: number; label: string }[] {
+  if (timestamps.length === 0) return [];
+
+  const hourly = HOURLY_PRESETS.has(preset);
+  const count = Math.min(target, timestamps.length);
+  const step = Math.max(1, Math.floor((timestamps.length - 1) / Math.max(1, count - 1)));
+
+  const out: { index: number; label: string }[] = [];
+  for (let i = 0; i < timestamps.length; i += step) {
+    const d = new Date(timestamps[i]);
+    if (Number.isNaN(d.getTime())) continue;
+    out.push({
+      index: i,
+      label: hourly
+        ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+        : d.toLocaleDateString([], { day: 'numeric', month: 'short' }),
+    });
+  }
+  return out;
+}

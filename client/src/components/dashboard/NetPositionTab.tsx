@@ -28,6 +28,7 @@ export function NetPositionTab() {
   const { data: countries } = useCountries();
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const country = countries?.find((c) => c.country_code === selectedCountry);
+  const timePreset = useDashboardStore((s) => s.timePreset);
 
   // Respect the picker like every other tab. Previously this ignored it, so
   // hiding the forecast changed the load chart and did nothing here.
@@ -119,6 +120,7 @@ export function NetPositionTab() {
               height={300}
               formatAxis={formatAxis}
               formatTooltip={formatMw}
+              preset={timePreset}
             />
             <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-muted">
               {latest && (
