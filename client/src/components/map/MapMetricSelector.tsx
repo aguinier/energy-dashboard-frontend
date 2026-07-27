@@ -1,18 +1,12 @@
 import { useDashboardStore } from '@/store/dashboardStore';
 import { cn } from '@/lib/utils';
-import type { MetricType } from '@/types';
+import { MAP_METRICS } from '@/lib/constants';
 
 // able-prototype metric selector: a single rounded segmented control with the
 // active item filled in ink. Three modes:
 //   - floating   → absolute, centered on top of the map
 //   - vertical   → list layout (legacy sidebar)
 //   - inline     → flow layout (legacy, embedded in chart headers)
-const METRICS: { value: MetricType; label: string; unit: string }[] = [
-  { value: 'price', label: 'Day-ahead price', unit: '€/MWh' },
-  { value: 'renewable_pct', label: 'Renewable share', unit: '%' },
-  { value: 'load', label: 'Electricity load', unit: 'MW' },
-  { value: 'net_position', label: 'Net position', unit: 'MW' },
-];
 
 interface MapMetricSelectorProps {
   floating?: boolean;
@@ -31,7 +25,7 @@ export function MapMetricSelector({ floating, vertical, className }: MapMetricSe
           Map metric
         </h3>
         <div className="space-y-1">
-          {METRICS.map(({ value, label, unit }) => (
+          {MAP_METRICS.map(({ value, label, unit }) => (
             <button
               key={value}
               onClick={() => setMapMetric(value)}
@@ -64,7 +58,7 @@ export function MapMetricSelector({ floating, vertical, className }: MapMetricSe
 
   return (
     <div className={cn(wrapperCls, className)}>
-      {METRICS.map(({ value, label, unit }) => {
+      {MAP_METRICS.map(({ value, label, unit }) => {
         const active = mapMetric === value;
         return (
           <button

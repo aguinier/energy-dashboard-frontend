@@ -82,12 +82,6 @@ function formatHoverValue(value: number, metric: MetricType): string {
   }
 }
 
-function hoverUnit(metric: MetricType, fallback?: string): string {
-  if (metric === 'load') return 'GW';
-  if (metric === 'net_position') return 'MW';
-  return fallback ?? '';
-}
-
 function formatLegendValue(value: number, metric: MetricType): string {
   switch (metric) {
     case 'load': return (value / 1000).toFixed(value >= 10000 ? 0 : 1);
@@ -202,7 +196,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           <div className="num text-[26px] font-medium text-foreground">
             {formatHoverValue(hoveredCountry.value, mapMetric)}
             <span className="ml-1 font-mono-num text-[11px] text-ink-muted">
-              {hoverUnit(mapMetric, metricInfo?.unit)}
+              {metricInfo?.unit ?? ''}
             </span>
           </div>
           <p className="mt-1 text-xs text-ink-dim">{metricInfo?.label}</p>
@@ -230,12 +224,10 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
       <div className="absolute bottom-5 left-5 min-w-[280px] rounded-[10px] border border-border bg-card p-3.5 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
         <div className="mb-1.5 flex items-baseline justify-between">
           <span className="text-xs font-medium text-foreground">
-            {/* Named as an average: the map aggregates over the window, and for
-                a signed quantity that is a different claim from "right now". */}
-            {mapMetric === 'net_position' ? 'Avg net position' : metricInfo?.label}
+            {metricInfo?.legendLabel}
           </span>
           <span className="font-mono-num text-[10.5px] text-ink-muted">
-            {mapMetric === 'load' ? 'GW' : metricInfo?.unit}
+            {metricInfo?.unit}
           </span>
         </div>
         <div
