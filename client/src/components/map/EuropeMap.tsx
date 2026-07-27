@@ -8,30 +8,9 @@ import { MAP_METRICS } from '@/lib/constants';
 import { divergingT, symmetricBound } from '@/lib/divergingScale';
 import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
+import { selectMapGeometry, hoverCardClearsSelector } from './mapGeometry';
 
 const EUROPE_GEO_URL = '/europe.topojson';
-
-// The desktop viewBox (1000x650) is landscape. Below this container width the
-// map's container turns portrait (phones, and most tablets in portrait), and
-// a landscape viewBox scaled with preserveAspectRatio="xMidYMid meet" (the
-// ComposableMap default) only fits the *width* of a portrait box, centering
-// vertically and leaving hundreds of px of dead space above/below — the map
-// looks tiny even though the <svg> element itself spans the full width.
-// Below the breakpoint we swap to a narrow viewBox sized to the *measured*
-// container aspect ratio (via ResizeObserver, not a guessed header offset),
-// so "meet" binds evenly on both axes instead of just one.
-const DESKTOP_MIN_WIDTH = 1024;
-const DESKTOP_VIEWBOX = { width: 1000, height: 650, scale: 440 };
-// Reference width for the narrow viewBox. The resulting on-screen ink % is
-// independent of the absolute number chosen here (only the scale/width
-// ratio matters — see EuropeMap tuning notes) so this is just a convenient
-// unit; height is derived per-render from the measured container aspect.
-const NARROW_VIEWBOX_WIDTH = 420;
-// Empirically tuned (see task-11 follow-up report) so Europe's ink — Iceland
-// to Turkey, Norway to Malta, all confirmed unclipped — fills ~95% of the
-// narrow viewBox width, instead of the ~39% the old fixed 1000-wide viewBox
-// produced once scaled down to fit a phone screen.
-const NARROW_SCALE = 305;
 
 const COUNTRY_NAME_MAP: Record<string, string> = {
   'Germany': 'DE', 'France': 'FR', 'Italy': 'IT', 'Spain': 'ES', 'United Kingdom': 'GB',
@@ -200,19 +179,15 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     };
   }, [measureContainer]);
 
-  const isDesktop = containerSize.width >= DESKTOP_MIN_WIDTH;
-
-  // Narrow viewports get a portrait-ish viewBox (width fixed, height derived
-  // from the measured aspect ratio) plus a raised scale — see the constants
-  // above for why lowering scale on a landscape viewBox (the old approach)
-  // made things worse, not better.
-  const projectionScale = fullScreen ? (isDesktop ? DESKTOP_VIEWBOX.scale : NARROW_SCALE) : 260;
-  const mapWidth = fullScreen && !isDesktop ? NARROW_VIEWBOX_WIDTH : DESKTOP_VIEWBOX.width;
-  const mapHeight = !fullScreen
-    ? 420
-    : isDesktop
-      ? DESKTOP_VIEWBOX.height
-      : Math.round(NARROW_VIEWBOX_WIDTH * (containerSize.height / containerSize.width));
+  // Which viewBox/scale to render, and whether the hover card has room to
+  // dock in the corner — both are pure functions of the measured container
+  // box (task-11 review findings 1 and 2; see mapGeometry.ts for the "why").
+  const { projectionScale, mapWidth, mapHeight } = selectMapGeometry(
+    containerSize.width,
+    containerSize.height,
+    fullScreen,
+  );
+  const cardClearsSelector = hoverCardClearsSelector(containerSize.width);
 
   const mapContent = (
     <div ref={containerRef} className={cn('relative', fullScreen ? 'h-full w-full' : 'h-full min-h-[400px]')}>
@@ -263,15 +238,17 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         </Geographies>
       </ComposableMap>
 
-      {/* Hover card — top-right on desktop. On narrow viewports the floating
-          metric selector (MapMetricSelector `floating`) is centered across
-          the top of this same container, so top-5 there would sit right
-          under/over it; drop the card below the selector instead. */}
+      {/* Hover card — docks top-right once the container is wide enough that
+          the corner position actually clears the floating metric selector
+          (MapMetricSelector `floating`, centered across the top of this same
+          container) — see hoverCardClearsSelector in mapGeometry.ts. Below
+          that width, it drops below the selector instead, which stays clear
+          at any width. */}
       {hoveredCountry && (
         <div
           className={cn(
             'pointer-events-none absolute min-w-[260px] rounded-[10px] border border-border bg-card px-4 py-3.5 shadow-[0_4px_20px_rgba(0,0,0,0.06)]',
-            isDesktop ? 'right-5 top-5' : 'right-3 top-16',
+            cardClearsSelector ? 'right-5 top-5' : 'right-3 top-16',
           )}
         >
           <div className="mb-2 flex items-baseline gap-2">
