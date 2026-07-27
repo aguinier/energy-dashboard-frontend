@@ -4,6 +4,7 @@ import {
   usePriceData,
   useRenewableData,
 } from '@/hooks/useDashboardData';
+import { useDashboardStore } from '@/store/dashboardStore';
 import { AbleSparkline } from '@/components/charts/AbleSparkline';
 import { cn } from '@/lib/utils';
 
@@ -11,10 +12,19 @@ import { cn } from '@/lib/utils';
 // 24h delta, and a tiny sparkline pulled from the time series the page is
 // already fetching for the line charts below (no extra requests).
 
+/** Short window label per preset, for stats that are a window aggregate. */
+const WINDOW_LABEL: Record<string, string> = {
+  '24h': '24h', '7d': '7d', '30d': '30d', '90d': '90d', '1y': '1y',
+  today: 'today', thisWeek: 'this week',
+  next24h: 'next 24h', next48h: 'next 48h', next7d: 'next 7d', next1d: 'tomorrow',
+};
+
 type StatItem = {
   label: string;
   value: string;
   unit: string;
+  /** Set when the value aggregates the selected window rather than being instantaneous. */
+  qualifier?: string;
   delta?: string;
   good?: boolean;
   spark: number[];
@@ -40,6 +50,8 @@ export function AbleStatRow() {
   const { data: load } = useLoadData();
   const { data: price } = usePriceData();
   const { data: renewable } = useRenewableData();
+  const timePreset = useDashboardStore((s) => s.timePreset);
+  const win = WINDOW_LABEL[timePreset] ?? timePreset;
 
   const loadSpark = lastN(load?.map((p) => p.load ?? p.avg_load ?? null) ?? [], 48);
   const priceSpark = lastN(
@@ -61,6 +73,7 @@ export function AbleStatRow() {
       label: 'Day-ahead price',
       value: overview?.avgPrice != null ? `€${overview.avgPrice.toFixed(1)}` : '—',
       unit: '/MWh',
+      qualifier: `${win} avg`,
       delta:
         overview?.priceChange24h != null
           ? `${overview.priceChange24h >= 0 ? '+' : ''}${overview.priceChange24h.toFixed(2)}%`
@@ -90,6 +103,7 @@ export function AbleStatRow() {
           ? overview.renewablePercentage.toFixed(0)
           : '—',
       unit: '%',
+      qualifier: `${win} avg`,
       spark: renewableSpark,
     },
     {
@@ -97,6 +111,7 @@ export function AbleStatRow() {
       value:
         overview?.peakDemand != null ? (overview.peakDemand / 1000).toFixed(2) : '—',
       unit: 'GW',
+      qualifier: win,
       spark: peakSpark,
     },
   ];
@@ -112,8 +127,9 @@ export function AbleStatRow() {
             i % 2 === 0 && i < items.length - 1 && 'border-r border-border md:border-r',
           )}
         >
-          <div className="mb-2 font-mono-num text-[10px] uppercase tracking-[0.1em] text-ink-muted">
-            {it.label}
+          <div className="mb-2 flex items-baseline gap-1.5 font-mono-num text-[10px] uppercase tracking-[0.1em] text-ink-muted">
+            <span>{it.label}</span>
+            {it.qualifier && <span className="normal-case tracking-normal opacity-70">{it.qualifier}</span>}
           </div>
           <div className="flex items-baseline gap-1.5">
             <span className="num text-[26px] font-medium text-foreground">
@@ -130,7 +146,7 @@ export function AbleStatRow() {
                 )}
               >
                 {it.delta}
-                <span className="ml-1 text-ink-muted">24h</span>
+                <span className="ml-1 text-ink-muted">vs 24h ago</span>
               </span>
             ) : (
               <span />

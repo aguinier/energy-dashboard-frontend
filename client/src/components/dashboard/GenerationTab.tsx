@@ -86,7 +86,7 @@ export function GenerationTab() {
       </AbleCard>
 
       <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
-        <AbleCard title="Right now" subtitle="share of load · measured sources only">
+        <AbleCard title="Window average" subtitle="share of load · measured sources only">
           {mixLoading ? (
             <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
               Loading…
