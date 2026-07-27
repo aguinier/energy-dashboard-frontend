@@ -5,6 +5,7 @@ import { AblePriceHeatmap } from '@/components/charts/AblePriceHeatmap';
 import { useLoadChartData } from '@/hooks/useLoadChartData';
 import { useCountries } from '@/hooks/useCountries';
 import { useDashboardStore } from '@/store/dashboardStore';
+import { useModelSelection } from '@/hooks/useForecastModels';
 import { adaptLoadSeries, buildHeatmapCells } from '@/lib/chartAdapters';
 import { formatGwAxis } from '@/lib/chartTicks';
 
@@ -13,13 +14,14 @@ export function LoadTab() {
   const { data: countries } = useCountries();
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const country = countries?.find((c) => c.country_code === selectedCountry);
-  const layers = useDashboardStore((s) => s.layers);
   const timePreset = useDashboardStore((s) => s.timePreset);
 
-  // Choose forecast source: ML when ml.enabled, otherwise TSO when tso.enabled.
-  // The ModelPicker keeps these mutually exclusive.
-  const useMl = layers.ml.enabled;
-  const useTso = !useMl && layers.tso.enabled;
+  // The picker is the single source of truth for the overlay, matching
+  // PriceTab and NetPositionTab. The `layers` slice it used to read is dead
+  // state — nothing in the UI can set it.
+  const { selected, hidden } = useModelSelection('load');
+  const useMl = !hidden && selected?.source === 'ml';
+  const useTso = !hidden && selected?.source === 'tso';
 
   const { series, nowIndex } = useMemo(
     () =>
