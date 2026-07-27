@@ -1717,6 +1717,10 @@ git commit -m "fix(api): fail loudly on a malformed response envelope"
 
 `persist` has no `version` or `migrate`, so a shape change silently corrupts returning users' state. The audit hit this directly: a persisted `currentView` sent a fresh session to a stale country view. The store also mirrors `layers.*` onto four legacy booleans, hand-synced in four places.
 
+**The Task 8 review proved this duplication is not merely untidy — it ships bugs.** `timeRange` and `timePreset` are two fields describing one concept, hand-synced in `setTimePreset` (`dashboardStore.ts:217-220`), which silently collapses `timeRange` to `'7d'` for any non-historical preset. `useDashboardOverview` fetches on `timeRange` while most of the rest of the page reads `timePreset`, so clicking "+24h" fetched a trailing-7-day window. Task 8 fixed the *label* to match the fetch; the divergence itself is still there and will keep producing this class of defect. Removing it is the durable fix, and it is why this task is worth doing rather than deferring.
+
+Beyond the persist versioning below, audit `timeRange`'s remaining readers and decide per call site whether each should read the computed range from `getDateRangeForPreset(timePreset, timeOffset)` instead. If removing `timeRange` entirely is larger than this task can safely carry, narrow it to the overview path and record what remains — do not leave the reader believing the duplication is gone when it is not.
+
 **Files:**
 - Modify: `client/src/store/dashboardStore.ts:528-559`
 - Test: `client/src/store/migrate.test.ts` (create)
