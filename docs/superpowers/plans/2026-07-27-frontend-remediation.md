@@ -2251,6 +2251,73 @@ wherever actuals legitimately hit zero."
 
 ---
 
+### Task 22: Reconnect the Load tab's forecast overlay to the picker
+
+Found during the Task 9 fix. **This is the completion of Task 1** — without it, Tasks 1 and 2 fetch and label the right forecast, and the chart then discards it.
+
+`LoadTab.tsx:21-22` gates forecast rendering on the `layers` system:
+
+```tsx
+const useMl = layers.ml.enabled;
+const useTso = !useMl && layers.tso.enabled;
+```
+
+`DEFAULT_LAYERS` sets both to `false` (`dashboardStore.ts:7-18`), and **no component anywhere calls `toggleLayer`, `showAllLayers`, `showActualsOnly` or `setLayerAccuracy`** — verified by grep across `client/src`. The `layers` slice is write-only dead state. `layers` is also in `partialize`, so a user who somehow acquired `enabled: true` keeps it, but nothing in the UI can produce that.
+
+Net effect: **the ML and TSO forecast overlays never render on the Load tab, for any country.** The ModelPicker sits directly above the chart offering a model choice that cannot take effect.
+
+The other two tabs were already migrated off `layers` and are unaffected: `PriceTab` passes `forecastData` straight to its adapter and derives `hasForecast` from the data (`PriceTab.tsx:17-20`); `NetPositionTab` gates on `useModelSelection('net_position').hidden` (`NetPositionTab.tsx:35`). Load is the last tab still wired to the abandoned system.
+
+**Files:**
+- Modify: `client/src/components/dashboard/LoadTab.tsx:16-41`
+
+**Interfaces:**
+- Consumes: `useModelSelection(forecastType)` from Task 1 — `{ selected, hidden, requestModelId }`. `selected.source` is `'ml' | 'tso'`, and `selected.tsoHorizon` is set for tso models.
+
+- [ ] **Step 1: Establish the current behaviour**
+
+In the browser, open any country → Load with the forecast picker showing a model. Confirm no forecast line is drawn. This is the bug; record it before changing anything.
+
+- [ ] **Step 2: Drive the overlay from the picker**
+
+Replace the `layers` reads in `LoadTab.tsx` with the same selection the picker already drives:
+
+```tsx
+import { useModelSelection } from '@/hooks/useForecastModels';
+
+  // The picker is the single source of truth for the overlay, matching
+  // PriceTab and NetPositionTab. The `layers` slice it used to read is dead
+  // state — nothing in the UI can set it.
+  const { selected, hidden } = useModelSelection('load');
+  const useMl = !hidden && selected?.source === 'ml';
+  const useTso = !hidden && selected?.source === 'tso';
+```
+
+Leave the two `useMemo` bodies and their dependency arrays otherwise intact — they already branch on `useMl`/`useTso`.
+
+- [ ] **Step 3: Verify**
+
+Run: `npx tsc -b client && npm test -w client`
+
+In the browser, on the Load tab:
+- Germany (has catboost load data): picking **able-ml · catboost** draws a forecast line past `now`
+- France (xgboost only): the picker reads **able-ml · xgboost** and draws a line — this is Task 1 and Task 2 becoming visible
+- Picking **ENTSO-E TSO · D+1** draws the TSO overlay instead
+- Turning the forecast off via the picker removes the line
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add client/src/components/dashboard/LoadTab.tsx
+git commit -m "fix(load): drive the forecast overlay from the picker, not dead layer state
+
+LoadTab gated rendering on layers.ml/tso.enabled, which no component sets and
+which defaults to false — so the ML and TSO overlays never drew, for any
+country, while the picker above offered a choice that could not take effect."
+```
+
+---
+
 ## Out of scope — carried forward
 
 These were found during the audit but are not fixed by this plan.
