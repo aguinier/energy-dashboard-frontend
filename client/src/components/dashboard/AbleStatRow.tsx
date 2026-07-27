@@ -7,17 +7,11 @@ import {
 import { useDashboardStore } from '@/store/dashboardStore';
 import { AbleSparkline } from '@/components/charts/AbleSparkline';
 import { cn } from '@/lib/utils';
+import { getWindowLabel } from './windowLabel';
 
 // Top 4-stat strip on the country page. Each cell shows a big number, unit,
 // 24h delta, and a tiny sparkline pulled from the time series the page is
 // already fetching for the line charts below (no extra requests).
-
-/** Short window label per preset, for stats that are a window aggregate. */
-const WINDOW_LABEL: Record<string, string> = {
-  '24h': '24h', '7d': '7d', '30d': '30d', '90d': '90d', '1y': '1y',
-  today: 'today', thisWeek: 'this week',
-  next24h: 'next 24h', next48h: 'next 48h', next7d: 'next 7d', next1d: 'tomorrow',
-};
 
 type StatItem = {
   label: string;
@@ -50,8 +44,12 @@ export function AbleStatRow() {
   const { data: load } = useLoadData();
   const { data: price } = usePriceData();
   const { data: renewable } = useRenewableData();
-  const timePreset = useDashboardStore((s) => s.timePreset);
-  const win = WINDOW_LABEL[timePreset] ?? timePreset;
+  // Keyed off `timeRange`, not `timePreset`: `useDashboardOverview()` fetches
+  // on `timeRange`, so the qualifier must describe the same field that
+  // produced the number, or it can end up claiming a window (e.g. "next 24h")
+  // the server never actually computed the aggregate over.
+  const timeRange = useDashboardStore((s) => s.timeRange);
+  const win = getWindowLabel(timeRange);
 
   const loadSpark = lastN(load?.map((p) => p.load ?? p.avg_load ?? null) ?? [], 48);
   const priceSpark = lastN(
