@@ -868,12 +868,24 @@ In the stat strip, when `loadMetrics?.count != null && loadMetrics.count < MIN_R
 )}
 ```
 
-- [ ] **Step 2: Verify**
+- [ ] **Step 2: Correct copy that Task 5 made stale**
+
+Task 5 replaced the single extrapolated series with four independently measured bars, which makes the "Compare forecast models" card's closing sentence wrong. It currently reads:
+
+> Single-model error is below, anchored on the measured D+1 figure.
+
+Replace that sentence with:
+
+> Measured error by horizon is below.
+
+Leave the rest of that card's copy alone — it explains why per-model comparison is unavailable, which is still true.
+
+- [ ] **Step 3: Verify**
 
 Run: `npx tsc -b client` → exit 0.
-Select a country on `24h`; confirm the caveat appears when the sample count is small and disappears on `30d`.
+Select a country on `24h`; confirm the caveat appears when the sample count is small and disappears on `30d`. Confirm the "Compare forecast models" card no longer claims the chart below is anchored on D+1.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add client/src/components/dashboard/ForecastTab.tsx
