@@ -44,7 +44,7 @@ export const HOURLY_PRESETS = new Set(['24h', 'today', 'next24h', 'next1d']);
 export const SHORT_SPAN_HOURS = 36;
 
 /**
- * Upper bound (hours) of the "medium" tier: day+hour labels, e.g. "Mon 06:00".
+ * Upper bound (hours) of the "medium" tier: day+hour labels, e.g. "Mon 27 06:00".
  *
  * A forecast overlay is drawn on the same unclipped actual+forecast grid as
  * the chart itself (`buildSeriesGrid` in chartAdapters.ts merges every
@@ -76,7 +76,11 @@ function formatTick(d: Date, tier: TickTier): string {
     case 'hour':
       return hm();
     case 'dayHour':
-      return `${d.toLocaleDateString([], { weekday: 'short' })} ${hm()}`;
+      // Weekday alone repeats every 7 days, and the medium tier's 216h ceiling
+      // spans up to 9 days, so two ticks can land on the same weekday (e.g. a
+      // tick and another one exactly a week later). Day-of-month disambiguates
+      // them, mirroring the day-marker tier in AbleLineChart.tsx ("Wed 8").
+      return `${d.toLocaleDateString([], { weekday: 'short' })} ${d.getDate()} ${hm()}`;
     case 'date':
       return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
   }
@@ -88,7 +92,7 @@ function formatTick(d: Date, tier: TickTier): string {
  * chart with only date ticks, or none, cannot tell you when the peak
  * occurred), a multi-day window falls back to date-only as before, and
  * everything in between — the range a forecast overlay routinely produces —
- * gets both, e.g. "Mon 06:00", so the hour isn't lost just because the
+ * gets both, e.g. "Mon 27 06:00", so the hour isn't lost just because the
  * window is a few days wide instead of one.
  *
  * Tiering is driven by the actual span of `timestamps` (first to last), not
