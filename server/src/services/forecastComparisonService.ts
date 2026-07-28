@@ -280,10 +280,12 @@ function addBiasToGenerationMetrics(
  */
 function addBiasToMetrics(metrics: mlForecastService.MLForecastAccuracyMetrics): AccuracyMetrics {
   return {
-    mae: metrics.mae,
+    // mae/rmse/bias are only null when dataPoints === 0; both callers of this
+    // function already checked dataPoints > 0 before calling it.
+    mae: metrics.mae ?? 0,
     mape: metrics.mape,
-    rmse: metrics.rmse,
-    bias: metrics.bias,
+    rmse: metrics.rmse ?? 0,
+    bias: metrics.bias ?? 0,
     dataPoints: metrics.dataPoints,
   };
 }
@@ -295,8 +297,8 @@ function addBiasToMetrics(metrics: mlForecastService.MLForecastAccuracyMetrics):
 export interface RollingAccuracyDataPoint {
   date: string;  // YYYY-MM-DD format
   tso?: { mape: number | null; mae: number };
-  ml_d1?: { mape: number; mae: number };
-  ml_d2?: { mape: number; mae: number };
+  ml_d1?: { mape: number | null; mae: number };
+  ml_d2?: { mape: number | null; mae: number };
 }
 
 export interface RollingAccuracyResponse {
@@ -379,7 +381,8 @@ export function getRollingAccuracy(
         upperCode, forecastType, windowStartISO, windowEndISO, 1
       );
       if (mlD1.dataPoints > 0) {
-        dataPoint.ml_d1 = { mape: mlD1.mape, mae: mlD1.mae };
+        // mae is only null when dataPoints === 0, excluded by the guard above.
+        dataPoint.ml_d1 = { mape: mlD1.mape, mae: mlD1.mae ?? 0 };
       }
     } catch {
       // ML D+1 not available
@@ -391,7 +394,8 @@ export function getRollingAccuracy(
         upperCode, forecastType, windowStartISO, windowEndISO, 2
       );
       if (mlD2.dataPoints > 0) {
-        dataPoint.ml_d2 = { mape: mlD2.mape, mae: mlD2.mae };
+        // mae is only null when dataPoints === 0, excluded by the guard above.
+        dataPoint.ml_d2 = { mape: mlD2.mape, mae: mlD2.mae ?? 0 };
       }
     } catch {
       // ML D+2 not available

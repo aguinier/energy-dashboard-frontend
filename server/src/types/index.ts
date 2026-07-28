@@ -141,21 +141,6 @@ export interface TSOGenerationForecastDataPoint {
   total_forecast_mw: number | null;
 }
 
-export interface ForecastAccuracyDataPoint {
-  timestamp: string;
-  forecast_value: number;
-  actual_value: number;
-  error: number;
-  error_pct: number;
-}
-
-export interface ForecastAccuracyMetrics {
-  mae: number;
-  mape: number;
-  rmse: number;
-  dataPoints: number;
-}
-
 // Query parameter types
 export type Granularity = 'hourly' | 'daily' | 'weekly' | 'monthly';
 export type TimeRange = '24h' | '7d' | '30d' | '90d' | '1y' | 'custom';
