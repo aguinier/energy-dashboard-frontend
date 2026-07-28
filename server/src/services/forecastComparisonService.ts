@@ -15,7 +15,7 @@ type TSOForecastableType = typeof TSO_FORECAST_TYPES[number];
 
 export interface AccuracyMetrics {
   mae: number;      // Mean Absolute Error (MW or EUR/MWh)
-  mape: number;     // Mean Absolute Percentage Error (%)
+  mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
   rmse: number;     // Root Mean Square Error
   bias: number;     // Mean Error (positive = over-forecast)
   dataPoints: number;
@@ -131,16 +131,18 @@ export function getBestForecastByType(
   // Collect all available metrics with their identifiers
   const candidates: Array<{ provider: 'tso' | 'ml'; horizon: string; mape: number }> = [];
 
-  if (comparison.tso.dayAhead?.dataPoints && comparison.tso.dayAhead.dataPoints > 0) {
+  // A null mape (no point had a measurable positive actual) can't be ranked
+  // as "best" — it isn't a measurement.
+  if (comparison.tso.dayAhead?.dataPoints && comparison.tso.dayAhead.mape != null) {
     candidates.push({ provider: 'tso', horizon: 'day_ahead', mape: comparison.tso.dayAhead.mape });
   }
-  if (comparison.tso.weekAhead?.dataPoints && comparison.tso.weekAhead.dataPoints > 0) {
+  if (comparison.tso.weekAhead?.dataPoints && comparison.tso.weekAhead.mape != null) {
     candidates.push({ provider: 'tso', horizon: 'week_ahead', mape: comparison.tso.weekAhead.mape });
   }
-  if (comparison.ml.d1?.dataPoints && comparison.ml.d1.dataPoints > 0) {
+  if (comparison.ml.d1?.dataPoints && comparison.ml.d1.mape != null) {
     candidates.push({ provider: 'ml', horizon: 'd1', mape: comparison.ml.d1.mape });
   }
-  if (comparison.ml.d2?.dataPoints && comparison.ml.d2.dataPoints > 0) {
+  if (comparison.ml.d2?.dataPoints && comparison.ml.d2.mape != null) {
     candidates.push({ provider: 'ml', horizon: 'd2', mape: comparison.ml.d2.mape });
   }
 
@@ -213,7 +215,7 @@ function getTSOMetrics(
  * TSO service doesn't calculate bias, so we compute it from accuracy data
  */
 function addBiasToTSOMetrics(
-  metrics: { mae: number; mape: number; rmse: number; dataPoints: number },
+  metrics: { mae: number | null; mape: number | null; rmse: number | null; dataPoints: number },
   countryCode: string,
   start: string,
   end: string,
@@ -231,9 +233,11 @@ function addBiasToTSOMetrics(
   }
 
   return {
-    mae: metrics.mae,
+    // mae/rmse are only null when dataPoints === 0; every caller of this
+    // function already checked dataPoints > 0 before calling it.
+    mae: metrics.mae ?? 0,
     mape: metrics.mape,
-    rmse: metrics.rmse,
+    rmse: metrics.rmse ?? 0,
     bias: Math.round(bias * 100) / 100,
     dataPoints: metrics.dataPoints,
   };
@@ -243,7 +247,7 @@ function addBiasToTSOMetrics(
  * Add bias calculation to TSO generation metrics
  */
 function addBiasToGenerationMetrics(
-  metrics: { mae: number; mape: number; rmse: number; dataPoints: number },
+  metrics: { mae: number | null; mape: number | null; rmse: number | null; dataPoints: number },
   countryCode: string,
   generationType: 'solar' | 'wind_onshore' | 'wind_offshore',
   start: string,
@@ -261,9 +265,11 @@ function addBiasToGenerationMetrics(
   }
 
   return {
-    mae: metrics.mae,
+    // mae/rmse are only null when dataPoints === 0; every caller of this
+    // function already checked dataPoints > 0 before calling it.
+    mae: metrics.mae ?? 0,
     mape: metrics.mape,
-    rmse: metrics.rmse,
+    rmse: metrics.rmse ?? 0,
     bias: Math.round(bias * 100) / 100,
     dataPoints: metrics.dataPoints,
   };
@@ -274,10 +280,12 @@ function addBiasToGenerationMetrics(
  */
 function addBiasToMetrics(metrics: mlForecastService.MLForecastAccuracyMetrics): AccuracyMetrics {
   return {
-    mae: metrics.mae,
+    // mae/rmse/bias are only null when dataPoints === 0; both callers of this
+    // function already checked dataPoints > 0 before calling it.
+    mae: metrics.mae ?? 0,
     mape: metrics.mape,
-    rmse: metrics.rmse,
-    bias: metrics.bias,
+    rmse: metrics.rmse ?? 0,
+    bias: metrics.bias ?? 0,
     dataPoints: metrics.dataPoints,
   };
 }
@@ -288,9 +296,9 @@ function addBiasToMetrics(metrics: mlForecastService.MLForecastAccuracyMetrics):
 
 export interface RollingAccuracyDataPoint {
   date: string;  // YYYY-MM-DD format
-  tso?: { mape: number; mae: number };
-  ml_d1?: { mape: number; mae: number };
-  ml_d2?: { mape: number; mae: number };
+  tso?: { mape: number | null; mae: number };
+  ml_d1?: { mape: number | null; mae: number };
+  ml_d2?: { mape: number | null; mae: number };
 }
 
 export interface RollingAccuracyResponse {
@@ -350,15 +358,16 @@ export function getRollingAccuracy(
           const tsoMetrics = tsoForecastService.getLoadForecastAccuracyMetrics(
             upperCode, windowStartISO, windowEndISO, 'day_ahead'
           );
+          // mae is only null when dataPoints === 0, excluded by the guard above.
           if (tsoMetrics.dataPoints > 0) {
-            dataPoint.tso = { mape: tsoMetrics.mape, mae: tsoMetrics.mae };
+            dataPoint.tso = { mape: tsoMetrics.mape, mae: tsoMetrics.mae ?? 0 };
           }
         } else {
           const tsoMetrics = tsoForecastService.getGenerationForecastAccuracyMetrics(
             upperCode, windowStartISO, windowEndISO, forecastType as 'solar' | 'wind_onshore' | 'wind_offshore'
           );
           if (tsoMetrics.dataPoints > 0) {
-            dataPoint.tso = { mape: tsoMetrics.mape, mae: tsoMetrics.mae };
+            dataPoint.tso = { mape: tsoMetrics.mape, mae: tsoMetrics.mae ?? 0 };
           }
         }
       } catch {
@@ -372,7 +381,8 @@ export function getRollingAccuracy(
         upperCode, forecastType, windowStartISO, windowEndISO, 1
       );
       if (mlD1.dataPoints > 0) {
-        dataPoint.ml_d1 = { mape: mlD1.mape, mae: mlD1.mae };
+        // mae is only null when dataPoints === 0, excluded by the guard above.
+        dataPoint.ml_d1 = { mape: mlD1.mape, mae: mlD1.mae ?? 0 };
       }
     } catch {
       // ML D+1 not available
@@ -384,7 +394,8 @@ export function getRollingAccuracy(
         upperCode, forecastType, windowStartISO, windowEndISO, 2
       );
       if (mlD2.dataPoints > 0) {
-        dataPoint.ml_d2 = { mape: mlD2.mape, mae: mlD2.mae };
+        // mae is only null when dataPoints === 0, excluded by the guard above.
+        dataPoint.ml_d2 = { mape: mlD2.mape, mae: mlD2.mae ?? 0 };
       }
     } catch {
       // ML D+2 not available

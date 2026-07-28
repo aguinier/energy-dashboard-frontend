@@ -10,18 +10,22 @@ import { formatDistanceToNowStrict } from 'date-fns';
 const REPO_URL = 'https://github.com/aguinier/energy-dashboard-frontend';
 
 export function AbleHeader() {
-  const { currentView, goToMap } = useDashboardStore();
+  const { currentView, goToMap, goToComparison } = useDashboardStore();
   const { data: freshness } = useDataFreshness();
 
-  const navItems: { key: 'map' | 'docs' | 'api'; label: string; onClick: () => void }[] = [
+  const navItems: { key: 'map' | 'compare' | 'docs' | 'api'; label: string; onClick: () => void }[] = [
     { key: 'map', label: 'Map', onClick: goToMap },
+    { key: 'compare', label: 'Compare', onClick: goToComparison },
     { key: 'docs', label: 'Docs', onClick: () => window.open(`${REPO_URL}#readme`, '_blank') },
     { key: 'api', label: 'API', onClick: () => window.open('/api/health', '_blank') },
   ];
 
-  // The "Map" tab is considered active for both map and country views.
   const isActive = (k: string) =>
-    k === 'map' ? currentView === 'map' || currentView === 'country' : false;
+    k === 'map'
+      ? currentView === 'map' || currentView === 'country'
+      : k === 'compare'
+        ? currentView === 'comparison'
+        : false;
 
   // Pulse recency comes from the MEASURED series only (load/generation).
   // Price and TSO-forecast stamps sit up to a day in the future by design

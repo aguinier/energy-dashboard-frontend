@@ -168,14 +168,16 @@ export interface TSOForecastAccuracyDataPoint {
   forecast_value: number;
   actual_value: number;
   error: number;
-  error_pct: number;
+  error_pct: number | null; // null when actual_value <= 0 — unmeasurable as a percentage
 }
 
 export interface TSOForecastAccuracyMetrics {
-  mae: number;
-  mape: number;
-  rmse: number;
+  mae: number | null;
+  mape: number | null;
+  rmse: number | null;
   dataPoints: number;
+  /** Count of points with a positive actual — may be lower than dataPoints; mape covers only these. */
+  mapeSamples: number;
 }
 
 export interface TSOForecastAccuracyResponse {
@@ -203,53 +205,15 @@ export interface DataFreshness {
 }
 
 // ============================================================================
-// Data Layers - Unified forecast visualization state
+// Data Layers
 // ============================================================================
+// The unified `LayersState`/`ForecastLayer`/`AvailableLayers` trio that used
+// to live here was removed as dead code (Task 22 review: no reader, no
+// caller of any of its store actions, after LoadTab moved to the model
+// picker as the single source of truth for the overlay). `TSOHorizon` is
+// kept — it's still used by useLoadChartData.ts and the analytics config.
 
 export type TSOHorizon = 'day_ahead' | 'week_ahead';
-
-/**
- * Configuration for a single forecast layer
- */
-export interface ForecastLayer {
-  /** Whether this layer is visible on the chart */
-  enabled: boolean;
-  /** Whether to show accuracy comparison vs actuals (exclusive - only one layer can be in accuracy mode) */
-  showAccuracy: boolean;
-  /** Forecast horizon (TSO only) */
-  horizon?: TSOHorizon;
-}
-
-/**
- * Unified state for all data layers in charts
- */
-export interface LayersState {
-  /** Show actual/measured data */
-  showActuals: boolean;
-  /** TSO (ENTSO-E) forecast layer configuration */
-  tso: ForecastLayer;
-  /** ML (custom trained model) forecast layer configuration */
-  ml: ForecastLayer;
-  // Future: Add more forecast sources here
-  // external?: ForecastLayer;
-}
-
-/**
- * Available layer configuration for a specific chart type
- * Different charts support different layers
- */
-export interface AvailableLayers {
-  tso?: {
-    available: boolean;
-    horizons: TSOHorizon[];
-    hasAccuracy: boolean;
-  };
-  ml?: {
-    available: boolean;
-    horizons: MLHorizon[];
-    hasAccuracy: boolean;
-  };
-}
 
 // ============================================================================
 // Forecast Comparison Types
@@ -260,7 +224,7 @@ export interface AvailableLayers {
  */
 export interface AccuracyMetrics {
   mae: number;      // Mean Absolute Error (MW or EUR/MWh)
-  mape: number;     // Mean Absolute Percentage Error (%)
+  mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
   rmse: number;     // Root Mean Square Error
   bias: number;     // Mean Error (positive = over-forecast)
   dataPoints: number;
@@ -354,7 +318,7 @@ export type AnalyticsTimeRange = '7d' | '30d' | '90d' | 'all';
  */
 export interface RollingAccuracyDataPoint {
   date: string;  // YYYY-MM-DD format
-  tso?: { mape: number; mae: number };
+  tso?: { mape: number | null; mae: number };
   ml_d1?: { mape: number; mae: number };
   ml_d2?: { mape: number; mae: number };
 }
@@ -378,7 +342,7 @@ export interface RollingAccuracyResponse {
 
 export interface CrossCountryMetricsEntry {
   mae: number;
-  mape: number;
+  wape: number | null;
   rmse: number;
   bias: number;
   dataPoints: number;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useModelSelection, useActiveForecastType, useForecastModels } from '@/hooks/useForecastModels';
+import { servedLabel } from '@/lib/servedModel';
 import { cn } from '@/lib/utils';
 
 /**
@@ -25,6 +26,11 @@ export function ModelPicker() {
   const { models, selected, hidden, isLoading } = useModelSelection(forecastType);
   const { data: registry } = useForecastModels();
   const setSelectedModel = useDashboardStore((s) => s.setSelectedModel);
+  // Set by the data hooks (useLoadChartData, usePriceChartData) from the
+  // forecast response's `meta.model` — the model that actually served, which
+  // can differ from `selected` (the provisional/production label) when the
+  // server's candidate ladder fell back to a different model for this country.
+  const servedModelId = useDashboardStore((s) => s.servedModelByType[forecastType] ?? null);
 
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -65,7 +71,7 @@ export function ModelPicker() {
           !enabled && 'opacity-60',
         )}
       >
-        <span className="font-medium">{selected?.label ?? 'none'}</span>
+        <span className="font-medium">{servedLabel(models, servedModelId, selected) || 'none'}</span>
         <span className="text-[10px] text-ink-muted">▾</span>
       </button>
 

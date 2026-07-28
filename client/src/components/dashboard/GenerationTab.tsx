@@ -3,6 +3,7 @@ import { AbleCard } from './AbleCard';
 import { AbleStackedMix } from '@/components/charts/AbleStackedMix';
 import { AbleDonut } from '@/components/charts/AbleDonut';
 import { SourceTable } from './SourceTable';
+import { buildSourceRows } from './sourceRows';
 import { useRenewableChartData } from '@/hooks/useRenewableChartData';
 import {
   useDashboardOverview,
@@ -16,8 +17,7 @@ const SOURCE_COLORS = {
   wind: '#4D89C9',
   hydro: '#2FA39C',
   biomass: '#73A35F',
-  nuclear: '#8A6FB5',
-  gas: '#8D8579',
+  unattributed: '#D8D4CC',
 };
 
 const LEGEND: Array<{ key: keyof typeof SOURCE_COLORS; label: string }> = [
@@ -29,32 +29,31 @@ const LEGEND: Array<{ key: keyof typeof SOURCE_COLORS; label: string }> = [
 
 export function GenerationTab() {
   const { renewableData, isLoading } = useRenewableChartData();
-  const { data: mix } = useRenewableMix();
-  const { data: overview } = useDashboardOverview();
+  const { data: mix, isLoading: mixLoading, isError: mixError } = useRenewableMix();
+  const { data: overview, isLoading: overviewLoading } = useDashboardOverview();
 
   const { series, nowIndex } = useMemo(
     () => adaptRenewableMixSeries(renewableData),
     [renewableData],
   );
 
-  // Donut input — combines renewable mix with derived nuclear / gas+other.
-  const load = overview?.currentLoad ?? 0;
-  const renPct = overview?.renewablePercentage ?? 0;
+  // Donut input — measured renewable mix plus the unattributed remainder of
+  // load. Derived from buildSourceRows so the donut and SourceTable can never
+  // disagree about what the remainder is.
+  const { rows, unattributedMw } = useMemo(
+    () => buildSourceRows(mix, overview?.currentLoad ?? null),
+    [mix, overview?.currentLoad],
+  );
+
+  // `unattributedMw` is null whenever load is unmeasurable for this window
+  // (buildSourceRows deliberately refuses to guess). Coercing that to 0 would
+  // make every remaining slice green and the donut print a false "100%
+  // renewable" — so the donut is built only once a real remainder exists;
+  // see the `unattributedMw == null` guard below.
   const donutValues = [
-    { key: 'solar', value: mix?.solar ?? 0, isGreen: true },
-    {
-      key: 'wind',
-      value: (mix?.wind_onshore ?? 0) + (mix?.wind_offshore ?? 0),
-      isGreen: true,
-    },
-    { key: 'hydro', value: mix?.hydro ?? 0, isGreen: true },
-    { key: 'biomass', value: mix?.biomass ?? 0, isGreen: true },
-    { key: 'nuclear', value: load * 0.2, isGreen: false },
-    {
-      key: 'gas',
-      value: Math.max(0, load * (1 - renPct / 100 - 0.2)),
-      isGreen: false,
-    },
+    ...rows.map((r) => ({ key: r.key, value: r.mw, isGreen: true })),
+    // The rest of load. Not "gas" — nothing in the DB says what it is.
+    { key: 'unattributed', value: unattributedMw ?? 0, isGreen: false },
   ];
 
   return (
@@ -92,14 +91,34 @@ export function GenerationTab() {
       </AbleCard>
 
       <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
-        <AbleCard title="Right now" subtitle="share of load · nuclear & gas estimated">
-          <div className="flex justify-center py-2">
-            <AbleDonut values={donutValues} colors={SOURCE_COLORS} />
-          </div>
+        <AbleCard title="Window average" subtitle="share of load · measured sources only">
+          {mixLoading || overviewLoading ? (
+            <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
+              Loading…
+            </div>
+          ) : mixError || !mix || unattributedMw == null ? (
+            <div className="flex h-[180px] items-center justify-center text-center text-[12px] text-ink-muted">
+              Generation mix unavailable.
+            </div>
+          ) : (
+            <div className="flex justify-center py-2">
+              <AbleDonut values={donutValues} colors={SOURCE_COLORS} />
+            </div>
+          )}
         </AbleCard>
 
-        <AbleCard title="By source" subtitle="GW · current">
-          <SourceTable mix={mix} overview={overview} />
+        <AbleCard title="By source" subtitle="GW · window average">
+          {mixLoading ? (
+            <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
+              Loading…
+            </div>
+          ) : mixError || !mix ? (
+            <div className="flex h-[180px] items-center justify-center text-center text-[12px] text-ink-muted">
+              Generation mix unavailable.
+            </div>
+          ) : (
+            <SourceTable mix={mix} overview={overview} />
+          )}
         </AbleCard>
       </div>
     </div>

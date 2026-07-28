@@ -102,8 +102,8 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
                   );
                 }
 
-                const color = comparisonMetric === 'mape' ? getMetricColor(value, type) : undefined;
-                const formatted = comparisonMetric === 'mape'
+                const color = comparisonMetric === 'wape' ? getMetricColor(value, type) : undefined;
+                const formatted = comparisonMetric === 'wape'
                   ? `${value.toFixed(1)}%`
                   : value.toFixed(2);
 

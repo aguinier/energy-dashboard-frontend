@@ -36,22 +36,38 @@ import type {
   CrossCountryMetricsEntry,
   NetPositionResponse,
   ForecastModelRegistry,
+  RollingAccuracyDataPoint,
 } from '@/types';
+import { unwrap } from './unwrap';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 15000,
 });
+
+/**
+ * Override for the handful of calls that are known to be slow server-side
+ * regardless of the client-side cache: long-range (30d/90d/1y) windows over
+ * `energy_load`/`energy_price`/`energy_renewable`, and `/renewables/mix`
+ * (which additionally runs an unindexed date()/strftime() join in
+ * `getRenewablePercentage`). The global 15s default is a UX bound picked so
+ * a stalled request fails fast instead of hanging the retry policy — it is
+ * not a claim that every query completes that quickly. These specific calls
+ * used to succeed under the old 30s global timeout; pinning them back to
+ * 30000ms here keeps that true without diluting the 15s bound (and the
+ * retry cap it protects) for every other, normally-fast request.
+ */
+const LONG_RANGE_TIMEOUT_MS = 30000;
 
 // Countries
 export async function fetchCountries(): Promise<Country[]> {
   const { data } = await api.get<ApiResponse<Country[]>>('/countries');
-  return data.data;
+  return unwrap(data, '/countries');
 }
 
 export async function fetchCountriesWithData(): Promise<string[]> {
   const { data } = await api.get<ApiResponse<string[]>>('/countries/with-data');
-  return data.data;
+  return unwrap(data, '/countries/with-data');
 }
 
 // Load Data
@@ -61,15 +77,20 @@ export async function fetchLoadData(params: {
   end?: string;
   granularity?: Granularity;
 }): Promise<LoadDataPoint[]> {
-  const { data } = await api.get<ApiResponse<LoadDataPoint[]>>('/load', { params });
-  return data.data;
+  // Drives LoadTab's primary chart and AbleStatRow's stat strip — both fetch
+  // unconditionally, so a 30d/90d/1y window here is a known-slow cold query.
+  const { data } = await api.get<ApiResponse<LoadDataPoint[]>>('/load', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
+  return unwrap(data, '/load');
 }
 
 export async function fetchLatestLoad(country?: string): Promise<LoadDataPoint | LoadDataPoint[]> {
   const { data } = await api.get<ApiResponse<LoadDataPoint | LoadDataPoint[]>>('/load/latest', {
     params: country ? { country } : undefined,
   });
-  return data.data;
+  return unwrap(data, '/load/latest');
 }
 
 export async function fetchLoadComparison(params: {
@@ -81,7 +102,7 @@ export async function fetchLoadComparison(params: {
   const { data } = await api.get<ApiResponse<Record<string, number>[]>>('/load/compare', {
     params: { ...params, countries: params.countries.join(',') },
   });
-  return data.data;
+  return unwrap(data, '/load/compare');
 }
 
 // Price Data
@@ -91,15 +112,20 @@ export async function fetchPriceData(params: {
   end?: string;
   granularity?: Granularity;
 }): Promise<PriceDataPoint[]> {
-  const { data } = await api.get<ApiResponse<PriceDataPoint[]>>('/prices', { params });
-  return data.data;
+  // Drives PriceTab's primary chart and AbleStatRow's stat strip — both fetch
+  // unconditionally, so a 30d/90d/1y window here is a known-slow cold query.
+  const { data } = await api.get<ApiResponse<PriceDataPoint[]>>('/prices', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
+  return unwrap(data, '/prices');
 }
 
 export async function fetchLatestPrices(country?: string): Promise<PriceDataPoint | PriceDataPoint[]> {
   const { data } = await api.get<ApiResponse<PriceDataPoint | PriceDataPoint[]>>('/prices/latest', {
     params: country ? { country } : undefined,
   });
-  return data.data;
+  return unwrap(data, '/prices/latest');
 }
 
 export async function fetchPriceStats(params: {
@@ -108,7 +134,7 @@ export async function fetchPriceStats(params: {
   end?: string;
 }): Promise<{ avg: number; min: number; max: number; current: number }> {
   const { data } = await api.get<ApiResponse<{ avg: number; min: number; max: number; current: number }>>('/prices/stats', { params });
-  return data.data;
+  return unwrap(data, '/prices/stats');
 }
 
 export async function fetchPriceHeatmap(params: {
@@ -116,7 +142,7 @@ export async function fetchPriceHeatmap(params: {
   days?: number;
 }): Promise<PriceHeatmapPoint[]> {
   const { data } = await api.get<ApiResponse<PriceHeatmapPoint[]>>('/prices/heatmap', { params });
-  return data.data;
+  return unwrap(data, '/prices/heatmap');
 }
 
 // Renewable Data
@@ -126,8 +152,13 @@ export async function fetchRenewableData(params: {
   end?: string;
   granularity?: Granularity;
 }): Promise<RenewableDataPoint[]> {
-  const { data } = await api.get<ApiResponse<RenewableDataPoint[]>>('/renewables', { params });
-  return data.data;
+  // Drives GenerationTab's stacked chart and AbleStatRow's stat strip — both
+  // fetch unconditionally, so a 30d/90d/1y window here is a known-slow cold query.
+  const { data } = await api.get<ApiResponse<RenewableDataPoint[]>>('/renewables', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
+  return unwrap(data, '/renewables');
 }
 
 export async function fetchRenewableMix(params: {
@@ -135,8 +166,15 @@ export async function fetchRenewableMix(params: {
   start?: string;
   end?: string;
 }): Promise<RenewableMix> {
-  const { data } = await api.get<ApiResponse<RenewableMix>>('/renewables/mix', { params });
-  return data.data;
+  // GenerationTab's "Window average"/"By source" panels. Server-side this also
+  // runs getRenewablePercentage's date()/strftime() join (the same unindexed
+  // join pattern getMapRenewableData had to be rewritten to avoid) — the
+  // single named example in the review finding for a known-slow long-range call.
+  const { data } = await api.get<ApiResponse<RenewableMix>>('/renewables/mix', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
+  return unwrap(data, '/renewables/mix');
 }
 
 // Dashboard Data
@@ -144,8 +182,15 @@ export async function fetchDashboardOverview(params: {
   country: string;
   timeRange?: TimeRange;
 }): Promise<DashboardOverview> {
-  const { data } = await api.get<ApiResponse<DashboardOverview>>('/dashboard/overview', { params });
-  return data.data;
+  // AbleStatRow's top stat strip, fetched unconditionally on every country
+  // tab. `timeRange` mirrors the 30d/90d/1y preset, and the server route
+  // comment (`dashboard.ts`) calls this "an expensive query" even at 7d —
+  // it runs five separate scans over the window.
+  const { data } = await api.get<ApiResponse<DashboardOverview>>('/dashboard/overview', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
+  return unwrap(data, '/dashboard/overview');
 }
 
 export async function fetchMapData(params: {
@@ -153,7 +198,7 @@ export async function fetchMapData(params: {
   timeRange?: TimeRange;
 }): Promise<MapDataPoint[]> {
   const { data } = await api.get<ApiResponse<MapDataPoint[]>>('/dashboard/map', { params });
-  return data.data;
+  return unwrap(data, '/dashboard/map');
 }
 
 export async function fetchCombinedTimeseries(params: {
@@ -162,10 +207,16 @@ export async function fetchCombinedTimeseries(params: {
   end?: string;
 }): Promise<CombinedTimeseriesPoint[]> {
   const { data } = await api.get<ApiResponse<CombinedTimeseriesPoint[]>>('/dashboard/timeseries', { params });
-  return data.data;
+  return unwrap(data, '/dashboard/timeseries');
 }
 
 // Forecast Data
+export interface ForecastFetchResult {
+  points: ForecastDataPoint[];
+  /** `meta.model` — which model the server actually read. */
+  servedModelId: string | null;
+}
+
 export async function fetchForecastData(params: {
   country: string;
   type: ForecastType;
@@ -173,11 +224,14 @@ export async function fetchForecastData(params: {
   end?: string;
   granularity?: Granularity;
   horizon?: MLHorizon;
-  /** Registry model id. Omit for the type's production model. */
+  /** Registry model id. Omit to let the server choose one with data. */
   model?: string;
-}): Promise<ForecastDataPoint[]> {
-  const { data } = await api.get<ApiResponse<ForecastDataPoint[]>>('/forecasts', { params });
-  return data.data;
+}): Promise<ForecastFetchResult> {
+  const { data } = await api.get<ApiResponse<ForecastDataPoint[]> & { meta?: { model?: string | null } }>(
+    '/forecasts',
+    { params },
+  );
+  return { points: unwrap(data, '/forecasts'), servedModelId: data.meta?.model ?? null };
 }
 
 // Multi-horizon forecast data (D+1 and D+2 for overlay view)
@@ -188,7 +242,7 @@ export async function fetchMultiHorizonForecast(params: {
   end?: string;
 }): Promise<MultiHorizonForecastDataPoint[]> {
   const { data } = await api.get<ApiResponse<MultiHorizonForecastDataPoint[]>>('/forecasts/multi-horizon', { params });
-  return data.data;
+  return unwrap(data, '/forecasts/multi-horizon');
 }
 
 export async function fetchLatestForecast(params: {
@@ -196,12 +250,12 @@ export async function fetchLatestForecast(params: {
   type?: ForecastType;
 }): Promise<ForecastDataPoint[]> {
   const { data } = await api.get<ApiResponse<ForecastDataPoint[]>>('/forecasts/latest', { params });
-  return data.data;
+  return unwrap(data, '/forecasts/latest');
 }
 
 export async function fetchAvailableForecastTypes(country: string): Promise<string[]> {
   const { data } = await api.get<ApiResponse<string[]>>('/forecasts/types', { params: { country } });
-  return data.data;
+  return unwrap(data, '/forecasts/types');
 }
 
 export async function fetchForecastComparison(params: {
@@ -211,7 +265,7 @@ export async function fetchForecastComparison(params: {
   end?: string;
 }): Promise<ForecastComparisonData> {
   const { data } = await api.get<ApiResponse<ForecastComparisonData>>('/forecasts/compare', { params });
-  return data.data;
+  return unwrap(data, '/forecasts/compare');
 }
 
 // TSO Forecast Data (ENTSO-E official forecasts)
@@ -223,11 +277,12 @@ export async function fetchTSOLoadForecast(params: {
   granularity?: Granularity;
 }): Promise<TSOLoadForecastDataPoint[]> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/tso-forecast/load/${countryCode}`;
   const { data } = await api.get<ApiResponse<TSOLoadForecastDataPoint[]>>(
-    `/tso-forecast/load/${countryCode}`,
+    endpoint,
     { params: queryParams }
   );
-  return data.data;
+  return unwrap(data, endpoint);
 }
 
 export async function fetchTSOGenerationForecast(params: {
@@ -237,11 +292,12 @@ export async function fetchTSOGenerationForecast(params: {
   granularity?: Granularity;
 }): Promise<TSOGenerationForecastDataPoint[]> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/tso-forecast/generation/${countryCode}`;
   const { data } = await api.get<ApiResponse<TSOGenerationForecastDataPoint[]>>(
-    `/tso-forecast/generation/${countryCode}`,
+    endpoint,
     { params: queryParams }
   );
-  return data.data;
+  return unwrap(data, endpoint);
 }
 
 export async function fetchTSOLoadForecastAccuracy(params: {
@@ -252,12 +308,13 @@ export async function fetchTSOLoadForecastAccuracy(params: {
   granularity?: Granularity;
 }): Promise<{ data: TSOForecastAccuracyDataPoint[]; metrics: TSOForecastAccuracyMetrics }> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/tso-forecast/accuracy/load/${countryCode}`;
   const { data } = await api.get<{
     success: boolean;
     data: TSOForecastAccuracyDataPoint[];
     metrics: TSOForecastAccuracyMetrics;
-  }>(`/tso-forecast/accuracy/load/${countryCode}`, { params: queryParams });
-  return { data: data.data, metrics: data.metrics };
+  }>(endpoint, { params: queryParams });
+  return { data: unwrap(data, endpoint), metrics: data.metrics };
 }
 
 export async function fetchTSOGenerationForecastAccuracy(params: {
@@ -268,12 +325,13 @@ export async function fetchTSOGenerationForecastAccuracy(params: {
   granularity?: Granularity;
 }): Promise<{ data: TSOForecastAccuracyDataPoint[]; metrics: TSOForecastAccuracyMetrics }> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/tso-forecast/accuracy/generation/${countryCode}`;
   const { data } = await api.get<{
     success: boolean;
     data: TSOForecastAccuracyDataPoint[];
     metrics: TSOForecastAccuracyMetrics;
-  }>(`/tso-forecast/accuracy/generation/${countryCode}`, { params: queryParams });
-  return { data: data.data, metrics: data.metrics };
+  }>(endpoint, { params: queryParams });
+  return { data: unwrap(data, endpoint), metrics: data.metrics };
 }
 
 export async function fetchTSOForecastMetrics(params: {
@@ -287,21 +345,21 @@ export async function fetchTSOForecastMetrics(params: {
   wind_offshore: TSOForecastAccuracyMetrics;
 }> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/tso-forecast/metrics/${countryCode}`;
   const { data } = await api.get<ApiResponse<{
     load: TSOForecastAccuracyMetrics;
     solar: TSOForecastAccuracyMetrics;
     wind_onshore: TSOForecastAccuracyMetrics;
     wind_offshore: TSOForecastAccuracyMetrics;
-  }>>(`/tso-forecast/metrics/${countryCode}`, { params: queryParams });
-  return data.data;
+  }>>(endpoint, { params: queryParams });
+  return unwrap(data, endpoint);
 }
 
 // Data Freshness
 export async function fetchDataFreshness(countryCode: string): Promise<DataFreshness> {
-  const { data } = await api.get<ApiResponse<DataFreshness>>(
-    `/data-freshness/${countryCode}`
-  );
-  return data.data;
+  const endpoint = `/data-freshness/${countryCode}`;
+  const { data } = await api.get<ApiResponse<DataFreshness>>(endpoint);
+  return unwrap(data, endpoint);
 }
 
 // Combined initial data endpoint - reduces round trips for country view
@@ -319,7 +377,7 @@ export async function fetchInitialCountryData(params: {
     overview: DashboardOverview;
     loadData: LoadDataPoint[];
   }>>('/dashboard/initial', { params });
-  return data.data;
+  return unwrap(data, '/dashboard/initial');
 }
 
 // ============================================================================
@@ -336,11 +394,12 @@ export async function fetchUnifiedForecastComparison(params: {
   end?: string;
 }): Promise<ForecastComparisonResponse> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/forecast-comparison/${countryCode}`;
   const { data } = await api.get<ApiResponse<ForecastComparisonResponse>>(
-    `/forecast-comparison/${countryCode}`,
+    endpoint,
     { params: queryParams }
   );
-  return data.data;
+  return unwrap(data, endpoint);
 }
 
 /**
@@ -352,11 +411,12 @@ export async function fetchForecastComparisonSummary(params: {
   end?: string;
 }): Promise<ForecastComparisonSummary> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/forecast-comparison/${countryCode}/summary`;
   const { data } = await api.get<ApiResponse<ForecastComparisonSummary>>(
-    `/forecast-comparison/${countryCode}/summary`,
+    endpoint,
     { params: queryParams }
   );
-  return data.data;
+  return unwrap(data, endpoint);
 }
 
 /**
@@ -369,11 +429,14 @@ export async function fetchBestForecast(params: {
   end?: string;
 }): Promise<BestForecastResponse | null> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/forecast-comparison/${countryCode}/best`;
   const { data } = await api.get<ApiResponse<BestForecastResponse | null>>(
-    `/forecast-comparison/${countryCode}/best`,
+    endpoint,
     { params: queryParams }
   );
-  return data.data;
+  // `data` may legitimately be `null` when no provider has enough points to
+  // rank yet — unwrap distinguishes that from a missing/malformed envelope.
+  return unwrap(data, endpoint);
 }
 
 /**
@@ -387,12 +450,13 @@ export async function fetchMLForecastAccuracy(params: {
   horizon?: 1 | 2;
 }): Promise<{ data: MLForecastAccuracyDataPoint[]; metrics: AccuracyMetrics }> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/forecast-comparison/${countryCode}/ml-accuracy`;
   const { data } = await api.get<{
     success: boolean;
     data: MLForecastAccuracyDataPoint[];
     metrics: AccuracyMetrics;
-  }>(`/forecast-comparison/${countryCode}/ml-accuracy`, { params: queryParams });
-  return { data: data.data, metrics: data.metrics };
+  }>(endpoint, { params: queryParams });
+  return { data: unwrap(data, endpoint), metrics: data.metrics };
 }
 
 /**
@@ -406,12 +470,13 @@ export async function fetchRollingAccuracy(params: {
   windowDays?: number;
 }): Promise<RollingAccuracyResponse> {
   const { countryCode, ...queryParams } = params;
+  const endpoint = `/forecast-comparison/${countryCode}/rolling`;
   const { data } = await api.get<{ success: boolean } & RollingAccuracyResponse>(
-    `/forecast-comparison/${countryCode}/rolling`,
+    endpoint,
     { params: queryParams }
   );
   return {
-    data: data.data,
+    data: unwrap<RollingAccuracyDataPoint[]>(data, endpoint),
     windowDays: data.windowDays,
     meta: data.meta,
   };
@@ -450,7 +515,7 @@ export async function fetchCrossCountryMetrics(params?: {
     '/cross-country/metrics',
     { params }
   );
-  return pivotMetrics(data.data);
+  return pivotMetrics(unwrap(data, '/cross-country/metrics'));
 }
 
 /**
@@ -463,17 +528,18 @@ export async function fetchNetPosition(params: {
   end: string;
 }): Promise<NetPositionResponse> {
   const { country, ...query } = params;
+  const endpoint = `/net-position/${country}`;
   const { data } = await api.get<ApiResponse<NetPositionResponse>>(
-    `/net-position/${country}`,
+    endpoint,
     { params: query },
   );
-  return data.data;
+  return unwrap(data, endpoint);
 }
 
 /** The server-side model registry: which models may serve which forecast type. */
 export async function fetchForecastModels(): Promise<ForecastModelRegistry> {
   const { data } = await api.get<ApiResponse<ForecastModelRegistry>>('/forecasts/models');
-  return data.data;
+  return unwrap(data, '/forecasts/models');
 }
 
 export default api;

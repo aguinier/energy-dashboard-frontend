@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { useDashboardStore } from '@/store/dashboardStore';
 import {
@@ -6,6 +7,8 @@ import {
   fetchForecastComparison,
 } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
+import { maskServedModel } from '@/lib/servedModel';
+import { useModelSelection } from './useForecastModels';
 import {
   getDateRangeForPreset,
   getGranularityForPreset,
@@ -26,6 +29,8 @@ export interface PriceChartData {
   // ML forecast data
   forecastData: ForecastDataPoint[] | undefined;
   isLoadingForecast: boolean;
+  /** `meta.model` from the most recent forecast response — which model actually served. */
+  servedModelId: string | null;
 
   // ML comparison data
   comparisonData: ForecastComparisonData | undefined;
@@ -45,8 +50,19 @@ export function usePriceChartData(): PriceChartData {
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
-  const showForecast = useDashboardStore((s) => s.showForecast);
   const showComparisonMode = useDashboardStore((s) => s.showComparisonMode);
+  const setServedModel = useDashboardStore((s) => s.setServedModel);
+
+  // The picker is the single source of truth for which model this chart shows
+  // (see useLoadChartData.ts — same treatment). The legacy `showForecast` store
+  // boolean has no UI setter for the price tab, so gating on it left the query
+  // permanently disabled while the picker still advertised a model as serving.
+  const { selected, requestModelId } = useModelSelection('price');
+  const showForecast = selected?.source === 'ml';
+
+  // Pin only what the user pinned; otherwise let the server pick a model that
+  // has data for this country.
+  const modelId = selected?.source === 'ml' ? requestModelId : undefined;
 
   // Calculate date ranges
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
@@ -75,7 +91,7 @@ export function usePriceChartData(): PriceChartData {
       },
       // Query 1: ML forecast data
       {
-        queryKey: ['forecast', selectedCountry, 'price', timePreset, timeOffset, granularity],
+        queryKey: ['forecast', selectedCountry, 'price', timePreset, timeOffset, granularity, modelId],
         queryFn: () =>
           fetchForecastData({
             country: selectedCountry,
@@ -83,6 +99,7 @@ export function usePriceChartData(): PriceChartData {
             start: mlForecastStart,
             end: mlForecastEnd,
             granularity,
+            model: modelId,
           }),
         enabled: showForecast,
         staleTime: REFRESH_INTERVALS.dashboard,
@@ -105,14 +122,24 @@ export function usePriceChartData(): PriceChartData {
 
   const [priceQuery, forecastQuery, comparisonQuery] = queries;
 
+  const forecastData = forecastQuery.data?.points;
+  // Masked by the same flag that gates the query above (`enabled: showForecast`)
+  // — see maskServedModel's doc comment for why this can't just read the data.
+  const servedModelId = maskServedModel(showForecast, forecastQuery.data?.servedModelId);
+
+  useEffect(() => {
+    setServedModel('price', servedModelId);
+  }, [setServedModel, servedModelId]);
+
   return {
     // Actual price data
     priceData: priceQuery.data,
     isLoadingPrice: priceQuery.isLoading,
 
     // ML forecast data
-    forecastData: forecastQuery.data,
+    forecastData,
     isLoadingForecast: forecastQuery.isLoading,
+    servedModelId,
 
     // ML comparison data
     comparisonData: comparisonQuery.data,

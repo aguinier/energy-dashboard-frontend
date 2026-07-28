@@ -1,3 +1,6 @@
+// Intentionally not mounted. Light is the designed mode and dark is a coarse
+// retune (see store/themeStore.ts), so the toggle is kept ready rather than
+// shipped half-finished. Delete this component only alongside the dark tokens.
 import { Moon, Sun, Monitor } from 'lucide-react';
 import { Button } from './button';
 import { useThemeStore } from '@/store/themeStore';

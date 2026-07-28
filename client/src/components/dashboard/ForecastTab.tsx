@@ -8,21 +8,17 @@ import {
   fetchTSOForecastMetrics,
   fetchTSOLoadForecastAccuracy,
 } from '@/services/api';
+import { buildHorizonBars } from './horizonBars';
 import { useLoadChartData } from '@/hooks/useLoadChartData';
 import { useDashboardStore } from '@/store/dashboardStore';
-import { getDateRangeForPreset } from '@/hooks/useDashboardData';
+import { getDateRangeForPreset, useForecastComparisonSummary } from '@/hooks/useDashboardData';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { adaptLoadSeries } from '@/lib/chartAdapters';
 import { formatGwAxis } from '@/lib/chartTicks';
 import { cn } from '@/lib/utils';
 
-// Synthetic horizon multipliers from the prototype. The backend supplies error
-// only at D+1, so everything after index 0 is extrapolated and renders hollow.
-// The D+1 anchor is now the MEASURED mape from /tso-forecast/metrics. It used
-// to be a hardcoded constant (2.4) rendered solid under a "solid = measured"
-// caption, which made an invented number look like a measurement.
-const HORIZON_LABELS = ['D+1', 'D+2', 'D+3', 'D+5', 'D+7'];
-const HORIZON_FACTORS = [1, 1.15, 1.3, 1.55, 1.9];
+/** Below this many paired points, MAPE/MAE/RMSE are too noisy to report plainly. */
+const MIN_RELIABLE_SAMPLES = 48;
 
 function StatCell({
   label,
@@ -106,14 +102,10 @@ export function ForecastTab() {
 
   const loadMetrics = metricsQuery.data?.load;
 
-  // Error by horizon, anchored on the measured D+1 mape. No measurement means
-  // no bars — an empty chart is honest, an invented one is not.
-  const measuredMape = loadMetrics?.mape ?? null;
-  const horizonBars = measuredMape == null ? [] : HORIZON_LABELS.map((label, i) => ({
-    label,
-    v: measuredMape * HORIZON_FACTORS[i],
-    extrapolated: i > 0,
-  }));
+  // Error by horizon — measured only. Horizons with no stored forecast (D+3/D+5/D+7,
+  // since forecasts.horizon_hours tops out at 63h) are simply absent, not invented.
+  const { data: summary } = useForecastComparisonSummary();
+  const horizonBars = buildHorizonBars(summary, 'load');
 
   // Overlay chart data — pair forecasted vs actual for the past window.
   const { loadData, forecastData } = useLoadChartData();
@@ -128,28 +120,42 @@ export function ForecastTab() {
   return (
     <div className="space-y-3.5">
       {/* 4-stat strip — MAE / MAPE / RMSE / Bias */}
-      <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card md:grid-cols-4">
-        <StatCell
-          label="MAE"
-          value={loadMetrics?.mae != null ? loadMetrics.mae.toFixed(0) : '—'}
-          unit="MW"
-        />
-        <StatCell
-          label="MAPE"
-          value={loadMetrics?.mape != null ? loadMetrics.mape.toFixed(2) : '—'}
-          unit="%"
-        />
-        <StatCell
-          label="RMSE"
-          value={loadMetrics?.rmse != null ? loadMetrics.rmse.toFixed(0) : '—'}
-          unit="MW"
-        />
-        <StatCell
-          label="Samples"
-          value={loadMetrics?.dataPoints != null ? loadMetrics.dataPoints.toString() : '—'}
-          unit=""
-          last
-        />
+      <div>
+        <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card md:grid-cols-4">
+          <StatCell
+            label="MAE"
+            value={loadMetrics?.mae != null ? loadMetrics.mae.toFixed(0) : '—'}
+            unit="MW"
+          />
+          <StatCell
+            label="MAPE"
+            value={loadMetrics?.mape != null ? loadMetrics.mape.toFixed(2) : '—'}
+            unit="%"
+          />
+          <StatCell
+            label="RMSE"
+            value={loadMetrics?.rmse != null ? loadMetrics.rmse.toFixed(0) : '—'}
+            unit="MW"
+          />
+          <StatCell
+            label="Samples"
+            value={loadMetrics?.dataPoints != null ? loadMetrics.dataPoints.toString() : '—'}
+            unit=""
+            last
+          />
+        </div>
+        {loadMetrics?.dataPoints != null && loadMetrics.dataPoints < MIN_RELIABLE_SAMPLES && (
+          <p className="mt-2 text-[11px] text-ink-muted">
+            Only {loadMetrics.dataPoints} paired points in this window — these figures are
+            indicative, not a stable estimate. Widen the range for a firmer read.
+          </p>
+        )}
+        {loadMetrics != null && loadMetrics.mapeSamples < loadMetrics.dataPoints && (
+          <p className="mt-2 text-[11px] text-ink-muted">
+            MAPE covers {loadMetrics.mapeSamples} of {loadMetrics.dataPoints} points — the rest
+            had a zero or negative actual, where percentage error is undefined.
+          </p>
+        )}
       </div>
 
       {/* Compare forecast models */}
@@ -163,8 +169,7 @@ export function ForecastTab() {
             This panel used to plot per-model MAPE from hardcoded constants rather
             than measurements. Per-model accuracy needs the accuracy endpoints to
             accept a model, which they do not yet — so it shows nothing instead of
-            numbers that were never measured. Single-model error is below, anchored
-            on the measured D+1 figure.
+            numbers that were never measured. Measured error by horizon is below.
           </p>
         </div>
       </div>
@@ -174,9 +179,9 @@ export function ForecastTab() {
         <AbleCard
           title="Error by horizon"
           subtitle={
-            measuredMape == null
-              ? "no measured error for this window"
-              : "MAPE % · D+1 measured, later horizons extrapolated (hollow)"
+            horizonBars.length === 0
+              ? 'no measured error for this window'
+              : 'MAPE % · measured over the selected window'
           }
         >
           <AbleAccuracyBars data={horizonBars} />

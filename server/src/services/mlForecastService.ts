@@ -31,16 +31,19 @@ export interface MLForecastAccuracyDataPoint {
   forecast_value: number;
   actual_value: number;
   error: number;
-  error_pct: number;
+  /** null when actual_value <= 0 — a percentage error is undefined at zero. */
+  error_pct: number | null;
   horizon_hours: number;
 }
 
 export interface MLForecastAccuracyMetrics {
-  mae: number;      // Mean Absolute Error
-  mape: number;     // Mean Absolute Percentage Error
-  rmse: number;     // Root Mean Square Error
-  bias: number;     // Mean Error (positive = over-forecast)
+  mae: number | null;      // Mean Absolute Error — null only when dataPoints is 0
+  mape: number | null;     // Mean Absolute Percentage Error — null when no point had a measurable (positive) actual
+  rmse: number | null;     // Root Mean Square Error — null only when dataPoints is 0
+  bias: number | null;     // Mean Error (positive = over-forecast) — null only when dataPoints is 0
   dataPoints: number;
+  /** Count of points with a positive actual — may be lower than dataPoints; mape covers only these. */
+  mapeSamples: number;
 }
 
 // Helper to normalize timestamps for the forecasts table (uses 'T' format)
@@ -135,7 +138,7 @@ export function getMLForecastAccuracy(
         ROUND(${actualColumn} - f.forecast_value, 2) as error,
         CASE
           WHEN ${actualColumn} > 0 THEN ROUND(100.0 * ABS(${actualColumn} - f.forecast_value) / ${actualColumn}, 2)
-          ELSE 0
+          ELSE NULL
         END as error_pct,
         f.horizon_hours
       FROM latest_forecasts f
@@ -192,7 +195,7 @@ export function getMLForecastAccuracy(
       ROUND(AVG(forecast_value), 2) as forecast_value,
       ROUND(AVG(actual_value), 2) as actual_value,
       ROUND(AVG(actual_value - forecast_value), 2) as error,
-      ROUND(AVG(CASE WHEN actual_value > 0 THEN 100.0 * ABS(actual_value - forecast_value) / actual_value ELSE 0 END), 2) as error_pct,
+      ROUND(AVG(CASE WHEN actual_value > 0 THEN 100.0 * ABS(actual_value - forecast_value) / actual_value ELSE NULL END), 2) as error_pct,
       ROUND(AVG(horizon_hours), 0) as horizon_hours
     FROM joined_data
     GROUP BY ${groupByClause.replace('timestamp_utc', 'target_timestamp_utc')}
@@ -217,20 +220,34 @@ export function getMLForecastAccuracyMetrics(
 }
 
 /**
- * Calculate accuracy metrics from data points
+ * Calculate accuracy metrics from data points.
+ *
+ * Returns nulls rather than zeros for an empty window: zeros render as
+ * "MAE 0 MW / MAPE 0%", which reads as a flawless forecast when nothing was
+ * measured at all.
+ *
+ * `mape` covers only points with a positive actual — a percentage error is
+ * undefined at zero. Those points previously contributed 0, which understated
+ * mape wherever actuals legitimately hit zero (solar overnight) or negative
+ * (price). Mirrors tsoForecastService.calculateMetrics — same bug, same fix.
  */
-function calculateMetrics(data: MLForecastAccuracyDataPoint[]): MLForecastAccuracyMetrics {
+export function calculateMetrics(data: MLForecastAccuracyDataPoint[]): MLForecastAccuracyMetrics {
   if (data.length === 0) {
-    return { mae: 0, mape: 0, rmse: 0, bias: 0, dataPoints: 0 };
+    return { mae: null, mape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0 };
   }
 
   const n = data.length;
+  const round2 = (x: number) => Math.round(x * 100) / 100;
 
   // MAE: Mean Absolute Error
   const mae = data.reduce((sum, d) => sum + Math.abs(d.error), 0) / n;
 
-  // MAPE: Mean Absolute Percentage Error (already calculated as error_pct)
-  const mape = data.reduce((sum, d) => sum + d.error_pct, 0) / n;
+  // MAPE: Mean Absolute Percentage Error — averaged only over points with a
+  // measurable (positive) actual.
+  const pctPoints = data.filter((d) => d.error_pct != null);
+  const mape = pctPoints.length
+    ? pctPoints.reduce((sum, d) => sum + (d.error_pct as number), 0) / pctPoints.length
+    : null;
 
   // RMSE: Root Mean Square Error
   const rmse = Math.sqrt(data.reduce((sum, d) => sum + d.error * d.error, 0) / n);
@@ -239,11 +256,12 @@ function calculateMetrics(data: MLForecastAccuracyDataPoint[]): MLForecastAccura
   const bias = data.reduce((sum, d) => sum + d.error, 0) / n;
 
   return {
-    mae: Math.round(mae * 100) / 100,
-    mape: Math.round(mape * 100) / 100,
-    rmse: Math.round(rmse * 100) / 100,
-    bias: Math.round(bias * 100) / 100,
+    mae: round2(mae),
+    mape: mape == null ? null : round2(mape),
+    rmse: round2(rmse),
+    bias: round2(bias),
     dataPoints: n,
+    mapeSamples: pctPoints.length,
   };
 }
 

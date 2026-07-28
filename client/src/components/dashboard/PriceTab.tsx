@@ -12,6 +12,7 @@ export function PriceTab() {
   const { data: countries } = useCountries();
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const country = countries?.find((c) => c.country_code === selectedCountry);
+  const timePreset = useDashboardStore((s) => s.timePreset);
   const { series, nowIndex } = useMemo(
     () => adaptPriceSeries(priceData, forecastData),
     [priceData, forecastData],
@@ -52,6 +53,7 @@ export function PriceTab() {
             formatAxis={(v) => v.toFixed(0)}
             formatTooltip={(v) => `€${v.toFixed(1)}`}
             unit="/MWh"
+            preset={timePreset}
           />
         )}
       </AbleCard>

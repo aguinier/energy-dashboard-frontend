@@ -3,7 +3,7 @@ import { FORECAST_TYPE_FILTER_OPTIONS } from '@/lib/comparisonConstants';
 import { cn } from '@/lib/utils';
 
 const METRICS = [
-  { value: 'mape' as const, label: 'MAPE' },
+  { value: 'wape' as const, label: 'WAPE' },
   { value: 'mae' as const, label: 'MAE' },
   { value: 'rmse' as const, label: 'RMSE' },
 ];

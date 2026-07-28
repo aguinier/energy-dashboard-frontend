@@ -5,7 +5,7 @@ import { getStatusLabel } from '@/lib/comparisonConstants';
 import { cn } from '@/lib/utils';
 import type { CrossCountryMetrics, CrossCountryMetricsEntry } from '@/types';
 
-type SortField = 'country' | 'mape' | 'mae' | 'rmse' | 'bias' | 'dataPoints';
+type SortField = 'country' | 'wape' | 'mae' | 'rmse' | 'bias' | 'dataPoints';
 
 const STATUS_COLORS: Record<string, string> = {
   excellent: '#22C55E',
@@ -19,7 +19,7 @@ interface ComparisonLeaderboardProps {
 
 export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
   const { comparisonForecastType, goToCountry } = useDashboardStore();
-  const [sortField, setSortField] = useState<SortField>('mape');
+  const [sortField, setSortField] = useState<SortField>('wape');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
   // Aggregate metrics per country (average across forecast types, or single type)
@@ -38,8 +38,13 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
 
       if (entries.length === 0) return null;
 
+      // Entries with a null WAPE (no denominator in that window) must not be
+      // coerced into the average as 0 — that would read as a perfect
+      // forecast. Only average over the entries that actually have a value.
       const avg = (field: keyof CrossCountryMetricsEntry) => {
-        const vals = entries.map((e) => e[field]).filter((v) => !isNaN(v));
+        const vals = entries
+          .map((e) => e[field])
+          .filter((v): v is number => typeof v === 'number' && !isNaN(v));
         return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : NaN;
       };
 
@@ -47,7 +52,7 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
 
       return {
         country,
-        mape: avg('mape'),
+        wape: avg('wape'),
         mae: avg('mae'),
         rmse: avg('rmse'),
         bias: avg('bias'),
@@ -56,7 +61,7 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
       };
     }).filter(Boolean) as {
       country: string;
-      mape: number;
+      wape: number;
       mae: number;
       rmse: number;
       bias: number;
@@ -122,7 +127,7 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
               #
             </th>
             <SortHeader field="country" label="Country" align="left" />
-            <SortHeader field="mape" label="MAPE" />
+            <SortHeader field="wape" label="WAPE" />
             <SortHeader field="mae" label="MAE" />
             <SortHeader field="rmse" label="RMSE" />
             <SortHeader field="bias" label="Bias" />
@@ -134,7 +139,7 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
         </thead>
         <tbody>
           {sortedRows.map((row, idx) => {
-            const status = !isNaN(row.mape) ? getStatusLabel(row.mape, row.forecastType) : null;
+            const status = !isNaN(row.wape) ? getStatusLabel(row.wape, row.forecastType) : null;
             const statusColor = status ? STATUS_COLORS[status.level] : undefined;
 
             return (
@@ -150,15 +155,15 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
                   {row.country}
                 </td>
                 <td className="px-4 py-3 text-center">
-                  {!isNaN(row.mape) ? (
+                  {!isNaN(row.wape) ? (
                     <span
                       className="inline-block rounded px-2 py-0.5 text-xs font-medium"
                       style={{
-                        backgroundColor: withOpacity(getMetricColor(row.mape, row.forecastType), 0.15),
-                        color: getMetricColor(row.mape, row.forecastType),
+                        backgroundColor: withOpacity(getMetricColor(row.wape, row.forecastType), 0.15),
+                        color: getMetricColor(row.wape, row.forecastType),
                       }}
                     >
-                      {row.mape.toFixed(1)}%
+                      {row.wape.toFixed(1)}%
                     </span>
                   ) : '-'}
                 </td>

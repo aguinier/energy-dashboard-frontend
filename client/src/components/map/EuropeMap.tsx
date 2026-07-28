@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, memo } from 'react';
+import { useState, useEffect, useMemo, useCallback, useId, useRef, memo } from 'react';
 import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
 import { ChartWrapper } from '@/components/charts/ChartWrapper';
 import { useMapData } from '@/hooks/useDashboardData';
@@ -8,6 +8,7 @@ import { MAP_METRICS } from '@/lib/constants';
 import { divergingT, symmetricBound } from '@/lib/divergingScale';
 import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
+import { selectMapGeometry, hoverCardClearsSelector } from './mapGeometry';
 
 const EUROPE_GEO_URL = '/europe.topojson';
 
@@ -32,7 +33,9 @@ const MEDIUM = '#C99A2A';
 const DIRTY = '#8E3D2C';
 const LOAD_LOW = '#CFE3DC';
 const LOAD_HIGH = '#12503F';
-const NO_DATA = '#EDEBE3';
+// No-data must not sit on the same beige axis as the diverging scale's zero,
+// or a balanced country and a missing one read identically.
+const NO_DATA = '#E4E0D6';
 
 // Net position is the one signed metric: amber = importing, blue = exporting,
 // meeting at a near-neutral zero. Amber/blue rather than red/green so the two
@@ -71,21 +74,19 @@ function dataColor(metric: MetricType, value: number, min: number, max: number):
 }
 
 // Number-only formatters — the unit is rendered once, in its own muted span.
+// `load`'s unit label (metricInfo.unit = 'GW') already matches the unconditional
+// /1000 below. `net_position`'s unit label is a fixed 'MW', so its conditional
+// /1000 rescale must say 'k' itself (matching formatLegendValue) — otherwise a
+// 2500 MW value renders as a bare "2.50" next to "MW", reading as 2.50 MW.
 function formatHoverValue(value: number, metric: MetricType): string {
   switch (metric) {
     case 'load': return (value / 1000).toFixed(value >= 10000 ? 1 : 2);
     case 'price': return value.toFixed(2);
     case 'renewable_pct': return value.toFixed(1);
     case 'net_position':
-      return (Math.abs(value) >= 1000 ? (value / 1000).toFixed(2) : value.toFixed(0));
+      return (Math.abs(value) >= 1000 ? (value / 1000).toFixed(2) + 'k' : value.toFixed(0));
     default: return value.toString();
   }
-}
-
-function hoverUnit(metric: MetricType, fallback?: string): string {
-  if (metric === 'load') return 'GW';
-  if (metric === 'net_position') return 'MW';
-  return fallback ?? '';
 }
 
 function formatLegendValue(value: number, metric: MetricType): string {
@@ -113,6 +114,9 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
   const prefetchCountry = usePrefetchCountry();
 
   const [hoveredCountry, setHoveredCountry] = useState<MapDataPoint | null>(null);
+  // Unique per mounted instance — the map can render both docked (ChartWrapper)
+  // and full-screen at once, and a hardcoded pattern id would collide.
+  const noDataHatchId = `no-data-hatch-${useId()}`;
 
   const handleCountryClick = useCallback((countryCode: string) => {
     prefetchCountry(countryCode);
@@ -133,8 +137,10 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     if (!mapData || mapData.length === 0) {
       return { min: 0, max: 100, dataMap: new Map<string, MapDataPoint>() };
     }
-    const values = mapData.map((d) => d.value).filter((v) => v != null);
-    const dataMap = new Map(mapData.map((d) => [d.country_code, d]));
+    const usable = mapData.filter((d) => d.value != null && Number.isFinite(d.value));
+    const values = usable.map((d) => d.value);
+    const dataMap = new Map(usable.map((d) => [d.country_code, d]));
+    if (values.length === 0) return { min: 0, max: 100, dataMap };
     return { min: Math.min(...values), max: Math.max(...values), dataMap };
   }, [mapData]);
 
@@ -145,15 +151,69 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     return name ? (COUNTRY_NAME_MAP[name] || null) : null;
   };
 
+  // Measure the actual rendered container (not window.innerWidth minus a
+  // guessed header height) so the viewBox aspect always matches reality,
+  // whether this is the full-screen map view or a docked chart card.
+  // Belt-and-suspenders: ResizeObserver is the primary signal, but it only
+  // guarantees delivery before the next paint — some embedding contexts
+  // (e.g. an inactive/non-compositing tab) can delay or skip that, so a
+  // window `resize` listener re-measures directly too, and the initial
+  // state is seeded from window.innerWidth/innerHeight for a same-render
+  // best guess rather than defaulting to the desktop numbers.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerSize, setContainerSize] = useState(() => ({
+    width: typeof window === 'undefined' ? 1440 : window.innerWidth,
+    height: typeof window === 'undefined' ? 900 : window.innerHeight,
+  }));
+  const measureContainer = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    if (width > 0 && height > 0) {
+      // ResizeObserver + window `resize` both fire, unthrottled, on every
+      // layout pass — bail out when the measured box hasn't actually
+      // changed so an unrelated reflow doesn't re-render the whole
+      // Geographies tree.
+      setContainerSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+    }
+  }, []);
+  useEffect(() => {
+    measureContainer();
+    const el = containerRef.current;
+    const ro = el && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measureContainer) : undefined;
+    ro?.observe(el!);
+    window.addEventListener('resize', measureContainer);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measureContainer);
+    };
+  }, [measureContainer]);
+
+  // Which viewBox/scale to render, and whether the hover card has room to
+  // dock in the corner — both are pure functions of the measured container
+  // box (task-11 review findings 1 and 2; see mapGeometry.ts for the "why").
+  const { projectionScale, mapWidth, mapHeight } = selectMapGeometry(
+    containerSize.width,
+    containerSize.height,
+    fullScreen,
+  );
+  const cardClearsSelector = hoverCardClearsSelector(containerSize.width);
+
   const mapContent = (
-    <div className={cn('relative', fullScreen ? 'h-full w-full' : 'h-full min-h-[400px]')}>
+    <div ref={containerRef} className={cn('relative', fullScreen ? 'h-full w-full' : 'h-full min-h-[400px]')}>
       <ComposableMap
         projection="geoMercator"
-        projectionConfig={{ center: [12, 55], scale: fullScreen ? 440 : 260 }}
-        width={1000}
-        height={fullScreen ? 650 : 420}
+        projectionConfig={{ center: [12, 55], scale: projectionScale }}
+        width={mapWidth}
+        height={mapHeight}
         style={{ width: '100%', height: '100%', shapeRendering: 'geometricPrecision' }}
       >
+        <defs>
+          <pattern id={noDataHatchId} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="6" height="6" fill={NO_DATA} />
+            <line x1="0" y1="0" x2="0" y2="6" stroke="#CFCABE" strokeWidth="1.5" />
+          </pattern>
+        </defs>
         <Geographies geography={EUROPE_GEO_URL}>
           {({ geographies }) =>
             geographies.map((geo) => {
@@ -166,13 +226,13 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                 <Geography
                   key={geo.rsmKey}
                   geography={geo}
-                  fill={has ? dataColor(mapMetric, d!.value, min, max) : NO_DATA}
+                  fill={has ? dataColor(mapMetric, d!.value, min, max) : `url(#${noDataHatchId})`}
                   stroke={isHover || isSelected ? 'hsl(var(--foreground))' : '#FFFFFF'}
                   strokeWidth={isHover ? 2.4 : isSelected ? 1.6 : 1.2}
                   style={{
                     default: {
                       outline: 'none',
-                      opacity: has ? (hoveredCountry && !isHover ? 0.55 : 1) : 0.55,
+                      opacity: hoveredCountry && !isHover ? 0.55 : 1,
                       transition: 'fill-opacity 0.15s, stroke-width 0.15s',
                     },
                     hover: { outline: 'none', cursor: has ? 'pointer' : 'default' },
@@ -188,9 +248,19 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         </Geographies>
       </ComposableMap>
 
-      {/* Top-right hover card */}
+      {/* Hover card — docks top-right once the container is wide enough that
+          the corner position actually clears the floating metric selector
+          (MapMetricSelector `floating`, centered across the top of this same
+          container) — see hoverCardClearsSelector in mapGeometry.ts. Below
+          that width, it drops below the selector instead, which stays clear
+          at any width. */}
       {hoveredCountry && (
-        <div className="pointer-events-none absolute right-5 top-5 min-w-[260px] rounded-[10px] border border-border bg-card px-4 py-3.5 shadow-[0_4px_20px_rgba(0,0,0,0.06)]">
+        <div
+          className={cn(
+            'pointer-events-none absolute min-w-[260px] rounded-[10px] border border-border bg-card px-4 py-3.5 shadow-[0_4px_20px_rgba(0,0,0,0.06)]',
+            cardClearsSelector ? 'right-5 top-5' : 'right-3 top-16',
+          )}
+        >
           <div className="mb-2 flex items-baseline gap-2">
             <span className="font-mono-num text-[11px] text-ink-muted">
               {hoveredCountry.country_code}
@@ -202,7 +272,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           <div className="num text-[26px] font-medium text-foreground">
             {formatHoverValue(hoveredCountry.value, mapMetric)}
             <span className="ml-1 font-mono-num text-[11px] text-ink-muted">
-              {hoverUnit(mapMetric, metricInfo?.unit)}
+              {metricInfo?.unit ?? ''}
             </span>
           </div>
           <p className="mt-1 text-xs text-ink-dim">{metricInfo?.label}</p>
@@ -230,12 +300,10 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
       <div className="absolute bottom-5 left-5 min-w-[280px] rounded-[10px] border border-border bg-card p-3.5 shadow-[0_2px_12px_rgba(0,0,0,0.04)]">
         <div className="mb-1.5 flex items-baseline justify-between">
           <span className="text-xs font-medium text-foreground">
-            {/* Named as an average: the map aggregates over the window, and for
-                a signed quantity that is a different claim from "right now". */}
-            {mapMetric === 'net_position' ? 'Avg net position' : metricInfo?.label}
+            {metricInfo?.legendLabel}
           </span>
           <span className="font-mono-num text-[10.5px] text-ink-muted">
-            {mapMetric === 'load' ? 'GW' : metricInfo?.unit}
+            {metricInfo?.unit}
           </span>
         </div>
         <div
@@ -273,10 +341,15 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           </div>
         )}
         <div className="mt-2 flex items-center gap-1.5 border-t border-input pt-2">
-          <span
-            className="inline-block h-2.5 w-2.5 rounded-sm border border-border"
-            style={{ background: NO_DATA }}
-          />
+          <svg width="10" height="10" className="rounded-sm border border-border">
+            <defs>
+              <pattern id={`${noDataHatchId}-legend`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <rect width="6" height="6" fill={NO_DATA} />
+                <line x1="0" y1="0" x2="0" y2="6" stroke="#CFCABE" strokeWidth="1.5" />
+              </pattern>
+            </defs>
+            <rect width="10" height="10" fill={`url(#${noDataHatchId}-legend)`} />
+          </svg>
           <span className="font-mono-num text-[10px] text-ink-muted">no data</span>
         </div>
       </div>

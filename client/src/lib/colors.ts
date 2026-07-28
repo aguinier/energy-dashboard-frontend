@@ -103,26 +103,26 @@ export const METRIC_THRESHOLDS: Record<string, { excellent: number; good: number
 };
 
 /**
- * Get a discrete color for a MAPE value based on forecast type thresholds.
+ * Get a discrete color for a WAPE value based on forecast type thresholds.
  * Green if excellent, yellow if good, red otherwise.
  */
-export function getMetricColor(mape: number, forecastType: string): string {
+export function getMetricColor(wape: number, forecastType: string): string {
   const thresholds = METRIC_THRESHOLDS[forecastType] || METRIC_THRESHOLDS.load;
-  if (mape < thresholds.excellent) return '#22C55E';
-  if (mape < thresholds.good) return '#F59E0B';
+  if (wape < thresholds.excellent) return '#22C55E';
+  if (wape < thresholds.good) return '#F59E0B';
   return '#EF4444';
 }
 
 /**
  * Get an HSL-interpolated color for smooth choropleth maps.
- * Smoothly transitions green -> yellow -> red based on MAPE thresholds.
+ * Smoothly transitions green -> yellow -> red based on WAPE thresholds.
  */
-export function getMetricColorHSL(mape: number, forecastType: string): string {
+export function getMetricColorHSL(wape: number, forecastType: string): string {
   const thresholds = METRIC_THRESHOLDS[forecastType] || METRIC_THRESHOLDS.load;
   const maxVal = thresholds.good * 1.5; // Red zone starts at 1.5x the "good" threshold
 
   // Clamp between 0 and maxVal
-  const clamped = Math.max(0, Math.min(mape, maxVal));
+  const clamped = Math.max(0, Math.min(wape, maxVal));
   // Normalize to 0..1 range
   const normalized = clamped / maxVal;
   // Hue: 120 (green) -> 60 (yellow) -> 0 (red)

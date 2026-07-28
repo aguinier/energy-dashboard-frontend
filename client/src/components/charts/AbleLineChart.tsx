@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
-import { niceTicks } from '@/lib/chartTicks';
+import { niceTicks, timeTicks, HOURLY_PRESETS, MEDIUM_SPAN_HOURS } from '@/lib/chartTicks';
+import { trailingGapLabel } from '@/lib/trailingGap';
 
 // Typed port of the able prototype's <LineChart>. Single-series chart with
 // optional dashed forecast overlay, future-region shading, "now" pill marker
@@ -35,6 +36,8 @@ export interface AbleLineChartProps {
   overlay?: boolean;
   /** Disable smoothing (Catmull-Rom). */
   smooth?: boolean;
+  /** Active time preset (e.g. '24h', '7d') — chooses hour vs. date X-axis labels. */
+  preset?: string;
 }
 
 const T = {
@@ -90,6 +93,7 @@ export function AbleLineChart({
   unit = '',
   overlay = false,
   smooth = true,
+  preset,
 }: AbleLineChartProps) {
   const [hover, setHover] = useState<number | null>(null);
 
@@ -104,9 +108,9 @@ export function AbleLineChart({
     ? Math.max(0, Math.min(series.length - 1, nowIndex))
     : series.length - 1;
 
-  const { pts, fpts, yMin, yMax, bandPath } = useMemo(() => {
+  const { pts, fpts, yMin, yMax, bandPath, bandUpperPath, bandLowerPath } = useMemo(() => {
     if (series.length === 0) {
-      return { pts: [], fpts: [], yMin: 0, yMax: 1, bandPath: '' };
+      return { pts: [], fpts: [], yMin: 0, yMax: 1, bandPath: '', bandUpperPath: '', bandLowerPath: '' };
     }
     const values = series.flatMap((d) => {
       const xs: number[] = [];
@@ -117,7 +121,7 @@ export function AbleLineChart({
       return xs;
     });
     if (values.length === 0) {
-      return { pts: [], fpts: [], yMin: 0, yMax: 1, bandPath: '' };
+      return { pts: [], fpts: [], yMin: 0, yMax: 1, bandPath: '', bandUpperPath: '', bandLowerPath: '' };
     }
     const rawMin = Math.min(...values);
     const rawMax = Math.max(...values);
@@ -137,16 +141,22 @@ export function AbleLineChart({
       d.forecast != null ? yFor(d.forecast) : NaN,
     ]);
 
-    // Min/max band (week-ahead)
+    // Min/max band (week-ahead, or p10-p90 for net position). Upper/lower
+    // edges are drawn separately (dashed) so the band reads as a defined
+    // region rather than a flat fill indistinguishable from the card bg.
     let bandPath = '';
+    let bandUpperPath = '';
+    let bandLowerPath = '';
     const bandPts = series
       .map((d, i) => ({ i, x: xFor(i), min: d.min, max: d.max }))
       .filter((b) => b.min != null && b.max != null);
     if (bandPts.length > 1) {
       const top = bandPts.map((b): [number, number] => [b.x, yFor(b.max as number)]);
       const bottom = bandPts.map((b): [number, number] => [b.x, yFor(b.min as number)]);
+      bandUpperPath = straightPath(top);
+      bandLowerPath = straightPath(bottom);
       bandPath =
-        straightPath(top) +
+        bandUpperPath +
         ' L ' +
         bottom
           .slice()
@@ -156,7 +166,7 @@ export function AbleLineChart({
         ' Z';
     }
 
-    return { pts, fpts, yMin, yMax, bandPath };
+    return { pts, fpts, yMin, yMax, bandPath, bandUpperPath, bandLowerPath };
   }, [series, padL, ih, iw, padT]);
 
   // The actual series draws SOLID wherever it has values — including past
@@ -179,28 +189,73 @@ export function AbleLineChart({
 
   const yTicks = niceTicks(yMin, yMax, 4);
 
-  // Day-marker X ticks anchored to NOW, thinned so labels never collide.
-  const xTicks: number[] = [];
-  for (let i = NOW % 24; i < series.length; i += 24) {
-    if (i >= 0) xTicks.push(i);
+  // Sub-day windows (24h and its siblings) get hour/day+hour ticks from
+  // timeTicks — the day-anchored derivation below produces at most one tick
+  // when the series itself only spans ~24 hourly points, which is the
+  // original bug (24h rendered no x-axis labels at all).
+  //
+  // Guarded on actual span, not just `preset`: NetPositionTab always extends
+  // its fetch window to now+3d regardless of preset (see
+  // useNetPositionData.ts), and Load/Price forecast overlays stretch the
+  // merged actual+forecast grid further still (see MEDIUM_SPAN_HOURS's doc
+  // comment in chartTicks.ts for the measured per-tab spans). Keying off
+  // preset alone would put hour-only labels (no day context) across several
+  // days, which is ambiguous, not a fix — timeTicks itself picks hour vs.
+  // day+hour based on this same span. Only once the span exceeds
+  // MEDIUM_SPAN_HOURS does this fall back to the existing day-marker
+  // derivation verbatim, so 7d/30d render exactly as before.
+  const spanHours =
+    series.length > 1
+      ? (new Date(series[series.length - 1].ts).getTime() - new Date(series[0].ts).getTime()) /
+        3_600_000
+      : 0;
+  const useHourTicks =
+    !!preset && HOURLY_PRESETS.has(preset) && spanHours > 0 && spanHours <= MEDIUM_SPAN_HOURS;
+
+  let visibleXTicks: number[];
+  let xLabelFor: (i: number) => string;
+
+  if (useHourTicks) {
+    const ticks = timeTicks(series.map((d) => d.ts), preset as string);
+    visibleXTicks = ticks.map((t) => t.index);
+    const labelByIndex = new Map(ticks.map((t) => [t.index, t.label]));
+    xLabelFor = (i: number) => labelByIndex.get(i) ?? '';
+  } else {
+    // Day-marker X ticks anchored to NOW, thinned so labels never collide.
+    const xTicks: number[] = [];
+    for (let i = NOW % 24; i < series.length; i += 24) {
+      if (i >= 0) xTicks.push(i);
+    }
+    const xStride = Math.ceil(xTicks.length / 9);
+    visibleXTicks =
+      xStride > 1
+        ? xTicks.filter((i) => i === NOW || Math.round((i - NOW) / 24) % xStride === 0)
+        : xTicks;
+    // Long windows label as "8 Jul", short ones as weekday "Wed 8".
+    const spanDays = series.length / 24;
+    xLabelFor = (i: number): string => {
+      if (i === NOW) return 'now';
+      const d = new Date(series[i].ts);
+      if (Number.isNaN(d.getTime())) return '';
+      return spanDays > 12
+        ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+        : `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${d.getDate()}`;
+    };
   }
-  const xStride = Math.ceil(xTicks.length / 9);
-  const visibleXTicks =
-    xStride > 1
-      ? xTicks.filter((i) => i === NOW || Math.round((i - NOW) / 24) % xStride === 0)
-      : xTicks;
-  // Long windows label as "8 Jul", short ones as weekday "Wed 8".
-  const spanDays = series.length / 24;
-  const xLabelFor = (i: number): string => {
-    if (i === NOW) return 'now';
-    const d = new Date(series[i].ts);
-    if (Number.isNaN(d.getTime())) return '';
-    return spanDays > 12
-      ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
-      : `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${d.getDate()}`;
-  };
 
   const nowX = pts[NOW] ? pts[NOW][0] : padL + iw;
+
+  // ENTSO-E actuals routinely arrive hours late, so the solid line stops
+  // well short of the `now` marker. Name the gap instead of leaving it
+  // unexplained — the header's freshness note is easy to miss.
+  let lastActualIso: string | undefined;
+  for (let i = series.length - 1; i >= 0; i--) {
+    if (series[i].value != null) {
+      lastActualIso = series[i].ts;
+      break;
+    }
+  }
+  const gapLabel = trailingGapLabel(lastActualIso, new Date());
 
   const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (series.length === 0) return;
@@ -308,9 +363,27 @@ export function AbleLineChart({
           );
         })}
 
-        {/* Min/max band (week-ahead) */}
+        {/* Min/max band (week-ahead, or p10-p90 for net position) */}
         {bandPath && (
-          <path d={bandPath} fill={T.primary} fillOpacity={0.10} />
+          <>
+            <path d={bandPath} fill={T.primary} fillOpacity={0.16} />
+            <path
+              d={bandUpperPath}
+              fill="none"
+              stroke={T.primary}
+              strokeOpacity={0.35}
+              strokeWidth={1}
+              strokeDasharray="3 3"
+            />
+            <path
+              d={bandLowerPath}
+              fill="none"
+              stroke={T.primary}
+              strokeOpacity={0.35}
+              strokeWidth={1}
+              strokeDasharray="3 3"
+            />
+          </>
         )}
 
         {/* Forecast dashed line */}
@@ -385,6 +458,21 @@ export function AbleLineChart({
               now
             </text>
           </g>
+        )}
+
+        {/* Trailing gap — ENTSO-E actuals lag, so the solid line stops short
+            of `now` with no explanation on the chart itself otherwise. */}
+        {!overlay && gapLabel && (
+          <text
+            x={nowX}
+            y={12}
+            textAnchor="end"
+            className="font-mono-num"
+            fontSize={10}
+            fill="hsl(var(--muted-foreground))"
+          >
+            {gapLabel}
+          </text>
         )}
 
         {/* Hover */}

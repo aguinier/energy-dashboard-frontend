@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { useDashboardStore } from '@/store/dashboardStore';
 import {
@@ -9,6 +10,7 @@ import {
   fetchTSOLoadForecastAccuracy,
 } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
+import { maskServedModel } from '@/lib/servedModel';
 import { useModelSelection } from './useForecastModels';
 import {
   getDateRangeForPreset,
@@ -44,6 +46,8 @@ export interface LoadChartData {
   // ML forecast data
   forecastData: ForecastDataPoint[] | undefined;
   isLoadingForecast: boolean;
+  /** `meta.model` from the most recent forecast response — which model actually served. */
+  servedModelId: string | null;
 
   // ML multi-horizon data
   multiHorizonData: MultiHorizonForecastDataPoint[] | undefined;
@@ -78,13 +82,17 @@ export function useLoadChartData(): LoadChartData {
   const timeOffset = useDashboardStore((s) => s.timeOffset);
   const showComparisonMode = useDashboardStore((s) => s.showComparisonMode);
   const showTSOComparisonMode = useDashboardStore((s) => s.showTSOComparisonMode);
+  const setServedModel = useDashboardStore((s) => s.setServedModel);
 
   // The picker is the single source of truth for which model this chart shows.
-  const { selected } = useModelSelection('load');
+  const { selected, requestModelId } = useModelSelection('load');
   const showForecast = selected?.source === 'ml';
   const showTSOForecast = selected?.source === 'tso';
   const tsoHorizon = (selected?.tsoHorizon ?? 'day_ahead') as TSOHorizon;
-  const modelId = selected?.source === 'ml' ? selected.id : undefined;
+
+  // Pin only what the user pinned; otherwise let the server pick a model that
+  // has data for this country.
+  const modelId = selected?.source === 'ml' ? requestModelId : undefined;
   const selectedMLHorizons = useDashboardStore((s) => s.selectedMLHorizons);
 
   // Calculate date ranges
@@ -186,14 +194,24 @@ export function useLoadChartData(): LoadChartData {
 
   const [loadQuery, forecastQuery, comparisonQuery, multiHorizonQuery, tsoForecastQuery, tsoAccuracyQuery] = queries;
 
+  const forecastData = forecastQuery.data?.points;
+  // Masked by the same flag that gates the query above (`enabled: showForecast`)
+  // — see maskServedModel's doc comment for why this can't just read the data.
+  const servedModelId = maskServedModel(showForecast, forecastQuery.data?.servedModelId);
+
+  useEffect(() => {
+    setServedModel('load', servedModelId);
+  }, [setServedModel, servedModelId]);
+
   return {
     // Actual load data
     loadData: loadQuery.data,
     isLoadingLoad: loadQuery.isLoading,
 
     // ML forecast data
-    forecastData: forecastQuery.data,
+    forecastData,
     isLoadingForecast: forecastQuery.isLoading,
+    servedModelId,
 
     // ML multi-horizon data
     multiHorizonData: multiHorizonQuery.data,

@@ -59,11 +59,16 @@ export const GRANULARITIES = [
   { value: 'monthly', label: 'Monthly' },
 ] as const;
 
+// The single source of truth for map metric copy. `unit` is the unit the map
+// actually renders — EuropeMap divides load by 1000, so it is GW, not MW.
+// `legendLabel` is what the legend says where it needs a different claim from
+// the button: net position is a window average, not an instantaneous value.
+// Every entry carries one so consumers can read it off the union unconditionally.
 export const MAP_METRICS = [
-  { value: 'load', label: 'Electricity Load', unit: 'MW' },
-  { value: 'price', label: 'Energy Price', unit: 'EUR/MWh' },
-  { value: 'renewable_pct', label: 'Renewable %', unit: '%' },
-  { value: 'net_position', label: 'Net position', unit: 'MW' },
+  { value: 'price', label: 'Day-ahead price', unit: '€/MWh', legendLabel: 'Day-ahead price' },
+  { value: 'renewable_pct', label: 'Renewable share', unit: '%', legendLabel: 'Renewable share' },
+  { value: 'load', label: 'Electricity load', unit: 'GW', legendLabel: 'Electricity load' },
+  { value: 'net_position', label: 'Net position', unit: 'MW', legendLabel: 'Avg net position' },
 ] as const;
 
 export const ANIMATION_DURATION = {

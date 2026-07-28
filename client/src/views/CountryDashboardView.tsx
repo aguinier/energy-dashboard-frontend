@@ -35,6 +35,12 @@ function TabSkeleton({ height = 350 }: { height?: number }) {
   );
 }
 
+// Tabs whose chart actually reads a model selection. `renewables` (Generation)
+// and `analytics` (Forecast accuracy) don't — GenerationTab renders actuals
+// only, and the accuracy overlay is driven by the Load tab's own selection.
+// The picker for a tab outside this set would be a control that does nothing.
+const TABS_WITH_MODEL_PICKER = new Set(['price', 'load', 'net-position']);
+
 export function CountryDashboardView() {
   const { selectedCountry, activeChartTab, setActiveChartTab } = useDashboardStore();
   const { data: countries } = useCountries();
@@ -73,7 +79,7 @@ export function CountryDashboardView() {
           </Tabs>
           <div className="flex-1" />
           <RangeSegment />
-          <ModelPicker />
+          {TABS_WITH_MODEL_PICKER.has(activeChartTab) && <ModelPicker />}
         </div>
 
         <Tabs value={activeChartTab} onValueChange={setActiveChartTab}>
