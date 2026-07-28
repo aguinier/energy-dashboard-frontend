@@ -74,13 +74,17 @@ function dataColor(metric: MetricType, value: number, min: number, max: number):
 }
 
 // Number-only formatters — the unit is rendered once, in its own muted span.
+// `load`'s unit label (metricInfo.unit = 'GW') already matches the unconditional
+// /1000 below. `net_position`'s unit label is a fixed 'MW', so its conditional
+// /1000 rescale must say 'k' itself (matching formatLegendValue) — otherwise a
+// 2500 MW value renders as a bare "2.50" next to "MW", reading as 2.50 MW.
 function formatHoverValue(value: number, metric: MetricType): string {
   switch (metric) {
     case 'load': return (value / 1000).toFixed(value >= 10000 ? 1 : 2);
     case 'price': return value.toFixed(2);
     case 'renewable_pct': return value.toFixed(1);
     case 'net_position':
-      return (Math.abs(value) >= 1000 ? (value / 1000).toFixed(2) : value.toFixed(0));
+      return (Math.abs(value) >= 1000 ? (value / 1000).toFixed(2) + 'k' : value.toFixed(0));
     default: return value.toString();
   }
 }
