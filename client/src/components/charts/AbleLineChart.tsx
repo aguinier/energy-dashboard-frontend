@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
 import { niceTicks, timeTicks, HOURLY_PRESETS, MEDIUM_SPAN_HOURS } from '@/lib/chartTicks';
+import { trailingGapLabel } from '@/lib/trailingGap';
 
 // Typed port of the able prototype's <LineChart>. Single-series chart with
 // optional dashed forecast overlay, future-region shading, "now" pill marker
@@ -107,9 +108,9 @@ export function AbleLineChart({
     ? Math.max(0, Math.min(series.length - 1, nowIndex))
     : series.length - 1;
 
-  const { pts, fpts, yMin, yMax, bandPath } = useMemo(() => {
+  const { pts, fpts, yMin, yMax, bandPath, bandUpperPath, bandLowerPath } = useMemo(() => {
     if (series.length === 0) {
-      return { pts: [], fpts: [], yMin: 0, yMax: 1, bandPath: '' };
+      return { pts: [], fpts: [], yMin: 0, yMax: 1, bandPath: '', bandUpperPath: '', bandLowerPath: '' };
     }
     const values = series.flatMap((d) => {
       const xs: number[] = [];
@@ -120,7 +121,7 @@ export function AbleLineChart({
       return xs;
     });
     if (values.length === 0) {
-      return { pts: [], fpts: [], yMin: 0, yMax: 1, bandPath: '' };
+      return { pts: [], fpts: [], yMin: 0, yMax: 1, bandPath: '', bandUpperPath: '', bandLowerPath: '' };
     }
     const rawMin = Math.min(...values);
     const rawMax = Math.max(...values);
@@ -140,16 +141,22 @@ export function AbleLineChart({
       d.forecast != null ? yFor(d.forecast) : NaN,
     ]);
 
-    // Min/max band (week-ahead)
+    // Min/max band (week-ahead, or p10-p90 for net position). Upper/lower
+    // edges are drawn separately (dashed) so the band reads as a defined
+    // region rather than a flat fill indistinguishable from the card bg.
     let bandPath = '';
+    let bandUpperPath = '';
+    let bandLowerPath = '';
     const bandPts = series
       .map((d, i) => ({ i, x: xFor(i), min: d.min, max: d.max }))
       .filter((b) => b.min != null && b.max != null);
     if (bandPts.length > 1) {
       const top = bandPts.map((b): [number, number] => [b.x, yFor(b.max as number)]);
       const bottom = bandPts.map((b): [number, number] => [b.x, yFor(b.min as number)]);
+      bandUpperPath = straightPath(top);
+      bandLowerPath = straightPath(bottom);
       bandPath =
-        straightPath(top) +
+        bandUpperPath +
         ' L ' +
         bottom
           .slice()
@@ -159,7 +166,7 @@ export function AbleLineChart({
         ' Z';
     }
 
-    return { pts, fpts, yMin, yMax, bandPath };
+    return { pts, fpts, yMin, yMax, bandPath, bandUpperPath, bandLowerPath };
   }, [series, padL, ih, iw, padT]);
 
   // The actual series draws SOLID wherever it has values — including past
@@ -237,6 +244,18 @@ export function AbleLineChart({
   }
 
   const nowX = pts[NOW] ? pts[NOW][0] : padL + iw;
+
+  // ENTSO-E actuals routinely arrive hours late, so the solid line stops
+  // well short of the `now` marker. Name the gap instead of leaving it
+  // unexplained — the header's freshness note is easy to miss.
+  let lastActualIso: string | undefined;
+  for (let i = series.length - 1; i >= 0; i--) {
+    if (series[i].value != null) {
+      lastActualIso = series[i].ts;
+      break;
+    }
+  }
+  const gapLabel = trailingGapLabel(lastActualIso, new Date());
 
   const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (series.length === 0) return;
@@ -344,9 +363,27 @@ export function AbleLineChart({
           );
         })}
 
-        {/* Min/max band (week-ahead) */}
+        {/* Min/max band (week-ahead, or p10-p90 for net position) */}
         {bandPath && (
-          <path d={bandPath} fill={T.primary} fillOpacity={0.10} />
+          <>
+            <path d={bandPath} fill={T.primary} fillOpacity={0.16} />
+            <path
+              d={bandUpperPath}
+              fill="none"
+              stroke={T.primary}
+              strokeOpacity={0.35}
+              strokeWidth={1}
+              strokeDasharray="3 3"
+            />
+            <path
+              d={bandLowerPath}
+              fill="none"
+              stroke={T.primary}
+              strokeOpacity={0.35}
+              strokeWidth={1}
+              strokeDasharray="3 3"
+            />
+          </>
         )}
 
         {/* Forecast dashed line */}
@@ -421,6 +458,21 @@ export function AbleLineChart({
               now
             </text>
           </g>
+        )}
+
+        {/* Trailing gap — ENTSO-E actuals lag, so the solid line stops short
+            of `now` with no explanation on the chart itself otherwise. */}
+        {!overlay && gapLabel && (
+          <text
+            x={nowX}
+            y={12}
+            textAnchor="end"
+            className="font-mono-num"
+            fontSize={10}
+            fill="hsl(var(--muted-foreground))"
+          >
+            {gapLabel}
+          </text>
         )}
 
         {/* Hover */}
