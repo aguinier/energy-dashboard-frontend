@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { horizonDayLabel, summarizeVintages, dayLabelByVintage } from './netPositionProvenance';
+import {
+  horizonDayLabel,
+  summarizeVintages,
+  dayLabelByVintage,
+  capVintages,
+  MAX_VINTAGE_ROWS,
+  type VintageSummary,
+} from './netPositionProvenance';
 import type { NetPositionForecastVintage } from '@/types';
 
 describe('horizonDayLabel', () => {
@@ -108,5 +115,60 @@ describe('dayLabelByVintage', () => {
 
   it('returns an empty map when there are no vintages', () => {
     expect(dayLabelByVintage(undefined).size).toBe(0);
+  });
+});
+
+describe('capVintages', () => {
+  /** N runs, newest first, shaped like summarizeVintages output. */
+  const runs = (n: number): VintageSummary[] =>
+    Array.from({ length: n }, (_, i) => ({
+      generated_at: `2026-07-${String(28 - i).padStart(2, '0')}T06:00:00`,
+      dayLabel: 'D+2',
+      target_count: 24,
+      first_target: `2026-07-${String(30 - i).padStart(2, '0')}T00:00:00`,
+      last_target: `2026-07-${String(30 - i).padStart(2, '0')}T23:00:00`,
+    }));
+
+  it('shows everything when it already fits', () => {
+    const out = capVintages(runs(3));
+    expect(out.shown).toHaveLength(3);
+    expect(out.hiddenCount).toBe(0);
+  });
+
+  it('does not collapse a single extra run — "+1 more" saves no space', () => {
+    const out = capVintages(runs(MAX_VINTAGE_ROWS + 1));
+    expect(out.shown).toHaveLength(MAX_VINTAGE_ROWS + 1);
+    expect(out.hiddenCount).toBe(0);
+  });
+
+  it('collapses once past that, keeping the newest runs', () => {
+    const all = runs(MAX_VINTAGE_ROWS + 2);
+    const out = capVintages(all);
+    expect(out.shown).toHaveLength(MAX_VINTAGE_ROWS);
+    expect(out.hiddenCount).toBe(2);
+    // newest-first order preserved, oldest dropped
+    expect(out.shown[0].generated_at).toBe(all[0].generated_at);
+    expect(out.shown.map((v) => v.generated_at)).not.toContain(
+      all[all.length - 1].generated_at,
+    );
+  });
+
+  it('keeps the row count flat as runs accumulate — the point of the cap', () => {
+    // A 30d window a month from now: one run per day.
+    const out = capVintages(runs(33));
+    expect(out.shown).toHaveLength(MAX_VINTAGE_ROWS);
+    expect(out.hiddenCount).toBe(28);
+    // 5 rows + 1 summary row, regardless of how many runs exist.
+    expect(out.shown.length + 1).toBe(MAX_VINTAGE_ROWS + 1);
+  });
+
+  it('honours an explicit max', () => {
+    const out = capVintages(runs(10), 2);
+    expect(out.shown).toHaveLength(2);
+    expect(out.hiddenCount).toBe(8);
+  });
+
+  it('handles an empty list', () => {
+    expect(capVintages([])).toEqual({ shown: [], hiddenCount: 0 });
   });
 });
