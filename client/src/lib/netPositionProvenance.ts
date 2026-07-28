@@ -49,6 +49,38 @@ export function summarizeVintages(
   }));
 }
 
+/** How many runs the provenance row lists before collapsing the rest. */
+export const MAX_VINTAGE_ROWS = 5;
+
+export interface CappedVintages {
+  shown: VintageSummary[];
+  /** Runs omitted from `shown`. 0 when everything fits. */
+  hiddenCount: number;
+}
+
+/**
+ * Cap the per-run provenance list so a wide window does not stack dozens of
+ * rows under the chart.
+ *
+ * One run lands per day and is kept indefinitely, and the chart lists every
+ * run whose target day falls inside the visible window. That is bounded — the
+ * query is limited to the window — but the bound is the window itself: ~4 rows
+ * on the 24h preset, ~33 on 30d once the job has been running a month.
+ *
+ * Nothing is lost by collapsing: each point carries its own run in its
+ * tooltip, and this row is a summary rather than the source of truth.
+ *
+ * Collapsing only kicks in past `max + 1`, because turning a single extra row
+ * into a "+1 more" row saves no space and just costs the reader a click.
+ */
+export function capVintages(
+  summaries: VintageSummary[],
+  max: number = MAX_VINTAGE_ROWS,
+): CappedVintages {
+  if (summaries.length <= max + 1) return { shown: summaries, hiddenCount: 0 };
+  return { shown: summaries.slice(0, max), hiddenCount: summaries.length - max };
+}
+
 /**
  * `generated_at` -> "D+N" lookup, for tagging individual chart points with
  * the provenance of whichever vintage won for that timestamp.

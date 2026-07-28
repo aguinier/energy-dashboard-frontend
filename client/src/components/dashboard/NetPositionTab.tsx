@@ -5,7 +5,7 @@ import { useNetPositionData } from '@/hooks/useNetPositionData';
 import { useCountries } from '@/hooks/useCountries';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { adaptNetPositionSeries } from '@/lib/chartAdapters';
-import { summarizeVintages } from '@/lib/netPositionProvenance';
+import { summarizeVintages, capVintages } from '@/lib/netPositionProvenance';
 import { useModelSelection } from '@/hooks/useForecastModels';
 
 /** Countries whose net position is folded into a multi-country bidding zone. */
@@ -47,6 +47,13 @@ export function NetPositionTab() {
   // generated_at - a subtitle claiming one generation time for the whole
   // series would be wrong the moment two vintages are both showing.
   const vintages = useMemo(() => summarizeVintages(data?.meta.vintages), [data]);
+
+  // One run lands per day and the window keeps every run whose target day it
+  // covers, so a wide preset would otherwise stack ~33 rows under the chart.
+  const { shown: shownVintages, hiddenCount: hiddenVintageCount } = useMemo(
+    () => capVintages(vintages),
+    [vintages],
+  );
 
   const latest = useMemo(() => {
     const withValue = (data?.actual ?? []).filter((p) => p.net_position_mw != null);
@@ -159,7 +166,7 @@ export function NetPositionTab() {
                 subtitle above, so a one-row repeat here would be noise. */}
             {!forecastHidden && vintages.length > 1 && (
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint">
-                {vintages.map((v) => (
+                {shownVintages.map((v) => (
                   <span key={v.generated_at} className="font-mono-num">
                     {v.dayLabel} run generated{' '}
                     {new Date(v.generated_at).toLocaleString([], {
@@ -171,6 +178,12 @@ export function NetPositionTab() {
                     ({v.target_count} pts)
                   </span>
                 ))}
+                {hiddenVintageCount > 0 && (
+                  <span className="font-mono-num">
+                    +{hiddenVintageCount} older{' '}
+                    {hiddenVintageCount === 1 ? 'run' : 'runs'}
+                  </span>
+                )}
               </div>
             )}
           </>
