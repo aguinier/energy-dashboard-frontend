@@ -140,10 +140,10 @@ interface DashboardState {
   // ============================================================================
   // Cross-Country Comparison
   // ============================================================================
-  comparisonMetric: 'mape' | 'mae' | 'rmse';
+  comparisonMetric: 'wape' | 'mae' | 'rmse';
   comparisonForecastType: string;
   comparisonTimeRange: '7d' | '30d' | '90d';
-  setComparisonMetric: (m: 'mape' | 'mae' | 'rmse') => void;
+  setComparisonMetric: (m: 'wape' | 'mae' | 'rmse') => void;
   setComparisonForecastType: (t: string) => void;
   setComparisonTimeRange: (r: '7d' | '30d' | '90d') => void;
   goToComparison: () => void;
@@ -416,7 +416,7 @@ export const useDashboardStore = create<DashboardState>()(
       // ============================================================================
       // Cross-Country Comparison
       // ============================================================================
-      comparisonMetric: 'mape',
+      comparisonMetric: 'wape',
       comparisonForecastType: 'all',
       comparisonTimeRange: '30d',
       setComparisonMetric: (m) => set({ comparisonMetric: m }),

@@ -340,7 +340,7 @@ export interface RollingAccuracyResponse {
 
 export interface CrossCountryMetricsEntry {
   mae: number;
-  mape: number;
+  wape: number | null;
   rmse: number;
   bias: number;
   dataPoints: number;

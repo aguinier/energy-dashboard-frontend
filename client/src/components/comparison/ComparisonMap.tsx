@@ -31,6 +31,14 @@ interface HoveredCountryInfo {
   metrics: Record<string, CrossCountryMetricsEntry>;
 }
 
+// WAPE can be null (no denominator — e.g. all-zero actuals in the window).
+// Render that as absent rather than coercing to 0, which would read as a
+// perfect forecast.
+function formatMetricValue(value: number | null, asPercent: boolean): string {
+  if (value === null) return '–';
+  return asPercent ? `${value.toFixed(1)}%` : value.toFixed(2);
+}
+
 export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMapProps) {
   const { comparisonMetric, comparisonForecastType, goToCountry } = useDashboardStore();
   const [hovered, setHovered] = useState<HoveredCountryInfo | null>(null);
@@ -92,10 +100,10 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
                 const countryData = code ? data[code] : null;
                 const entry = countryData?.[mapForecastType];
                 const metricValue = entry?.[comparisonMetric];
-                const hasData = metricValue !== undefined && metricValue !== null && !isNaN(metricValue);
+                const hasData = typeof metricValue === 'number' && !isNaN(metricValue);
 
-                // For MAPE use HSL interpolation; for others use primary color
-                const fill = hasData && comparisonMetric === 'mape'
+                // For WAPE use HSL interpolation; for others use primary color
+                const fill = comparisonMetric === 'wape' && typeof metricValue === 'number' && !isNaN(metricValue)
                   ? getMetricColorHSL(metricValue, mapForecastType)
                   : hasData
                     ? 'hsl(var(--primary))'
@@ -145,7 +153,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
               <div key={type} className="flex items-center justify-between text-xs">
                 <span className="text-muted-foreground capitalize">{type.replace('_', ' ')}</span>
                 <span className="font-medium">
-                  {comparisonMetric === 'mape' ? `${entry[comparisonMetric].toFixed(1)}%` : entry[comparisonMetric].toFixed(2)}
+                  {formatMetricValue(entry[comparisonMetric], comparisonMetric === 'wape')}
                 </span>
               </div>
             ))}
@@ -154,9 +162,9 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
       )}
 
       {/* Legend */}
-      {comparisonMetric === 'mape' && (
+      {comparisonMetric === 'wape' && (
         <div className="absolute bottom-4 left-4 rounded-lg border bg-background/90 backdrop-blur p-3 z-10">
-          <p className="text-xs font-medium mb-2">MAPE ({mapForecastType})</p>
+          <p className="text-xs font-medium mb-2">WAPE ({mapForecastType})</p>
           <div className="flex items-center gap-2">
             <div
               className="h-3 w-24 rounded"

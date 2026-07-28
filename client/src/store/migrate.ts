@@ -1,4 +1,4 @@
-export const PERSIST_VERSION = 1;
+export const PERSIST_VERSION = 2;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
@@ -38,6 +38,14 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
     next.showForecast = !!layers.ml?.enabled;
     next.showTSOComparisonMode = !!layers.tso?.showAccuracy;
     next.showComparisonMode = !!layers.ml?.showAccuracy;
+  }
+
+  // MAPE was replaced by WAPE (degenerate metric: divided by the signed
+  // actual, so negative prices cancelled error, and a near-zero actual could
+  // dominate the mean — see crossCountryMetricsService.ts). A persisted
+  // 'mape' selection no longer matches a real option in the toggle group.
+  if (next.comparisonMetric === 'mape') {
+    next.comparisonMetric = 'wape';
   }
 
   return next;

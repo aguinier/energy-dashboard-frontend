@@ -4,7 +4,7 @@ import { ForecastType } from '../types/index.js';
 /**
  * Cross-Country Forecast Metrics Service
  *
- * Computes ML forecast accuracy metrics (MAE, MAPE, RMSE, bias)
+ * Computes ML forecast accuracy metrics (MAE, WAPE, RMSE, bias)
  * across all countries for a given forecast type, using the same
  * deduplication and join patterns as mlForecastService.
  */
@@ -29,7 +29,7 @@ const ACTUAL_DATA_MAPPING: Record<string, { table: string; column: string; times
 
 export interface CountryMetrics {
   mae: number;
-  mape: number;
+  wape: number | null;
   rmse: number;
   bias: number;
   dataPoints: number;
@@ -40,6 +40,25 @@ export type CrossCountryMetricsResult = Record<string, CountryMetrics>;
 // Helper to normalize timestamps for the forecasts table (uses 'T' format)
 function normalizeTimestamp(isoTimestamp: string): string {
   return isoTimestamp.replace('Z', '').split('.')[0];
+}
+
+/**
+ * Weighted absolute percentage error: 100 * sum|e| / sum|actual|.
+ *
+ * Replaces MAPE, which divided by the SIGNED actual (so negative day-ahead
+ * prices cancelled error) and guarded only `!= 0` (so a single near-zero
+ * actual dominated the mean — BE solar measured 148458%).
+ */
+export function wape(pairs: Array<{ actual: number; forecast: number }>): number | null {
+  let num = 0;
+  let den = 0;
+  for (const { actual, forecast } of pairs) {
+    if (!Number.isFinite(actual) || !Number.isFinite(forecast)) continue;
+    num += Math.abs(actual - forecast);
+    den += Math.abs(actual);
+  }
+  if (den === 0) return null;
+  return Math.round((100 * num / den) * 100) / 100;
 }
 
 /**
@@ -91,12 +110,10 @@ export function getCrossCountryMetrics(
     SELECT
       f.country_code,
       ROUND(AVG(ABS(${actualColumn} - f.forecast_value)), 2) as mae,
-      ROUND(AVG(
-        CASE WHEN ${actualColumn} > 0
-          THEN 100.0 * ABS(${actualColumn} - f.forecast_value) / ${actualColumn}
-          ELSE NULL
-        END
-      ), 2) as mape,
+      CASE WHEN SUM(ABS(${actualColumn})) > 0
+        THEN ROUND(100.0 * SUM(ABS(${actualColumn} - f.forecast_value)) / SUM(ABS(${actualColumn})), 2)
+        ELSE NULL
+      END as wape,
       ROUND(SQRT(AVG((${actualColumn} - f.forecast_value) * (${actualColumn} - f.forecast_value))), 2) as rmse,
       ROUND(AVG(${actualColumn} - f.forecast_value), 2) as bias,
       COUNT(*) as data_points
@@ -112,7 +129,7 @@ export function getCrossCountryMetrics(
   const rows = stmt.all(forecastType, normalizedStart, normalizedEnd) as Array<{
     country_code: string;
     mae: number | null;
-    mape: number | null;
+    wape: number | null;
     rmse: number | null;
     bias: number | null;
     data_points: number;
@@ -122,7 +139,7 @@ export function getCrossCountryMetrics(
   for (const row of rows) {
     result[row.country_code] = {
       mae: row.mae ?? 0,
-      mape: row.mape ?? 0,
+      wape: row.wape,
       rmse: row.rmse ?? 0,
       bias: row.bias ?? 0,
       dataPoints: row.data_points,

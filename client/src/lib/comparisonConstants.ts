@@ -41,13 +41,13 @@ export const FORECAST_TYPE_MAP_OPTIONS = FORECAST_TYPE_ORDER.map((t) => ({
   label: FORECAST_TYPE_CONFIG[t].shortLabel,
 }));
 
-// Status badge helper
+// Status badge helper (value is a WAPE percentage)
 export function getStatusLabel(
-  mape: number,
+  wape: number,
   forecastType: string,
 ): { label: string; level: 'excellent' | 'good' | 'poor' } {
   const thresholds = METRIC_THRESHOLDS[forecastType] || METRIC_THRESHOLDS.load;
-  if (mape < thresholds.excellent) return { label: 'Excellent', level: 'excellent' };
-  if (mape < thresholds.good) return { label: 'Good', level: 'good' };
+  if (wape < thresholds.excellent) return { label: 'Excellent', level: 'excellent' };
+  if (wape < thresholds.good) return { label: 'Good', level: 'good' };
   return { label: 'Needs Improvement', level: 'poor' };
 }
