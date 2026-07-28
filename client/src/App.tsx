@@ -5,6 +5,7 @@ import { AbleHeader } from '@/components/layout/AbleHeader';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { lazy, Suspense, useEffect } from 'react';
 import { useThemeStore } from '@/store/themeStore';
+import { shouldRetryQuery } from '@/lib/queryRetry';
 
 const MapView = lazy(() => import('@/views/MapView').then(m => ({ default: m.MapView })));
 const CountryDashboardView = lazy(() => import('@/views/CountryDashboardView').then(m => ({ default: m.CountryDashboardView })));
@@ -14,7 +15,10 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 1000 * 60 * 2,
-      retry: 2,
+      // The API is single-threaded and synchronous; a slow query blocks every
+      // other request. Retrying a timeout triples the load that caused it.
+      retry: shouldRetryQuery,
+      retryDelay: (attempt) => Math.min(4000, 1000 * 2 ** attempt),
       refetchOnWindowFocus: false,
     },
   },
