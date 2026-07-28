@@ -1723,6 +1723,8 @@ Beyond the persist versioning below, audit `timeRange`'s remaining readers and d
 
 **The `layers` slice is now fully dead — established by the Task 22 review.** After Task 22, no component reads `layers` (`LoadTab` was the last reader) and no component calls any of its five mutating actions (`toggleLayer`, `showAllLayers`, `showActualsOnly`, `setLayerAccuracy`, `setTSOHorizon` — zero call sites outside `dashboardStore.ts`). It can be removed as one unit: the state, `DEFAULT_LAYERS`, all five actions, the `LayersState` type in `types/index.ts`, and the `partialize` entry, with no callers to chase.
 
+**Also validate `activeChartTab`.** Found while verifying Task 12: an invalid persisted `activeChartTab` renders a **completely blank tab panel** with no fallback — no chart, no message, just the page chrome. The real tab values are `price`, `load`, `renewables`, `net-position`, `analytics` (read them off the `TabsTrigger` values rather than guessing; note `renewables` and `analytics` do not match their visible labels "Generation" and "Forecast accuracy"). Add the same domain check `currentView` gets, defaulting to `load`.
+
 **One trap when removing it:** those actions also write four *independent* legacy fields as a side effect — `showForecast`, `showTSOForecast`, `showComparisonMode`, `showTSOComparisonMode`. Those four are still separately live through their own actions (`setShowComparisonMode`, `toggleComparisonMode`, `setShowTSOComparisonMode`, `toggleTSOComparisonMode`). Deleting `layers` must not delete them. Check which of the four still have real readers before deciding their fate — that is a separate judgement from removing `layers`.
 
 **Files:**
