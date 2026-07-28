@@ -2322,11 +2322,94 @@ country, while the picker above offered a choice that could not take effect."
 
 ---
 
+### Task 23: Fix the index-defeating join that makes `/renewables/mix` pathologically slow
+
+Found while reviewing Task 14. **This is the root cause of the acceptance-backend latency recorded in "Out of scope" below** — it was never a prod-host infrastructure problem, it is this repo's own SQL.
+
+`getRenewablePercentage` in `server/src/services/renewableService.ts:146-152` joins on functions of the indexed column:
+
+```sql
+FROM energy_renewable r
+JOIN energy_load l ON r.country_code = l.country_code
+  AND date(r.timestamp_utc) = date(l.timestamp_utc)
+  AND strftime('%H', r.timestamp_utc) = strftime('%H', l.timestamp_utc)
+WHERE r.country_code = ?
+  AND r.timestamp_utc BETWEEN ? AND ?
+```
+
+SQLite cannot use an index on a column wrapped in a function, so the inner table falls back to a country-only scan. Measured `EXPLAIN QUERY PLAN` against the local replica:
+
+```
+SEARCH r USING INDEX idx_renewable_latest_revision (country_code=? AND timestamp_utc>? AND timestamp_utc<?)
+SEARCH l USING INDEX idx_energy_load_country_time (country_code=?)      <-- no timestamp bound
+```
+
+For every renewable row in the window it rescans every `energy_load` row for that country. Measured on the replica (FR): **7d = 12.53s, 30d = 51.17s.** On the prod host, with slower storage and a synchronous single-threaded server, that is the 88–150s stall observed during the audit — and it blocks every other request while it runs.
+
+There is a second, quieter defect in the same predicate. Both tables store **15-minute** granularity (`23:15`, `23:30`, `23:45`). Matching on date + hour therefore joins each renewable row to all **four** load rows in that hour — a 4× fan-out that skews the average.
+
+**Files:**
+- Modify: `server/src/services/renewableService.ts:146-152`
+- Test: `server/src/services/renewableService.test.ts` (create)
+
+- [ ] **Step 1: Write the failing test**
+
+The value must not change materially, and the plan must use the index. Create `server/src/services/renewableService.test.ts` asserting the SQL shape — specifically that the join predicate contains no `date(` or `strftime(` applied to a joined column. A string assertion is weak on its own, so pair it with the behavioural check in Step 4 against the replica.
+
+- [ ] **Step 2: Rewrite the join**
+
+```sql
+    FROM energy_renewable r
+    JOIN energy_load l
+      ON l.country_code = r.country_code
+     AND l.timestamp_utc = r.timestamp_utc
+    WHERE r.country_code = ?
+      AND r.timestamp_utc BETWEEN ? AND ?
+```
+
+Both tables carry identical aligned timestamps (verified on the replica), so direct equality is exact rather than approximate, and removes the fan-out.
+
+- [ ] **Step 3: Confirm the plan uses the index on both sides**
+
+Expected after the rewrite (verified on the replica):
+
+```
+SEARCH l USING INDEX idx_load_country_time (country_code=? AND timestamp_utc>? AND timestamp_utc<?)
+SEARCH r USING INDEX idx_renewable_country_time (country_code=? AND timestamp_utc=?)
+```
+
+- [ ] **Step 4: Verify value and timing against the replica**
+
+Point `ENERGY_DB_PATH` at `C:/Code/able/data/energy_dashboard.db` (read-only replica) and compare old vs new for FR. Measured reference values:
+
+| window | before | after | value before → after |
+|---|---|---|---|
+| 7d | 12.53s | 0.0036s | 36.04 → 36.03 |
+| 30d | 51.17s | 0.0094s | 34.65 → 34.64 |
+
+The small value shift is the fan-out being removed and is expected. A large shift is not — investigate rather than accepting it.
+
+**Do not benchmark against `192.168.86.36`.**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add server/src/services/renewableService.ts server/src/services/renewableService.test.ts
+git commit -m "perf(renewables): join on the timestamp instead of functions of it
+
+date()/strftime() on the joined column defeated the index, so every renewable
+row rescanned the country's whole energy_load history: 51s for a 30d window
+on the replica, 0.009s after. The date+hour match also fanned each row out to
+all four 15-minute load rows in the hour, skewing the average."
+```
+
+---
+
 ## Out of scope — carried forward
 
 These were found during the audit but are not fixed by this plan.
 
-1. **Acceptance backend cold-query latency.** Cold 30d `/renewables/mix` measured **88-150s+** against `192.168.86.36:3001`; the identical query on the same-size local replica runs in **29ms** using `idx_renewable_country_time`. Because better-sqlite3 is synchronous, one such query blocks every other request — `/api/health`, which touches no DB, measured 14-17s during a stall. Task 13 and Task 14 reduce the amplification but not the cause. **Next step:** compare `sqlite_master` indexes and `EXPLAIN QUERY PLAN` on the prod DB against the replica, and check disk/contention on that host. This is the single biggest drag on acceptance.
+1. ~~**Acceptance backend cold-query latency.**~~ **RESOLVED — see Task 23.** This was originally recorded as a prod-host infrastructure problem needing separate investigation. It is not: the cause is `getRenewablePercentage`'s join predicate wrapping the indexed `timestamp_utc` in `date()`/`strftime()`, which defeats the index and makes every renewable row rescan the country's entire `energy_load` history. Measured on the local replica: 30d took **51.17s** before, **0.0094s** after the rewrite. The 88-150s figures seen against `192.168.86.36` were that query plus a synchronous single-threaded server plus retry amplification (Task 14) and a never-hitting cache (Task 13). My earlier note that "the identical query on the replica runs in 29ms" measured `getRenewableMix`'s simple AVG, not the `/renewables/mix` route's *other* query (`getRenewablePercentage`) — which is the slow one. Task 23 fixes it.
 
 2. **ENTSO-E A75 ingest** (`data_gathering` module) — the prerequisite that would let Task 4's unattributed remainder become a real nuclear/fossil breakdown.
 
