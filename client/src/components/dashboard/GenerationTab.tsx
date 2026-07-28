@@ -30,7 +30,7 @@ const LEGEND: Array<{ key: keyof typeof SOURCE_COLORS; label: string }> = [
 export function GenerationTab() {
   const { renewableData, isLoading } = useRenewableChartData();
   const { data: mix, isLoading: mixLoading, isError: mixError } = useRenewableMix();
-  const { data: overview } = useDashboardOverview();
+  const { data: overview, isLoading: overviewLoading } = useDashboardOverview();
 
   const { series, nowIndex } = useMemo(
     () => adaptRenewableMixSeries(renewableData),
@@ -45,6 +45,11 @@ export function GenerationTab() {
     [mix, overview?.currentLoad],
   );
 
+  // `unattributedMw` is null whenever load is unmeasurable for this window
+  // (buildSourceRows deliberately refuses to guess). Coercing that to 0 would
+  // make every remaining slice green and the donut print a false "100%
+  // renewable" — so the donut is built only once a real remainder exists;
+  // see the `unattributedMw == null` guard below.
   const donutValues = [
     ...rows.map((r) => ({ key: r.key, value: r.mw, isGreen: true })),
     // The rest of load. Not "gas" — nothing in the DB says what it is.
@@ -87,11 +92,11 @@ export function GenerationTab() {
 
       <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
         <AbleCard title="Window average" subtitle="share of load · measured sources only">
-          {mixLoading ? (
+          {mixLoading || overviewLoading ? (
             <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
               Loading…
             </div>
-          ) : mixError || !mix ? (
+          ) : mixError || !mix || unattributedMw == null ? (
             <div className="flex h-[180px] items-center justify-center text-center text-[12px] text-ink-muted">
               Generation mix unavailable.
             </div>
