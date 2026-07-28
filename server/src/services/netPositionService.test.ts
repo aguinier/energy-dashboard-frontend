@@ -36,6 +36,10 @@ const SCHEMA = `
   );
 `;
 
+/** Window wide enough to cover every timestamp the fixtures below use. */
+const WIDE_START = '2000-01-01 00:00:00';
+const WIDE_END = '2100-01-01 00:00:00';
+
 const QUANTILES_SCHEMA = `
   CREATE TABLE forecast_quantiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +71,42 @@ function seedForecast(db: DatabaseType, generatedAt: string, value: number) {
         horizon_hours, forecast_value, model_name, model_version)
      VALUES ('BE','net_position','2026-07-28 00:00:00',?,40,?,'chronos-2-V010','20260726_070628')`
   ).run(generatedAt, value);
+}
+
+/** Add `days` (may be negative) to a 'YYYY-MM-DD' date, returning 'YYYY-MM-DD'. */
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Seed one 24-point D+2 run, mirroring the real Chronos job's shape. */
+function seedRun(
+  db: DatabaseType,
+  country: string,
+  generatedAt: string,
+  modelVersion: string,
+  targetDay: string,
+  baseHorizon: number,
+  baseValue: number
+) {
+  const ins = db.prepare(
+    `INSERT INTO forecasts
+       (country_code, forecast_type, target_timestamp_utc, generated_at,
+        horizon_hours, forecast_value, model_name, model_version)
+     VALUES (?, 'net_position', ?, ?, ?, ?, 'chronos-2-V010', ?)`
+  );
+  for (let h = 0; h < 24; h++) {
+    const hh = String(h).padStart(2, '0');
+    ins.run(
+      country,
+      `${targetDay} ${hh}:00:00`,
+      generatedAt,
+      baseHorizon + h,
+      baseValue + h,
+      modelVersion
+    );
+  }
 }
 
 describe('resolveBiddingZone', () => {
@@ -123,22 +163,41 @@ describe('getNetPositionForecast', () => {
     db.exec(SCHEMA);
   });
 
-  it('returns the newest vintage when several runs exist', () => {
+  it('picks the freshest run for a timestamp two vintages both cover', () => {
     seedForecast(db, '2026-07-26 06:00:43.125465', -100);
     seedForecast(db, '2026-07-26 07:06:28.960696', -57.2);
 
-    const { points, meta } = getNetPositionForecast('BE', db);
+    const { points, meta } = getNetPositionForecast('BE', WIDE_START, WIDE_END, db);
     expect(points).toHaveLength(1);
     expect(points[0].p50).toBe(-57.2);
-    expect(meta.generated_at).toBe('2026-07-26T07:06:28.960696');
+    expect(points[0].generated_at).toBe('2026-07-26T07:06:28.960696');
+    expect(points[0].horizon_hours).toBe(40);
+    expect(meta.vintages).toEqual([
+      {
+        generated_at: '2026-07-26T07:06:28.960696',
+        model_version: '20260726_070628',
+        horizon_hours_min: 40,
+        horizon_hours_max: 40,
+        target_count: 1,
+        first_target: '2026-07-28T00:00:00',
+        last_target: '2026-07-28T00:00:00',
+      },
+    ]);
   });
 
   it('degrades to a median-only forecast when forecast_quantiles is absent', () => {
     seedForecast(db, '2026-07-26 07:06:28.960696', -57.2);
 
-    const { points, meta } = getNetPositionForecast('BE', db);
+    const { points, meta } = getNetPositionForecast('BE', WIDE_START, WIDE_END, db);
     expect(meta.has_band).toBe(false);
-    expect(points[0]).toEqual({ timestamp: '2026-07-28T00:00:00', p50: -57.2, p10: null, p90: null });
+    expect(points[0]).toEqual({
+      timestamp: '2026-07-28T00:00:00',
+      p50: -57.2,
+      p10: null,
+      p90: null,
+      generated_at: '2026-07-26T07:06:28.960696',
+      horizon_hours: 40,
+    });
   });
 
   it('attaches the p10/p90 band when quantiles are present', () => {
@@ -154,25 +213,208 @@ describe('getNetPositionForecast', () => {
     insq.run(0.5, -57.2);
     insq.run(0.9, 56.1);
 
-    const { points, meta } = getNetPositionForecast('BE', db);
+    const { points, meta } = getNetPositionForecast('BE', WIDE_START, WIDE_END, db);
     expect(meta.has_band).toBe(true);
     expect(points[0]).toEqual({
       timestamp: '2026-07-28T00:00:00',
       p50: -57.2,
       p10: -166.5,
       p90: 56.1,
+      generated_at: '2026-07-26T07:06:28.960696',
+      horizon_hours: 40,
     });
   });
 
-  it('reports the bidding zone and null model metadata when nothing is forecast', () => {
-    const { points, meta } = getNetPositionForecast('GR', db);
+  it('reports the bidding zone and empty vintages when nothing is forecast', () => {
+    const { points, meta } = getNetPositionForecast('GR', WIDE_START, WIDE_END, db);
     expect(points).toEqual([]);
     expect(meta).toEqual({
       bidding_zone: 'GR',
       model_name: null,
-      model_version: null,
-      generated_at: null,
+      vintages: [],
       has_band: false,
+    });
+  });
+
+  describe('multiple vintages covering different targets', () => {
+    beforeEach(() => {
+      db.exec(QUANTILES_SCHEMA);
+      // Mirrors the reported bug: a D+2 run from 26 Jul covers 28 Jul, and
+      // the next day's run covers 29 Jul. Both must appear - the 26 Jul run
+      // is not superseded, because it targets different timestamps.
+      seedRun(db, 'FR', '2026-07-26 07:06:28.960696', '20260726_070628', '2026-07-28', 40, 100);
+      seedRun(db, 'FR', '2026-07-27 06:00:35.035825', '20260727_060035', '2026-07-29', 41, 200);
+    });
+
+    it('returns points from every vintage, not just the newest', () => {
+      const { points } = getNetPositionForecast('FR', WIDE_START, WIDE_END, db);
+      expect(points).toHaveLength(48);
+      const day28 = points.filter((p) => p.timestamp.startsWith('2026-07-28'));
+      const day29 = points.filter((p) => p.timestamp.startsWith('2026-07-29'));
+      expect(day28).toHaveLength(24);
+      expect(day29).toHaveLength(24);
+      expect(day28.every((p) => p.generated_at === '2026-07-26T07:06:28.960696')).toBe(true);
+      expect(day29.every((p) => p.generated_at === '2026-07-27T06:00:35.035825')).toBe(true);
+    });
+
+    it('lists both vintages in meta, newest first, with their own target coverage', () => {
+      const { meta } = getNetPositionForecast('FR', WIDE_START, WIDE_END, db);
+      expect(meta.vintages).toEqual([
+        {
+          generated_at: '2026-07-27T06:00:35.035825',
+          model_version: '20260727_060035',
+          horizon_hours_min: 41,
+          horizon_hours_max: 64,
+          target_count: 24,
+          first_target: '2026-07-29T00:00:00',
+          last_target: '2026-07-29T23:00:00',
+        },
+        {
+          generated_at: '2026-07-26T07:06:28.960696',
+          model_version: '20260726_070628',
+          horizon_hours_min: 40,
+          horizon_hours_max: 63,
+          target_count: 24,
+          first_target: '2026-07-28T00:00:00',
+          last_target: '2026-07-28T23:00:00',
+        },
+      ]);
+    });
+
+    it('never pairs a p50 from one vintage with a band from another', () => {
+      const insq = db.prepare(
+        `INSERT INTO forecast_quantiles
+           (country_code, forecast_type, target_timestamp_utc, generated_at,
+            quantile, forecast_value, model_name)
+         VALUES ('FR','net_position',?,?,?,?,'chronos-2-V010')`
+      );
+      // Band only exists for the 26 Jul vintage's first target.
+      insq.run('2026-07-28 00:00:00', '2026-07-26 07:06:28.960696', 0.1, -50);
+      insq.run('2026-07-28 00:00:00', '2026-07-26 07:06:28.960696', 0.9, 300);
+      // A stale band under the SAME target timestamp but the OLD vintage that
+      // lost - must never leak onto the winning row.
+      insq.run('2026-07-29 00:00:00', '2026-07-26 07:06:28.960696', 0.1, -9999);
+      insq.run('2026-07-29 00:00:00', '2026-07-26 07:06:28.960696', 0.9, 9999);
+
+      const { points } = getNetPositionForecast('FR', WIDE_START, WIDE_END, db);
+      const jul28 = points.find((p) => p.timestamp === '2026-07-28T00:00:00')!;
+      expect(jul28.p10).toBe(-50);
+      expect(jul28.p90).toBe(300);
+
+      // 29 Jul is won by the 27 Jul vintage, which has no quantile rows here -
+      // it must stay null, not inherit the 26 Jul vintage's stray band.
+      const jul29 = points.find((p) => p.timestamp === '2026-07-29T00:00:00')!;
+      expect(jul29.p10).toBeNull();
+      expect(jul29.p90).toBeNull();
+    });
+  });
+
+  describe('a single-vintage country renders exactly as before', () => {
+    it('produces one vintage entry with points matching the one run', () => {
+      seedRun(db, 'BE', '2026-07-27 06:00:00.000000', '20260727_060000', '2026-07-29', 41, 10);
+
+      const { points, meta } = getNetPositionForecast('BE', WIDE_START, WIDE_END, db);
+      expect(points).toHaveLength(24);
+      expect(meta.vintages).toHaveLength(1);
+      expect(meta.vintages[0].target_count).toBe(24);
+      expect(points.every((p) => p.generated_at === '2026-07-27T06:00:00.000000')).toBe(true);
+    });
+  });
+
+  describe('bounding by the requested window', () => {
+    // Mirrors the daily D+2 job's real steady state: every run targets a
+    // distinct calendar day, so nothing ever supersedes an older run.
+    // Without a time bound, 58 days of runs leaves 58 permanent "winners"
+    // and 58*24 = 1392 points, growing forever as the job keeps running.
+    const RUN_COUNT = 58;
+    const FIRST_GENERATED_DAY = '2026-06-01'; // -> first target 2026-06-03
+
+    function seedDailyRuns() {
+      for (let i = 0; i < RUN_COUNT; i++) {
+        const generatedDay = addDays(FIRST_GENERATED_DAY, i);
+        const targetDay = addDays(generatedDay, 2);
+        seedRun(db, 'FR', `${generatedDay} 06:00:00.000000`, generatedDay, targetDay, 40, 100);
+      }
+    }
+
+    it('does not accumulate every vintage ever written - only those inside the window', () => {
+      seedDailyRuns();
+
+      // A realistic query window: the client extends `end` to now+3d but
+      // does not extend `start` back through the whole deployment's
+      // history (see client/src/hooks/useNetPositionData.ts). Using the
+      // day after the last seeded run as "now", with a 10-day lookback,
+      // mirrors that shape.
+      const now = addDays(FIRST_GENERATED_DAY, RUN_COUNT - 1);
+      const start = `${addDays(now, -10)} 00:00:00`;
+      const end = `${addDays(now, 3)} 00:00:00`;
+
+      const { points, meta } = getNetPositionForecast('FR', start, end, db);
+
+      // Bounded, not "everything the deployment has ever produced": only
+      // the 13 target days that fall inside [start, end] come back, out of
+      // the 58 that exist on disk.
+      expect(points.length).toBeLessThan(58 * 24);
+      expect(meta.vintages.length).toBeLessThan(58);
+      expect(points).toHaveLength(13 * 24);
+      expect(meta.vintages).toHaveLength(13);
+
+      const startIso = start.replace(' ', 'T');
+      const endIso = end.replace(' ', 'T');
+      for (const p of points) {
+        expect(p.timestamp >= startIso).toBe(true);
+        expect(p.timestamp <= endIso).toBe(true);
+      }
+    });
+
+    it('still returns the full history when the window genuinely covers all of it', () => {
+      // Confirms the bound tracks the caller's window rather than being a
+      // hidden fixed cap - a window wide enough to cover everything still
+      // returns everything.
+      seedDailyRuns();
+
+      const { points, meta } = getNetPositionForecast('FR', WIDE_START, WIDE_END, db);
+      expect(points).toHaveLength(RUN_COUNT * 24);
+      expect(meta.vintages).toHaveLength(RUN_COUNT);
+    });
+  });
+
+  describe('a null horizon_hours does not silently mislabel the vintage', () => {
+    // `forecasts.horizon_hours` has no NOT NULL constraint, and nothing at
+    // the ingest HTTP boundary enforces one (netPositionIngestService writes
+    // `row.horizon_hours ?? null`). Math.min/Math.max coerce a null to 0 in
+    // JS, which would silently turn a D+2+ vintage into horizon_hours_min: 0
+    // -> mislabelled "D+1" by horizonDayLabel. Must come back null instead.
+    it('reports horizon_hours_min/max as null when every row has a null horizon', () => {
+      db.prepare(
+        `INSERT INTO forecasts
+           (country_code, forecast_type, target_timestamp_utc, generated_at,
+            horizon_hours, forecast_value, model_name, model_version)
+         VALUES ('BE','net_position','2026-07-28 00:00:00','2026-07-26 07:06:28.960696',
+                 NULL, -57.2, 'chronos-2-V010','20260726_070628')`
+      ).run();
+
+      const { points, meta } = getNetPositionForecast('BE', WIDE_START, WIDE_END, db);
+      expect(points[0].horizon_hours).toBeNull();
+      expect(meta.vintages).toHaveLength(1);
+      expect(meta.vintages[0].horizon_hours_min).toBeNull();
+      expect(meta.vintages[0].horizon_hours_max).toBeNull();
+    });
+
+    it('excludes only the null rows from min/max when a vintage mixes null and real horizons', () => {
+      db.prepare(
+        `INSERT INTO forecasts
+           (country_code, forecast_type, target_timestamp_utc, generated_at,
+            horizon_hours, forecast_value, model_name, model_version)
+         VALUES
+           ('BE','net_position','2026-07-28 00:00:00','2026-07-26 07:06:28.960696', NULL, -57.2, 'chronos-2-V010','20260726_070628'),
+           ('BE','net_position','2026-07-28 01:00:00','2026-07-26 07:06:28.960696', 41, -50.0, 'chronos-2-V010','20260726_070628')`
+      ).run();
+
+      const { meta } = getNetPositionForecast('BE', WIDE_START, WIDE_END, db);
+      expect(meta.vintages).toHaveLength(1);
+      expect(meta.vintages[0].horizon_hours_min).toBe(41);
+      expect(meta.vintages[0].horizon_hours_max).toBe(41);
     });
   });
 });
@@ -184,10 +426,24 @@ describe('getNetPosition', () => {
     seedActuals(db);
     seedForecast(db, '2026-07-26 07:06:28.960696', -57.2);
 
-    const out = getNetPosition('BE', '2026-07-26 00:00:00', '2026-07-27 23:00:00', db);
+    // End extended past the actuals range to 2026-07-28, same shape as the
+    // real caller (useNetPositionData.ts extends `end` to now+3d) - the
+    // forecast's target_timestamp_utc (2026-07-28, from seedForecast) must
+    // be inside the window now that the forecast query is window-bounded.
+    const out = getNetPosition('BE', '2026-07-26 00:00:00', '2026-07-28 23:00:00', db);
     expect(out.actual).toHaveLength(3);
     expect(out.forecast).toHaveLength(1);
     expect(out.meta.bidding_zone).toBe('BE');
+  });
+
+  it('excludes a forecast whose target falls outside the requested window', () => {
+    const db = new Database(':memory:');
+    db.exec(SCHEMA);
+    seedForecast(db, '2026-07-26 07:06:28.960696', -57.2); // targets 2026-07-28
+
+    const out = getNetPosition('BE', '2026-07-01 00:00:00', '2026-07-10 00:00:00', db);
+    expect(out.forecast).toHaveLength(0);
+    expect(out.meta.vintages).toHaveLength(0);
   });
 });
 
@@ -247,7 +503,7 @@ describe('net position model pinning', () => {
     seedModel('chronos-2-V010', '2026-07-26 07:00:00', -57.2);
     seedModel('chronos-2-V011', '2026-07-26 09:00:00', 999.9);
 
-    const { points, meta } = getNetPositionForecast('BE', db);
+    const { points, meta } = getNetPositionForecast('BE', WIDE_START, WIDE_END, db);
     expect(meta.model_name).toBe('chronos-2-V010');
     expect(points[0].p50).toBe(-57.2);
   });
@@ -256,7 +512,7 @@ describe('net position model pinning', () => {
     seedModel('chronos-2-V010', '2026-07-26 06:00:00', -100);
     seedModel('chronos-2-V010', '2026-07-26 07:00:00', -57.2);
 
-    const { points } = getNetPositionForecast('BE', db);
+    const { points } = getNetPositionForecast('BE', WIDE_START, WIDE_END, db);
     expect(points).toHaveLength(1);
     expect(points[0].p50).toBe(-57.2);
   });

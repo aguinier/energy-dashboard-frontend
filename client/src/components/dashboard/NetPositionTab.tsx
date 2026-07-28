@@ -5,6 +5,7 @@ import { useNetPositionData } from '@/hooks/useNetPositionData';
 import { useCountries } from '@/hooks/useCountries';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { adaptNetPositionSeries } from '@/lib/chartAdapters';
+import { summarizeVintages } from '@/lib/netPositionProvenance';
 import { useModelSelection } from '@/hooks/useForecastModels';
 
 /** Countries whose net position is folded into a multi-country bidding zone. */
@@ -41,6 +42,12 @@ export function NetPositionTab() {
 
   const { series, nowIndex } = useMemo(() => adaptNetPositionSeries(shown), [shown]);
 
+  // Several forecast runs can be on screen at once (see netPositionService's
+  // freshest-per-timestamp read), so provenance is a list, not a single
+  // generated_at - a subtitle claiming one generation time for the whole
+  // series would be wrong the moment two vintages are both showing.
+  const vintages = useMemo(() => summarizeVintages(data?.meta.vintages), [data]);
+
   const latest = useMemo(() => {
     const withValue = (data?.actual ?? []).filter((p) => p.net_position_mw != null);
     return withValue.length ? withValue[withValue.length - 1] : null;
@@ -64,11 +71,22 @@ export function NetPositionTab() {
     country?.country_name ?? selectedCountry,
     'ENTSO-E day-ahead',
   ];
-  if (!forecastHidden && data?.meta.generated_at) {
+  if (!forecastHidden && vintages.length === 1) {
+    // Exactly one run on screen - safe to name its generation time here,
+    // same as before this change.
+    const v = vintages[0];
     subtitleParts.push(
-      `forecast ${data.meta.model_name ?? 'model'} · generated ${new Date(
-        data.meta.generated_at,
+      `forecast ${data?.meta.model_name ?? 'model'} · ${v.dayLabel} · generated ${new Date(
+        v.generated_at,
       ).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+    );
+  } else if (!forecastHidden && vintages.length > 1) {
+    // Several runs, each covering its own target window - naming one
+    // generation time here would misattribute it to the whole chart. The
+    // per-run breakdown renders as its own row below, and each point's
+    // tooltip carries its own vintage besides.
+    subtitleParts.push(
+      `forecast ${data?.meta.model_name ?? 'model'} · ${vintages.length} runs on screen`,
     );
   }
 
@@ -136,6 +154,25 @@ export function NetPositionTab() {
                 <span>median only — no uncertainty band stored</span>
               )}
             </div>
+            {/* Per-run provenance. Only needed once there is more than one
+                vintage on screen - a single run is already named in the
+                subtitle above, so a one-row repeat here would be noise. */}
+            {!forecastHidden && vintages.length > 1 && (
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint">
+                {vintages.map((v) => (
+                  <span key={v.generated_at} className="font-mono-num">
+                    {v.dayLabel} run generated{' '}
+                    {new Date(v.generated_at).toLocaleString([], {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}{' '}
+                    ({v.target_count} pts)
+                  </span>
+                ))}
+              </div>
+            )}
           </>
         )}
 

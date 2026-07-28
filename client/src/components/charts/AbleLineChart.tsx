@@ -18,6 +18,13 @@ export interface AbleSeriesPoint {
   /** Optional min/max band, used for ENTSO-E week-ahead daily bands. */
   min?: number | null;
   max?: number | null;
+  /**
+   * Provenance of the forecast value at this point — which run produced it
+   * and how far ahead it was, e.g. net position's D+1/D+2 vintages. Optional:
+   * only series that can carry several forecast vintages at once set these.
+   */
+  forecastGeneratedAt?: string | null;
+  forecastDayLabel?: string | null;
 }
 
 export interface AbleLineChartProps {
@@ -512,6 +519,21 @@ export function AbleLineChart({
             {h.value != null ? (h.future ? 'published' : 'actual') : 'forecast'} ·{' '}
             {new Date(h.ts).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
           </div>
+          {/* Per-point provenance — several forecast vintages can be on
+              screen at once, so the generation time is named per point
+              rather than once for the whole series. */}
+          {h.value == null && h.forecastDayLabel && (
+            <div className="mb-0.5 text-[10px] opacity-60">
+              {h.forecastDayLabel}
+              {h.forecastGeneratedAt &&
+                ` · run ${new Date(h.forecastGeneratedAt).toLocaleString([], {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}`}
+            </div>
+          )}
           <div className="font-semibold">
             {tipFmt(h.value ?? h.forecast ?? 0)}
             {unit && <span className="ml-0.5 opacity-60">{unit}</span>}
