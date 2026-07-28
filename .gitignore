@@ -6,6 +6,9 @@ dist/
 .env.local
 .env.*.local
 
+# TypeScript incremental build cache — churns on every build, not source
+*.tsbuildinfo
+
 # Database
 *.db
 *.db-wal
