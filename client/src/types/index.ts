@@ -203,53 +203,15 @@ export interface DataFreshness {
 }
 
 // ============================================================================
-// Data Layers - Unified forecast visualization state
+// Data Layers
 // ============================================================================
+// The unified `LayersState`/`ForecastLayer`/`AvailableLayers` trio that used
+// to live here was removed as dead code (Task 22 review: no reader, no
+// caller of any of its store actions, after LoadTab moved to the model
+// picker as the single source of truth for the overlay). `TSOHorizon` is
+// kept — it's still used by useLoadChartData.ts and the analytics config.
 
 export type TSOHorizon = 'day_ahead' | 'week_ahead';
-
-/**
- * Configuration for a single forecast layer
- */
-export interface ForecastLayer {
-  /** Whether this layer is visible on the chart */
-  enabled: boolean;
-  /** Whether to show accuracy comparison vs actuals (exclusive - only one layer can be in accuracy mode) */
-  showAccuracy: boolean;
-  /** Forecast horizon (TSO only) */
-  horizon?: TSOHorizon;
-}
-
-/**
- * Unified state for all data layers in charts
- */
-export interface LayersState {
-  /** Show actual/measured data */
-  showActuals: boolean;
-  /** TSO (ENTSO-E) forecast layer configuration */
-  tso: ForecastLayer;
-  /** ML (custom trained model) forecast layer configuration */
-  ml: ForecastLayer;
-  // Future: Add more forecast sources here
-  // external?: ForecastLayer;
-}
-
-/**
- * Available layer configuration for a specific chart type
- * Different charts support different layers
- */
-export interface AvailableLayers {
-  tso?: {
-    available: boolean;
-    horizons: TSOHorizon[];
-    hasAccuracy: boolean;
-  };
-  ml?: {
-    available: boolean;
-    horizons: MLHorizon[];
-    hasAccuracy: boolean;
-  };
-}
 
 // ============================================================================
 // Forecast Comparison Types

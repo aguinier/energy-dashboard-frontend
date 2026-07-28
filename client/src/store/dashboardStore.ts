@@ -1,21 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { TimeRange, TimePreset, TimeAnchor, MetricType, TSOForecastType, LayersState, TSOHorizon, AppView, AnalyticsForecastType } from '@/types';
+import type { TimeRange, TimePreset, TimeAnchor, MetricType, TSOForecastType, AppView, AnalyticsForecastType } from '@/types';
 import { DEFAULT_COUNTRY, PRESET_DURATIONS_HOURS } from '@/lib/constants';
-
-// Default layers state
-const DEFAULT_LAYERS: LayersState = {
-  showActuals: true,
-  tso: {
-    enabled: false,
-    showAccuracy: false,
-    horizon: 'day_ahead',
-  },
-  ml: {
-    enabled: false,
-    showAccuracy: false,
-  },
-};
+import { migratePersisted, PERSIST_VERSION } from './migrate';
 
 // Default ML forecast horizons (D+1 and D+2)
 const DEFAULT_ML_HORIZONS = [1, 2];
@@ -137,18 +124,6 @@ interface DashboardState {
   selectedMLHorizons: number[];
   toggleMLHorizon: (horizon: number) => void;
   setSelectedMLHorizons: (horizons: number[]) => void;
-
-  // ============================================================================
-  // Unified Data Layers (new system)
-  // ============================================================================
-  layers: LayersState;
-
-  // Layer actions
-  toggleLayer: (layer: 'tso' | 'ml') => void;
-  setLayerAccuracy: (layer: 'tso' | 'ml', show: boolean) => void;
-  setTSOHorizon: (horizon: TSOHorizon) => void;
-  showActualsOnly: () => void;
-  showAllLayers: () => void;
 
   // ============================================================================
   // Analytics Configuration
@@ -341,98 +316,6 @@ export const useDashboardStore = create<DashboardState>()(
       setSelectedMLHorizons: (horizons) => set({ selectedMLHorizons: horizons }),
 
       // ============================================================================
-      // Unified Data Layers (new system)
-      // ============================================================================
-      layers: DEFAULT_LAYERS,
-
-      toggleLayer: (layer) =>
-        set((state) => {
-          const newEnabled = !state.layers[layer].enabled;
-          const newLayers = {
-            ...state.layers,
-            [layer]: {
-              ...state.layers[layer],
-              enabled: newEnabled,
-              // Reset accuracy when disabling
-              showAccuracy: newEnabled ? state.layers[layer].showAccuracy : false,
-            },
-          };
-          // Sync with legacy state (including comparison modes)
-          return {
-            layers: newLayers,
-            showTSOForecast: newLayers.tso.enabled,
-            showForecast: newLayers.ml.enabled,
-            showTSOComparisonMode: newLayers.tso.showAccuracy,
-            showComparisonMode: newLayers.ml.showAccuracy,
-          };
-        }),
-
-      setLayerAccuracy: (layer, show) =>
-        set((state) => {
-          // If enabling accuracy for one layer, disable for others (exclusive)
-          const newLayers = {
-            ...state.layers,
-            tso: {
-              ...state.layers.tso,
-              showAccuracy: layer === 'tso' ? show : (show ? false : state.layers.tso.showAccuracy),
-            },
-            ml: {
-              ...state.layers.ml,
-              showAccuracy: layer === 'ml' ? show : (show ? false : state.layers.ml.showAccuracy),
-            },
-          };
-          // Sync with legacy state
-          return {
-            layers: newLayers,
-            showTSOComparisonMode: newLayers.tso.showAccuracy,
-            showComparisonMode: newLayers.ml.showAccuracy,
-          };
-        }),
-
-      setTSOHorizon: (horizon) =>
-        set((state) => ({
-          layers: {
-            ...state.layers,
-            tso: {
-              ...state.layers.tso,
-              horizon,
-            },
-          },
-          // Sync with legacy state
-          tsoForecastType: horizon,
-        })),
-
-      showActualsOnly: () =>
-        set((state) => ({
-          layers: {
-            ...state.layers,
-            showActuals: true,
-            tso: { ...state.layers.tso, enabled: false, showAccuracy: false },
-            ml: { ...state.layers.ml, enabled: false, showAccuracy: false },
-          },
-          // Sync with legacy state
-          showTSOForecast: false,
-          showForecast: false,
-          showTSOComparisonMode: false,
-          showComparisonMode: false,
-        })),
-
-      showAllLayers: () =>
-        set((state) => ({
-          layers: {
-            ...state.layers,
-            showActuals: true,
-            tso: { ...state.layers.tso, enabled: true },
-            ml: { ...state.layers.ml, enabled: true },
-          },
-          // Sync with legacy state (including comparison modes)
-          showTSOForecast: true,
-          showForecast: true,
-          showTSOComparisonMode: state.layers.tso.showAccuracy,
-          showComparisonMode: state.layers.ml.showAccuracy,
-        })),
-
-      // ============================================================================
       // Analytics Configuration
       // ============================================================================
       analyticsConfig: DEFAULT_ANALYTICS_CONFIG,
@@ -543,6 +426,8 @@ export const useDashboardStore = create<DashboardState>()(
     }),
     {
       name: 'energy-dashboard-storage',
+      version: PERSIST_VERSION,
+      migrate: (persisted, from) => migratePersisted(persisted as Record<string, unknown>, from),
       partialize: (state) => ({
         currentView: state.currentView,
         selectedCountry: state.selectedCountry,
@@ -550,6 +435,7 @@ export const useDashboardStore = create<DashboardState>()(
         timePreset: state.timePreset,
         timeAnchor: state.timeAnchor,
         mapMetric: state.mapMetric,
+        activeChartTab: state.activeChartTab,
         selectedModelByType: state.selectedModelByType,
         comparisonCountries: state.comparisonCountries,
         sidebarOpen: state.sidebarOpen,
@@ -562,8 +448,6 @@ export const useDashboardStore = create<DashboardState>()(
         visibleRenewableTypes: state.visibleRenewableTypes,
         // ML Forecast horizons
         selectedMLHorizons: state.selectedMLHorizons,
-        // New unified layers state
-        layers: state.layers,
         // Analytics configuration
         analyticsConfig: state.analyticsConfig,
         // Cross-country comparison
