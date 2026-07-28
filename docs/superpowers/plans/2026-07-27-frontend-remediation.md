@@ -2407,6 +2407,54 @@ all four 15-minute load rows in the hour, skewing the average."
 
 ---
 
+### Task 24: Stop the Generation tab fetching forecasts it discards
+
+Found during Task 20. Same family as Task 22's dead render gate, with an added cost.
+
+`TAB_FORECAST_TYPE` maps the `renewables` tab to the `solar` forecast type (`lib/constants.ts:113`), so `ModelPicker` renders a model list on the Generation tab. But **`GenerationTab.tsx` contains no reference to forecasts at all** — it renders `adaptRenewableMixSeries(renewableData)`, which takes actuals only. Neither the component nor `useRenewableChartData` reads `useModelSelection`.
+
+Two consequences:
+
+1. **The picker is a control that lies.** Choosing a model on this tab does nothing.
+2. **Five API round-trips per view are thrown away.** `useRenewableChartData` fires ML forecast queries for solar, wind_onshore, wind_offshore, hydro_total and biomass (`useRenewableChartData.ts:86-146`), and nothing consumes them. On a synchronous single-threaded server, that is five needless blocking queries every time someone opens the tab.
+
+**Do not** wire the forecasts into the stacked chart — overlaying a forecast on a stacked area chart is a feature, and this is a remediation branch. Remove what is unused and stop offering a control that does nothing.
+
+**Files:**
+- Modify: `client/src/hooks/useRenewableChartData.ts:86-146`
+- Modify: `client/src/views/CountryDashboardView.tsx` (picker visibility)
+
+- [ ] **Step 1: Confirm the forecast results are genuinely unused**
+
+Grep every consumer of `useRenewableChartData`'s return value. Confirm no caller reads the forecast fields. If any does, stop — the fix is different from what this task assumes, and you should report that instead.
+
+- [ ] **Step 2: Drop the discarded queries**
+
+Remove the five ML forecast queries and the TSO generation-forecast query if it is equally unused, along with any now-unused date-range helpers and returned fields. Keep the actuals query and the mix query exactly as they are.
+
+- [ ] **Step 3: Hide the picker where it does nothing**
+
+`CountryDashboardView` renders one `ModelPicker` for the active tab. Render it only for tabs that actually consume a model selection — `load`, `price` and `net-position` today. Do not render a disabled or placeholder control; render nothing.
+
+- [ ] **Step 4: Verify**
+
+Run `npx tsc -b client && npm test -w client`.
+
+In the browser, open a country's **Generation** tab with DevTools' network panel filtered to `/api/forecasts`: there must now be **zero** such requests. Confirm the stacked chart, donut and source table all still render. Confirm the picker still appears and still works on Load, Price and Net position.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add client/src/hooks/useRenewableChartData.ts client/src/views/CountryDashboardView.tsx
+git commit -m "fix(generation): stop fetching forecasts the tab discards
+
+useRenewableChartData ran five ML forecast queries per view and GenerationTab
+consumed none of them, while ModelPicker offered a model choice that could not
+take effect."
+```
+
+---
+
 ## Deployment note — server changes are invisible in acceptance until redeploy
 
 `client/.env.local` sets `API_PROXY_TARGET=http://192.168.86.36:3001`, so the local Vite dev server serves **new client code against the old server bundle**. Client-side work is therefore verifiable immediately; server-side work is not.
