@@ -1,4 +1,4 @@
-export const PERSIST_VERSION = 2;
+export const PERSIST_VERSION = 3;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
@@ -30,15 +30,26 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
     next.activeChartTab = 'load';
   }
 
-  const layers = next.layers as
-    | { tso?: { enabled?: boolean; showAccuracy?: boolean }; ml?: { enabled?: boolean; showAccuracy?: boolean } }
-    | undefined;
-  if (layers && typeof layers === 'object') {
-    next.showTSOForecast = !!layers.tso?.enabled;
-    next.showForecast = !!layers.ml?.enabled;
-    next.showTSOComparisonMode = !!layers.tso?.showAccuracy;
-    next.showComparisonMode = !!layers.ml?.showAccuracy;
-  }
+  // `layers` (a `{ tso, ml }` blob) predates the per-tab model picker. Every
+  // chart has since moved to `useModelSelection` as its single source of
+  // truth for which forecast overlay to show (Load: Task 22; Price: the
+  // price-picker fix), and nothing anywhere writes to `layers` any more —
+  // it, and the four booleans this used to derive from it
+  // (showForecast/showTSOForecast/showComparisonMode/showTSOComparisonMode),
+  // are dead: no live chart reads them for whether to render a forecast.
+  //
+  // Deriving from it was actively harmful, not just redundant: `layers.ml`
+  // defaulted to `enabled: false` and nothing could ever set it `true`, so
+  // this clause unconditionally overwrote `showForecast` with `false` on
+  // every migration — clobbering a value the *current* code had legitimately
+  // set moments earlier (e.g. jumping to a future time preset sets
+  // `showForecast: true` directly, with no `layers` involved at all). A
+  // returning user could lose a forecast they had on simply because a stale
+  // `layers` fossil happened to still be sitting in their persisted blob.
+  //
+  // The fix is to stop deriving anything from it and just drop the dead key
+  // so it stops shallow-merging back into state on every load.
+  delete next.layers;
 
   // MAPE was replaced by WAPE (degenerate metric: divided by the signed
   // actual, so negative prices cancelled error, and a near-zero actual could

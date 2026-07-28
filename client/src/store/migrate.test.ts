@@ -11,10 +11,38 @@ describe('migratePersisted', () => {
     expect(migratePersisted({ currentView: 'country' }, 0).currentView).toBe('country');
   });
 
-  it('derives legacy booleans from layers', () => {
-    const out = migratePersisted({ layers: { showActuals: true, tso: { enabled: true, showAccuracy: false, horizon: 'day_ahead' }, ml: { enabled: false, showAccuracy: false } } }, 0);
-    expect(out.showTSOForecast).toBe(true);
-    expect(out.showForecast).toBe(false);
+  // `layers` is dead state (see migrate.ts) — migration must not derive
+  // anything from it, and must not let it survive to shallow-merge back in.
+  it('drops the dead layers blob without touching forecast booleans', () => {
+    const out = migratePersisted(
+      {
+        layers: { showActuals: true, tso: { enabled: true, showAccuracy: false, horizon: 'day_ahead' }, ml: { enabled: false, showAccuracy: false } },
+        showForecast: true,
+      },
+      0,
+    );
+    expect(out.layers).toBeUndefined();
+    // A `showForecast` the current code already set must survive untouched —
+    // it must NOT be clobbered back to `layers.ml.enabled` (false).
+    expect(out.showForecast).toBe(true);
+  });
+
+  it('is a no-op on forecast booleans when layers is absent', () => {
+    const out = migratePersisted({ showForecast: true, showTSOForecast: false }, 0);
+    expect(out.showForecast).toBe(true);
+    expect(out.showTSOForecast).toBe(false);
+  });
+
+  // comparisonMetric 'mape' -> 'wape' — the entire reason PERSIST_VERSION
+  // moved past 1 (WAPE replaced MAPE as a degenerate cross-country metric).
+  it('migrates a persisted mape comparisonMetric to wape', () => {
+    const out = migratePersisted({ comparisonMetric: 'mape' }, 0);
+    expect(out.comparisonMetric).toBe('wape');
+  });
+
+  it('leaves a valid comparisonMetric untouched', () => {
+    const out = migratePersisted({ comparisonMetric: 'rmse' }, 0);
+    expect(out.comparisonMetric).toBe('rmse');
   });
 
   it('is a no-op at the current version', () => {
