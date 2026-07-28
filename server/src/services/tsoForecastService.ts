@@ -28,7 +28,7 @@ export interface ForecastAccuracyDataPoint {
   forecast_value: number;
   actual_value: number;
   error: number;
-  error_pct: number;
+  error_pct: number | null;
 }
 
 export type TSOForecastType = 'day_ahead' | 'week_ahead' | 'all';
@@ -210,7 +210,7 @@ export function getLoadForecastAccuracy(
         ROUND(a.actual_value - f.forecast_value, 2) as error,
         CASE
           WHEN a.actual_value > 0 THEN ROUND(100.0 * ABS(a.actual_value - f.forecast_value) / a.actual_value, 2)
-          ELSE 0
+          ELSE NULL
         END as error_pct
       FROM hourly_forecast f
       INNER JOIN hourly_actual a ON f.timestamp = a.timestamp
@@ -249,7 +249,7 @@ export function getLoadForecastAccuracy(
       ROUND(a.actual_value - f.forecast_value, 2) as error,
       CASE
         WHEN a.actual_value > 0 THEN ROUND(100.0 * ABS(a.actual_value - f.forecast_value) / a.actual_value, 2)
-        ELSE 0
+        ELSE NULL
       END as error_pct
     FROM agg_forecast f
     INNER JOIN agg_actual a ON f.timestamp = a.timestamp
@@ -289,7 +289,7 @@ export function getGenerationForecastAccuracy(
         ROUND(a.${actualColumn} - f.${forecastColumn}, 2) as error,
         CASE
           WHEN a.${actualColumn} > 0 THEN ROUND(100.0 * ABS(a.${actualColumn} - f.${forecastColumn}) / a.${actualColumn}, 2)
-          ELSE 0
+          ELSE NULL
         END as error_pct
       FROM energy_generation_forecast f
       INNER JOIN energy_renewable a
@@ -334,7 +334,7 @@ export function getGenerationForecastAccuracy(
       ROUND(a.actual_value - f.forecast_value, 2) as error,
       CASE
         WHEN a.actual_value > 0 THEN ROUND(100.0 * ABS(a.actual_value - f.forecast_value) / a.actual_value, 2)
-        ELSE 0
+        ELSE NULL
       END as error_pct
     FROM agg_forecast f
     INNER JOIN agg_actual a ON f.timestamp = a.timestamp
@@ -366,21 +366,39 @@ export function getGenerationForecastAccuracyMetrics(
   return calculateMetrics(data);
 }
 
-function calculateMetrics(data: ForecastAccuracyDataPoint[]) {
+/**
+ * Accuracy metrics over paired forecast/actual points.
+ *
+ * Returns nulls rather than zeros for an empty window: zeros render as
+ * "MAE 0 MW / MAPE 0%", which reads as a flawless forecast when nothing was
+ * measured at all.
+ *
+ * `mape` covers only points with a positive actual — a percentage error is
+ * undefined at zero. Those points previously contributed 0, which understated
+ * mape wherever actuals legitimately hit zero (solar overnight).
+ */
+export function calculateMetrics(data: ForecastAccuracyDataPoint[]) {
   if (data.length === 0) {
-    return { mae: 0, mape: 0, rmse: 0, dataPoints: 0 };
+    return { mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 };
   }
 
   const n = data.length;
+  const round2 = (x: number) => Math.round(x * 100) / 100;
+
   const mae = data.reduce((sum, d) => sum + Math.abs(d.error), 0) / n;
-  const mape = data.reduce((sum, d) => sum + d.error_pct, 0) / n;
   const rmse = Math.sqrt(data.reduce((sum, d) => sum + d.error * d.error, 0) / n);
 
+  const pctPoints = data.filter((d) => d.error_pct != null);
+  const mape = pctPoints.length
+    ? pctPoints.reduce((sum, d) => sum + (d.error_pct as number), 0) / pctPoints.length
+    : null;
+
   return {
-    mae: Math.round(mae * 100) / 100,
-    mape: Math.round(mape * 100) / 100,
-    rmse: Math.round(rmse * 100) / 100,
+    mae: round2(mae),
+    mape: mape == null ? null : round2(mape),
+    rmse: round2(rmse),
     dataPoints: n,
+    mapeSamples: pctPoints.length,
   };
 }
 

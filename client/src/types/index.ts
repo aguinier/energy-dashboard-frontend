@@ -168,14 +168,16 @@ export interface TSOForecastAccuracyDataPoint {
   forecast_value: number;
   actual_value: number;
   error: number;
-  error_pct: number;
+  error_pct: number | null; // null when actual_value <= 0 — unmeasurable as a percentage
 }
 
 export interface TSOForecastAccuracyMetrics {
-  mae: number;
-  mape: number;
-  rmse: number;
+  mae: number | null;
+  mape: number | null;
+  rmse: number | null;
   dataPoints: number;
+  /** Count of points with a positive actual — may be lower than dataPoints; mape covers only these. */
+  mapeSamples: number;
 }
 
 export interface TSOForecastAccuracyResponse {
@@ -222,7 +224,7 @@ export type TSOHorizon = 'day_ahead' | 'week_ahead';
  */
 export interface AccuracyMetrics {
   mae: number;      // Mean Absolute Error (MW or EUR/MWh)
-  mape: number;     // Mean Absolute Percentage Error (%)
+  mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
   rmse: number;     // Root Mean Square Error
   bias: number;     // Mean Error (positive = over-forecast)
   dataPoints: number;
@@ -316,7 +318,7 @@ export type AnalyticsTimeRange = '7d' | '30d' | '90d' | 'all';
  */
 export interface RollingAccuracyDataPoint {
   date: string;  // YYYY-MM-DD format
-  tso?: { mape: number; mae: number };
+  tso?: { mape: number | null; mae: number };
   ml_d1?: { mape: number; mae: number };
   ml_d2?: { mape: number; mae: number };
 }

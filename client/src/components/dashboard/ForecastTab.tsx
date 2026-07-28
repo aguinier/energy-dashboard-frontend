@@ -150,6 +150,12 @@ export function ForecastTab() {
             indicative, not a stable estimate. Widen the range for a firmer read.
           </p>
         )}
+        {loadMetrics != null && loadMetrics.mapeSamples < loadMetrics.dataPoints && (
+          <p className="mt-2 text-[11px] text-ink-muted">
+            MAPE covers {loadMetrics.mapeSamples} of {loadMetrics.dataPoints} points — the rest
+            had a zero or negative actual, where percentage error is undefined.
+          </p>
+        )}
       </div>
 
       {/* Compare forecast models */}
