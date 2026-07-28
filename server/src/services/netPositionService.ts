@@ -78,7 +78,8 @@ interface RawForecastRow {
   p10: number | null;
   p90: number | null;
   generated_at: string;
-  horizon_hours: number;
+  /** `forecasts.horizon_hours` has no NOT NULL constraint. */
+  horizon_hours: number | null;
   model_version: string | null;
 }
 
@@ -99,7 +100,11 @@ function buildVintages(rows: RawForecastRow[]): NetPositionForecastVintage[] {
       group = { model_version: r.model_version, horizons: [], targets: [] };
       byGeneratedAt.set(r.generated_at, group);
     }
-    group.horizons.push(r.horizon_hours);
+    // horizon_hours is nullable at the DB layer - a null must never enter a
+    // Math.min/Math.max reduction below, where JS coerces it to 0 and would
+    // silently mislabel a D+2 (or later) vintage as D+1 downstream in
+    // horizonDayLabel. Excluded here, not defaulted.
+    if (r.horizon_hours != null) group.horizons.push(r.horizon_hours);
     group.targets.push(r.timestamp);
   }
 
@@ -107,8 +112,10 @@ function buildVintages(rows: RawForecastRow[]): NetPositionForecastVintage[] {
     .map(([generated_at, g]) => ({
       generated_at,
       model_version: g.model_version,
-      horizon_hours_min: Math.min(...g.horizons),
-      horizon_hours_max: Math.max(...g.horizons),
+      // null when every row in this vintage had a null horizon_hours - honest
+      // "unknown" rather than a fabricated 0.
+      horizon_hours_min: g.horizons.length ? Math.min(...g.horizons) : null,
+      horizon_hours_max: g.horizons.length ? Math.max(...g.horizons) : null,
       target_count: g.targets.length,
       first_target: g.targets.reduce((a, b) => (a < b ? a : b)),
       last_target: g.targets.reduce((a, b) => (a > b ? a : b)),
@@ -141,13 +148,25 @@ function buildVintages(rows: RawForecastRow[]): NetPositionForecastVintage[] {
  * The p10/p90 band comes from forecast_quantiles. That table does not exist
  * on every deployment - it is created on first forecast write - so a missing
  * table degrades to a median-only forecast rather than failing the request.
+ *
+ * Bounded by [start, end] on `target_timestamp_utc`, same as
+ * `getNetPositionActuals`. Without this bound the `winners` CTE resolves
+ * MAX(generated_at) per timestamp across the model's *entire* history: since
+ * nothing ever deletes an old vintage (each daily run targets a distinct
+ * calendar day, so it never collides with - and therefore never supersedes -
+ * an earlier run), every run this job has ever produced would accumulate as
+ * a permanent "winner" and the response would grow without bound.
  */
 export function getNetPositionForecast(
   countryCode: string,
+  start: string,
+  end: string,
   db: DatabaseType = defaultDb,
   modelId?: string
 ): { points: NetPositionForecastPoint[]; meta: ForecastMeta } {
   const code = storageCode(countryCode);
+  const from = normalizeTimestamp(start);
+  const to = normalizeTimestamp(end);
   // Pin to the registered model. Selecting purely on generated_at let any
   // newer run take over the display by being newer - including V011, rejected
   // on evidence 2026-07-25 at +11.7% pooled MAE. A model must be registered.
@@ -185,6 +204,7 @@ export function getNetPositionForecast(
              SELECT target_timestamp_utc, MAX(generated_at) AS generated_at
                FROM forecasts
               WHERE country_code = ? AND forecast_type = 'net_position' AND model_name = ?
+                AND target_timestamp_utc BETWEEN ? AND ?
               GROUP BY target_timestamp_utc
            )
            SELECT
@@ -206,6 +226,7 @@ export function getNetPositionForecast(
                  AND q.generated_at         = f.generated_at
                  AND q.model_name           = f.model_name
           WHERE f.country_code = ? AND f.forecast_type = 'net_position' AND f.model_name = ?
+            AND f.target_timestamp_utc BETWEEN ? AND ?
           GROUP BY f.target_timestamp_utc, f.forecast_value, f.generated_at, f.horizon_hours, f.model_version
           ORDER BY f.target_timestamp_utc`
         )
@@ -214,6 +235,7 @@ export function getNetPositionForecast(
              SELECT target_timestamp_utc, MAX(generated_at) AS generated_at
                FROM forecasts
               WHERE country_code = ? AND forecast_type = 'net_position' AND model_name = ?
+                AND target_timestamp_utc BETWEEN ? AND ?
               GROUP BY target_timestamp_utc
            )
            SELECT
@@ -229,9 +251,10 @@ export function getNetPositionForecast(
              ON w.target_timestamp_utc = f.target_timestamp_utc
             AND w.generated_at         = f.generated_at
           WHERE f.country_code = ? AND f.forecast_type = 'net_position' AND f.model_name = ?
+            AND f.target_timestamp_utc BETWEEN ? AND ?
           ORDER BY f.target_timestamp_utc`
         )
-  ).all(code, modelName, code, modelName) as RawForecastRow[];
+  ).all(code, modelName, from, to, code, modelName, from, to) as RawForecastRow[];
 
   const meta: ForecastMeta = {
     bidding_zone: resolveBiddingZone(countryCode),
@@ -277,7 +300,7 @@ export function getNetPosition(
   db: DatabaseType = defaultDb
 ): NetPositionResponse {
   const actual = getNetPositionActuals(countryCode, start, end, db);
-  const { points, meta } = getNetPositionForecast(countryCode, db);
+  const { points, meta } = getNetPositionForecast(countryCode, start, end, db);
   return {
     actual,
     forecast: points,

@@ -15,8 +15,15 @@ import type { NetPositionForecastVintage } from '@/types';
  * `ceil` (not `floor`) so a run generated exactly at midnight and targeting
  * the next midnight (horizon = 24h exactly) reads as D+1, not D+2 — it is
  * genuinely only one day out.
+ *
+ * `minHorizonHours` is null when every row in the vintage had a null
+ * `horizon_hours` (the column has no NOT NULL constraint, and nothing at the
+ * ingest HTTP boundary enforces it). That must resolve to an honest "D+?",
+ * not silently fall through arithmetic — `null / 24` coerces to `0` in JS,
+ * which would previously label an unknown-horizon vintage as D+1.
  */
-export function horizonDayLabel(minHorizonHours: number): string {
+export function horizonDayLabel(minHorizonHours: number | null): string {
+  if (minHorizonHours == null) return 'D+?';
   const days = Math.max(1, Math.ceil(minHorizonHours / 24));
   return `D+${days}`;
 }

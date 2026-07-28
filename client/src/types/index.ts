@@ -393,7 +393,8 @@ export interface NetPositionForecastPoint {
   p90: number | null;
   /** Vintage that won for THIS timestamp — the freshest run covering it. */
   generated_at: string;
-  horizon_hours: number;
+  /** `forecasts.horizon_hours` has no NOT NULL constraint; null means unknown. */
+  horizon_hours: number | null;
 }
 
 /**
@@ -405,8 +406,9 @@ export interface NetPositionForecastPoint {
 export interface NetPositionForecastVintage {
   generated_at: string;
   model_version: string | null;
-  horizon_hours_min: number;
-  horizon_hours_max: number;
+  /** null when every row in this vintage had a null horizon_hours. */
+  horizon_hours_min: number | null;
+  horizon_hours_max: number | null;
   target_count: number;
   first_target: string;
   last_target: string;

@@ -30,6 +30,15 @@ describe('horizonDayLabel', () => {
   it('crosses into D+3 once the minimum horizon passes two full days', () => {
     expect(horizonDayLabel(49)).toBe('D+3');
   });
+
+  it('labels a null horizon honestly instead of silently defaulting to D+1', () => {
+    // `horizon_hours_min` is null when every row in the vintage had a null
+    // `horizon_hours` (nullable column, unenforced at the ingest boundary).
+    // `null / 24` coerces to `0` in JS, which would previously read as D+1
+    // through this same ceil/max math - a silent mislabel this function must
+    // not produce.
+    expect(horizonDayLabel(null)).toBe('D+?');
+  });
 });
 
 const VINTAGE_26: NetPositionForecastVintage = {
@@ -76,6 +85,16 @@ describe('summarizeVintages', () => {
   it('returns an empty list when there is nothing to forecast', () => {
     expect(summarizeVintages(undefined)).toEqual([]);
     expect(summarizeVintages([])).toEqual([]);
+  });
+
+  it('labels a vintage with an unknown horizon as D+? rather than a fabricated D+1', () => {
+    const unknownHorizon: NetPositionForecastVintage = {
+      ...VINTAGE_26,
+      horizon_hours_min: null,
+      horizon_hours_max: null,
+    };
+    const out = summarizeVintages([unknownHorizon]);
+    expect(out[0].dayLabel).toBe('D+?');
   });
 });
 
