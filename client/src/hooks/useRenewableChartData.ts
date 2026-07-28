@@ -1,47 +1,14 @@
 import { useQueries } from '@tanstack/react-query';
 import { useDashboardStore } from '@/store/dashboardStore';
-import {
-  fetchRenewableData,
-  fetchForecastData,
-  fetchTSOGenerationForecast,
-} from '@/services/api';
+import { fetchRenewableData } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
-import {
-  getDateRangeForPreset,
-  getGranularityForPreset,
-  getMLForecastDateRange,
-} from './useDashboardData';
-import type {
-  RenewableDataPoint,
-  ForecastDataPoint,
-  TSOGenerationForecastDataPoint,
-} from '@/types';
-
-// Helper to extend date range for forecast overlay
-function getTSOForecastDateRange(
-  startDate: Date,
-  endDate: Date,
-  futureDays: number = 7
-): { start: string; end: string } {
-  const extendedEnd = new Date(Math.max(endDate.getTime(), Date.now() + futureDays * 24 * 60 * 60 * 1000));
-  return { start: startDate.toISOString(), end: extendedEnd.toISOString() };
-}
+import { getDateRangeForPreset, getGranularityForPreset } from './useDashboardData';
+import type { RenewableDataPoint } from '@/types';
 
 export interface RenewableChartData {
   // Actual renewable data
   renewableData: RenewableDataPoint[] | undefined;
   isLoadingRenewable: boolean;
-
-  // ML forecast data for each type
-  solarForecast: ForecastDataPoint[] | undefined;
-  windOnshoreForecast: ForecastDataPoint[] | undefined;
-  windOffshoreForecast: ForecastDataPoint[] | undefined;
-  hydroForecast: ForecastDataPoint[] | undefined;
-  biomassForecast: ForecastDataPoint[] | undefined;
-
-  // TSO generation forecast
-  tsoGenerationForecast: TSOGenerationForecastDataPoint[] | undefined;
-  isLoadingTSOForecast: boolean;
 
   // Aggregate loading state
   isLoading: boolean;
@@ -49,25 +16,25 @@ export interface RenewableChartData {
 }
 
 /**
- * Batched hook for RenewableMixChart that fetches all data in parallel.
- * This replaces 7 separate useQuery hooks with a single useQueries call,
- * significantly reducing load time when forecasts are enabled.
+ * Batched hook for GenerationTab that fetches the actuals series.
+ *
+ * Used to also fire five ML forecast queries (solar, wind_onshore,
+ * wind_offshore, hydro_total, biomass) plus a TSO generation-forecast query,
+ * but GenerationTab renders `adaptRenewableMixSeries(renewableData)`, which
+ * takes actuals only — nothing ever consumed the forecast results. Removed in
+ * Task 24; see that task's brief for the grep that confirmed it. Overlaying a
+ * forecast on the stacked mix chart remains unbuilt — that's a feature, not a
+ * remediation.
  */
 export function useRenewableChartData(): RenewableChartData {
   // Use selective store subscriptions to minimize re-renders
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
-  const showForecast = useDashboardStore((s) => s.showForecast);
-  const showTSOForecast = useDashboardStore((s) => s.showTSOForecast);
 
   // Calculate date ranges
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
   const granularity = getGranularityForPreset(timePreset);
-  const { start: tsoStart, end: tsoEnd } = getTSOForecastDateRange(start, end, 7);
-
-  // ML forecast date range (window start to max(window end, now+48h))
-  const { start: mlForecastStart, end: mlForecastEnd } = getMLForecastDateRange(start, end, 48);
 
   const queries = useQueries({
     queries: [
@@ -83,117 +50,15 @@ export function useRenewableChartData(): RenewableChartData {
           }),
         staleTime: REFRESH_INTERVALS.dashboard,
       },
-      // Query 1: ML solar forecast
-      {
-        queryKey: ['forecast', selectedCountry, 'solar', timePreset, timeOffset, granularity],
-        queryFn: () =>
-          fetchForecastData({
-            country: selectedCountry,
-            type: 'solar',
-            start: mlForecastStart,
-            end: mlForecastEnd,
-            granularity,
-          }),
-        enabled: showForecast,
-        staleTime: REFRESH_INTERVALS.dashboard,
-      },
-      // Query 2: ML wind_onshore forecast
-      {
-        queryKey: ['forecast', selectedCountry, 'wind_onshore', timePreset, timeOffset, granularity],
-        queryFn: () =>
-          fetchForecastData({
-            country: selectedCountry,
-            type: 'wind_onshore',
-            start: mlForecastStart,
-            end: mlForecastEnd,
-            granularity,
-          }),
-        enabled: showForecast,
-        staleTime: REFRESH_INTERVALS.dashboard,
-      },
-      // Query 3: ML wind_offshore forecast
-      {
-        queryKey: ['forecast', selectedCountry, 'wind_offshore', timePreset, timeOffset, granularity],
-        queryFn: () =>
-          fetchForecastData({
-            country: selectedCountry,
-            type: 'wind_offshore',
-            start: mlForecastStart,
-            end: mlForecastEnd,
-            granularity,
-          }),
-        enabled: showForecast,
-        staleTime: REFRESH_INTERVALS.dashboard,
-      },
-      // Query 4: ML hydro_total forecast
-      {
-        queryKey: ['forecast', selectedCountry, 'hydro_total', timePreset, timeOffset, granularity],
-        queryFn: () =>
-          fetchForecastData({
-            country: selectedCountry,
-            type: 'hydro_total',
-            start: mlForecastStart,
-            end: mlForecastEnd,
-            granularity,
-          }),
-        enabled: showForecast,
-        staleTime: REFRESH_INTERVALS.dashboard,
-      },
-      // Query 5: ML biomass forecast
-      {
-        queryKey: ['forecast', selectedCountry, 'biomass', timePreset, timeOffset, granularity],
-        queryFn: () =>
-          fetchForecastData({
-            country: selectedCountry,
-            type: 'biomass',
-            start: mlForecastStart,
-            end: mlForecastEnd,
-            granularity,
-          }),
-        enabled: showForecast,
-        staleTime: REFRESH_INTERVALS.dashboard,
-      },
-      // Query 6: TSO generation forecast (solar + wind)
-      {
-        queryKey: ['tso-forecast', 'generation', selectedCountry, timePreset, timeOffset, granularity],
-        queryFn: () =>
-          fetchTSOGenerationForecast({
-            countryCode: selectedCountry,
-            start: tsoStart,
-            end: tsoEnd,
-            granularity,
-          }),
-        enabled: showTSOForecast,
-        staleTime: REFRESH_INTERVALS.dashboard,
-      },
     ],
   });
 
-  const [
-    renewableQuery,
-    solarQuery,
-    windOnshoreQuery,
-    windOffshoreQuery,
-    hydroQuery,
-    biomassQuery,
-    tsoGenQuery,
-  ] = queries;
+  const [renewableQuery] = queries;
 
   return {
     // Actual renewable data
     renewableData: renewableQuery.data,
     isLoadingRenewable: renewableQuery.isLoading,
-
-    // ML forecast data
-    solarForecast: solarQuery.data?.points,
-    windOnshoreForecast: windOnshoreQuery.data?.points,
-    windOffshoreForecast: windOffshoreQuery.data?.points,
-    hydroForecast: hydroQuery.data?.points,
-    biomassForecast: biomassQuery.data?.points,
-
-    // TSO generation forecast
-    tsoGenerationForecast: tsoGenQuery.data,
-    isLoadingTSOForecast: tsoGenQuery.isLoading,
 
     // Aggregate states
     isLoading: renewableQuery.isLoading, // Only consider primary data loading
