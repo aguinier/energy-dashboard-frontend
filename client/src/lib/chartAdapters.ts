@@ -12,6 +12,7 @@ import type {
   TSOLoadForecastDataPoint,
   NetPositionResponse,
 } from '@/types';
+import { dayLabelByVintage } from './netPositionProvenance';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -184,6 +185,11 @@ export function adaptNetPositionSeries(
     if (Number.isFinite(p.net_position_mw)) points[i].value = p.net_position_mw;
   }
 
+  // Several forecast vintages can be on screen together (see the module doc
+  // above), so each point carries the provenance of whichever vintage won
+  // for it, rather than the series claiming one generation time throughout.
+  const dayLabels = dayLabelByVintage(data?.meta.vintages);
+
   for (const p of forecast) {
     if (!p.timestamp) continue;
     const i = idxOf(hourKey(p.timestamp));
@@ -191,6 +197,8 @@ export function adaptNetPositionSeries(
     if (Number.isFinite(p.p50)) points[i].forecast = p.p50;
     if (p.p10 != null && Number.isFinite(p.p10)) points[i].min = p.p10;
     if (p.p90 != null && Number.isFinite(p.p90)) points[i].max = p.p90;
+    points[i].forecastGeneratedAt = p.generated_at ?? null;
+    points[i].forecastDayLabel = dayLabels.get(p.generated_at) ?? null;
   }
 
   let nowIndex = points.findIndex((p) => new Date(p.ts).getTime() > nowMs);

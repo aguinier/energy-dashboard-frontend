@@ -5,6 +5,7 @@ import { resolveModelName } from '../config/forecastModels.js';
 import {
   NetPositionActualPoint,
   NetPositionForecastPoint,
+  NetPositionForecastVintage,
   NetPositionResponse,
 } from '../types/index.js';
 
@@ -70,10 +71,72 @@ export function getNetPositionActuals(
   ) as NetPositionActualPoint[];
 }
 
+/** Raw row shared by both variants of the per-timestamp query below. */
+interface RawForecastRow {
+  timestamp: string;
+  p50: number;
+  p10: number | null;
+  p90: number | null;
+  generated_at: string;
+  horizon_hours: number;
+  model_version: string | null;
+}
+
 /**
- * Latest forecast vintage only. Several runs a day accumulate as separate
- * generated_at values (each a distinct vintage, deliberately kept), so the
- * newest one is selected rather than blending them.
+ * Groups rows already resolved to their winning vintage (see the `winners`
+ * CTE in `getNetPositionForecast`) into one summary per distinct
+ * `generated_at`, newest first.
+ */
+function buildVintages(rows: RawForecastRow[]): NetPositionForecastVintage[] {
+  const byGeneratedAt = new Map<
+    string,
+    { model_version: string | null; horizons: number[]; targets: string[] }
+  >();
+
+  for (const r of rows) {
+    let group = byGeneratedAt.get(r.generated_at);
+    if (!group) {
+      group = { model_version: r.model_version, horizons: [], targets: [] };
+      byGeneratedAt.set(r.generated_at, group);
+    }
+    group.horizons.push(r.horizon_hours);
+    group.targets.push(r.timestamp);
+  }
+
+  return [...byGeneratedAt.entries()]
+    .map(([generated_at, g]) => ({
+      generated_at,
+      model_version: g.model_version,
+      horizon_hours_min: Math.min(...g.horizons),
+      horizon_hours_max: Math.max(...g.horizons),
+      target_count: g.targets.length,
+      first_target: g.targets.reduce((a, b) => (a < b ? a : b)),
+      last_target: g.targets.reduce((a, b) => (a > b ? a : b)),
+    }))
+    .sort((a, b) => (a.generated_at < b.generated_at ? 1 : -1));
+}
+
+/**
+ * Freshest-per-target-timestamp forecast, across every vintage that exists.
+ *
+ * A country can have several runs on file at once - a daily D+2 job means
+ * "today", "yesterday" and the day before all wrote a distinct generated_at,
+ * each covering a *different* 24h target block. Pinning to the single newest
+ * generated_at (the previous behaviour) discarded every other run wholesale,
+ * so the day a new run landed, every day it used to cover went blank - see
+ * the France "why is tomorrow empty" report this fixes.
+ *
+ * The fix is a per-timestamp MAX(generated_at), not a per-country one: for
+ * each target_timestamp_utc, take the row from whichever vintage is newest
+ * *for that timestamp*. Vintages are never blended within a single
+ * timestamp - the quantile join below is keyed on the same winning
+ * (timestamp, generated_at) pair, so a p50 from one run can never be paired
+ * with a p10/p90 band from another.
+ *
+ * The model is still pinned via the registry (`resolveModelName`): this
+ * maximises coverage across a model's own runs, it does not reopen "any
+ * newer run of any model wins" - that was rejected on evidence (V011,
+ * 2026-07-25, +11.7% pooled MAE) and stays rejected here.
  *
  * The p10/p90 band comes from forecast_quantiles. That table does not exist
  * on every deployment - it is created on first forecast write - so a missing
@@ -90,68 +153,103 @@ export function getNetPositionForecast(
   // on evidence 2026-07-25 at +11.7% pooled MAE. A model must be registered.
   const modelName = resolveModelName('net_position', modelId);
 
-  const latest = db
-    .prepare(
-      `SELECT generated_at, model_name, model_version
-         FROM forecasts
-        WHERE country_code = ? AND forecast_type = 'net_position'
-          AND model_name = ?
-        ORDER BY generated_at DESC
-        LIMIT 1`
-    )
-    .get(code, modelName) as
-    | { generated_at: string; model_name: string; model_version: string }
-    | undefined;
-
-  const meta: ForecastMeta = {
+  const emptyMeta: ForecastMeta = {
     bidding_zone: resolveBiddingZone(countryCode),
-    model_name: latest?.model_name ?? null,
-    model_version: latest?.model_version ?? null,
-    generated_at: latest ? latest.generated_at.replace(' ', 'T') : null,
+    model_name: null,
+    vintages: [],
     has_band: false,
   };
 
-  if (!latest) return { points: [], meta };
+  if (!modelName) return { points: [], meta: emptyMeta };
+
+  const hasAny = db
+    .prepare(
+      `SELECT 1 AS present FROM forecasts
+        WHERE country_code = ? AND forecast_type = 'net_position' AND model_name = ?
+        LIMIT 1`
+    )
+    .get(code, modelName) as { present: number } | undefined;
+
+  if (!hasAny) return { points: [], meta: emptyMeta };
 
   const withBand = hasTable(db, 'forecast_quantiles');
-  meta.has_band = withBand;
 
-  if (!withBand) {
-    const rows = db
-      .prepare(
-        `SELECT REPLACE(target_timestamp_utc, ' ', 'T') as timestamp,
-                forecast_value as p50
-           FROM forecasts
-          WHERE country_code = ? AND forecast_type = 'net_position'
-            AND model_name = ? AND generated_at = ?
-          ORDER BY target_timestamp_utc`
-      )
-      .all(code, modelName, latest.generated_at) as Array<{ timestamp: string; p50: number }>;
-    return { points: rows.map((r) => ({ ...r, p10: null, p90: null })), meta };
-  }
+  // `winners` resolves, per target timestamp, the single freshest generated_at
+  // among this model's runs. Everything downstream joins back onto that exact
+  // (target_timestamp_utc, generated_at) pair, so a timestamp is always
+  // sourced from one vintage end-to-end.
+  const rows = (
+    withBand
+      ? db.prepare(
+          `WITH winners AS (
+             SELECT target_timestamp_utc, MAX(generated_at) AS generated_at
+               FROM forecasts
+              WHERE country_code = ? AND forecast_type = 'net_position' AND model_name = ?
+              GROUP BY target_timestamp_utc
+           )
+           SELECT
+             REPLACE(f.target_timestamp_utc, ' ', 'T') as timestamp,
+             f.forecast_value as p50,
+             MAX(CASE WHEN q.quantile = 0.1 THEN q.forecast_value END) as p10,
+             MAX(CASE WHEN q.quantile = 0.9 THEN q.forecast_value END) as p90,
+             REPLACE(f.generated_at, ' ', 'T') as generated_at,
+             f.horizon_hours as horizon_hours,
+             f.model_version as model_version
+           FROM forecasts f
+           JOIN winners w
+             ON w.target_timestamp_utc = f.target_timestamp_utc
+            AND w.generated_at         = f.generated_at
+           LEFT JOIN forecast_quantiles q
+                  ON q.country_code         = f.country_code
+                 AND q.forecast_type        = f.forecast_type
+                 AND q.target_timestamp_utc = f.target_timestamp_utc
+                 AND q.generated_at         = f.generated_at
+                 AND q.model_name           = f.model_name
+          WHERE f.country_code = ? AND f.forecast_type = 'net_position' AND f.model_name = ?
+          GROUP BY f.target_timestamp_utc, f.forecast_value, f.generated_at, f.horizon_hours, f.model_version
+          ORDER BY f.target_timestamp_utc`
+        )
+      : db.prepare(
+          `WITH winners AS (
+             SELECT target_timestamp_utc, MAX(generated_at) AS generated_at
+               FROM forecasts
+              WHERE country_code = ? AND forecast_type = 'net_position' AND model_name = ?
+              GROUP BY target_timestamp_utc
+           )
+           SELECT
+             REPLACE(f.target_timestamp_utc, ' ', 'T') as timestamp,
+             f.forecast_value as p50,
+             NULL as p10,
+             NULL as p90,
+             REPLACE(f.generated_at, ' ', 'T') as generated_at,
+             f.horizon_hours as horizon_hours,
+             f.model_version as model_version
+           FROM forecasts f
+           JOIN winners w
+             ON w.target_timestamp_utc = f.target_timestamp_utc
+            AND w.generated_at         = f.generated_at
+          WHERE f.country_code = ? AND f.forecast_type = 'net_position' AND f.model_name = ?
+          ORDER BY f.target_timestamp_utc`
+        )
+  ).all(code, modelName, code, modelName) as RawForecastRow[];
 
-  const rows = db
-    .prepare(
-      `SELECT
-         REPLACE(f.target_timestamp_utc, ' ', 'T') as timestamp,
-         f.forecast_value as p50,
-         MAX(CASE WHEN q.quantile = 0.1 THEN q.forecast_value END) as p10,
-         MAX(CASE WHEN q.quantile = 0.9 THEN q.forecast_value END) as p90
-       FROM forecasts f
-       LEFT JOIN forecast_quantiles q
-              ON q.country_code         = f.country_code
-             AND q.forecast_type        = f.forecast_type
-             AND q.target_timestamp_utc = f.target_timestamp_utc
-             AND q.generated_at         = f.generated_at
-             AND q.model_name           = f.model_name
-      WHERE f.country_code = ? AND f.forecast_type = 'net_position'
-        AND f.model_name = ? AND f.generated_at = ?
-      GROUP BY f.target_timestamp_utc, f.forecast_value
-      ORDER BY f.target_timestamp_utc`
-    )
-    .all(code, modelName, latest.generated_at) as NetPositionForecastPoint[];
+  const meta: ForecastMeta = {
+    bidding_zone: resolveBiddingZone(countryCode),
+    model_name: modelName,
+    vintages: buildVintages(rows),
+    has_band: withBand,
+  };
 
-  return { points: rows, meta };
+  const points: NetPositionForecastPoint[] = rows.map((r) => ({
+    timestamp: r.timestamp,
+    p50: r.p50,
+    p10: r.p10,
+    p90: r.p90,
+    generated_at: r.generated_at,
+    horizon_hours: r.horizon_hours,
+  }));
+
+  return { points, meta };
 }
 
 /**

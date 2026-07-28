@@ -191,6 +191,25 @@ export interface NetPositionForecastPoint {
   /** null when the deployment has no forecast_quantiles table yet. */
   p10: number | null;
   p90: number | null;
+  /** Vintage that won for THIS timestamp - the freshest run covering it. */
+  generated_at: string;
+  horizon_hours: number;
+}
+
+/**
+ * One forecast run's footprint within the returned points. Several vintages
+ * can be present at once - see `getNetPositionForecast` - so `meta` reports
+ * each one honestly rather than picking a single generated_at/model_version
+ * to speak for the whole series.
+ */
+export interface NetPositionForecastVintage {
+  generated_at: string;
+  model_version: string | null;
+  horizon_hours_min: number;
+  horizon_hours_max: number;
+  target_count: number;
+  first_target: string;
+  last_target: string;
 }
 
 export interface NetPositionResponse {
@@ -200,8 +219,8 @@ export interface NetPositionResponse {
     /** Zone actually queried - DE and LU both report DE_LU. */
     bidding_zone: string;
     model_name: string | null;
-    model_version: string | null;
-    generated_at: string | null;
+    /** Distinct forecast runs present in `forecast`, newest first. */
+    vintages: NetPositionForecastVintage[];
     /** False when only the median is available. */
     has_band: boolean;
     /** Newest published hour for this zone, ignoring the query window. */
