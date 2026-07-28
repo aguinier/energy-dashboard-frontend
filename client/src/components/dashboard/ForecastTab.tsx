@@ -178,7 +178,11 @@ export function ForecastTab() {
       <div className="grid gap-3.5 md:grid-cols-2">
         <AbleCard
           title="Error by horizon"
-          subtitle="MAPE % · measured over the selected window"
+          subtitle={
+            horizonBars.length === 0
+              ? 'no measured error for this window'
+              : 'MAPE % · measured over the selected window'
+          }
         >
           <AbleAccuracyBars data={horizonBars} />
         </AbleCard>
