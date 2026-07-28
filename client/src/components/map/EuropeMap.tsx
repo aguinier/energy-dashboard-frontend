@@ -169,7 +169,13 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     const el = containerRef.current;
     if (!el) return;
     const { width, height } = el.getBoundingClientRect();
-    if (width > 0 && height > 0) setContainerSize({ width, height });
+    if (width > 0 && height > 0) {
+      // ResizeObserver + window `resize` both fire, unthrottled, on every
+      // layout pass — bail out when the measured box hasn't actually
+      // changed so an unrelated reflow doesn't re-render the whole
+      // Geographies tree.
+      setContainerSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+    }
   }, []);
   useEffect(() => {
     measureContainer();
