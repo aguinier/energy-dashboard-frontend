@@ -2415,6 +2415,10 @@ These were found during the audit but are not fixed by this plan.
 
 2. **ENTSO-E A75 ingest** (`data_gathering` module) — the prerequisite that would let Task 4's unattributed remainder become a real nuclear/fossil breakdown.
 
+2b. **`timeRange` / `timePreset` duplication** — deliberately deferred by Task 16 after a full reader audit, and the deferral was verified well-founded rather than convenient. `/dashboard/overview`, `/dashboard/map` and `/dashboard/initial` accept `TimeRange` as a **closed enum** and derive start/end server-side via `getTimeRangeDates()`; they have no `start`/`end` passthrough. So the client cannot drop `timeRange` without a backend change. This duplication already shipped one Critical bug (Task 8) and will keep producing that class of defect until the endpoints accept an explicit window like their siblings do. **Next step:** add `start`/`end` support to those three endpoints, then delete `timeRange` from the store.
+
+2c. **Timestamp format drift, Sep–Nov 2025** — found by Task 23. `energy_load` and `energy_renewable` disagree on timestamp string format in that band (mixed space/ISO-`T`, some with UTC offsets, plus duplicate load rows), so the now-indexed direct-equality join drops roughly 1–6% of rows there. No user-facing impact today because `RangeSegment` only exposes 24h/7d/30d — `90d` and `1y` are unreachable. Root cause is upstream in `data_gathering` ingest; normalising it in the join would reintroduce the index-defeating pattern Task 23 removed.
+
 3. **Chart and map accessibility.** Every chart and the map render as a single `img` node with no accessible values; map countries have no keyboard path, no `aria-label`; range buttons lack `aria-pressed`. A focused a11y pass deserves its own plan.
 
 4. **`net_position` "24h" showing 4 days.** `useNetPositionData` extends `end` to now+3d by design so the D+2 forecast stays on-chart. Correct behaviour, misleading range label — decide whether the segment control should read differently on that tab.
