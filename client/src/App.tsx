@@ -16,7 +16,9 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 1000 * 60 * 2,
       // The API is single-threaded and synchronous; a slow query blocks every
-      // other request. Retrying a timeout triples the load that caused it.
+      // other request. shouldRetryQuery caps retries at exactly one (and never
+      // retries a 4xx), so a failure adds at most one extra request instead of
+      // compounding load on a server that's already struggling.
       retry: shouldRetryQuery,
       retryDelay: (attempt) => Math.min(4000, 1000 * 2 ** attempt),
       refetchOnWindowFocus: false,

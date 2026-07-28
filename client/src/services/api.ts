@@ -43,6 +43,20 @@ const api = axios.create({
   timeout: 15000,
 });
 
+/**
+ * Override for the handful of calls that are known to be slow server-side
+ * regardless of the client-side cache: long-range (30d/90d/1y) windows over
+ * `energy_load`/`energy_price`/`energy_renewable`, and `/renewables/mix`
+ * (which additionally runs an unindexed date()/strftime() join in
+ * `getRenewablePercentage`). The global 15s default is a UX bound picked so
+ * a stalled request fails fast instead of hanging the retry policy — it is
+ * not a claim that every query completes that quickly. These specific calls
+ * used to succeed under the old 30s global timeout; pinning them back to
+ * 30000ms here keeps that true without diluting the 15s bound (and the
+ * retry cap it protects) for every other, normally-fast request.
+ */
+const LONG_RANGE_TIMEOUT_MS = 30000;
+
 // Countries
 export async function fetchCountries(): Promise<Country[]> {
   const { data } = await api.get<ApiResponse<Country[]>>('/countries');
@@ -61,7 +75,12 @@ export async function fetchLoadData(params: {
   end?: string;
   granularity?: Granularity;
 }): Promise<LoadDataPoint[]> {
-  const { data } = await api.get<ApiResponse<LoadDataPoint[]>>('/load', { params });
+  // Drives LoadTab's primary chart and AbleStatRow's stat strip — both fetch
+  // unconditionally, so a 30d/90d/1y window here is a known-slow cold query.
+  const { data } = await api.get<ApiResponse<LoadDataPoint[]>>('/load', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
   return data.data;
 }
 
@@ -91,7 +110,12 @@ export async function fetchPriceData(params: {
   end?: string;
   granularity?: Granularity;
 }): Promise<PriceDataPoint[]> {
-  const { data } = await api.get<ApiResponse<PriceDataPoint[]>>('/prices', { params });
+  // Drives PriceTab's primary chart and AbleStatRow's stat strip — both fetch
+  // unconditionally, so a 30d/90d/1y window here is a known-slow cold query.
+  const { data } = await api.get<ApiResponse<PriceDataPoint[]>>('/prices', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
   return data.data;
 }
 
@@ -126,7 +150,12 @@ export async function fetchRenewableData(params: {
   end?: string;
   granularity?: Granularity;
 }): Promise<RenewableDataPoint[]> {
-  const { data } = await api.get<ApiResponse<RenewableDataPoint[]>>('/renewables', { params });
+  // Drives GenerationTab's stacked chart and AbleStatRow's stat strip — both
+  // fetch unconditionally, so a 30d/90d/1y window here is a known-slow cold query.
+  const { data } = await api.get<ApiResponse<RenewableDataPoint[]>>('/renewables', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
   return data.data;
 }
 
@@ -135,7 +164,14 @@ export async function fetchRenewableMix(params: {
   start?: string;
   end?: string;
 }): Promise<RenewableMix> {
-  const { data } = await api.get<ApiResponse<RenewableMix>>('/renewables/mix', { params });
+  // GenerationTab's "Window average"/"By source" panels. Server-side this also
+  // runs getRenewablePercentage's date()/strftime() join (the same unindexed
+  // join pattern getMapRenewableData had to be rewritten to avoid) — the
+  // single named example in the review finding for a known-slow long-range call.
+  const { data } = await api.get<ApiResponse<RenewableMix>>('/renewables/mix', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
   return data.data;
 }
 
@@ -144,7 +180,14 @@ export async function fetchDashboardOverview(params: {
   country: string;
   timeRange?: TimeRange;
 }): Promise<DashboardOverview> {
-  const { data } = await api.get<ApiResponse<DashboardOverview>>('/dashboard/overview', { params });
+  // AbleStatRow's top stat strip, fetched unconditionally on every country
+  // tab. `timeRange` mirrors the 30d/90d/1y preset, and the server route
+  // comment (`dashboard.ts`) calls this "an expensive query" even at 7d —
+  // it runs five separate scans over the window.
+  const { data } = await api.get<ApiResponse<DashboardOverview>>('/dashboard/overview', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
   return data.data;
 }
 
