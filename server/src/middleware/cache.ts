@@ -68,10 +68,40 @@ export const TTL = {
   COUNTRIES: 3600000 // 1 hour - for static country list
 };
 
+/** Timestamp query params rounded down before keying, so the cache can hit. */
+const TIME_PARAMS = ['start', 'end'];
+
+/**
+ * Cache key with timestamp params floored to a bucket.
+ *
+ * The client derives start/end from `new Date()` at millisecond precision, so
+ * keying on the raw URL made every ranged request a unique key and the cache
+ * never hit once.
+ */
+export function buildCacheKey(method: string, originalUrl: string, bucketMs: number): string {
+  const qIndex = originalUrl.indexOf('?');
+  if (qIndex === -1) return `${method}:${originalUrl}`;
+
+  const path = originalUrl.slice(0, qIndex);
+  const params = new URLSearchParams(originalUrl.slice(qIndex + 1));
+
+  for (const p of TIME_PARAMS) {
+    const raw = params.get(p);
+    if (!raw) continue;
+    const t = Date.parse(raw);
+    if (Number.isNaN(t)) continue;
+    params.set(p, new Date(Math.floor(t / bucketMs) * bucketMs).toISOString());
+  }
+
+  params.sort();
+  return `${method}:${path}?${params.toString()}`;
+}
+
 // Cache middleware factory
 export function cacheMiddleware(ttlMs: number = TTL.MEDIUM) {
+  const bucketMs = Math.min(60_000, ttlMs);
   return (req: Request, res: Response, next: NextFunction): void => {
-    const key = `${req.method}:${req.originalUrl}`;
+    const key = buildCacheKey(req.method, req.originalUrl, bucketMs);
     const cached = cache.get(key);
 
     if (cached) {
