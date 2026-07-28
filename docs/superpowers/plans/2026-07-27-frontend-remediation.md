@@ -2407,6 +2407,24 @@ all four 15-minute load rows in the hour, skewing the average."
 
 ---
 
+## Deployment note — server changes are invisible in acceptance until redeploy
+
+`client/.env.local` sets `API_PROXY_TARGET=http://192.168.86.36:3001`, so the local Vite dev server serves **new client code against the old server bundle**. Client-side work is therefore verifiable immediately; server-side work is not.
+
+This was caught concretely during Task 18: the comparison heatmap rendered every cell as `—`, because Task 17 renamed the wire field `mape` → `wape` and the acceptance backend still returns `mape`. Verified directly:
+
+```
+GET http://192.168.86.36:3001/api/cross-country/metrics?metric=wape&…
+→ {"AT":{"mae":522.04,"mape":8.44,…}}      # still `mape`
+```
+
+**This is not a production defect.** `docker/docker-compose.yml` builds client and server into a single image, so they deploy atomically — the skew exists only in this dev-proxy acceptance setup. But it has two consequences worth holding onto:
+
+1. **Four server-side changes on this branch cannot be acceptance-tested against the current prod backend**: Task 13 (cache key bucketing), Task 17 (WAPE), Task 21 (accuracy nulls), and Task 23 (the index-defeating join — the single largest performance fix here, 66s → 0.004s). Verify them either by redeploying, or by pointing `API_PROXY_TARGET` at a local server started with `ENERGY_DB_PATH=C:/Code/able/data/energy_dashboard.db`.
+2. **Task 23's fix is the one that matters most to redeploy.** Until prod runs it, `/renewables/mix` continues to block the single-threaded server for tens of seconds per call.
+
+---
+
 ## Out of scope — carried forward
 
 These were found during the audit but are not fixed by this plan.
