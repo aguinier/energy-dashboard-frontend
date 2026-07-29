@@ -72,6 +72,15 @@ export interface GenerationMix {
   fossil_coal_derived_gas: number | null;
   waste: number | null;
   other: number | null;
+  // Renewable ÷ total positive generation, a ratio of window sums computed
+  // server-side (generationService.getRenewableShare) - the same figure the
+  // header's "Renewable share" stat card and the map's renewable_pct
+  // choropleth read. The donut consumes this directly instead of re-deriving
+  // a percentage from the fields above, so it cannot print a different
+  // number than the header for the same country/window. Null when this
+  // country has no energy_generation rows yet, or total positive generation
+  // is zero/negative.
+  renewable_percentage: number | null;
 }
 
 export interface DashboardOverview {

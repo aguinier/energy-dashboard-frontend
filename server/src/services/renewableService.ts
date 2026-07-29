@@ -1,4 +1,3 @@
-import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
 import { RenewableMix, RenewableTimeSeriesPoint, Granularity } from '../types/index.js';
 import { normalizeTimestamp } from '../utils/timestamp.js';
@@ -129,54 +128,17 @@ export function getLatestRenewable(countryCode?: string) {
   return stmt.all();
 }
 
-/**
- * SQL for getRenewablePercentage, exported so tests can assert on the exact
- * text the prepared statement runs (not a hand-copied duplicate) and pass
- * their own in-memory database.
- *
- * The join is on r.timestamp_utc = l.timestamp_utc directly. Both tables
- * store 15-minute readings, so this is an exact 1:1 match. The previous
- * predicate joined on date(r.timestamp_utc) = date(l.timestamp_utc) AND
- * strftime('%H', ...) = strftime('%H', ...) - functions of the indexed
- * column, which SQLite cannot seek on, so `l` degraded to a country-only
- * scan: every renewable row rescanned the country's entire load history
- * (measured 51s for a 30d window on the replica). The date+hour match also
- * joined each renewable row to all four 15-minute load rows in that hour,
- * a 4x fan-out that skewed the average. Direct equality fixes both.
- */
-export const RENEWABLE_PERCENTAGE_SQL = `
-    SELECT
-      ROUND(
-        AVG(
-          (COALESCE(r.solar_mw, 0) + COALESCE(r.wind_onshore_mw, 0) +
-           COALESCE(r.wind_offshore_mw, 0) + COALESCE(r.hydro_run_mw, 0) +
-           COALESCE(r.hydro_reservoir_mw, 0) + COALESCE(r.biomass_mw, 0) +
-           COALESCE(r.geothermal_mw, 0) + COALESCE(r.other_renewable_mw, 0)) * 100.0 / NULLIF(l.load_mw, 0)
-        ), 2
-      ) as renewable_pct
-    FROM energy_renewable r
-    JOIN energy_load l
-      ON l.country_code = r.country_code
-     AND l.timestamp_utc = r.timestamp_utc
-    WHERE r.country_code = ?
-      AND r.timestamp_utc BETWEEN ? AND ?
-  `;
-
-export function getRenewablePercentage(
-  countryCode: string,
-  start: string,
-  end: string,
-  db: DatabaseType = defaultDb
-): number | null {
-  const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
-
-  const stmt = db.prepare(RENEWABLE_PERCENTAGE_SQL);
-
-  const result = stmt.get(upperCode, normalizedStart, normalizedEnd) as { renewable_pct: number | null } | undefined;
-  return result?.renewable_pct ?? null;
-}
+// getRenewablePercentage / RENEWABLE_PERCENTAGE_SQL (energy_renewable JOIN
+// energy_load, matched on r.timestamp_utc = l.timestamp_utc) used to live
+// here - a mean of per-timestamp renewable-over-load ratios. It has been
+// replaced everywhere by generationService.getRenewableShare, a ratio of
+// window sums read from energy_generation (renewable ÷ total generation, not
+// ÷ load), which is now the single definition behind every "Renewable share"
+// figure in the app - see generationService.ts for the full rationale. This
+// also removes the energy_renewable→energy_load join entirely: the join
+// needed a real-column-equality rewrite to stop timing out (51s → 0.009s on
+// the replica, history preserved in git blame), and the new definition has
+// no join at all, so that failure mode cannot recur.
 
 function getGroupByClause(granularity: Granularity): string {
   switch (granularity) {

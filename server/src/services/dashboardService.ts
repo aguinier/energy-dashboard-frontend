@@ -1,6 +1,7 @@
 import db from '../config/database.js';
 import { DashboardOverview, MapDataPoint, MetricType, TimeRange } from '../types/index.js';
 import { normalizeTimestamp } from '../utils/timestamp.js';
+import { getRenewableShare, RENEWABLE_MW_SUM, TOTAL_POSITIVE_MW_SUM } from './generationService.js';
 
 function getTimeRangeDates(timeRange: TimeRange): { start: string; end: string } {
   const end = new Date().toISOString();
@@ -70,32 +71,17 @@ export function getDashboardOverview(
   `);
   const peakResult = peakStmt.get(upperCode, start, end) as { peak_demand: number } | undefined;
 
-  // Calculate renewable percentage - optimized version
-  // Instead of expensive JOIN with date()/strftime(), calculate averages separately
-  // This uses indexes efficiently and is much faster
-  const renewableAvgStmt = db.prepare(`
-    SELECT
-      AVG(COALESCE(solar_mw, 0) + COALESCE(wind_onshore_mw, 0) +
-          COALESCE(wind_offshore_mw, 0) + COALESCE(hydro_run_mw, 0) +
-          COALESCE(hydro_reservoir_mw, 0) + COALESCE(biomass_mw, 0) +
-          COALESCE(geothermal_mw, 0) + COALESCE(other_renewable_mw, 0)) as avg_renewable
-    FROM energy_renewable
-    WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
-  `);
-  const loadAvgStmt = db.prepare(`
-    SELECT AVG(load_mw) as avg_load
-    FROM energy_load
-    WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
-  `);
-  const renewableAvg = renewableAvgStmt.get(upperCode, start, end) as { avg_renewable: number | null } | undefined;
-  const loadAvg = loadAvgStmt.get(upperCode, start, end) as { avg_load: number | null } | undefined;
-  
-  const renewablePct = (renewableAvg?.avg_renewable && loadAvg?.avg_load && loadAvg.avg_load > 0)
-    ? Math.round((renewableAvg.avg_renewable / loadAvg.avg_load) * 1000) / 10
-    : null;
-  const renewableResult = { renewable_pct: renewablePct };
+  // Renewable share - the same generationService.getRenewableShare every
+  // other "Renewable share" figure in the app reads (the Generation tab's
+  // donut, the map's renewable_pct choropleth, /renewables/mix and
+  // /renewables/percentage). This used to be its own energy_renewable ÷
+  // energy_load computation (a different table pair, and a different
+  // question - renewable ÷ load, not renewable ÷ generation) and could print
+  // a different number than the donut on the same page for the same country.
+  // Null - not 0, not a fallback to that old load-based figure - when this
+  // country has no energy_generation rows yet (still mid-backfill) or the
+  // window's total positive generation is zero/negative.
+  const renewablePct = getRenewableShare(upperCode, start, end, db);
 
   // Calculate 24h changes
   const change24hStart = normalizeTimestamp(new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString());
@@ -114,7 +100,7 @@ export function getDashboardOverview(
   return {
     currentLoad: loadResult?.current_load ?? null,
     avgPrice: priceResult?.avg_price ?? null,
-    renewablePercentage: renewableResult?.renewable_pct ?? null,
+    renewablePercentage: renewablePct,
     peakDemand: peakResult?.peak_demand ?? null,
     priceChange24h: priceChangeResult?.price_change ?? undefined,
     dataTimestamp: loadResult?.timestamp,
@@ -221,41 +207,39 @@ function getMapPriceData(start: string, end: string): MapDataPoint[] {
   return stmt.all(start, end) as MapDataPoint[];
 }
 
+/**
+ * Renewable share per country over the window - energy_generation ÷
+ * energy_generation, the same ratio-of-window-sums definition as
+ * generationService.getRenewableShare, reusing its exact
+ * RENEWABLE_MW_SUM/TOTAL_POSITIVE_MW_SUM fragments so the map can never
+ * define "renewable" differently than the header stat or the Generation
+ * tab's donut for the same country/window (see generationService.ts). This
+ * used to be its own energy_renewable ÷ energy_load computation - a
+ * different table pair and a different question.
+ *
+ * A country with no energy_generation rows in the window (still mid-backfill
+ * for 15 of 34 as of the A75 rollout) simply has no group here - HAVING
+ * drops a country whose total positive generation is zero/negative too, for
+ * the same reason NULLIF makes it NULL in getRenewableShare: a share of
+ * nothing is undefined, not 0%. Either way the map already renders an absent
+ * country as "no data" (EuropeMap filters `value == null`), never a
+ * fabricated reading.
+ */
 function getMapRenewableData(start: string, end: string): MapDataPoint[] {
-  // Average renewable output vs average load over the window, aggregated per
-  // country BEFORE joining. The old row-level join matched hours via
-  // date()/strftime() on both sides, which defeats every index and made this
-  // query time out on the full production DB.
   const stmt = db.prepare(`
     SELECT
-      r.country_code,
+      g.country_code,
       c.country_name,
-      ROUND(r.avg_renewable * 100.0 / NULLIF(l.avg_load, 0), 1) as value,
-      r.latest as timestamp
-    FROM (
-      SELECT
-        country_code,
-        AVG(
-          COALESCE(solar_mw, 0) + COALESCE(wind_onshore_mw, 0) +
-          COALESCE(wind_offshore_mw, 0) + COALESCE(hydro_run_mw, 0) +
-          COALESCE(hydro_reservoir_mw, 0) + COALESCE(biomass_mw, 0) +
-          COALESCE(geothermal_mw, 0) + COALESCE(other_renewable_mw, 0)
-        ) as avg_renewable,
-        MAX(timestamp_utc) as latest
-      FROM energy_renewable
-      WHERE timestamp_utc BETWEEN ? AND ?
-      GROUP BY country_code
-    ) r
-    JOIN (
-      SELECT country_code, AVG(load_mw) as avg_load
-      FROM energy_load
-      WHERE timestamp_utc BETWEEN ? AND ?
-      GROUP BY country_code
-    ) l ON l.country_code = r.country_code
-    JOIN countries c ON c.country_code = r.country_code
+      ROUND(SUM${RENEWABLE_MW_SUM} * 100.0 / NULLIF(SUM${TOTAL_POSITIVE_MW_SUM}, 0), 2) as value,
+      MAX(g.timestamp_utc) as timestamp
+    FROM energy_generation g
+    JOIN countries c ON c.country_code = g.country_code
+    WHERE g.timestamp_utc BETWEEN ? AND ?
+    GROUP BY g.country_code, c.country_name
+    HAVING value IS NOT NULL
     ORDER BY c.country_name
   `);
-  return stmt.all(start, end, start, end) as MapDataPoint[];
+  return stmt.all(start, end) as MapDataPoint[];
 }
 
 export function getCombinedTimeseries(

@@ -8,12 +8,24 @@ interface DonutValue {
 
 interface Props {
   values: DonutValue[];
+  /**
+   * The renewable-share figure to print at the centre - the server's
+   * `renewable_percentage` (generationService.getRenewableShare), the same
+   * value the header stat card and the map read. This used to be computed
+   * here as `greenTotal / total` from `values`, which is exactly how the
+   * donut's number and the header's number ended up disagreeing (different
+   * denominator, different aggregation) even though both were nominally
+   * "renewable share" - see GenerationTab.tsx. `values` still drives the
+   * arc proportions below; `pct` no longer comes from them. `null` renders
+   * as an em dash - never coerced to a 0% or 100% the data doesn't support.
+   */
+  pct: number | null;
   size?: number;
   thickness?: number;
   colors: Record<string, string>;
 }
 
-export function AbleDonut({ values, size = 140, thickness = 22, colors }: Props) {
+export function AbleDonut({ values, pct, size = 140, thickness = 22, colors }: Props) {
   const total = values.reduce((a, v) => a + v.value, 0) || 1;
   const cx = size / 2;
   const cy = size / 2;
@@ -32,9 +44,6 @@ export function AbleDonut({ values, size = 140, thickness = 22, colors }: Props)
     a0 = a1;
     return { d, key: v.key, value: v.value, frac };
   });
-
-  const greenTotal = values.filter((v) => v.isGreen).reduce((a, v) => a + v.value, 0);
-  const pct = Math.round((greenTotal / total) * 100);
 
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
@@ -57,7 +66,7 @@ export function AbleDonut({ values, size = 140, thickness = 22, colors }: Props)
         textAnchor="middle"
         fontFamily="'JetBrains Mono', monospace"
       >
-        {pct}%
+        {pct == null ? '—' : `${Math.round(pct)}%`}
       </text>
       <text
         x={cx}

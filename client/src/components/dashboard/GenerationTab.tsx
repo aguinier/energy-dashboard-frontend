@@ -30,11 +30,15 @@ const LEGEND: Array<{ key: 'solar' | 'wind' | 'hydro' | 'biomass'; label: string
   { key: 'biomass', label: 'Biomass' },
 ];
 
-// Only these rows count toward the donut's "% RENEWABLE" figure. Nuclear,
-// fossil, waste, pumped storage and the "other" bucket (which mixes storage
-// and ENTSO-E's own unclassified "Other" type) are all real generation now
-// that they're measured, but none of them are renewable - flagging any of
-// them green would inflate the percentage AbleDonut prints.
+// Which arcs AbleDonut colors green - cosmetic only. The printed "% RENEWABLE"
+// figure comes from the server (mix.renewable_percentage, see below), not
+// from these flags, so this set no longer needs to match the server's
+// renewable definition exactly to keep the number honest. It's narrower than
+// that definition on purpose: this card's "Other" row (see sourceRows.ts)
+// bundles geothermal/marine/other_renewable - which the server does count as
+// renewable - together with non-renewable energy_storage and ENTSO-E's
+// unclassified "Other" type, so coloring it green would misrepresent the two
+// non-renewable members it also contains.
 const GREEN_KEYS = new Set<SourceRow['key']>(['solar', 'wind', 'hydro', 'biomass']);
 
 export function GenerationTab() {
@@ -54,16 +58,17 @@ export function GenerationTab() {
   // `totalMw` is null until the mix loads, and (in the degenerate case of no
   // positive generation at all) can be zero — either way buildSourceRows
   // already refused to compute a share, leaving every row's pctOfGeneration
-  // null. Building the donut anyway would divide 0/0 and could print a false
-  // "100% renewable", so it's gated on a real, positive total instead.
+  // null. `mix.renewable_percentage` (server-computed) is null in exactly
+  // the same cases, so the two gates below agree; both are checked as
+  // belt-and-suspenders so the donut never renders off a partial/degenerate
+  // state either query could theoretically produce on its own.
   const donutValues = rows.map((r) => ({
-    // AbleDonut's arcs are a proportion of a positive total; a row can be
-    // genuinely negative (pumped storage net-charging, a stray
-    // consumption-only fossil reading) but that isn't a slice to draw, so it
-    // contributes 0 to the donut while SourceTable still shows the true
-    // signed value. This is exactly the sum `totalMw` above uses as its
-    // denominator, so the donut's printed percentage and SourceTable's rows
-    // always agree.
+    // AbleDonut's arcs are a proportion of a positive total, drawn purely for
+    // the visual breakdown - a row can be genuinely negative (pumped storage
+    // net-charging, a stray consumption-only fossil reading) but that isn't
+    // a slice to draw, so it contributes 0 here while SourceTable still
+    // shows the true signed value. The centre percentage AbleDonut prints no
+    // longer comes from these values (see `pct` below) - only arc widths do.
     key: r.key,
     value: Math.max(0, r.mw ?? 0),
     isGreen: GREEN_KEYS.has(r.key),
@@ -104,31 +109,30 @@ export function GenerationTab() {
       </AbleCard>
 
       {/*
-        The header stat row's "Renewable share" tile is renewables ÷ load
-        (server-computed, dashboardService.ts) - a different question from
-        this donut, which is renewables ÷ total measured generation (see
-        sourceRows.ts). The two numbers can legitimately differ (France
-        exports, so its generation-based share reads lower than a
-        load-based one would once nuclear dominates the mix). Rather than
-        forcing them to the same definition - the header's covers every tab,
-        not just this one, and load-based renewable share is itself a
-        standard grid metric - this card's subtitle says "share of
-        generation · not of load" so a reader never has to guess which
-        question either number is answering.
+        The header stat row's "Renewable share" tile and this donut used to
+        disagree: the header divided by load (a different denominator) using
+        a mean of per-hour ratios (a different aggregation), while the donut
+        summed this card's own window-average rows. Both now read
+        `renewable_percentage` from generationService.getRenewableShare - a
+        single server-side ratio of window sums (renewable ÷ total positive
+        generation, from energy_generation) that the header, the map, and
+        this donut all consume rather than recompute. They cannot drift
+        apart, so the subtitle only needs to state the denominator, not
+        explain a discrepancy.
       */}
       <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
-        <AbleCard title="Window average" subtitle="share of generation · not of load">
+        <AbleCard title="Window average" subtitle="share of generation">
           {mixLoading ? (
             <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
               Loading…
             </div>
-          ) : mixError || !mix || totalMw == null || totalMw <= 0 ? (
+          ) : mixError || !mix || mix.renewable_percentage == null || totalMw == null || totalMw <= 0 ? (
             <div className="flex h-[180px] items-center justify-center text-center text-[12px] text-ink-muted">
               Generation mix unavailable.
             </div>
           ) : (
             <div className="flex justify-center py-2">
-              <AbleDonut values={donutValues} colors={SOURCE_COLORS} />
+              <AbleDonut values={donutValues} pct={mix.renewable_percentage} colors={SOURCE_COLORS} />
             </div>
           )}
         </AbleCard>
