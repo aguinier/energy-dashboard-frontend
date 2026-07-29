@@ -3,6 +3,7 @@ import countriesRouter from './countries.js';
 import loadRouter from './load.js';
 import pricesRouter from './prices.js';
 import renewablesRouter from './renewables.js';
+import generationRouter from './generation.js';
 import dashboardRouter from './dashboard.js';
 import forecastRouter from './forecast.js';
 import tsoForecastRouter from './tsoForecast.js';
@@ -20,6 +21,7 @@ router.use('/countries', countriesRouter);
 router.use('/load', loadRouter);
 router.use('/prices', pricesRouter);
 router.use('/renewables', renewablesRouter);
+router.use('/generation', generationRouter);
 router.use('/dashboard', dashboardRouter);
 router.use('/forecasts', forecastRouter);
 // Write path for the workstation's Chronos net-position run. Mounted under the

@@ -84,6 +84,39 @@ export interface RenewableTimeSeriesPoint {
   other: number;
 }
 
+// Full A75 generation mix, sourced from `energy_generation` (the complete
+// document ENTSO-E returns) rather than `energy_renewable`'s 8-column
+// narrowing. Every field is nullable on purpose: a production type a country
+// does not report must reach the wire as `null`, never a fabricated `0` -
+// see generationService.ts. `hydro_pumped` and the fossil types can be
+// legitimately negative (net pumping / consumption-only readings).
+export interface GenerationMix {
+  // renewables - same underlying values as RenewableMix's fields, but read
+  // from energy_generation so one query serves the whole source mix.
+  solar: number | null;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+  hydro_run: number | null;
+  hydro_reservoir: number | null;
+  hydro_pumped: number | null;
+  biomass: number | null;
+  geothermal: number | null;
+  marine: number | null;
+  other_renewable: number | null;
+  energy_storage: number | null;
+  // previously discarded by _map_renewable_columns
+  nuclear: number | null;
+  fossil_gas: number | null;
+  fossil_hard_coal: number | null;
+  fossil_brown_coal: number | null;
+  fossil_oil: number | null;
+  fossil_oil_shale: number | null;
+  fossil_peat: number | null;
+  fossil_coal_derived_gas: number | null;
+  waste: number | null;
+  other: number | null;
+}
+
 // Dashboard types
 export interface DashboardOverview {
   currentLoad: number | null;
