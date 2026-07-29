@@ -5,16 +5,13 @@ import { AbleDonut } from '@/components/charts/AbleDonut';
 import { SourceTable } from './SourceTable';
 import { buildSourceRows, type SourceRow } from './sourceRows';
 import { useRenewableChartData } from '@/hooks/useRenewableChartData';
-import {
-  useDashboardOverview,
-  useGenerationMix,
-} from '@/hooks/useDashboardData';
+import { useGenerationMix } from '@/hooks/useDashboardData';
 import { adaptRenewableMixSeries } from '@/lib/chartAdapters';
 
 // Keep in sync with AbleStackedMix DEFAULT_COLORS (validated palette). The
 // top chart still only plots the 4 renewable types (unchanged, out of scope
 // for the A75 work), so those 4 keys must stay exactly as they were.
-const SOURCE_COLORS: Record<SourceRow['key'] | 'remainder', string> = {
+const SOURCE_COLORS: Record<SourceRow['key'], string> = {
   solar: '#D9A114',
   wind: '#4D89C9',
   hydro: '#2FA39C',
@@ -24,7 +21,6 @@ const SOURCE_COLORS: Record<SourceRow['key'] | 'remainder', string> = {
   fossil: '#6B6459',
   waste: '#A98F5D',
   other: '#B7AFA0',
-  remainder: '#D8D4CC',
 };
 
 const LEGEND: Array<{ key: 'solar' | 'wind' | 'hydro' | 'biomass'; label: string }> = [
@@ -44,36 +40,34 @@ const GREEN_KEYS = new Set<SourceRow['key']>(['solar', 'wind', 'hydro', 'biomass
 export function GenerationTab() {
   const { renewableData, isLoading } = useRenewableChartData();
   const { data: mix, isLoading: mixLoading, isError: mixError } = useGenerationMix();
-  const { data: overview, isLoading: overviewLoading } = useDashboardOverview();
 
   const { series, nowIndex } = useMemo(
     () => adaptRenewableMixSeries(renewableData),
     [renewableData],
   );
 
-  // Donut input — the full measured mix plus the remainder of load. Derived
-  // from buildSourceRows so the donut and SourceTable can never disagree
-  // about what's measured or what the remainder is.
-  const { rows, remainderMw } = useMemo(
-    () => buildSourceRows(mix ?? undefined, overview?.currentLoad ?? null),
-    [mix, overview?.currentLoad],
-  );
+  // Donut input — the full measured mix, shared with SourceTable via
+  // buildSourceRows so the two can never disagree about what's measured or
+  // what each row's share means.
+  const { rows, totalMw } = useMemo(() => buildSourceRows(mix ?? undefined), [mix]);
 
-  // `remainderMw` is null whenever load is unmeasurable for this window
-  // (buildSourceRows deliberately refuses to guess). Coercing that to 0 would
-  // make every remaining slice green and the donut print a false "100%
-  // renewable" — so the donut is built only once a real remainder exists;
-  // see the `remainderMw == null` guard below.
-  const donutValues = [
+  // `totalMw` is null until the mix loads, and (in the degenerate case of no
+  // positive generation at all) can be zero — either way buildSourceRows
+  // already refused to compute a share, leaving every row's pctOfGeneration
+  // null. Building the donut anyway would divide 0/0 and could print a false
+  // "100% renewable", so it's gated on a real, positive total instead.
+  const donutValues = rows.map((r) => ({
     // AbleDonut's arcs are a proportion of a positive total; a row can be
     // genuinely negative (pumped storage net-charging, a stray
     // consumption-only fossil reading) but that isn't a slice to draw, so it
     // contributes 0 to the donut while SourceTable still shows the true
-    // signed value.
-    ...rows.map((r) => ({ key: r.key, value: Math.max(0, r.mw ?? 0), isGreen: GREEN_KEYS.has(r.key) })),
-    // The rest of load, once all 21 measured types are counted.
-    { key: 'remainder', value: remainderMw ?? 0, isGreen: false },
-  ];
+    // signed value. This is exactly the sum `totalMw` above uses as its
+    // denominator, so the donut's printed percentage and SourceTable's rows
+    // always agree.
+    key: r.key,
+    value: Math.max(0, r.mw ?? 0),
+    isGreen: GREEN_KEYS.has(r.key),
+  }));
 
   return (
     <div className="space-y-3.5">
@@ -109,13 +103,26 @@ export function GenerationTab() {
         )}
       </AbleCard>
 
+      {/*
+        The header stat row's "Renewable share" tile is renewables ÷ load
+        (server-computed, dashboardService.ts) - a different question from
+        this donut, which is renewables ÷ total measured generation (see
+        sourceRows.ts). The two numbers can legitimately differ (France
+        exports, so its generation-based share reads lower than a
+        load-based one would once nuclear dominates the mix). Rather than
+        forcing them to the same definition - the header's covers every tab,
+        not just this one, and load-based renewable share is itself a
+        standard grid metric - this card's subtitle says "share of
+        generation · not of load" so a reader never has to guess which
+        question either number is answering.
+      */}
       <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
-        <AbleCard title="Window average" subtitle="share of load · all measured production types">
-          {mixLoading || overviewLoading ? (
+        <AbleCard title="Window average" subtitle="share of generation · not of load">
+          {mixLoading ? (
             <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
               Loading…
             </div>
-          ) : mixError || !mix || remainderMw == null ? (
+          ) : mixError || !mix || totalMw == null || totalMw <= 0 ? (
             <div className="flex h-[180px] items-center justify-center text-center text-[12px] text-ink-muted">
               Generation mix unavailable.
             </div>
@@ -136,7 +143,7 @@ export function GenerationTab() {
               Generation mix unavailable.
             </div>
           ) : (
-            <SourceTable mix={mix} overview={overview} />
+            <SourceTable mix={mix} />
           )}
         </AbleCard>
       </div>

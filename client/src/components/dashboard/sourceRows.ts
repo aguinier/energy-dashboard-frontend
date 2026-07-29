@@ -12,8 +12,12 @@ export interface SourceRow {
    * offsetting generation reading in the window).
    */
   mw: number | null;
-  /** Share of load, signed. Null exactly when `mw` is null. */
-  pctOfLoad: number | null;
+  /**
+   * Share of this window's total measured generation, signed - NOT share of
+   * load (see `buildSourceRows` for why). Null exactly when `mw` is null, or
+   * when `totalMw` is zero/negative and a share cannot be expressed.
+   */
+  pctOfGeneration: number | null;
   color: string;
 }
 
@@ -56,19 +60,51 @@ function sumOrNull(values: Array<number | null | undefined>): number | null {
  *   and a small "other" bucket (geothermal, marine, other renewable,
  *   energy storage, and ENTSO-E's own "Other" type).
  *
- * Nuclear and fossil used to be discarded entirely (not ingested), so this
- * function reported measured renewables plus an unnamed remainder of load.
- * Both tables are now populated from the same A75 fetch, so the remainder
- * below is what's left after all 21 types are accounted for, not just 4 -
- * normally small, often exactly 0. It is clamped at 0: this function answers
- * "how much of load is unexplained by what we measured", which cannot be
- * negative by definition - a window where measured generation exceeds load
- * is a net-export surplus, a different claim this function does not make.
+ * ## Share of generation, not share of load
+ *
+ * Rows used to be expressed as a share of load, back when this panel showed
+ * *measured renewables plus an unknown remainder of load* (nuclear and
+ * fossil weren't ingested at all). That framing breaks now that the whole
+ * mix is measured: a country that exports (France, routinely) generates
+ * more than it consumes, so nuclear alone can read over 100% of load - a
+ * "share" that can exceed 100% isn't a share of anything meaningful, and
+ * the rows no longer sum to a sensible total.
+ *
+ * So this now reports each row's share of **total measured generation**
+ * (`totalMw`) instead. That also retires the old "remainder" (`loadMw -
+ * measured`, clamped at 0): it used to answer "how much of load can't we
+ * explain", a question that made sense only when most of the mix was
+ * unmeasured. Now that all 21 types are ingested, the gap between
+ * generation and load is exports/imports plus losses - a real quantity, but
+ * a *different* one, already served by the Net position tab. Relabelling
+ * the old remainder as that would be wrong, so it's gone rather than
+ * repurposed; this function no longer takes `loadMw` at all.
+ *
+ * ## The denominator
+ *
+ * `totalMw` is the sum of *positive* rows only, not the net sum including
+ * negatives. Two reasons:
+ *
+ *  1. A negative row (pumped storage charging, a stray consumption-only
+ *     fossil reading) is a draw, not production - it was never generated,
+ *     so it shouldn't shrink the base every other row is measured against.
+ *     Dividing by a net figure would make every positive row's share swing
+ *     with how much a country happened to be pumping that window, which
+ *     has nothing to do with the *mix* of what was produced.
+ *  2. It keeps this total identical to what the donut (`AbleDonut`) sums
+ *     internally - it can only draw non-negative slices, so it naturally
+ *     totals the positive rows. Picking the same definition here means the
+ *     table and the donut can never silently disagree, the exact class of
+ *     bug ("header said 36%, donut said 0%") the A75 UI audit flagged.
+ *
+ * A negative row still gets a correctly negative `pctOfGeneration` (it's
+ * still divided by `totalMw`), so the positive rows alone sum to 100% and a
+ * negative row reads as "drew back N% of what was produced" rather than
+ * partitioning a pie together with the positive rows.
  */
 export function buildSourceRows(
   mix: GenerationMix | undefined,
-  loadMw: number | null,
-): { rows: SourceRow[]; remainderMw: number | null } {
+): { rows: SourceRow[]; totalMw: number | null } {
   const raw: Array<[SourceRow['key'], string, number | null]> = [
     ['nuclear', 'Nuclear', mix?.nuclear ?? null],
     ['solar', 'Solar', mix?.solar ?? null],
@@ -99,20 +135,21 @@ export function buildSourceRows(
     ],
   ];
 
+  // Null when the mix itself hasn't loaded yet (nothing measured at all -
+  // distinct from "measured, and it happens to sum to zero or less").
+  const totalMw = mix == null ? null : raw.reduce((a, [, , mw]) => a + Math.max(0, mw ?? 0), 0);
+
   const rows: SourceRow[] = raw
     .map(([key, label, mw]) => ({
       key,
       label,
       mw,
-      pctOfLoad: mw == null ? null : loadMw && loadMw > 0 ? (mw / loadMw) * 100 : 0,
+      pctOfGeneration: mw == null ? null : totalMw && totalMw > 0 ? (mw / totalMw) * 100 : null,
       color: COLORS[key],
     }))
     // Largest contributors first, by magnitude, so the mix reads at a
     // glance; types this country doesn't report sink to the bottom.
     .sort((a, b) => Math.abs(b.mw ?? 0) - Math.abs(a.mw ?? 0));
 
-  const measured = rows.reduce((a, r) => a + (r.mw ?? 0), 0);
-  const remainderMw = loadMw == null ? null : Math.max(0, loadMw - measured);
-
-  return { rows, remainderMw };
+  return { rows, totalMw };
 }
