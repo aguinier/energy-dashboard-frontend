@@ -115,6 +115,14 @@ export interface GenerationMix {
   fossil_coal_derived_gas: number | null;
   waste: number | null;
   other: number | null;
+  // Renewable ÷ total positive generation, a ratio of window sums over this
+  // same table - see generationService.getRenewableShare. Computed
+  // server-side and attached here (not left for the client to re-derive from
+  // the fields above) so the Generation tab's donut and the header's
+  // "Renewable share" stat card can never print different numbers for the
+  // same window. Null when this country has no energy_generation rows in the
+  // window, or when total positive generation is zero/negative.
+  renewable_percentage: number | null;
 }
 
 // Dashboard types

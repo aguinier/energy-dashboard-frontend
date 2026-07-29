@@ -178,7 +178,11 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
 - **`PriceTab`** — same shape for day-ahead price (ml forecast only; price has
   no TSO forecast in the registry).
 - **`GenerationTab`** — `AbleStackedMix` (solar/wind/hydro/biomass, stacked)
-  plus an `AbleDonut` and `SourceTable` showing window-average share of load.
+  plus an `AbleDonut` and `SourceTable` showing window-average share of
+  *generation* (`energy_generation`, the full A75 document — see
+  `generationService.getRenewableShare`). The donut's percentage and the
+  header stat row's "Renewable share" card both read this same server-computed
+  ratio of window sums, so they cannot disagree.
   `ModelPicker` still renders on this tab (`solar` has `catboost`/`xgboost`/TSO
   D+1 registered), but `GenerationTab.tsx` never calls `useModelSelection` or
   reads a forecast at all, so picking a model here is inert — no overlay is
@@ -468,8 +472,10 @@ interface TSOForecastAccuracyMetrics {
 **A query that filters/joins on `date(timestamp_utc)` or `strftime(...)` is slow:**
 - SQLite cannot use an index through a function of the indexed column, so a
   predicate like `date(r.timestamp_utc) = date(l.timestamp_utc)` degrades to a
-  full scan of the joined table per row. `getRenewablePercentage` hit this
-  joining `energy_renewable` to `energy_load`: 51s for a 30-day window,
+  full scan of the joined table per row. The old `getRenewablePercentage`
+  (`energy_renewable` joined to `energy_load`, since removed - renewable
+  share is now `generationService.getRenewableShare`, a join-free ratio of
+  window sums over `energy_generation`) hit this: 51s for a 30-day window,
   0.009s after switching to a direct `r.timestamp_utc = l.timestamp_utc`
   equality join. Grouping/formatting output with `date()`/`strftime()` is
   fine — only filtering or joining on a function of the timestamp column

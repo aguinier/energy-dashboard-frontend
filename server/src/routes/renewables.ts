@@ -1,5 +1,6 @@
 import { Router, Request } from 'express';
 import * as renewableService from '../services/renewableService.js';
+import { getRenewableShare } from '../services/generationService.js';
 import { cacheMiddleware, TTL } from '../middleware/cache.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { Granularity } from '../types/index.js';
@@ -49,7 +50,11 @@ router.get('/mix', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknown, u
   const startDate = start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
   const mix = renewableService.getRenewableMix(country, startDate, endDate);
-  const percentage = renewableService.getRenewablePercentage(country, startDate, endDate);
+  // Same definition as the Generation tab's donut and the header stat card -
+  // see generationService.getRenewableShare. `mix` above still comes from
+  // energy_renewable (an unrelated, older breakdown this endpoint has always
+  // served); only the percentage now comes from the reconciled source.
+  const percentage = getRenewableShare(country, startDate, endDate);
 
   res.json({
     success: true,
@@ -85,7 +90,7 @@ router.get('/percentage', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unk
   const endDate = end || new Date().toISOString();
   const startDate = start || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const percentage = renewableService.getRenewablePercentage(country, startDate, endDate);
+  const percentage = getRenewableShare(country, startDate, endDate);
 
   res.json({
     success: true,

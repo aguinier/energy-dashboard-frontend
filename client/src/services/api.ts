@@ -167,10 +167,12 @@ export async function fetchRenewableMix(params: {
   start?: string;
   end?: string;
 }): Promise<RenewableMix> {
-  // GenerationTab's "Window average"/"By source" panels. Server-side this also
-  // runs getRenewablePercentage's date()/strftime() join (the same unindexed
-  // join pattern getMapRenewableData had to be rewritten to avoid) — the
-  // single named example in the review finding for a known-slow long-range call.
+  // GenerationTab now reads fetchGenerationMix (energy_generation, the full
+  // A75 document) instead - this energy_renewable-only endpoint has no
+  // current UI caller, kept for API compatibility. Its `renewable_percentage`
+  // field is generationService.getRenewableShare's figure (same definition
+  // the header stat, the map, and the Generation tab donut use), not a
+  // separate energy_renewable/energy_load join anymore - see routes/renewables.ts.
   const { data } = await api.get<ApiResponse<RenewableMix>>('/renewables/mix', {
     params,
     timeout: LONG_RANGE_TIMEOUT_MS,

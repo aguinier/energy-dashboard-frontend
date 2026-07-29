@@ -27,6 +27,9 @@ const FR_MIX: GenerationMix = {
   energy_storage: null,
   waste: 402.32,
   other: null,
+  // Irrelevant to buildSourceRows (which never reads this field) - present
+  // only so this fixture satisfies the GenerationMix type.
+  renewable_percentage: 21.4,
 };
 
 // Sum of the positive rows only: nuclear + solar + wind + hydro + fossil
@@ -160,6 +163,7 @@ describe('buildSourceRows', () => {
       energy_storage: null,
       waste: null,
       other: null,
+      renewable_percentage: null,
     };
     const { rows, totalMw } = buildSourceRows(allNonPositive);
     expect(totalMw).toBe(0);
