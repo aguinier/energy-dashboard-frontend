@@ -6,6 +6,7 @@ import type {
   PriceDataPoint,
   RenewableDataPoint,
   RenewableMix,
+  GenerationMix,
   DashboardOverview,
   MapDataPoint,
   CombinedTimeseriesPoint,
@@ -175,6 +176,22 @@ export async function fetchRenewableMix(params: {
     timeout: LONG_RANGE_TIMEOUT_MS,
   });
   return unwrap(data, '/renewables/mix');
+}
+
+// Full A75 generation mix (nuclear + every fossil type + renewables), read
+// from energy_generation. GenerationTab's donut and SourceTable use this
+// instead of fetchRenewableMix so both draw from the same measured document
+// and cannot disagree about what remains unexplained.
+export async function fetchGenerationMix(params: {
+  country: string;
+  start?: string;
+  end?: string;
+}): Promise<GenerationMix | null> {
+  const { data } = await api.get<ApiResponse<GenerationMix | null>>('/generation/mix', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
+  return unwrap(data, '/generation/mix');
 }
 
 // Dashboard Data

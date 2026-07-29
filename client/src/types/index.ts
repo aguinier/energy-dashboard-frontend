@@ -43,6 +43,37 @@ export interface RenewableMix {
   renewable_percentage?: number | null;
 }
 
+// Full A75 generation mix, sourced server-side from `energy_generation` (the
+// complete ENTSO-E document) rather than the 8-column renewable-only
+// narrowing above. Every field is independently nullable: a production type
+// this country does not report reaches the client as `null`, never a
+// fabricated `0` - see GenerationTab/sourceRows.ts, which render the two
+// differently. `hydro_pumped` and the fossil types can be genuinely negative
+// (net pumping, consumption-only readings).
+export interface GenerationMix {
+  solar: number | null;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+  hydro_run: number | null;
+  hydro_reservoir: number | null;
+  hydro_pumped: number | null;
+  biomass: number | null;
+  geothermal: number | null;
+  marine: number | null;
+  other_renewable: number | null;
+  energy_storage: number | null;
+  nuclear: number | null;
+  fossil_gas: number | null;
+  fossil_hard_coal: number | null;
+  fossil_brown_coal: number | null;
+  fossil_oil: number | null;
+  fossil_oil_shale: number | null;
+  fossil_peat: number | null;
+  fossil_coal_derived_gas: number | null;
+  waste: number | null;
+  other: number | null;
+}
+
 export interface DashboardOverview {
   currentLoad: number | null;
   avgPrice: number | null;

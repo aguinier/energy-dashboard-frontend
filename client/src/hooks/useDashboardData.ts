@@ -7,6 +7,7 @@ import {
   fetchPriceData,
   fetchRenewableData,
   fetchRenewableMix,
+  fetchGenerationMix,
   fetchPriceHeatmap,
   fetchLoadComparison,
   fetchForecastData,
@@ -326,6 +327,21 @@ export function useRenewableMix() {
   return useQuery({
     queryKey: ['renewables', 'mix', selectedCountry, timePreset, timeOffset],
     queryFn: () => fetchRenewableMix({ country: selectedCountry, start: start.toISOString(), end: end.toISOString() }),
+    staleTime: REFRESH_INTERVALS.dashboard,
+  });
+}
+
+// Full A75 generation mix (nuclear + fossil + renewables) for GenerationTab's
+// donut and SourceTable. Same window as useRenewableMix so the two would
+// agree if both were still in use; this hook is what actually feeds those
+// two views now - see sourceRows.ts.
+export function useGenerationMix() {
+  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
+  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
+
+  return useQuery({
+    queryKey: ['generation', 'mix', selectedCountry, timePreset, timeOffset],
+    queryFn: () => fetchGenerationMix({ country: selectedCountry, start: start.toISOString(), end: end.toISOString() }),
     staleTime: REFRESH_INTERVALS.dashboard,
   });
 }
