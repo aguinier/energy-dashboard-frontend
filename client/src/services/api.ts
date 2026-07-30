@@ -21,22 +21,14 @@ import type {
   ApiResponse,
   TSOForecastType,
   TSOLoadForecastDataPoint,
-  TSOGenerationForecastDataPoint,
   TSOForecastAccuracyDataPoint,
   TSOForecastAccuracyMetrics,
   DataFreshness,
-  ForecastComparisonResponse,
   ForecastComparisonSummary,
-  BestForecastResponse,
-  MLForecastAccuracyDataPoint,
-  AccuracyMetrics,
-  AnalyticsForecastType,
-  RollingAccuracyResponse,
   CrossCountryMetrics,
   CrossCountryMetricsEntry,
   NetPositionResponse,
   ForecastModelRegistry,
-  RollingAccuracyDataPoint,
 } from '@/types';
 import { unwrap } from './unwrap';
 
@@ -86,13 +78,6 @@ export async function fetchLoadData(params: {
   return unwrap(data, '/load');
 }
 
-export async function fetchLatestLoad(country?: string): Promise<LoadDataPoint | LoadDataPoint[]> {
-  const { data } = await api.get<ApiResponse<LoadDataPoint | LoadDataPoint[]>>('/load/latest', {
-    params: country ? { country } : undefined,
-  });
-  return unwrap(data, '/load/latest');
-}
-
 export async function fetchLoadComparison(params: {
   countries: string[];
   start?: string;
@@ -119,22 +104,6 @@ export async function fetchPriceData(params: {
     timeout: LONG_RANGE_TIMEOUT_MS,
   });
   return unwrap(data, '/prices');
-}
-
-export async function fetchLatestPrices(country?: string): Promise<PriceDataPoint | PriceDataPoint[]> {
-  const { data } = await api.get<ApiResponse<PriceDataPoint | PriceDataPoint[]>>('/prices/latest', {
-    params: country ? { country } : undefined,
-  });
-  return unwrap(data, '/prices/latest');
-}
-
-export async function fetchPriceStats(params: {
-  country: string;
-  start?: string;
-  end?: string;
-}): Promise<{ avg: number; min: number; max: number; current: number }> {
-  const { data } = await api.get<ApiResponse<{ avg: number; min: number; max: number; current: number }>>('/prices/stats', { params });
-  return unwrap(data, '/prices/stats');
 }
 
 export async function fetchPriceHeatmap(params: {
@@ -307,21 +276,6 @@ export async function fetchTSOLoadForecast(params: {
   return unwrap(data, endpoint);
 }
 
-export async function fetchTSOGenerationForecast(params: {
-  countryCode: string;
-  start?: string;
-  end?: string;
-  granularity?: Granularity;
-}): Promise<TSOGenerationForecastDataPoint[]> {
-  const { countryCode, ...queryParams } = params;
-  const endpoint = `/tso-forecast/generation/${countryCode}`;
-  const { data } = await api.get<ApiResponse<TSOGenerationForecastDataPoint[]>>(
-    endpoint,
-    { params: queryParams }
-  );
-  return unwrap(data, endpoint);
-}
-
 export async function fetchTSOLoadForecastAccuracy(params: {
   countryCode: string;
   start?: string;
@@ -331,23 +285,6 @@ export async function fetchTSOLoadForecastAccuracy(params: {
 }): Promise<{ data: TSOForecastAccuracyDataPoint[]; metrics: TSOForecastAccuracyMetrics }> {
   const { countryCode, ...queryParams } = params;
   const endpoint = `/tso-forecast/accuracy/load/${countryCode}`;
-  const { data } = await api.get<{
-    success: boolean;
-    data: TSOForecastAccuracyDataPoint[];
-    metrics: TSOForecastAccuracyMetrics;
-  }>(endpoint, { params: queryParams });
-  return { data: unwrap(data, endpoint), metrics: data.metrics };
-}
-
-export async function fetchTSOGenerationForecastAccuracy(params: {
-  countryCode: string;
-  type: 'solar' | 'wind_onshore' | 'wind_offshore';
-  start?: string;
-  end?: string;
-  granularity?: Granularity;
-}): Promise<{ data: TSOForecastAccuracyDataPoint[]; metrics: TSOForecastAccuracyMetrics }> {
-  const { countryCode, ...queryParams } = params;
-  const endpoint = `/tso-forecast/accuracy/generation/${countryCode}`;
   const { data } = await api.get<{
     success: boolean;
     data: TSOForecastAccuracyDataPoint[];
@@ -406,24 +343,6 @@ export async function fetchInitialCountryData(params: {
 // ============================================================================
 
 /**
- * Fetch unified forecast comparison metrics (TSO vs ML)
- */
-export async function fetchUnifiedForecastComparison(params: {
-  countryCode: string;
-  forecastType?: AnalyticsForecastType;
-  start?: string;
-  end?: string;
-}): Promise<ForecastComparisonResponse> {
-  const { countryCode, ...queryParams } = params;
-  const endpoint = `/forecast-comparison/${countryCode}`;
-  const { data } = await api.get<ApiResponse<ForecastComparisonResponse>>(
-    endpoint,
-    { params: queryParams }
-  );
-  return unwrap(data, endpoint);
-}
-
-/**
  * Fetch forecast comparison summary for all types
  */
 export async function fetchForecastComparisonSummary(params: {
@@ -438,69 +357,6 @@ export async function fetchForecastComparisonSummary(params: {
     { params: queryParams }
   );
   return unwrap(data, endpoint);
-}
-
-/**
- * Fetch best performing forecast for a type
- */
-export async function fetchBestForecast(params: {
-  countryCode: string;
-  forecastType?: AnalyticsForecastType;
-  start?: string;
-  end?: string;
-}): Promise<BestForecastResponse | null> {
-  const { countryCode, ...queryParams } = params;
-  const endpoint = `/forecast-comparison/${countryCode}/best`;
-  const { data } = await api.get<ApiResponse<BestForecastResponse | null>>(
-    endpoint,
-    { params: queryParams }
-  );
-  // `data` may legitimately be `null` when no provider has enough points to
-  // rank yet — unwrap distinguishes that from a missing/malformed envelope.
-  return unwrap(data, endpoint);
-}
-
-/**
- * Fetch ML forecast accuracy data points
- */
-export async function fetchMLForecastAccuracy(params: {
-  countryCode: string;
-  forecastType?: AnalyticsForecastType;
-  start?: string;
-  end?: string;
-  horizon?: 1 | 2;
-}): Promise<{ data: MLForecastAccuracyDataPoint[]; metrics: AccuracyMetrics }> {
-  const { countryCode, ...queryParams } = params;
-  const endpoint = `/forecast-comparison/${countryCode}/ml-accuracy`;
-  const { data } = await api.get<{
-    success: boolean;
-    data: MLForecastAccuracyDataPoint[];
-    metrics: AccuracyMetrics;
-  }>(endpoint, { params: queryParams });
-  return { data: unwrap(data, endpoint), metrics: data.metrics };
-}
-
-/**
- * Fetch rolling accuracy metrics for trend chart
- */
-export async function fetchRollingAccuracy(params: {
-  countryCode: string;
-  forecastType?: AnalyticsForecastType;
-  start?: string;
-  end?: string;
-  windowDays?: number;
-}): Promise<RollingAccuracyResponse> {
-  const { countryCode, ...queryParams } = params;
-  const endpoint = `/forecast-comparison/${countryCode}/rolling`;
-  const { data } = await api.get<{ success: boolean } & RollingAccuracyResponse>(
-    endpoint,
-    { params: queryParams }
-  );
-  return {
-    data: unwrap<RollingAccuracyDataPoint[]>(data, endpoint),
-    windowDays: data.windowDays,
-    meta: data.meta,
-  };
 }
 
 // ============================================================================
