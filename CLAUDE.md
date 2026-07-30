@@ -183,13 +183,12 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
   `generationService.getRenewableShare`). The donut's percentage and the
   header stat row's "Renewable share" card both read this same server-computed
   ratio of window sums, so they cannot disagree.
-  `ModelPicker` still renders on this tab (`solar` has `catboost`/`xgboost`/TSO
-  D+1 registered), but `GenerationTab.tsx` never calls `useModelSelection` or
-  reads a forecast at all, so picking a model here is inert — no overlay is
-  ever requested or drawn. `useRenewableChartData` separately fetches per-type
-  ml and TSO generation forecasts gated on the legacy `showForecast`/
-  `showTSOForecast` store flags, but nothing in the UI sets those flags
-  anymore either, so that data path is also dead.
+  No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER` in
+  `CountryDashboardView.tsx` limits it to the tabs whose chart actually reads a
+  selection (`price`, `load`, `net-position`). It used to render and do
+  nothing, while `useRenewableChartData` fired five per-type forecast queries
+  that no component consumed: six API calls per view, discarded. Both are gone.
+  If you add a forecast overlay to this tab, add it back to that set.
 - **`NetPositionTab`** — `AbleLineChart` for ENTSO-E day-ahead net position
   plus the Chronos forecast (median, and a p10-p90 band where stored). Handles
   a zone going silent upstream (e.g. GR/IE since 2026-03-14) as an explicit
@@ -275,17 +274,48 @@ positive actual (`mapeSamples` in the response, always <= `dataPoints`) and
 returns `null` rather than `0` when no point qualified — e.g. solar overnight,
 where every actual is legitimately zero.
 
+## Generation data
+
+Two tables, both written from **one** A75 fetch per country per window
+(`fetch_renewable.py` → `query_generation_and_renewable_with_metadata`). Never
+add a second request to fill one of them.
+
+- **`energy_generation`** — the whole document. 21 `*_mw` columns, one per
+  ENTSO-E production type. Prefer this for anything new.
+- **`energy_renewable`** — the older, narrower table: 8 renewable columns, with
+  pumped storage folded into `hydro_reservoir_mw`. **Frozen.** The dashboard,
+  the forecast job and several backfill scripts read it. It is derived from the
+  *pre-netting* flatten specifically so its values are unchanged; deriving it
+  from `energy_generation` shifts `hydro_reservoir_mw` (measured 1520 → 1410)
+  because of that folding. It is now redundant and worth retiring, but that is
+  its own migration.
+
+Three things to know before touching this:
+
+- **`NULL` ≠ `0`.** A type a country does not report is `NULL` — we do not know.
+  A measured zero (solar overnight) is `0.0`. `energy_generation` deliberately
+  has **no `DEFAULT 0`**, and the mapping avoids `fillna(0)`. Note
+  `groupby().sum()` collapses an all-NaN group to `0.0` unless you pass
+  `min_count=1`.
+- **Values can be negative, legitimately.** ENTSO-E reports `Actual Aggregated`
+  and `Actual Consumption` separately; the full mapping nets them
+  (`aggregated - consumption`), so `hydro_pumped_mw` is negative while pumping
+  and a consumption-only type (French `Fossil Hard coal`) is negative outright.
+  An earlier version skipped every Consumption series, which recorded France as
+  a net pumped-storage *generator* at +26 MW while it was pumping 285-349 MW.
+- **Share of generation, not of load.** `generationService.getRenewableShare` is
+  the single definition — renewable output over total *positive* generation, as
+  a ratio of window sums. Three separate implementations existed before
+  (`renewableService`'s join, plus inline `AVG/AVG` SQL in the header and the
+  map), disagreeing with each other. Share-of-load is wrong here: a net
+  exporter generates more than it consumes, so single rows read over 100%.
+
 ## Data the database does not have
 
-- **Nuclear and fossil generation.** Only `energy_renewable` is ingested — no
-  nuclear, gas, coal, or other thermal generation table exists. Do not derive
-  them from load minus renewables and label the remainder "nuclear" or "gas":
-  a previous version of `GenerationTab` did exactly that and showed nuclear as
-  a flat ~20% of load for every country, including ones with no nuclear fleet.
-  The current donut instead labels the load-minus-renewables remainder
-  "unattributed." Adding a real breakdown needs ENTSO-E *Actual Generation per
-  Production Type* (document A75) ingested in the `energy-data-gathering`
-  module first.
+- **Nothing, for generation.** This entry used to say nuclear and fossil were
+  unavailable. They are not: `energy_generation` holds the complete ENTSO-E
+  A75 document — nuclear, every fossil type, waste, storage and the renewables
+  — backfilled to 2021-01-01 across 34 countries. See "Generation data" below.
 - **Forecast horizons beyond ~D+2.** `forecasts.horizon_hours` runs roughly
   2-64h depending on model (catboost tops out at 63h, xgboost at 64h) — there
   is no stored forecast for D+3 and beyond. `ForecastTab`'s error-by-horizon
