@@ -30,12 +30,19 @@ function getTimeRangeDates(timeRange: TimeRange): { start: string; end: string }
   return { start: start.toISOString(), end };
 }
 
+/** Explicit window, when the caller has one, instead of deriving from the `TimeRange` enum. */
+interface DateRange {
+  start: string;
+  end: string;
+}
+
 export function getDashboardOverview(
   countryCode: string,
-  timeRange: TimeRange = '7d'
+  timeRange: TimeRange = '7d',
+  range?: DateRange
 ): DashboardOverview {
   const upperCode = countryCode.toUpperCase();
-  const { start: rawStart, end: rawEnd } = getTimeRangeDates(timeRange);
+  const { start: rawStart, end: rawEnd } = range ?? getTimeRangeDates(timeRange);
   const start = normalizeTimestamp(rawStart);
   const end = normalizeTimestamp(rawEnd);
 
@@ -109,9 +116,10 @@ export function getDashboardOverview(
 
 export function getMapData(
   metric: MetricType = 'load',
-  timeRange: TimeRange = '24h'
+  timeRange: TimeRange = '24h',
+  range?: DateRange
 ): MapDataPoint[] {
-  const { start: rawStart, end: rawEnd } = getTimeRangeDates(timeRange);
+  const { start: rawStart, end: rawEnd } = range ?? getTimeRangeDates(timeRange);
   const start = normalizeTimestamp(rawStart);
   const end = normalizeTimestamp(rawEnd);
 

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { TimeRange, TimePreset, TimeAnchor, MetricType, TSOForecastType, AppView, AnalyticsForecastType } from '@/types';
+import type { TimePreset, TimeAnchor, MetricType, TSOForecastType, AppView, AnalyticsForecastType } from '@/types';
 import { DEFAULT_COUNTRY, PRESET_DURATIONS_HOURS } from '@/lib/constants';
 import { migratePersisted, PERSIST_VERSION } from './migrate';
 
@@ -44,10 +44,6 @@ interface DashboardState {
   // Selected country
   selectedCountry: string;
   setSelectedCountry: (country: string) => void;
-
-  // Time range (legacy - kept for backward compatibility)
-  timeRange: TimeRange;
-  setTimeRange: (range: TimeRange) => void;
 
   // New time navigation
   timePreset: TimePreset;
@@ -165,10 +161,6 @@ export const useDashboardStore = create<DashboardState>()(
       selectedCountry: DEFAULT_COUNTRY,
       setSelectedCountry: (country) => set({ selectedCountry: country }),
 
-      // Time range (legacy)
-      timeRange: '7d',
-      setTimeRange: (range) => set({ timeRange: range }),
-
       // New time navigation
       timePreset: '7d',
       timeAnchor: 'past',
@@ -189,17 +181,11 @@ export const useDashboardStore = create<DashboardState>()(
         // Auto-enable ML forecast for future presets (since no actual data exists)
         const isFuturePreset = ['next1d', 'next24h', 'next48h', 'next7d'].includes(preset);
 
-        // Also update legacy timeRange for backward compatibility
-        const legacyTimeRange = ['24h', '7d', '30d', '90d', '1y'].includes(preset)
-          ? preset as TimeRange
-          : '7d';
-
         set({
           timePreset: preset,
           timeAnchor: anchor,
           timeOffset: 0, // Reset offset when changing preset
           isLive: isLivePreset,
-          timeRange: legacyTimeRange,
           // Auto-enable ML forecast for future presets
           ...(isFuturePreset && { showForecast: true }),
         });
@@ -431,7 +417,6 @@ export const useDashboardStore = create<DashboardState>()(
       partialize: (state) => ({
         currentView: state.currentView,
         selectedCountry: state.selectedCountry,
-        timeRange: state.timeRange,
         timePreset: state.timePreset,
         timeAnchor: state.timeAnchor,
         mapMetric: state.mapMetric,

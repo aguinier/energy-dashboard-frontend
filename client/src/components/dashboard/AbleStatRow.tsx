@@ -44,12 +44,13 @@ export function AbleStatRow() {
   const { data: load } = useLoadData();
   const { data: price } = usePriceData();
   const { data: renewable } = useRenewableData();
-  // Keyed off `timeRange`, not `timePreset`: `useDashboardOverview()` fetches
-  // on `timeRange`, so the qualifier must describe the same field that
-  // produced the number, or it can end up claiming a window (e.g. "next 24h")
-  // the server never actually computed the aggregate over.
-  const timeRange = useDashboardStore((s) => s.timeRange);
-  const win = getWindowLabel(timeRange);
+  // Keyed off `timePreset`: `useDashboardOverview()` fetches on
+  // `getDateRangeForPreset(timePreset, timeOffset)`, so the qualifier
+  // describes the same field that produced the number and cannot end up
+  // claiming a window the server never actually computed the aggregate over
+  // (see windowLabel.ts and Task 8's original "next 24h" Critical finding).
+  const timePreset = useDashboardStore((s) => s.timePreset);
+  const win = getWindowLabel(timePreset);
 
   const loadSpark = lastN(load?.map((p) => p.load ?? p.avg_load ?? null) ?? [], 48);
   const priceSpark = lastN(

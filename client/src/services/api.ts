@@ -11,7 +11,6 @@ import type {
   MapDataPoint,
   CombinedTimeseriesPoint,
   PriceHeatmapPoint,
-  TimeRange,
   Granularity,
   MetricType,
   ForecastType,
@@ -199,12 +198,15 @@ export async function fetchGenerationMix(params: {
 // Dashboard Data
 export async function fetchDashboardOverview(params: {
   country: string;
-  timeRange?: TimeRange;
+  start?: string;
+  end?: string;
 }): Promise<DashboardOverview> {
   // AbleStatRow's top stat strip, fetched unconditionally on every country
-  // tab. `timeRange` mirrors the 30d/90d/1y preset, and the server route
-  // comment (`dashboard.ts`) calls this "an expensive query" even at 7d —
-  // it runs five separate scans over the window.
+  // tab. `start`/`end` come from the same `getDateRangeForPreset` every other
+  // hook already uses, so this can no longer disagree with the window the
+  // header stat's qualifier claims (windowLabel.ts). The server route
+  // comment (`dashboard.ts`) calls this "an expensive query" even at 7d — it
+  // runs five separate scans over the window.
   const { data } = await api.get<ApiResponse<DashboardOverview>>('/dashboard/overview', {
     params,
     timeout: LONG_RANGE_TIMEOUT_MS,
@@ -214,7 +216,8 @@ export async function fetchDashboardOverview(params: {
 
 export async function fetchMapData(params: {
   metric?: MetricType;
-  timeRange?: TimeRange;
+  start?: string;
+  end?: string;
 }): Promise<MapDataPoint[]> {
   const { data } = await api.get<ApiResponse<MapDataPoint[]>>('/dashboard/map', { params });
   return unwrap(data, '/dashboard/map');
@@ -384,7 +387,6 @@ export async function fetchDataFreshness(countryCode: string): Promise<DataFresh
 // Combined initial data endpoint - reduces round trips for country view
 export async function fetchInitialCountryData(params: {
   country: string;
-  timeRange?: TimeRange;
   start?: string;
   end?: string;
   granularity?: Granularity;
