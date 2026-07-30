@@ -1,39 +1,11 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { TimePreset, TimeAnchor, MetricType, TSOForecastType, AppView, AnalyticsForecastType } from '@/types';
+import type { TimePreset, TimeAnchor, MetricType, TSOForecastType, AppView } from '@/types';
 import { DEFAULT_COUNTRY, PRESET_DURATIONS_HOURS } from '@/lib/constants';
 import { migratePersisted, PERSIST_VERSION } from './migrate';
 
 // Default ML forecast horizons (D+1 and D+2)
 const DEFAULT_ML_HORIZONS = [1, 2];
-
-// Analytics time range presets
-export type AnalyticsTimeRange = '7d' | '30d' | '90d' | 'all';
-
-// Default analytics configuration
-export interface AnalyticsConfig {
-  forecastType: AnalyticsForecastType;
-  selectedProviders: ('tso' | 'ml')[];
-  selectedHorizons: {
-    tso: ('day_ahead' | 'week_ahead')[];
-    ml: (1 | 2)[];
-  };
-  // Independent time range for analytics (not linked to global dashboard time)
-  timeRange: AnalyticsTimeRange;
-  // Rolling window for accuracy trend chart (days)
-  rollingWindow: 7 | 14;
-}
-
-const DEFAULT_ANALYTICS_CONFIG: AnalyticsConfig = {
-  forecastType: 'load',
-  selectedProviders: ['tso', 'ml'],
-  selectedHorizons: {
-    tso: ['day_ahead'],
-    ml: [1, 2],
-  },
-  timeRange: '30d',     // Default: 30 days for sufficient statistical samples
-  rollingWindow: 7,     // Default: 7-day rolling window
-};
 
 interface DashboardState {
   // App view navigation
@@ -120,18 +92,6 @@ interface DashboardState {
   selectedMLHorizons: number[];
   toggleMLHorizon: (horizon: number) => void;
   setSelectedMLHorizons: (horizons: number[]) => void;
-
-  // ============================================================================
-  // Analytics Configuration
-  // ============================================================================
-  analyticsConfig: AnalyticsConfig;
-  setAnalyticsForecastType: (forecastType: AnalyticsForecastType) => void;
-  toggleAnalyticsProvider: (provider: 'tso' | 'ml') => void;
-  toggleAnalyticsTSOHorizon: (horizon: 'day_ahead' | 'week_ahead') => void;
-  toggleAnalyticsMLHorizon: (horizon: 1 | 2) => void;
-  setAnalyticsTimeRange: (timeRange: AnalyticsTimeRange) => void;
-  setAnalyticsRollingWindow: (window: 7 | 14) => void;
-  resetAnalyticsConfig: () => void;
 
   // ============================================================================
   // Cross-Country Comparison
@@ -302,104 +262,6 @@ export const useDashboardStore = create<DashboardState>()(
       setSelectedMLHorizons: (horizons) => set({ selectedMLHorizons: horizons }),
 
       // ============================================================================
-      // Analytics Configuration
-      // ============================================================================
-      analyticsConfig: DEFAULT_ANALYTICS_CONFIG,
-
-      setAnalyticsForecastType: (forecastType) =>
-        set((state) => ({
-          analyticsConfig: { ...state.analyticsConfig, forecastType },
-        })),
-
-      toggleAnalyticsProvider: (provider) =>
-        set((state) => {
-          const current = state.analyticsConfig.selectedProviders;
-          if (current.includes(provider)) {
-            // Don't allow deselecting all providers
-            if (current.length === 1) return state;
-            return {
-              analyticsConfig: {
-                ...state.analyticsConfig,
-                selectedProviders: current.filter((p) => p !== provider),
-              },
-            };
-          }
-          return {
-            analyticsConfig: {
-              ...state.analyticsConfig,
-              selectedProviders: [...current, provider],
-            },
-          };
-        }),
-
-      toggleAnalyticsTSOHorizon: (horizon) =>
-        set((state) => {
-          const current = state.analyticsConfig.selectedHorizons.tso;
-          if (current.includes(horizon)) {
-            // Don't allow deselecting all horizons
-            if (current.length === 1) return state;
-            return {
-              analyticsConfig: {
-                ...state.analyticsConfig,
-                selectedHorizons: {
-                  ...state.analyticsConfig.selectedHorizons,
-                  tso: current.filter((h) => h !== horizon),
-                },
-              },
-            };
-          }
-          return {
-            analyticsConfig: {
-              ...state.analyticsConfig,
-              selectedHorizons: {
-                ...state.analyticsConfig.selectedHorizons,
-                tso: [...current, horizon],
-              },
-            },
-          };
-        }),
-
-      toggleAnalyticsMLHorizon: (horizon) =>
-        set((state) => {
-          const current = state.analyticsConfig.selectedHorizons.ml;
-          if (current.includes(horizon)) {
-            // Don't allow deselecting all horizons
-            if (current.length === 1) return state;
-            return {
-              analyticsConfig: {
-                ...state.analyticsConfig,
-                selectedHorizons: {
-                  ...state.analyticsConfig.selectedHorizons,
-                  ml: current.filter((h) => h !== horizon),
-                },
-              },
-            };
-          }
-          return {
-            analyticsConfig: {
-              ...state.analyticsConfig,
-              selectedHorizons: {
-                ...state.analyticsConfig.selectedHorizons,
-                ml: [...current, horizon].sort((a, b) => a - b) as (1 | 2)[],
-              },
-            },
-          };
-        }),
-
-      setAnalyticsTimeRange: (timeRange) =>
-        set((state) => ({
-          analyticsConfig: { ...state.analyticsConfig, timeRange },
-        })),
-
-      setAnalyticsRollingWindow: (rollingWindow) =>
-        set((state) => ({
-          analyticsConfig: { ...state.analyticsConfig, rollingWindow },
-        })),
-
-      resetAnalyticsConfig: () =>
-        set({ analyticsConfig: DEFAULT_ANALYTICS_CONFIG }),
-
-      // ============================================================================
       // Cross-Country Comparison
       // ============================================================================
       comparisonMetric: 'wape',
@@ -433,8 +295,6 @@ export const useDashboardStore = create<DashboardState>()(
         visibleRenewableTypes: state.visibleRenewableTypes,
         // ML Forecast horizons
         selectedMLHorizons: state.selectedMLHorizons,
-        // Analytics configuration
-        analyticsConfig: state.analyticsConfig,
         // Cross-country comparison
         comparisonMetric: state.comparisonMetric,
         comparisonForecastType: state.comparisonForecastType,

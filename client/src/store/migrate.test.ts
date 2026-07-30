@@ -61,6 +61,24 @@ describe('migratePersisted', () => {
     expect(out.timeRange).toBeUndefined();
   });
 
+  // `analyticsConfig` (the last holder of a nested `timeRange` field) backed
+  // the now-deleted analytics dashboard — see migrate.ts. A blob persisted
+  // before that removal may still carry it; migration must strip it rather
+  // than let it keep re-appearing via the persist middleware's shallow merge.
+  it('drops a persisted analyticsConfig — the slice no longer exists', () => {
+    const out = migratePersisted(
+      { analyticsConfig: { forecastType: 'load', timeRange: '30d', rollingWindow: 7 }, timePreset: 'next24h' },
+      0,
+    );
+    expect(out.analyticsConfig).toBeUndefined();
+    expect(out.timePreset).toBe('next24h'); // untouched
+  });
+
+  it('is a no-op when analyticsConfig is already absent', () => {
+    const out = migratePersisted({ timePreset: '7d' }, 0);
+    expect(out.analyticsConfig).toBeUndefined();
+  });
+
   it('is a no-op at the current version', () => {
     const s = { currentView: 'map' as const };
     expect(migratePersisted(s, PERSIST_VERSION)).toEqual(s);

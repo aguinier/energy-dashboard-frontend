@@ -1,4 +1,4 @@
-export const PERSIST_VERSION = 4;
+export const PERSIST_VERSION = 5;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
@@ -70,6 +70,18 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
   // inert field) every time this migration's shallow merge ran. Drop it so
   // it doesn't outlive the field it described.
   delete next.timeRange;
+
+  // `analyticsConfig` (the `{ forecastType, selectedProviders, selectedHorizons,
+  // timeRange, rollingWindow }` blob) was the last holder of a nested
+  // `timeRange` field, now that the top-level one above is gone. It backed
+  // the analytics dashboard (ForecastAnalyticsPanel, AccuracyTrendChart, and
+  // friends under components/analytics/), which was removed as dead code —
+  // no barrel importer remained. Its store actions
+  // (setAnalyticsForecastType/toggleAnalyticsProvider/toggleAnalyticsTSOHorizon/
+  // toggleAnalyticsMLHorizon/setAnalyticsTimeRange/setAnalyticsRollingWindow/
+  // resetAnalyticsConfig) are gone too — nothing calls them. Drop the blob so
+  // it doesn't outlive the slice it configured.
+  delete next.analyticsConfig;
 
   return next;
 }

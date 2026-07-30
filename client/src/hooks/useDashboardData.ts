@@ -15,23 +15,14 @@ import {
   fetchAvailableForecastTypes,
   fetchForecastComparison,
   fetchMultiHorizonForecast,
-  fetchTSOLoadForecast,
-  fetchTSOGenerationForecast,
-  fetchTSOLoadForecastAccuracy,
-  fetchTSOGenerationForecastAccuracy,
-  fetchTSOForecastMetrics,
   fetchDataFreshness,
-  fetchUnifiedForecastComparison,
   fetchForecastComparisonSummary,
-  fetchBestForecast,
-  fetchMLForecastAccuracy,
-  fetchRollingAccuracy,
   fetchCrossCountryMetrics,
 } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { getTodayBrussels, getNextDayBrussels } from '@/lib/timezone';
-import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType, TSOForecastType, AnalyticsForecastType, AnalyticsTimeRange } from '@/types';
+import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType } from '@/types';
 
 // ============================================================================
 // New time navigation functions
@@ -163,43 +154,6 @@ export function getGranularityForPreset(preset: TimePreset): Granularity {
     default:
       return 'hourly';
   }
-}
-
-/**
- * Format date range for display (e.g., "Dec 25 - Jan 4, 2025 (11 days)")
- */
-export function formatDateRangeDisplay(start: Date, end: Date): string {
-  const startStr = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  const endStr = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const diffTime = Math.abs(end.getTime() - start.getTime());
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-  if (diffDays < 1) {
-    const diffHours = Math.ceil(diffTime / (1000 * 60 * 60));
-    return `${startStr} - ${endStr} (${diffHours}h)`;
-  }
-  return `${startStr} - ${endStr} (${diffDays} ${diffDays === 1 ? 'day' : 'days'})`;
-}
-
-/**
- * Custom hook to get computed date range based on current time navigation state
- */
-export function useComputedDateRange() {
-  const { timePreset, timeOffset } = useDashboardStore();
-  const { start, end, anchor } = getDateRangeForPreset(timePreset, timeOffset);
-  const granularity = getGranularityForPreset(timePreset);
-  const displayRange = formatDateRangeDisplay(start, end);
-
-  return {
-    start,
-    end,
-    startISO: start.toISOString(),
-    endISO: end.toISOString(),
-    anchor,
-    granularity,
-    displayRange,
-    now: new Date(),
-  };
 }
 
 // AbleStatRow's stat strip and the header qualifier (windowLabel.ts) both
@@ -488,128 +442,6 @@ export function getMLForecastDateRange(
   return { start: windowStart.toISOString(), end: extendedEnd.toISOString() };
 }
 
-// TSO Forecast hooks (ENTSO-E official forecasts)
-
-// Helper function to get forecast date range (extends into the future for overlay)
-function getTSOForecastDateRangeFromPreset(
-  preset: TimePreset,
-  offset: number = 0,
-  futureDays: number = 7
-): { start: string; end: string } {
-  const { start, end } = getDateRangeForPreset(preset, offset);
-
-  // For historical/now presets, extend end date into the future for forecast overlay
-  const extendedEnd = new Date(Math.max(end.getTime(), Date.now() + futureDays * 24 * 60 * 60 * 1000));
-
-  return { start: start.toISOString(), end: extendedEnd.toISOString() };
-}
-
-/**
- * Fetch TSO load forecasts for the selected country
- */
-export function useTSOLoadForecast(forecastType: TSOForecastType = 'day_ahead') {
-  const { selectedCountry, timePreset, timeOffset, showTSOForecast } = useDashboardStore();
-  const { start, end } = getTSOForecastDateRangeFromPreset(timePreset, timeOffset, 7);
-  const granularity = getGranularityForPreset(timePreset);
-
-  return useQuery({
-    queryKey: ['tso-forecast', 'load', selectedCountry, timePreset, timeOffset, forecastType, granularity],
-    queryFn: () => fetchTSOLoadForecast({
-      countryCode: selectedCountry,
-      start,
-      end,
-      forecastType,
-      granularity,
-    }),
-    enabled: showTSOForecast,
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-/**
- * Fetch TSO generation forecasts (solar + wind) for the selected country
- */
-export function useTSOGenerationForecast() {
-  const { selectedCountry, timePreset, timeOffset, showTSOForecast } = useDashboardStore();
-  const { start, end } = getTSOForecastDateRangeFromPreset(timePreset, timeOffset, 7);
-  const granularity = getGranularityForPreset(timePreset);
-
-  return useQuery({
-    queryKey: ['tso-forecast', 'generation', selectedCountry, timePreset, timeOffset, granularity],
-    queryFn: () => fetchTSOGenerationForecast({
-      countryCode: selectedCountry,
-      start,
-      end,
-      granularity,
-    }),
-    enabled: showTSOForecast,
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-/**
- * Fetch TSO load forecast accuracy comparison (forecast vs actual)
- */
-export function useTSOLoadForecastAccuracy(forecastType: TSOForecastType = 'day_ahead') {
-  const { selectedCountry, timePreset, timeOffset, showTSOForecast, showTSOComparisonMode } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-  const granularity = getGranularityForPreset(timePreset);
-
-  return useQuery({
-    queryKey: ['tso-forecast', 'accuracy', 'load', selectedCountry, timePreset, timeOffset, forecastType, granularity],
-    queryFn: () => fetchTSOLoadForecastAccuracy({
-      countryCode: selectedCountry,
-      start: start.toISOString(),
-      end: end.toISOString(),
-      forecastType,
-      granularity,
-    }),
-    enabled: showTSOForecast && showTSOComparisonMode,
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-/**
- * Fetch TSO generation forecast accuracy for a specific type
- */
-export function useTSOGenerationForecastAccuracy(type: 'solar' | 'wind_onshore' | 'wind_offshore') {
-  const { selectedCountry, timePreset, timeOffset, showTSOForecast, showTSOComparisonMode } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-  const granularity = getGranularityForPreset(timePreset);
-
-  return useQuery({
-    queryKey: ['tso-forecast', 'accuracy', 'generation', selectedCountry, type, timePreset, timeOffset, granularity],
-    queryFn: () => fetchTSOGenerationForecastAccuracy({
-      countryCode: selectedCountry,
-      type,
-      start: start.toISOString(),
-      end: end.toISOString(),
-      granularity,
-    }),
-    enabled: showTSOForecast && showTSOComparisonMode,
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-/**
- * Fetch aggregate TSO forecast accuracy metrics for all types
- */
-export function useTSOForecastMetrics() {
-  const { selectedCountry, timePreset, timeOffset, showTSOForecast } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-
-  return useQuery({
-    queryKey: ['tso-forecast', 'metrics', selectedCountry, timePreset, timeOffset],
-    queryFn: () => fetchTSOForecastMetrics({
-      countryCode: selectedCountry,
-      start: start.toISOString(),
-      end: end.toISOString(),
-    }),
-    enabled: showTSOForecast,
-    staleTime: REFRESH_INTERVALS.map, // Metrics don't change as often
-  });
-}
-
 // ============================================================================
 // Data freshness hook
 // ============================================================================
@@ -633,26 +465,6 @@ export function useDataFreshness() {
 // ============================================================================
 
 /**
- * Fetch unified forecast comparison for a specific type
- * Uses analytics-specific time range (independent from global dashboard time)
- */
-export function useForecastComparisonMetrics(forecastType: AnalyticsForecastType = 'load') {
-  const { selectedCountry, analyticsConfig } = useDashboardStore();
-  const { start, end } = getAnalyticsDateRange(analyticsConfig.timeRange);
-
-  return useQuery({
-    queryKey: ['forecast-comparison', selectedCountry, forecastType, analyticsConfig.timeRange],
-    queryFn: () => fetchUnifiedForecastComparison({
-      countryCode: selectedCountry,
-      forecastType,
-      start: start.toISOString(),
-      end: end.toISOString(),
-    }),
-    staleTime: REFRESH_INTERVALS.map, // Comparison metrics don't change often
-  });
-}
-
-/**
  * Fetch forecast comparison summary for all types
  */
 export function useForecastComparisonSummary() {
@@ -665,165 +477,6 @@ export function useForecastComparisonSummary() {
       countryCode: selectedCountry,
       start: start.toISOString(),
       end: end.toISOString(),
-    }),
-    staleTime: REFRESH_INTERVALS.map,
-  });
-}
-
-/**
- * Fetch best performing forecast for a type
- */
-export function useBestForecast(forecastType: AnalyticsForecastType = 'load') {
-  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-
-  return useQuery({
-    queryKey: ['forecast-comparison', 'best', selectedCountry, forecastType, timePreset, timeOffset],
-    queryFn: () => fetchBestForecast({
-      countryCode: selectedCountry,
-      forecastType,
-      start: start.toISOString(),
-      end: end.toISOString(),
-    }),
-    staleTime: REFRESH_INTERVALS.map,
-  });
-}
-
-/**
- * Fetch ML forecast accuracy data for charting
- */
-export function useMLForecastAccuracy(
-  forecastType: AnalyticsForecastType = 'load',
-  horizon?: 1 | 2
-) {
-  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-
-  return useQuery({
-    queryKey: ['forecast-comparison', 'ml-accuracy', selectedCountry, forecastType, horizon, timePreset, timeOffset],
-    queryFn: () => fetchMLForecastAccuracy({
-      countryCode: selectedCountry,
-      forecastType,
-      start: start.toISOString(),
-      end: end.toISOString(),
-      horizon,
-    }),
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-// ============================================================================
-// Analytics-Specific Hooks (independent time range)
-// ============================================================================
-
-/**
- * Calculate date range for analytics based on analyticsConfig.timeRange
- * This is independent from the global dashboard time navigation
- */
-export function getAnalyticsDateRange(timeRange: AnalyticsTimeRange): { start: Date; end: Date } {
-  const end = new Date();
-
-  switch (timeRange) {
-    case '7d':
-      return {
-        start: new Date(end.getTime() - 7 * 24 * 60 * 60 * 1000),
-        end,
-      };
-    case '30d':
-      return {
-        start: new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000),
-        end,
-      };
-    case '90d':
-      return {
-        start: new Date(end.getTime() - 90 * 24 * 60 * 60 * 1000),
-        end,
-      };
-    case 'all':
-      // Default to 1 year of data for "all" to avoid excessive queries
-      return {
-        start: new Date(end.getTime() - 365 * 24 * 60 * 60 * 1000),
-        end,
-      };
-    default:
-      return {
-        start: new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000),
-        end,
-      };
-  }
-}
-
-/**
- * Format analytics date range for display
- */
-export function formatAnalyticsDateRange(timeRange: AnalyticsTimeRange): string {
-  const { start, end } = getAnalyticsDateRange(timeRange);
-  const startStr = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  const endStr = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-
-  const days = timeRange === 'all' ? '1y' : timeRange;
-  return `${startStr} - ${endStr} (${days})`;
-}
-
-/**
- * Custom hook to get computed analytics date range based on analyticsConfig
- */
-export function useAnalyticsDateRange() {
-  const { analyticsConfig } = useDashboardStore();
-  const { start, end } = getAnalyticsDateRange(analyticsConfig.timeRange);
-  const displayRange = formatAnalyticsDateRange(analyticsConfig.timeRange);
-
-  return {
-    start,
-    end,
-    startISO: start.toISOString(),
-    endISO: end.toISOString(),
-    displayRange,
-    timeRange: analyticsConfig.timeRange,
-  };
-}
-
-/**
- * Fetch unified forecast comparison using analytics-specific time range
- */
-export function useAnalyticsForecastComparison(forecastType: AnalyticsForecastType = 'load') {
-  const { selectedCountry, analyticsConfig } = useDashboardStore();
-  const { start, end } = getAnalyticsDateRange(analyticsConfig.timeRange);
-
-  return useQuery({
-    queryKey: ['analytics', 'forecast-comparison', selectedCountry, forecastType, analyticsConfig.timeRange],
-    queryFn: () => fetchUnifiedForecastComparison({
-      countryCode: selectedCountry,
-      forecastType,
-      start: start.toISOString(),
-      end: end.toISOString(),
-    }),
-    staleTime: REFRESH_INTERVALS.map,
-  });
-}
-
-/**
- * Fetch rolling accuracy data for the trend chart
- */
-export function useRollingAccuracy(forecastType: AnalyticsForecastType = 'load') {
-  const { selectedCountry, analyticsConfig } = useDashboardStore();
-  const { start, end } = getAnalyticsDateRange(analyticsConfig.timeRange);
-
-  return useQuery({
-    queryKey: [
-      'analytics',
-      'rolling-accuracy',
-      selectedCountry,
-      forecastType,
-      analyticsConfig.timeRange,
-      analyticsConfig.rollingWindow,
-    ],
-    queryFn: () => fetchRollingAccuracy({
-      countryCode: selectedCountry,
-      forecastType,
-      start: start.toISOString(),
-      end: end.toISOString(),
-      windowDays: analyticsConfig.rollingWindow,
     }),
     staleTime: REFRESH_INTERVALS.map,
   });

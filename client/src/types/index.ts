@@ -192,14 +192,6 @@ export interface TSOLoadForecastDataPoint {
   publication_timestamp_utc: string | null;
 }
 
-export interface TSOGenerationForecastDataPoint {
-  timestamp: string;
-  solar_mw: number | null;
-  wind_onshore_mw: number | null;
-  wind_offshore_mw: number | null;
-  total_forecast_mw: number | null;
-}
-
 export interface TSOForecastAccuracyDataPoint {
   timestamp: string;
   forecast_value: number;
@@ -305,72 +297,6 @@ export interface ForecastComparisonResponse {
  */
 export interface ForecastComparisonSummary {
   [forecastType: string]: ForecastComparisonResponse;
-}
-
-/**
- * Best forecast response
- */
-export interface BestForecastResponse {
-  provider: 'tso' | 'ml';
-  horizon: string;
-  mape: number;
-}
-
-/**
- * ML forecast accuracy data point
- */
-export interface MLForecastAccuracyDataPoint {
-  timestamp: string;
-  forecast_value: number;
-  actual_value: number;
-  error: number;
-  error_pct: number;
-  horizon_hours: number;
-}
-
-/**
- * ML forecast accuracy response
- */
-export interface MLForecastAccuracyResponse {
-  data: MLForecastAccuracyDataPoint[];
-  metrics: AccuracyMetrics;
-}
-
-/**
- * Analytics forecast type (subset that supports analytics)
- */
-export type AnalyticsForecastType = 'load' | 'price' | 'solar' | 'wind_onshore' | 'wind_offshore';
-
-/**
- * Analytics time range presets (independent from global dashboard time)
- */
-export type AnalyticsTimeRange = '7d' | '30d' | '90d' | 'all';
-
-// ============================================================================
-// Rolling Accuracy Types (for trend chart)
-// ============================================================================
-
-/**
- * Single data point in the rolling accuracy trend
- */
-export interface RollingAccuracyDataPoint {
-  date: string;  // YYYY-MM-DD format
-  tso?: { mape: number | null; mae: number };
-  ml_d1?: { mape: number; mae: number };
-  ml_d2?: { mape: number; mae: number };
-}
-
-/**
- * Response from the rolling accuracy API
- */
-export interface RollingAccuracyResponse {
-  data: RollingAccuracyDataPoint[];
-  windowDays: number;
-  meta: {
-    forecastType: string;
-    countryCode: string;
-    timeRange: { start: string; end: string };
-  };
 }
 
 // ============================================================================
