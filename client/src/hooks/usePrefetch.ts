@@ -21,7 +21,6 @@ import { REFRESH_INTERVALS } from '@/lib/constants';
 export function usePrefetchCountry() {
   const queryClient = useQueryClient();
   const timePreset = useDashboardStore((s) => s.timePreset);
-  const timeRange = useDashboardStore((s) => s.timeRange);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
 
   const prefetch = useCallback(
@@ -39,26 +38,29 @@ export function usePrefetchCountry() {
       // Use combined endpoint to fetch overview + load in one request
       // This is faster than two separate requests
       queryClient.prefetchQuery({
-        queryKey: ['dashboard', 'initial', countryCode, timeRange, timePreset, timeOffset, granularity],
+        queryKey: ['dashboard', 'initial', countryCode, timePreset, timeOffset, granularity],
         queryFn: async () => {
           const result = await fetchInitialCountryData({
             country: countryCode,
-            timeRange,
             start: start.toISOString(),
             end: end.toISOString(),
             granularity,
           });
-          
-          // Populate individual caches so components can use their normal hooks
+
+          // Populate individual caches so components can use their normal
+          // hooks. This key MUST match useDashboardOverview's queryKey
+          // exactly (['dashboard', 'overview', country, timePreset,
+          // timeOffset]) or the seeded cache sits under a key React Query
+          // never looks up, and prefetching silently does nothing.
           queryClient.setQueryData(
-            ['dashboard', 'overview', countryCode, timeRange],
+            ['dashboard', 'overview', countryCode, timePreset, timeOffset],
             result.overview
           );
           queryClient.setQueryData(
             ['load', countryCode, timePreset, timeOffset, granularity],
             result.loadData
           );
-          
+
           return result;
         },
         staleTime: REFRESH_INTERVALS.dashboard,
@@ -66,8 +68,13 @@ export function usePrefetchCountry() {
 
       // Also prefetch overview separately as a fallback (in case combined fails)
       queryClient.prefetchQuery({
-        queryKey: ['dashboard', 'overview', countryCode, timeRange],
-        queryFn: () => fetchDashboardOverview({ country: countryCode, timeRange }),
+        queryKey: ['dashboard', 'overview', countryCode, timePreset, timeOffset],
+        queryFn: () =>
+          fetchDashboardOverview({
+            country: countryCode,
+            start: start.toISOString(),
+            end: end.toISOString(),
+          }),
         staleTime: REFRESH_INTERVALS.dashboard,
       });
 
@@ -96,7 +103,7 @@ export function usePrefetchCountry() {
         staleTime: REFRESH_INTERVALS.dashboard,
       });
     },
-    [queryClient, timePreset, timeRange, timeOffset]
+    [queryClient, timePreset, timeOffset]
   );
 
   return prefetch;

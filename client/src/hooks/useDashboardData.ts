@@ -31,36 +31,7 @@ import {
 import { useDashboardStore } from '@/store/dashboardStore';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { getTodayBrussels, getNextDayBrussels } from '@/lib/timezone';
-import type { TimeRange, TimePreset, TimeAnchor, Granularity, MetricType, ForecastType, TSOForecastType, AnalyticsForecastType, AnalyticsTimeRange } from '@/types';
-
-// Get dates from time range
-function getDateRange(timeRange: TimeRange): { start: string; end: string } {
-  const end = new Date();
-  let start: Date;
-
-  switch (timeRange) {
-    case '24h':
-      start = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      break;
-    case '7d':
-      start = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-      break;
-    case '30d':
-      start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-      break;
-    case '90d':
-      start = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-      break;
-    case '1y':
-      start = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
-      break;
-    default:
-      start = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  }
-
-  return { start: start.toISOString(), end: end.toISOString() };
-}
-
+import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType, TSOForecastType, AnalyticsForecastType, AnalyticsTimeRange } from '@/types';
 
 // ============================================================================
 // New time navigation functions
@@ -231,38 +202,82 @@ export function useComputedDateRange() {
   };
 }
 
+// AbleStatRow's stat strip and the header qualifier (windowLabel.ts) both
+// need to describe the same window — this is what the fetch actually uses,
+// so the two can no longer disagree the way `timeRange`/`timePreset` did
+// (see Task 8's "+24h" Critical finding, and the deferral note in Task 16).
 export function useDashboardOverview() {
-  const { selectedCountry, timeRange } = useDashboardStore();
+  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
+  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
 
   return useQuery({
-    queryKey: ['dashboard', 'overview', selectedCountry, timeRange],
-    queryFn: () => fetchDashboardOverview({ country: selectedCountry, timeRange }),
+    queryKey: ['dashboard', 'overview', selectedCountry, timePreset, timeOffset],
+    queryFn: () =>
+      fetchDashboardOverview({
+        country: selectedCountry,
+        start: start.toISOString(),
+        end: end.toISOString(),
+      }),
     staleTime: REFRESH_INTERVALS.dashboard,
     refetchInterval: REFRESH_INTERVALS.dashboard,
   });
 }
 
-export function useMapData(metric?: MetricType, timeRange?: TimeRange) {
+// The map has no time-navigation control of its own (confirmed: `EuropeMap`
+// is the only caller, and it passes neither argument). Before this refactor
+// it inherited whatever the legacy `timeRange` enum last landed on — which
+// `setTimePreset` had already collapsed back to a historical value ('7d' by
+// default) for every non-historical preset, so the map incidentally never
+// saw a future/"now" window even though nothing made that guarantee on
+// purpose.
+//
+// `getDashboardOverview`'s siblings (`getMapLoadData`/`getMapPriceData`/
+// `getMapRenewableData`/`getMapNetPositionData` in dashboardService.ts) all
+// read actuals-only tables — there is no forecast overlay for the map. Wiring
+// this straight to the country page's live `timePreset`/`timeOffset` (as
+// `useDashboardOverview` now does) would carry over a future-facing preset
+// like `next7d`/`today` the moment the user left the country tab set that
+// way, and the map would render every country as "no data" — a real
+// regression, not just a style change. So the map keeps its own fixed,
+// independent window instead of reusing the country page's live selection.
+const MAP_WINDOW_PRESET: TimePreset = '7d';
+
+export function useMapData(metric?: MetricType) {
   const mapMetricFromStore = useDashboardStore((state) => state.mapMetric);
-  const timeRangeFromStore = useDashboardStore((state) => state.timeRange);
   const m = metric ?? mapMetricFromStore;
-  const t = timeRange ?? timeRangeFromStore;
+  const { start, end } = getDateRangeForPreset(MAP_WINDOW_PRESET, 0);
 
   return useQuery({
-    queryKey: ['dashboard', 'map', m, t],
-    queryFn: () => fetchMapData({ metric: m, timeRange: t }),
+    queryKey: ['dashboard', 'map', m],
+    queryFn: () =>
+      fetchMapData({
+        metric: m,
+        start: start.toISOString(),
+        end: end.toISOString(),
+      }),
     staleTime: REFRESH_INTERVALS.map,
     refetchOnWindowFocus: false,
   });
 }
 
+// No callers anywhere in client/src (confirmed by the Task 16 audit and
+// re-confirmed here) — /dashboard/timeseries has been superseded by the
+// per-tab hooks below (useLoadData/usePriceData/useRenewableData). Kept
+// wired to the shared getDateRangeForPreset source rather than deleted,
+// since deleting exported, currently-dead code is a separate call from
+// removing the field it depended on.
 export function useCombinedTimeseries() {
-  const { selectedCountry, timeRange } = useDashboardStore();
-  const { start, end } = getDateRange(timeRange);
+  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
+  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
 
   return useQuery({
-    queryKey: ['dashboard', 'timeseries', selectedCountry, timeRange],
-    queryFn: () => fetchCombinedTimeseries({ country: selectedCountry, start, end }),
+    queryKey: ['dashboard', 'timeseries', selectedCountry, timePreset, timeOffset],
+    queryFn: () =>
+      fetchCombinedTimeseries({
+        country: selectedCountry,
+        start: start.toISOString(),
+        end: end.toISOString(),
+      }),
     staleTime: REFRESH_INTERVALS.dashboard,
   });
 }

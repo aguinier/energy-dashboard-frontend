@@ -1,4 +1,4 @@
-export const PERSIST_VERSION = 3;
+export const PERSIST_VERSION = 4;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
@@ -58,6 +58,18 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
   if (next.comparisonMetric === 'mape') {
     next.comparisonMetric = 'wape';
   }
+
+  // `timeRange` (the legacy '24h'|'7d'|'30d'|'90d'|'1y' enum, hand-synced
+  // from `timePreset` in `setTimePreset`) is gone — `/dashboard/overview` and
+  // `/dashboard/map` now take an explicit `start`/`end` window computed from
+  // `timePreset`/`timeOffset` via `getDateRangeForPreset`, the same source
+  // every other hook already used, and the header stat's qualifier
+  // (windowLabel.ts) reads `timePreset` again now that it can't disagree
+  // with what was actually fetched. Nothing declares or reads `timeRange` any
+  // more; left in a persisted blob it would just keep re-appearing (a stale,
+  // inert field) every time this migration's shallow merge ran. Drop it so
+  // it doesn't outlive the field it described.
+  delete next.timeRange;
 
   return next;
 }

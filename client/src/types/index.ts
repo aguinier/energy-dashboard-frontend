@@ -118,9 +118,6 @@ export interface PriceHeatmapPoint {
   price: number;
 }
 
-// Legacy time range type (kept for backward compatibility)
-export type TimeRange = '24h' | '7d' | '30d' | '90d' | '1y';
-
 // App view navigation
 export type AppView = 'map' | 'country' | 'comparison';
 

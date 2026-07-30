@@ -45,6 +45,22 @@ describe('migratePersisted', () => {
     expect(out.comparisonMetric).toBe('rmse');
   });
 
+  // `timeRange` (the legacy TimeRange enum hand-synced from `timePreset`) was
+  // removed from the store — see dashboardStore.ts/windowLabel.ts. A blob
+  // persisted before that change may still carry it; migration must strip it
+  // rather than let it keep re-appearing via the persist middleware's shallow
+  // merge of old state onto new.
+  it('drops a persisted timeRange — the field no longer exists', () => {
+    const out = migratePersisted({ timeRange: '7d', timePreset: 'next24h' }, 0);
+    expect(out.timeRange).toBeUndefined();
+    expect(out.timePreset).toBe('next24h'); // untouched
+  });
+
+  it('is a no-op when timeRange is already absent', () => {
+    const out = migratePersisted({ timePreset: '7d' }, 0);
+    expect(out.timeRange).toBeUndefined();
+  });
+
   it('is a no-op at the current version', () => {
     const s = { currentView: 'map' as const };
     expect(migratePersisted(s, PERSIST_VERSION)).toEqual(s);
