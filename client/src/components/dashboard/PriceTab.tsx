@@ -54,6 +54,7 @@ export function PriceTab() {
             formatTooltip={(v) => `€${v.toFixed(1)}`}
             unit="/MWh"
             preset={timePreset}
+            label="Day-ahead price"
           />
         )}
       </AbleCard>

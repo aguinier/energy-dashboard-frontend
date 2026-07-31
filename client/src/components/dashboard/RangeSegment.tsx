@@ -23,6 +23,7 @@ export function RangeSegment() {
           <button
             key={it.value}
             onClick={() => setTimePreset(it.value)}
+            aria-pressed={active}
             className={cn(
               'cursor-pointer border-none px-2.5 py-1 font-mono-num text-[11px]',
               i > 0 && 'border-l border-border',

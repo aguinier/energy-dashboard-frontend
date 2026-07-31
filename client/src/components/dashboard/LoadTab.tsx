@@ -67,6 +67,7 @@ export function LoadTab() {
             formatAxis={formatGwAxis}
             formatTooltip={(v) => (v >= 1000 ? `${(v / 1000).toFixed(2)} GW` : `${v.toFixed(0)} MW`)}
             preset={timePreset}
+            label="Electricity load"
           />
         )}
       </AbleCard>

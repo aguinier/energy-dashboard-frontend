@@ -29,6 +29,7 @@ export function MapMetricSelector({ floating, vertical, className }: MapMetricSe
             <button
               key={value}
               onClick={() => setMapMetric(value)}
+              aria-pressed={mapMetric === value}
               className={cn(
                 'w-full flex items-baseline gap-2 px-3 py-2 rounded-md text-left transition-colors',
                 mapMetric === value
@@ -64,6 +65,7 @@ export function MapMetricSelector({ floating, vertical, className }: MapMetricSe
           <button
             key={value}
             onClick={() => setMapMetric(value)}
+            aria-pressed={active}
             className={cn(
               'flex items-baseline gap-1.5 px-3.5 py-[7px] rounded-[7px] text-[13px] border-none cursor-pointer transition-colors whitespace-nowrap shrink-0',
               active

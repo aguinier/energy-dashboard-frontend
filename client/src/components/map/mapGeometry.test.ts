@@ -4,6 +4,7 @@ import {
   narrowViewBoxHeight,
   selectMapGeometry,
   hoverCardClearsSelector,
+  countryAriaLabel,
   DESKTOP_VIEWBOX,
   NARROW_VIEWBOX_WIDTH,
   NARROW_SCALE,
@@ -107,5 +108,34 @@ describe('hoverCardClearsSelector (task-11 review finding 2)', () => {
     // crossover to the reviewer's live measurement instead of drifting.
     expect(hoverCardClearsSelector(1140)).toBe(false);
     expect(hoverCardClearsSelector(1170)).toBe(true);
+  });
+});
+
+// The map's only screen-reader-facing content per country — every
+// `<Geography>` gets this as its `aria-label`. See the doc comment on
+// countryAriaLabel for why the two branches (data / no data) exist.
+describe('countryAriaLabel', () => {
+  it('names the country, metric and value together for a country with data', () => {
+    expect(countryAriaLabel('Germany', true, '58.0', 'GW', 'Electricity load')).toBe(
+      'Germany, Electricity load: 58.0 GW',
+    );
+  });
+
+  it('omits a trailing space when the unit is empty (e.g. a unitless share already in the value)', () => {
+    expect(countryAriaLabel('France', true, '42', '', 'Renewable share')).toBe(
+      'France, Renewable share: 42',
+    );
+  });
+
+  it('says "no data" and drops the value/unit/metric entirely when the country has none', () => {
+    expect(countryAriaLabel('Iceland', false, '58.0', 'GW', 'Electricity load')).toBe(
+      'Iceland: no data',
+    );
+  });
+
+  it('is stable across metrics with negative/signed values (net position)', () => {
+    expect(countryAriaLabel('Belgium', true, '−2.1k', 'MW', 'Net position')).toBe(
+      'Belgium, Net position: −2.1k MW',
+    );
   });
 });
