@@ -316,6 +316,21 @@ Three things to know before touching this:
   unavailable. They are not: `energy_generation` holds the complete ENTSO-E
   A75 document — nuclear, every fossil type, waste, storage and the renewables
   — backfilled to 2021-01-01 across 34 countries. See "Generation data" below.
+- **A real publication time.** `publication_timestamp_utc` exists on
+  `energy_load`, `energy_price`, `energy_renewable` and others (~4.9M non-null
+  rows) and **does not mean what its name says**. It is filled from the ENTSO-E
+  response's `createdDateTime`, but ENTSO-E builds the document *on request* and
+  stamps it with the generation time — so the column records **when we fetched**,
+  not when the value was published. Measured: a Belgian day-ahead price for
+  21:45 tonight (published ~12:45 CET yesterday) carries a
+  `publication_timestamp_utc` of 06:32 this morning, which is when the cron ran.
+  Nothing in the client renders it, so it is not currently lying to a user — but
+  do not build on it, and do not backfill it. A historical backfill re-queries
+  the API and therefore stamps every row with the date the backfill ran, which
+  is worse than the NULL it replaces. `net_position` is deliberately left fully
+  NULL for this reason. If you need "was this published as day-ahead or
+  observed after the fact", derive it from the target timestamp relative to
+  fetch time, or from `forecasts.horizon_hours` — not from this column.
 - **Forecast horizons beyond ~D+2.** `forecasts.horizon_hours` runs roughly
   2-64h depending on model (catboost tops out at 63h, xgboost at 64h) — there
   is no stored forecast for D+3 and beyond. `ForecastTab`'s error-by-horizon
