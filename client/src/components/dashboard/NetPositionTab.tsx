@@ -146,6 +146,7 @@ export function NetPositionTab() {
               formatAxis={formatAxis}
               formatTooltip={formatMw}
               preset={timePreset}
+              label="Net position"
             />
             <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-muted">
               {latest && (

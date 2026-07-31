@@ -96,6 +96,23 @@
     outline-offset: 1px;
     border-radius: 6px;
   }
+  /* react-simple-maps applies its own default/hover/pressed style object
+     inline (see `<Geography style={...}>` in EuropeMap.tsx), which sets
+     `outline: none` on every state including focus — so a keyboard user
+     tabbing through the map had no visible indicator of which country was
+     focused. `!important` is required to win over that inline style; a
+     bare rule here would lose to it regardless of selector specificity.
+     `able-country` is EuropeMap.tsx's own className on every <Geography>
+     (deliberately not the library's own `rsm-geography`: that class exists
+     only inside node_modules, which Tailwind's content scan never reads —
+     an @layer base rule targeting it gets silently purged from the built
+     CSS, no warning, because Tailwind treats an unreferenced class as
+     unused; `able-country` appears literally in EuropeMap.tsx so it
+     survives). */
+  .able-country:focus-visible {
+    outline: 2px solid hsl(var(--primary)) !important;
+    outline-offset: 2px;
+  }
   ::selection {
     background: hsl(var(--accent));
   }

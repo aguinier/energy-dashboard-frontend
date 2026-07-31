@@ -54,6 +54,7 @@ export function ModelPicker() {
     <div ref={ref} className="relative inline-flex items-stretch">
       <button
         onClick={() => setSelectedModel(forecastType, hidden ? (selected?.id ?? production ?? models[0].id) : null)}
+        aria-pressed={enabled}
         className={cn(
           'flex cursor-pointer items-center gap-1.5 rounded-l-md border border-r-0 px-2.5 py-[5px] text-[12px] font-sans',
           enabled ? 'border-primary bg-accent text-primary' : 'border-border bg-transparent text-ink-dim',
@@ -66,6 +67,8 @@ export function ModelPicker() {
       </button>
       <button
         onClick={() => setOpen(!open)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
         className={cn(
           'flex cursor-pointer items-center gap-2 rounded-r-md border border-border bg-card px-2.5 py-[5px] text-[12px] text-foreground',
           !enabled && 'opacity-60',
@@ -76,7 +79,11 @@ export function ModelPicker() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-[110%] z-50 min-w-[300px] rounded-[10px] border border-border bg-card p-1.5 shadow-[0_8px_28px_rgba(0,0,0,0.10)]">
+        <div
+          role="listbox"
+          aria-label={`Model · ${forecastType.replace('_', ' ')}`}
+          className="absolute right-0 top-[110%] z-50 min-w-[300px] rounded-[10px] border border-border bg-card p-1.5 shadow-[0_8px_28px_rgba(0,0,0,0.10)]"
+        >
           <div className="px-2.5 pb-1.5 pt-2 font-mono-num text-[10px] uppercase tracking-[0.1em] text-ink-muted">
             Model · {forecastType.replace('_', ' ')}
           </div>
@@ -86,6 +93,8 @@ export function ModelPicker() {
             return (
               <button
                 key={m.id}
+                role="option"
+                aria-selected={isSelected}
                 onClick={() => {
                   setSelectedModel(forecastType, m.id);
                   setOpen(false);

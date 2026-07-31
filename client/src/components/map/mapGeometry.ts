@@ -124,3 +124,31 @@ export function hoverCardClearsSelector(containerWidth: number): boolean {
   const selectorRightEdge = containerWidth / 2 + SELECTOR_WIDTH / 2;
   return cardLeftAtCorner - selectorRightEdge >= HOVER_CARD_GAP;
 }
+
+/**
+ * Accessible name for a single `<Geography>` path.
+ *
+ * The map used to carry the data a sighted mouse user sees in the hover
+ * card — country name, metric value, unit — nowhere a screen reader could
+ * reach: `<Geography>` has no `aria-label`, so every one of the ~50 country
+ * shapes read as a silent, unlabeled shape. This builds the same content the
+ * hover card already shows, as one string, so `EuropeMap.tsx` can put it on
+ * `aria-label` directly rather than duplicating the phrasing decision inline.
+ *
+ * A country with no data for the current metric gets a plain "no data" label
+ * rather than a value — it also isn't in the tab order (EuropeMap sets
+ * `tabIndex={-1}` for these), but a screen reader's virtual cursor can still
+ * land on it while sweeping the page, and silence there would read as a
+ * missing/broken country rather than a deliberately-empty one.
+ */
+export function countryAriaLabel(
+  countryName: string,
+  hasData: boolean,
+  formattedValue: string,
+  unit: string,
+  metricLabel: string,
+): string {
+  if (!hasData) return `${countryName}: no data`;
+  const valueText = unit ? `${formattedValue} ${unit}` : formattedValue;
+  return `${countryName}, ${metricLabel}: ${valueText}`;
+}

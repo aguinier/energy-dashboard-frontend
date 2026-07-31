@@ -202,6 +202,7 @@ export function ForecastTab() {
               height={180}
               formatAxis={formatGwAxis}
               formatTooltip={(v) => (v >= 1000 ? `${(v / 1000).toFixed(2)} GW` : `${v.toFixed(0)} MW`)}
+              label="Forecast vs actual load"
             />
           )}
         </AbleCard>

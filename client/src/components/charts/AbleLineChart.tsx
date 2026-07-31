@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { niceTicks, timeTicks, HOURLY_PRESETS, MEDIUM_SPAN_HOURS } from '@/lib/chartTicks';
 import { trailingGapLabel } from '@/lib/trailingGap';
+import { summarizeSeries } from '@/lib/chartSummary';
 
 // Typed port of the able prototype's <LineChart>. Single-series chart with
 // optional dashed forecast overlay, future-region shading, "now" pill marker
@@ -45,6 +46,12 @@ export interface AbleLineChartProps {
   smooth?: boolean;
   /** Active time preset (e.g. '24h', '7d') — chooses hour vs. date X-axis labels. */
   preset?: string;
+  /**
+   * What the series measures, e.g. "Electricity load" — used only to build
+   * the screen-reader text summary (summarizeSeries in lib/chartSummary.ts).
+   * Falls back to "Value" if omitted; the visible chart is unaffected.
+   */
+  label?: string;
 }
 
 const T = {
@@ -101,6 +108,7 @@ export function AbleLineChart({
   overlay = false,
   smooth = true,
   preset,
+  label,
 }: AbleLineChartProps) {
   const [hover, setHover] = useState<number | null>(null);
 
@@ -291,11 +299,22 @@ export function AbleLineChart({
 
   const tipFmt = formatTooltip ?? formatAxis;
 
+  // The SVG below carries the visual: a smoothed path plus axis tick text,
+  // none of which is annotated with what the data actually is. Rather than
+  // trying to make ~700 individual points navigable, this gives a screen
+  // reader the same "ranged X–Y, currently Z" framing a sighted user gets by
+  // glancing at the chart, and hides the SVG's own (partial, unlabelled)
+  // text from the accessibility tree so it doesn't also announce raw axis
+  // numbers with no unit or meaning attached.
+  const seriesSummary = summarizeSeries(series, NOW, { label, unit, formatValue: tipFmt });
+
   return (
     <div className="relative w-full">
+      <p className="sr-only">{seriesSummary}</p>
       <svg
         viewBox={`0 0 ${width} ${height}`}
         className="block h-auto w-full"
+        aria-hidden="true"
         onMouseMove={handleMove}
         onMouseLeave={() => setHover(null)}
       >

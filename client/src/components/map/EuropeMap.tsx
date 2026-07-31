@@ -8,7 +8,7 @@ import { MAP_METRICS } from '@/lib/constants';
 import { divergingT, symmetricBound } from '@/lib/divergingScale';
 import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
-import { selectMapGeometry, hoverCardClearsSelector } from './mapGeometry';
+import { selectMapGeometry, hoverCardClearsSelector, countryAriaLabel } from './mapGeometry';
 
 const EUROPE_GEO_URL = '/europe.topojson';
 
@@ -222,10 +222,25 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
               const has = !!d;
               const isSelected = code === selectedCountry;
               const isHover = hoveredCountry?.country_code === code;
+              const countryName: string = geo.properties.NAME ?? code ?? 'Unknown';
+              const ariaLabel = countryAriaLabel(
+                countryName,
+                has,
+                has ? formatHoverValue(d!.value, mapMetric) : '',
+                metricInfo?.unit ?? '',
+                metricInfo?.label ?? mapMetric,
+              );
               return (
                 <Geography
                   key={geo.rsmKey}
                   geography={geo}
+                  // Own class (rather than relying on react-simple-maps'
+                  // internal `rsm-geography`) so the :focus-visible ring in
+                  // index.css survives Tailwind's content-based purge —
+                  // Tailwind drops @layer base selectors that don't appear
+                  // literally in a scanned source file, and a class that
+                  // only exists inside node_modules doesn't qualify.
+                  className="able-country"
                   fill={has ? dataColor(mapMetric, d!.value, min, max) : `url(#${noDataHatchId})`}
                   stroke={isHover || isSelected ? 'hsl(var(--foreground))' : '#FFFFFF'}
                   strokeWidth={isHover ? 2.4 : isSelected ? 1.6 : 1.2}
@@ -238,9 +253,34 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                     hover: { outline: 'none', cursor: has ? 'pointer' : 'default' },
                     pressed: { outline: 'none' },
                   }}
+                  // Only data-bearing countries are real controls: they're
+                  // the only ones a click/Enter does anything to, so only
+                  // they take a tab stop (react-simple-maps otherwise
+                  // defaults every <Geography> to tabIndex 0 — ~50 of them,
+                  // most unclickable). role="button" + aria-label carries
+                  // the same name/value/unit the hover card shows visually,
+                  // since a screen reader has no other way to reach it — see
+                  // countryAriaLabel's doc comment in mapGeometry.ts.
+                  tabIndex={has ? 0 : -1}
+                  role={has ? 'button' : undefined}
+                  aria-label={ariaLabel}
                   onClick={() => { if (code && has) handleCountryClick(code); }}
+                  onKeyDown={(e) => {
+                    if (!has || !code) return;
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleCountryClick(code);
+                    }
+                  }}
                   onMouseEnter={() => handleMouseEnter(d ?? null)}
                   onMouseLeave={handleMouseLeave}
+                  // Keyboard focus mirrors mouse hover — same stroke
+                  // highlight, same hover card — so a sighted keyboard user
+                  // sees exactly what a mouse user sees, and Tab is a real
+                  // substitute for scanning the map instead of a second,
+                  // unlabeled mode.
+                  onFocus={() => handleMouseEnter(d ?? null)}
+                  onBlur={handleMouseLeave}
                 />
               );
             })
@@ -278,7 +318,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           <p className="mt-1 text-xs text-ink-dim">{metricInfo?.label}</p>
           {fullScreen && (
             <div className="mt-2.5 border-t border-input pt-2 font-mono-num text-[10px] text-ink-muted">
-              Click to open →
+              Click or press Enter to open →
             </div>
           )}
         </div>
@@ -370,6 +410,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
             <button
               key={metric.value}
               onClick={() => setMapMetric(metric.value)}
+              aria-pressed={mapMetric === metric.value}
               className={cn(
                 'rounded-md px-3 py-1 text-xs font-medium transition-all',
                 mapMetric === metric.value
