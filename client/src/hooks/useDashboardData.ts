@@ -2,19 +2,11 @@ import { useQuery } from '@tanstack/react-query';
 import {
   fetchDashboardOverview,
   fetchMapData,
-  fetchCombinedTimeseries,
   fetchLoadData,
   fetchPriceData,
   fetchRenewableData,
-  fetchRenewableMix,
   fetchGenerationMix,
-  fetchPriceHeatmap,
-  fetchLoadComparison,
-  fetchForecastData,
   fetchLatestForecast,
-  fetchAvailableForecastTypes,
-  fetchForecastComparison,
-  fetchMultiHorizonForecast,
   fetchDataFreshness,
   fetchForecastComparisonSummary,
   fetchCrossCountryMetrics,
@@ -214,28 +206,6 @@ export function useMapData(metric?: MetricType) {
   });
 }
 
-// No callers anywhere in client/src (confirmed by the Task 16 audit and
-// re-confirmed here) — /dashboard/timeseries has been superseded by the
-// per-tab hooks below (useLoadData/usePriceData/useRenewableData). Kept
-// wired to the shared getDateRangeForPreset source rather than deleted,
-// since deleting exported, currently-dead code is a separate call from
-// removing the field it depended on.
-export function useCombinedTimeseries() {
-  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-
-  return useQuery({
-    queryKey: ['dashboard', 'timeseries', selectedCountry, timePreset, timeOffset],
-    queryFn: () =>
-      fetchCombinedTimeseries({
-        country: selectedCountry,
-        start: start.toISOString(),
-        end: end.toISOString(),
-      }),
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
 export function useLoadData() {
   const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
@@ -289,21 +259,8 @@ export function useRenewableData() {
   });
 }
 
-export function useRenewableMix() {
-  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-
-  return useQuery({
-    queryKey: ['renewables', 'mix', selectedCountry, timePreset, timeOffset],
-    queryFn: () => fetchRenewableMix({ country: selectedCountry, start: start.toISOString(), end: end.toISOString() }),
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
 // Full A75 generation mix (nuclear + fossil + renewables) for GenerationTab's
-// donut and SourceTable. Same window as useRenewableMix so the two would
-// agree if both were still in use; this hook is what actually feeds those
-// two views now - see sourceRows.ts.
+// donut and SourceTable - see sourceRows.ts.
 export function useGenerationMix() {
   const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
@@ -311,58 +268,6 @@ export function useGenerationMix() {
   return useQuery({
     queryKey: ['generation', 'mix', selectedCountry, timePreset, timeOffset],
     queryFn: () => fetchGenerationMix({ country: selectedCountry, start: start.toISOString(), end: end.toISOString() }),
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-export function usePriceHeatmap(days: number = 30) {
-  const { selectedCountry } = useDashboardStore();
-
-  return useQuery({
-    queryKey: ['prices', 'heatmap', selectedCountry, days],
-    queryFn: () => fetchPriceHeatmap({ country: selectedCountry, days }),
-    staleTime: REFRESH_INTERVALS.map,
-  });
-}
-
-export function useLoadComparison() {
-  const { comparisonCountries, timePreset, timeOffset } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-  const granularity = getGranularityForPreset(timePreset);
-
-  return useQuery({
-    queryKey: ['load', 'compare', comparisonCountries, timePreset, timeOffset],
-    queryFn: () =>
-      fetchLoadComparison({
-        countries: comparisonCountries,
-        start: start.toISOString(),
-        end: end.toISOString(),
-        granularity,
-      }),
-    enabled: comparisonCountries.length >= 2,
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-// Forecast hooks
-export function useForecastData(forecastType: ForecastType) {
-  const { selectedCountry, timePreset, showForecast } = useDashboardStore();
-  const granularity = getGranularityForPreset(timePreset);
-
-  // For forecasts, we want current time to end of forecast period
-  const start = new Date().toISOString();
-  const end = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(); // Next 48 hours
-
-  return useQuery({
-    queryKey: ['forecast', selectedCountry, forecastType, timePreset, granularity],
-    queryFn: () => fetchForecastData({
-      country: selectedCountry,
-      type: forecastType,
-      start,
-      end,
-      granularity,
-    }),
-    enabled: showForecast,
     staleTime: REFRESH_INTERVALS.dashboard,
   });
 }
@@ -377,56 +282,6 @@ export function useLatestForecast(forecastType?: ForecastType) {
       type: forecastType,
     }),
     enabled: showForecast,
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-export function useAvailableForecastTypes() {
-  const { selectedCountry } = useDashboardStore();
-
-  return useQuery({
-    queryKey: ['forecast', 'types', selectedCountry],
-    queryFn: () => fetchAvailableForecastTypes(selectedCountry),
-    staleTime: REFRESH_INTERVALS.map, // Types don't change often
-  });
-}
-
-export function useForecastComparison(forecastType: ForecastType) {
-  const { selectedCountry, timePreset, timeOffset, showForecast } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-
-  return useQuery({
-    queryKey: ['forecast', 'comparison', selectedCountry, forecastType, timePreset, timeOffset],
-    queryFn: () => fetchForecastComparison({
-      country: selectedCountry,
-      type: forecastType,
-      start: start.toISOString(),
-      end: end.toISOString(),
-    }),
-    enabled: showForecast,
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-/**
- * Hook for fetching multi-horizon forecasts (D+1 and D+2) for overlay view
- */
-export function useMultiHorizonForecast(forecastType: ForecastType) {
-  const { selectedCountry, timePreset, timeOffset, showForecast, selectedMLHorizons } = useDashboardStore();
-
-  // For forecasts, we want current time to end of forecast period
-  const start = new Date().toISOString();
-  const end = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(); // Next 48 hours
-
-  return useQuery({
-    queryKey: ['forecast', 'multi-horizon', selectedCountry, forecastType, timePreset, timeOffset, selectedMLHorizons],
-    queryFn: () => fetchMultiHorizonForecast({
-      country: selectedCountry,
-      type: forecastType,
-      start,
-      end,
-    }),
-    enabled: showForecast && selectedMLHorizons.length > 1,
     staleTime: REFRESH_INTERVALS.dashboard,
   });
 }

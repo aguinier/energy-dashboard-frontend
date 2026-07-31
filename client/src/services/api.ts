@@ -9,8 +9,6 @@ import type {
   GenerationMix,
   DashboardOverview,
   MapDataPoint,
-  CombinedTimeseriesPoint,
-  PriceHeatmapPoint,
   Granularity,
   MetricType,
   ForecastType,
@@ -78,18 +76,6 @@ export async function fetchLoadData(params: {
   return unwrap(data, '/load');
 }
 
-export async function fetchLoadComparison(params: {
-  countries: string[];
-  start?: string;
-  end?: string;
-  granularity?: Granularity;
-}): Promise<Record<string, number>[]> {
-  const { data } = await api.get<ApiResponse<Record<string, number>[]>>('/load/compare', {
-    params: { ...params, countries: params.countries.join(',') },
-  });
-  return unwrap(data, '/load/compare');
-}
-
 // Price Data
 export async function fetchPriceData(params: {
   country: string;
@@ -104,14 +90,6 @@ export async function fetchPriceData(params: {
     timeout: LONG_RANGE_TIMEOUT_MS,
   });
   return unwrap(data, '/prices');
-}
-
-export async function fetchPriceHeatmap(params: {
-  country: string;
-  days?: number;
-}): Promise<PriceHeatmapPoint[]> {
-  const { data } = await api.get<ApiResponse<PriceHeatmapPoint[]>>('/prices/heatmap', { params });
-  return unwrap(data, '/prices/heatmap');
 }
 
 // Renewable Data
@@ -192,15 +170,6 @@ export async function fetchMapData(params: {
   return unwrap(data, '/dashboard/map');
 }
 
-export async function fetchCombinedTimeseries(params: {
-  country: string;
-  start?: string;
-  end?: string;
-}): Promise<CombinedTimeseriesPoint[]> {
-  const { data } = await api.get<ApiResponse<CombinedTimeseriesPoint[]>>('/dashboard/timeseries', { params });
-  return unwrap(data, '/dashboard/timeseries');
-}
-
 // Forecast Data
 export interface ForecastFetchResult {
   points: ForecastDataPoint[];
@@ -242,11 +211,6 @@ export async function fetchLatestForecast(params: {
 }): Promise<ForecastDataPoint[]> {
   const { data } = await api.get<ApiResponse<ForecastDataPoint[]>>('/forecasts/latest', { params });
   return unwrap(data, '/forecasts/latest');
-}
-
-export async function fetchAvailableForecastTypes(country: string): Promise<string[]> {
-  const { data } = await api.get<ApiResponse<string[]>>('/forecasts/types', { params: { country } });
-  return unwrap(data, '/forecasts/types');
 }
 
 export async function fetchForecastComparison(params: {

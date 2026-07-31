@@ -100,24 +100,6 @@ export interface MapDataPoint {
   timestamp?: string;
 }
 
-export interface CombinedTimeseriesPoint {
-  date: string;
-  load?: number;
-  price?: number;
-  solar?: number;
-  wind_onshore?: number;
-  wind_offshore?: number;
-  hydro?: number;
-  biomass?: number;
-  geothermal?: number;
-}
-
-export interface PriceHeatmapPoint {
-  day: number;
-  hour: number;
-  price: number;
-}
-
 // App view navigation
 export type AppView = 'map' | 'country' | 'comparison';
 
