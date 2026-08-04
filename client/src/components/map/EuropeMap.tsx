@@ -9,6 +9,7 @@ import { divergingT, symmetricBound } from '@/lib/divergingScale';
 import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
 import { selectMapGeometry, hoverCardClearsSelector, countryAriaLabel } from './mapGeometry';
+import type { GeoFeature } from './mapGeometry';
 
 const EUROPE_GEO_URL = '/europe.topojson';
 
@@ -146,7 +147,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
 
   const metricInfo = MAP_METRICS.find((m) => m.value === mapMetric);
 
-  const getCountryCode = (geo: { properties: Record<string, string> }): string | null => {
+  const getCountryCode = (geo: GeoFeature): string | null => {
     const name = geo.properties.NAME;
     return name ? (COUNTRY_NAME_MAP[name] || null) : null;
   };
@@ -216,7 +217,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         </defs>
         <Geographies geography={EUROPE_GEO_URL}>
           {({ geographies }) =>
-            geographies.map((geo) => {
+            geographies.map((geo: GeoFeature) => {
               const code = getCountryCode(geo);
               const d = code ? dataMap.get(code) : null;
               const has = !!d;
@@ -226,7 +227,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
               const ariaLabel = countryAriaLabel(
                 countryName,
                 has,
-                has ? formatHoverValue(d!.value, mapMetric) : '',
+                has ? formatHoverValue(d.value, mapMetric) : '',
                 metricInfo?.unit ?? '',
                 metricInfo?.label ?? mapMetric,
               );
@@ -241,7 +242,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                   // literally in a scanned source file, and a class that
                   // only exists inside node_modules doesn't qualify.
                   className="able-country"
-                  fill={has ? dataColor(mapMetric, d!.value, min, max) : `url(#${noDataHatchId})`}
+                  fill={has ? dataColor(mapMetric, d.value, min, max) : `url(#${noDataHatchId})`}
                   stroke={isHover || isSelected ? 'hsl(var(--foreground))' : '#FFFFFF'}
                   strokeWidth={isHover ? 2.4 : isSelected ? 1.6 : 1.2}
                   style={{
