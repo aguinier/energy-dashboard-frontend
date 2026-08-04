@@ -191,11 +191,6 @@ export interface TSOForecastAccuracyMetrics {
   mapeSamples: number;
 }
 
-export interface TSOForecastAccuracyResponse {
-  data: TSOForecastAccuracyDataPoint[];
-  metrics: TSOForecastAccuracyMetrics;
-}
-
 export interface ApiResponse<T> {
   success: boolean;
   data: T;
