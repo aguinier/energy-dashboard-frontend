@@ -21,15 +21,6 @@ import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType } fr
 // ============================================================================
 
 /**
- * Get the time anchor from a preset
- */
-export function getAnchorFromPreset(preset: TimePreset): TimeAnchor {
-  if (['24h', '7d', '30d', '90d', '1y'].includes(preset)) return 'past';
-  if (['today', 'thisWeek'].includes(preset)) return 'now';
-  return 'future';
-}
-
-/**
  * Calculate date range based on new TimePreset system
  * @param preset - The time preset (e.g., '7d', 'today', 'next7d')
  * @param offsetHours - Hours to offset from now (for navigation arrows)
