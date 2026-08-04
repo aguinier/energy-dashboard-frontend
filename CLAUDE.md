@@ -329,9 +329,7 @@ Three things to know before touching this:
   the sole gap (672 rows, 2026-05-26 → 2026-06-23, nothing since), and it is
   an *upstream publication* gap rather than an unfinished backfill —
   `energy_renewable` holds exactly the same 672 rows — so AL renders as "no
-  data" in every window the UI can reach. Code comments still saying
-  "mid-backfill for 15 of 34" predate the backfill finishing; don't treat them
-  as current.
+  data" in every window the UI can reach.
   What *is* routinely absent is a **production type a given country never
   reports**: that is `NULL`, per column, and must stay NULL rather than become
   0. Measured, `nuclear_mw` is reported by 14 of 34 countries and `marine_mw`

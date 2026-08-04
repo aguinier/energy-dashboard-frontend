@@ -197,10 +197,11 @@ export const RENEWABLE_SHARE_SQL = `
  * /renewables/mix and /renewables/percentage routes.
  *
  * Returns null - never 0, never a fallback to some other definition - when
- * this country has no energy_generation rows in the window at all (still
- * mid-backfill; see the A75 plan) or when the window's total positive
- * generation is zero/negative (a share of nothing is not 0%, it is
- * undefined).
+ * this country has no energy_generation rows in the window at all (a window
+ * predating its ingest, or a country ENTSO-E does not currently publish -
+ * measured 2026-08-04, AL is the only one, with nothing after 2026-06-23) or
+ * when the window's total positive generation is zero/negative (a share of
+ * nothing is not 0%, it is undefined).
  */
 export function getRenewableShare(
   countryCode: string,
