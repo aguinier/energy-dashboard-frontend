@@ -6,6 +6,7 @@ import { getMetricColorHSL, METRIC_THRESHOLDS } from '@/lib/colors';
 import { FORECAST_TYPE_MAP_OPTIONS } from '@/lib/comparisonConstants';
 import { cn } from '@/lib/utils';
 import type { CrossCountryMetrics, CrossCountryMetricsEntry } from '@/types';
+import type { GeoFeature } from '@/components/map/mapGeometry';
 
 // Shared map constants
 const EUROPE_GEO_URL = '/europe.topojson';
@@ -46,7 +47,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
   // Use store forecast type; when 'all', default to 'load' for map coloring
   const mapForecastType = comparisonForecastType === 'all' ? 'load' : comparisonForecastType;
 
-  const getCountryCode = useCallback((geo: { properties: Record<string, string> }): string | null => {
+  const getCountryCode = useCallback((geo: GeoFeature): string | null => {
     const name = geo.properties.NAME;
     return name ? (COUNTRY_NAME_MAP[name] || null) : null;
   }, []);
@@ -95,7 +96,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
         >
           <Geographies geography={EUROPE_GEO_URL}>
             {({ geographies }) =>
-              geographies.map((geo) => {
+              geographies.map((geo: GeoFeature) => {
                 const code = getCountryCode(geo);
                 const countryData = code ? data[code] : null;
                 const entry = countryData?.[mapForecastType];

@@ -231,7 +231,7 @@ export function AbleLineChart({
   let xLabelFor: (i: number) => string;
 
   if (useHourTicks) {
-    const ticks = timeTicks(series.map((d) => d.ts), preset as string);
+    const ticks = timeTicks(series.map((d) => d.ts), preset);
     visibleXTicks = ticks.map((t) => t.index);
     const labelByIndex = new Map(ticks.map((t) => [t.index, t.label]));
     xLabelFor = (i: number) => labelByIndex.get(i) ?? '';

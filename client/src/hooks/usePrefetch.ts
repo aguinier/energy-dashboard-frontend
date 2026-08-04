@@ -28,8 +28,17 @@ export function usePrefetchCountry() {
       const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
       const granularity = getGranularityForPreset(timePreset);
 
+      // Every prefetch below is deliberately fire-and-forget: this runs on
+      // click/hover to warm the cache, and the caller must not be blocked on
+      // it. `void` marks that intent explicitly. Dropping the promise is safe
+      // here specifically because `prefetchQuery` never rejects — it resolves
+      // to void whether the fetch succeeded or failed, leaving the error on
+      // the query itself for the real `useQuery` consumer to surface. Any
+      // failure therefore replays through the normal loading/error path when
+      // the component mounts; it is not swallowed.
+
       // Prefetch countries list (usually cached, but ensure it's ready)
-      queryClient.prefetchQuery({
+      void queryClient.prefetchQuery({
         queryKey: ['countries'],
         queryFn: fetchCountries,
         staleTime: 3600000, // 1 hour
@@ -37,7 +46,7 @@ export function usePrefetchCountry() {
 
       // Use combined endpoint to fetch overview + load in one request
       // This is faster than two separate requests
-      queryClient.prefetchQuery({
+      void queryClient.prefetchQuery({
         queryKey: ['dashboard', 'initial', countryCode, timePreset, timeOffset, granularity],
         queryFn: async () => {
           const result = await fetchInitialCountryData({
@@ -67,7 +76,7 @@ export function usePrefetchCountry() {
       });
 
       // Also prefetch overview separately as a fallback (in case combined fails)
-      queryClient.prefetchQuery({
+      void queryClient.prefetchQuery({
         queryKey: ['dashboard', 'overview', countryCode, timePreset, timeOffset],
         queryFn: () =>
           fetchDashboardOverview({
@@ -79,7 +88,7 @@ export function usePrefetchCountry() {
       });
 
       // Prefetch price and renewable data for other tabs (lower priority)
-      queryClient.prefetchQuery({
+      void queryClient.prefetchQuery({
         queryKey: ['prices', countryCode, timePreset, timeOffset, granularity],
         queryFn: () =>
           fetchPriceData({
@@ -91,7 +100,7 @@ export function usePrefetchCountry() {
         staleTime: REFRESH_INTERVALS.dashboard,
       });
 
-      queryClient.prefetchQuery({
+      void queryClient.prefetchQuery({
         queryKey: ['renewables', countryCode, timePreset, timeOffset, granularity],
         queryFn: () =>
           fetchRenewableData({
