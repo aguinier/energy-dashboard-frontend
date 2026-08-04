@@ -177,12 +177,20 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
   TSO per the picker) and an `AblePriceHeatmap` of load by hour x day.
 - **`PriceTab`** — same shape for day-ahead price (ml forecast only; price has
   no TSO forecast in the registry).
-- **`GenerationTab`** — `AbleStackedMix` (solar/wind/hydro/biomass, stacked)
-  plus an `AbleDonut` and `SourceTable` showing window-average share of
-  *generation* (`energy_generation`, the full A75 document — see
-  `generationService.getRenewableShare`). The donut's percentage and the
-  header stat row's "Renewable share" card both read this same server-computed
-  ratio of window sums, so they cannot disagree.
+- **`GenerationTab`** — `AbleStackedMix` (solar/wind/hydro/biomass, stacked —
+  the top chart is still renewables-only) plus an `AbleDonut` and
+  `SourceTable` showing window-average share of *generation*
+  (`energy_generation`, the full A75 document — see
+  `generationService.getRenewableShare`). The donut and table cover the
+  **whole** mix: `sourceRows.ts` groups the 21 raw `*_mw` columns into 9 rows
+  — Nuclear, Solar, Wind, Hydro, Pumped storage, Fossil (seven sub-types
+  collapsed), Biomass, Waste, Other — sorted by magnitude, rendering `—` for a
+  type this country does not report and a dimmed right-grown bar for a
+  negative one. There is no "unattributed remainder" row: every type is
+  measured now, and the gap between generation and load is exports/imports
+  plus losses, which is the Net position tab's subject. The donut's percentage
+  and the header stat row's "Renewable share" card both read this same
+  server-computed ratio of window sums, so they cannot disagree.
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER` in
   `CountryDashboardView.tsx` limits it to the tabs whose chart actually reads a
   selection (`price`, `load`, `net-position`). It used to render and do
@@ -312,10 +320,24 @@ Three things to know before touching this:
 
 ## Data the database does not have
 
-- **Nothing, for generation.** This entry used to say nuclear and fossil were
-  unavailable. They are not: `energy_generation` holds the complete ENTSO-E
-  A75 document — nuclear, every fossil type, waste, storage and the renewables
-  — backfilled to 2021-01-01 across 34 countries. See "Generation data" below.
+- **Nothing, for generation — except Albania.** `energy_generation` holds the
+  complete ENTSO-E A75 document: nuclear, all seven fossil sub-types (gas,
+  hard coal, brown coal, oil, oil shale, peat, coal-derived gas), waste,
+  pumped storage and battery storage, ENTSO-E's own unclassified "Other", and
+  the renewables — 21 `*_mw` columns. Measured 2026-08-04 against the replica:
+  all 34 countries present, 33 of them spanning 2021-01-01 → now. **AL** is
+  the sole gap (672 rows, 2026-05-26 → 2026-06-23, nothing since), and it is
+  an *upstream publication* gap rather than an unfinished backfill —
+  `energy_renewable` holds exactly the same 672 rows — so AL renders as "no
+  data" in every window the UI can reach. Code comments still saying
+  "mid-backfill for 15 of 34" predate the backfill finishing; don't treat them
+  as current.
+  What *is* routinely absent is a **production type a given country never
+  reports**: that is `NULL`, per column, and must stay NULL rather than become
+  0. Measured, `nuclear_mw` is reported by 14 of 34 countries and `marine_mw`
+  by 2, against 33 for `wind_onshore_mw` — a country showing `—` for Nuclear
+  is normal, not a bug. See "Generation data" above for the NULL/0 and sign
+  rules, and `sourceRows.ts` for how the columns reach the UI.
 - **A real publication time.** `publication_timestamp_utc` exists on
   `energy_load`, `energy_price`, `energy_renewable` and others (~4.9M non-null
   rows) and **does not mean what its name says**. It is filled from the ENTSO-E
@@ -487,9 +509,10 @@ interface TSOForecastAccuracyMetrics {
   both D+1 and D+7 registered; `solar`/`wind_onshore`/`wind_offshore` have D+1
   only; `price`/`renewable`/`biomass`/`hydro_total`/`net_position` have no TSO
   model at all — check `forecastModels.ts` before assuming a bug
-- On the Generation tab specifically, note that selecting a model in
-  `ModelPicker` does nothing today — `GenerationTab.tsx` doesn't read the
-  selection (see Country dashboard tabs above)
+- The Generation tab has no `ModelPicker` at all — `TABS_WITH_MODEL_PICKER` in
+  `CountryDashboardView.tsx` limits it to `price`/`load`/`net-position`, so
+  there is no forecast overlay to switch on there; it renders actuals only
+  (see Country dashboard tabs above)
 - Check the API response has data for the selected country
 - Verify database tables have data: `energy_load_forecast`, `energy_generation_forecast`
 
