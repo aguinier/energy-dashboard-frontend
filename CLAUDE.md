@@ -330,20 +330,20 @@ so it cannot drift from the union.
 
 Zustand store (`dashboardStore.ts`) with `persist` to localStorage
 (`energy-dashboard-storage`). **The persisted shape is versioned:**
-`PERSIST_VERSION` in `store/migrate.ts` (currently `6`, `migrate.ts:1`), bumped
+`PERSIST_VERSION` in `store/migrate.ts` (currently `6`, `migrate.ts:3`), bumped
 with a matching clause in `migratePersisted()` whenever a persisted field's
 shape or meaning changes. `migratePersisted` must never throw: `state` is an
 arbitrary, possibly years-old localStorage blob. Skipping this step leaves
 returning users on a shape the current code doesn't understand — previously a
 blank tab panel or a view nobody chose.
 
-It is **not** a per-version switch. `migrate.ts:42` short-circuits only on
+It is **not** a per-version switch. `migrate.ts:51` short-circuits only on
 `fromVersion >= PERSIST_VERSION`; below that, *every* clause runs for *any*
 older blob, so each clause must be safe to apply to a blob that never had the
 field. The clauses today coerce an unknown `currentView` / `activeChartTab` /
-`timePreset` back to a valid value (`migrate.ts:121` for the last), remap a
-stored `comparisonMetric: 'mape'` to `'wape'` (`:79`), and **delete** three
-dead keys: `layers` (`:73`), `timeRange` (`:93`), `analyticsConfig` (`:105`).
+`timePreset` back to a valid value (`migrate.ts:130` for the last), remap a
+stored `comparisonMetric: 'mape'` to `'wape'` (`:88`), and **delete** three
+dead keys: `layers` (`:82`), `timeRange` (`:102`), `analyticsConfig` (`:114`).
 Note `layers` is deleted, not folded into `showForecast`/`showTSOForecast` as
 an earlier version did — that folding unconditionally overwrote `showForecast`
 with `false` on every migration, clobbering a value the current code had
@@ -355,9 +355,9 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
 `server/src/types/index.ts:187`), `useDashboardOverview` sends an explicit
-`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:135`,
-and `useMapData` likewise at `:172`), and `migratePersisted` deletes a stored
-`timeRange` outright (`store/migrate.ts:93`). `timePreset` is the single field
+`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:157`,
+and `useMapData` likewise at `:194`), and `migratePersisted` deletes a stored
+`timeRange` outright (`store/migrate.ts:102`). `timePreset` is the single field
 describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
 field for `ComparisonView`, is unrelated and does still exist.)
 
@@ -372,9 +372,11 @@ drop `timeRange` without a backend change first" — had already been removed
 when it was written.
 
 Note `timePreset` is validated on migration against `VALID_TIME_PRESETS`
-(`store/migrate.ts:10`, checked at `:121`) and `timeAnchor` is re-derived from
-it, because the two persist separately and only `setTimePreset` keeps them in
-step.
+(`store/migrate.ts:33`, checked at `:130`) and `timeAnchor` is re-derived from
+it (`:135`), because the two persist separately and only `setTimePreset` keeps
+them in step. `VALID_TIME_PRESETS` is no longer a hand-maintained literal — it
+is `Object.keys(ANCHOR_FOR_PRESET)`, and `ANCHOR_FOR_PRESET` is keyed
+`Record<TimePreset, TimeAnchor>`, so it cannot drift from the union.
 
 ```typescript
 // The COMPLETE persisted set — `partialize`, dashboardStore.ts:279-302.
@@ -410,7 +412,7 @@ check which group it is in:
   (`useLoadChartData.ts:107`, `:153`).
 - **Written, and read only by dead code.** `showForecast`. `setTimePreset`
   still sets it `true` for future presets (`dashboardStore.ts:150`) and
-  `useLatestForecast` gates its query on it (`useDashboardData.ts:254`, `:262`)
+  `useLatestForecast` gates its query on it (`useDashboardData.ts:276`, `:284`)
   — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
   nothing, so it has no on-screen effect today.
 - **No reader at all.** `showTSOForecast`, `tsoForecastType`,
