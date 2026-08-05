@@ -578,7 +578,7 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-05: **204 client tests / 18 files**, **189 server tests /
+Green as of 2026-08-05: **244 client tests / 20 files**, **189 server tests /
 13 files**, clean typecheck. Fewer passing than that means something broke.
 
 Two conventions, and they are for different layers.
