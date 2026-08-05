@@ -31,8 +31,14 @@ export function errorHandler(
     return;
   }
 
-  // Handle database errors
-  if (err.message.includes('SQLITE')) {
+  // Handle database errors.
+  //
+  // better-sqlite3 puts the SQLITE_* string on `err.code`, never in the message
+  // — a failed prepare() reads `no such column: hydro_mw`. Matching the message
+  // therefore never fired, and every genuine SQL failure was reported as a
+  // generic INTERNAL_ERROR. `code` is untyped on Error, hence the cast.
+  const sqliteCode = (err as { code?: unknown }).code;
+  if (typeof sqliteCode === 'string' && sqliteCode.startsWith('SQLITE')) {
     res.status(500).json({
       success: false,
       error: 'Database error occurred',

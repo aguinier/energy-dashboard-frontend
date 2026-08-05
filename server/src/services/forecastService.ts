@@ -185,15 +185,28 @@ export function getForecastWithActuals(
   const normalizedStart = normalizeTimestamp(start);
   const normalizedEnd = normalizeTimestamp(end);
 
-  // Map forecast type to actual data table and column
+  // Map forecast type to actual data table and column.
+  //
+  // These column names are interpolated straight into the SELECT below, so a
+  // name that does not exist on the table is not a wrong number — better-sqlite3
+  // throws at prepare() and the request 500s. `renewable` named `total_mw` and
+  // `hydro_total` named `hydro_mw`; neither exists on `energy_renewable`, whose
+  // columns are `total_renewable_mw` and the `hydro_run_mw`/`hydro_reservoir_mw`
+  // pair. Kept identical to the mapping every other consumer already uses
+  // (`mlForecastService.ts:20-29`, `crossCountryMetricsService.ts:19-28`) so the
+  // three cannot drift apart again.
+  //
+  // The hydro sum is deliberately not COALESCE'd to 0: if either component is
+  // NULL the total is unknown, and `NULL + 30` reading as 30 would invent a
+  // measurement.
   const tableMapping: Record<string, { table: string; column: string }> = {
     load: { table: 'energy_load', column: 'load_mw' },
     price: { table: 'energy_price', column: 'price_eur_mwh' },
-    renewable: { table: 'energy_renewable', column: 'total_mw' },
+    renewable: { table: 'energy_renewable', column: 'total_renewable_mw' },
     solar: { table: 'energy_renewable', column: 'solar_mw' },
     wind_onshore: { table: 'energy_renewable', column: 'wind_onshore_mw' },
     wind_offshore: { table: 'energy_renewable', column: 'wind_offshore_mw' },
-    hydro_total: { table: 'energy_renewable', column: 'hydro_mw' },
+    hydro_total: { table: 'energy_renewable', column: 'hydro_run_mw + hydro_reservoir_mw' },
     biomass: { table: 'energy_renewable', column: 'biomass_mw' },
   };
 

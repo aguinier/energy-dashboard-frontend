@@ -72,12 +72,14 @@ describe('GET /api/cross-country/metrics', () => {
 
     expect(status).toBe(200);
     const data = body.data as Record<string, Record<string, unknown>>;
-    // Only types with at least one paired country appear; the other six are
-    // absent rather than present-and-empty.
-    expect(Object.keys(data)).toEqual(['load', 'solar']);
+    // Only types with at least one paired country appear; the other four are
+    // absent rather than present-and-empty. `renewable` and `hydro_total` are
+    // FR's, added with the forecastService column-mapping fix — the order is
+    // VALID_FORECAST_TYPES', not alphabetical.
+    expect(Object.keys(data)).toEqual(['load', 'renewable', 'solar', 'hydro_total']);
     expect(body.meta).toMatchObject({
-      countriesWithData: ['AT', 'BE', 'DE'],
-      forecastTypes: ['load', 'solar'],
+      countriesWithData: ['AT', 'BE', 'DE', 'FR'],
+      forecastTypes: ['load', 'renewable', 'solar', 'hydro_total'],
     });
   });
 

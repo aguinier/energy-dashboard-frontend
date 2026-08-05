@@ -335,6 +335,22 @@ function seed(db: DatabaseType): void {
   // BE: solar overnight — a measured zero at every hour. Sum of actuals is 0.
   HOURS.forEach((h) => renewable.run('BE', at(h), 0, 0, null, 0));
 
+  // FR — hydro, the two-column type. `hydro_total` has no column of its own:
+  // every consumer sums `hydro_run_mw + hydro_reservoir_mw`. At 02:00 the
+  // reservoir reading is NULL, so the sum is NULL — unknown, not 40. A
+  // COALESCE anywhere in that chain would turn an unknown into a measurement,
+  // and `total_renewable_mw` is NULL in the same row for the same reason.
+  const renewableHydro = db.prepare(
+    `INSERT INTO energy_renewable
+       (country_code, timestamp_utc, solar_mw, wind_onshore_mw, wind_offshore_mw,
+        hydro_run_mw, hydro_reservoir_mw, total_renewable_mw)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  renewableHydro.run('FR', at(0), 10, 20, null, 30, 70, 130);
+  renewableHydro.run('FR', at(1), 10, 20, null, 35, 75, 145);
+  renewableHydro.run('FR', at(2), 10, 20, null, 40, null, null);
+  renewableHydro.run('FR', at(3), 10, 20, null, 45, 85, 160);
+
   // ---------------------------------------------------------- net_position
 
   const netPosition = db.prepare(
@@ -393,6 +409,17 @@ function seed(db: DatabaseType): void {
   // null and WAPE is null — never a flawless 0%.
   HOURS.forEach((h) =>
     forecast.run('BE', 'solar', atT(h), GENERATED_AT, 12, 5, 'catboost', 'v1')
+  );
+
+  // FR hydro_total and renewable, catboost. These are the two forecast types
+  // whose actual-column mapping in forecastService named a column that does not
+  // exist (`hydro_mw`, `total_mw`), so /forecasts/compare 500'd for both. Paired
+  // against FR's rows above, including the NULL-component hour.
+  HOURS.forEach((h, i) =>
+    forecast.run('FR', 'hydro_total', atT(h), GENERATED_AT, 12, 95 + i * 10, 'catboost', 'v1')
+  );
+  HOURS.forEach((h, i) =>
+    forecast.run('FR', 'renewable', atT(h), GENERATED_AT, 12, 125 + i * 10, 'catboost', 'v1')
   );
 
   // BE net position, the registered Chronos run, with a p10/p90 band.
