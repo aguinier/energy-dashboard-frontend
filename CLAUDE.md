@@ -58,7 +58,7 @@ energy-dashboard-frontend/
 │       │   │   │   NetPositionTab.tsx, ForecastTab.tsx  # One file per tab
 │       │   │   ├── AbleCard.tsx          # Card shell all five tabs wrap their charts in
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
-│       │   │   ├── RangeSegment.tsx      # 24h/7d/30d/+24h/+7d range buttons
+│       │   │   ├── TimePicker.tsx        # categorised presets + window nav
 │       │   │   ├── AbleStatRow.tsx       # Top 4-stat strip (price/load/renewable share/peak)
 │       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
 │       │   │   ├── ForecastMetadataBadge.tsx  # ORPHANED — no importer (see State management)
@@ -271,10 +271,12 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
 
 ### 4. Time navigation
 
-`RangeSegment.tsx` (`client/src/components/dashboard/RangeSegment.tsx:7-13`)
-renders five buttons (`24h`, `7d`, `30d`, `+24h`, `+7d`) that set `timePreset`
-in the store. It is the **only** writer of `timePreset` anywhere in the client.
-The `TimePreset` union is still wider than what it exposes:
+`TimePicker.tsx` (`client/src/components/dashboard/TimePicker.tsx`) is the
+**only** writer of `timePreset` anywhere in the client. It renders four quick
+buttons (`7d`, `Today`, `Tomorrow`, `+7d`), a `More` popover holding the rest
+grouped by anchor, and the window navigation — back/forward arrows
+(`shiftTimeWindow`) and `Now` (`jumpToLive`). Its contents are data, in
+`dashboard/timePresets.ts`. Every value of the union is reachable from it:
 
 ```typescript
 type TimeAnchor = 'past' | 'now' | 'future';
@@ -288,35 +290,43 @@ type TimePreset =
 `getDateRangeForPreset()` (`useDashboardData.ts:29`) turns a preset +
 `timeOffset` into concrete start/end dates.
 
-**Unreachable presets and dead time-navigation actions.** `90d` and `1y` used
-to be in this union with no button to set them; they were removed outright
-(ABL-4) rather than wired up. Four values are still unreachable —
-`today`, `thisWeek`, `next1d`, `next48h` — and they are unreachable for a
-different reason: the store actions that would set them have lost their
-callers. `jumpToLive()` (`dashboardStore.ts:166`, sets `today`) and
-`shiftTimeWindow()` (`dashboardStore.ts:153`) are **called from nowhere** in
-`client/src`, so `timeOffset` is always `0` and `isLive` is never `true`
-(nothing reads `isLive` either). Those four keep market-aligned window logic
-(`getTodayBrussels`/`getNextDayBrussels`, `lib/timezone.ts`) that a restored
-live/now control would need, so they were kept pending a product decision on
-the time picker — see `TIME_PRESETS` in `lib/constants.ts`, an unbuilt design
-spec kept deliberately and not wired to this union.
+**Shifted windows.** `timeOffset` is real as of ABL-12 — the arrows write it,
+and it is `<= 0` always: `shiftTimeWindow` clamps forward navigation at the
+live position, so a window never runs past now into a region with no actuals
+(or past the ~D+2 horizon anything is stored for). One click moves the window
+by `PRESET_SHIFT_HOURS` (`lib/constants.ts`), which states a step per preset
+rather than deriving half the window length. That derivation was wrong for
+`today` and `next1d`: they are Brussels **market days**, and half of 24h
+re-derived the same calendar day about half the time — a click that redrew an
+identical chart under a caption claiming a different day. Those two step one
+whole day, applied as calendar arithmetic (`dayOffset`, `lib/timezone.ts`),
+because no fixed hour count steps a Brussels day across DST: 24h back from
+26 Oct 23:59 CET is still 26 Oct on the 25-hour day.
 
-Adding a preset back means touching six places. Five are a compile error if you
-miss them, by two mechanisms:
+**A shifted window must never wear a now-anchored label.** Every preset label
+("7d", "next 24h") claims a window anchored to now, and that claim expires the
+moment the window moves. `describeWindow()` (`dashboard/windowLabel.ts`)
+returns the preset name at offset 0 and the window's own bounds otherwise;
+`AbleStatRow` reads both `timePreset` and `timeOffset` through it. Bounds are
+formatted in the **viewer's** timezone, matching the chart axes and the "times
+in <zone>" caption — a Brussels-formatted caption over a locally-formatted
+axis would disagree with itself.
+
+Adding a preset means touching six places. All six now fail loudly:
 
 - Keyed `Record<TimePreset, …>`, so the missing key is named directly:
-  `PRESET_DURATIONS_HOURS` (`lib/constants.ts:50`), `WINDOW_LABEL`
+  `PRESET_SHIFT_HOURS` (`lib/constants.ts:17`), `WINDOW_LABEL`
   (`dashboard/windowLabel.ts:23`), and `ANCHOR_FOR_PRESET`
   (`store/migrate.ts:21`), whose keys `VALID_TIME_PRESETS` derives from.
 - A `const unhandled: never = preset` in the `default` branch, so the new value
   is reported as not assignable to `never`: `getDateRangeForPreset`
-  (`useDashboardData.ts:103`) and `getGranularityForPreset`
-  (`useDashboardData.ts:144`).
-
-The sixth — the button in `RangeSegment` — still fails silently, and always
-will: a preset with no control is unreachable, not ill-typed. That gap is
-exactly what ABL-12 is about.
+  (`useDashboardData.ts:113`) and `getGranularityForPreset`
+  (`useDashboardData.ts:155`).
+- The sixth — giving the preset a **control** — cannot be typed: a preset with
+  no button is unreachable, not ill-typed, which is how four of them sat in the
+  union until ABL-12. It is a **test** failure instead:
+  `dashboard/timePresets.test.ts` asserts `REACHABLE_PRESETS` covers every key
+  of `WINDOW_LABEL` (itself compiler-guaranteed to be the whole union).
 
 Until ABL-12 those last three failed silently, which mattered: both functions
 `default` to a trailing 7-day hourly window, so a preset with no `case` compiled
@@ -559,7 +569,7 @@ Three things to know before touching this:
    relevant per-tab hook)
 3. Update the tab component (`client/src/components/dashboard/*Tab.tsx`) and,
    if needed, the underlying `Able*` chart primitive in `components/charts/`
-4. Add UI toggle in the tab or in `ModelPicker`/`RangeSegment` as appropriate
+4. Add UI toggle in the tab or in `ModelPicker`/`TimePicker` as appropriate
 
 ### Adding a model to the forecast registry
 
@@ -735,8 +745,9 @@ interface TSOForecastAccuracyMetrics {
   in the `default` branch), so this is caught by `tsc -b` rather than by
   reading — but the `default` still resolves to a 7-day window at runtime, for
   the unvalidated string a same-version persisted blob can carry
-- Nothing calls `shiftTimeWindow`/`jumpToLive`, so `timeOffset` is always 0 —
-  confirm the preset you are testing can actually be set before debugging deeper
+- `timeOffset` is non-zero whenever the arrows have been used, and it is in
+  ~10 React Query keys — a "stale" chart is often just a shifted window; check
+  the explicit range the picker shows beside itself
 - Bump `PERSIST_VERSION` and add a `migratePersisted()` clause if you changed
   the shape of anything in `partialize`
 

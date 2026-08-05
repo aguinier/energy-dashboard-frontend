@@ -112,15 +112,19 @@ export type TimeAnchor = 'past' | 'now' | 'future';
 // by two different mechanisms:
 //
 //   - keyed `Record<TimePreset, …>`, so the missing key is named directly:
-//     `PRESET_DURATIONS_HOURS` (lib/constants.ts), `WINDOW_LABEL`
+//     `PRESET_SHIFT_HOURS` (lib/constants.ts), `WINDOW_LABEL`
 //     (components/dashboard/windowLabel.ts), `ANCHOR_FOR_PRESET`
 //     (store/migrate.ts — `VALID_TIME_PRESETS` derives from its keys).
 //   - a `const unhandled: never = preset` in the `default` branch, so the new
 //     value is reported as not assignable to `never`: `getDateRangeForPreset`
 //     and `getGranularityForPreset` (hooks/useDashboardData.ts).
 //
-// The sixth — a button in `RangeSegment` — stays silent by nature: a preset
-// with no control is unreachable, not ill-typed. That is ABL-12's subject.
+// The sixth — giving the preset a control — cannot be a compile error: a
+// preset with no button is unreachable, not ill-typed, which is how `today`,
+// `thisWeek`, `next1d` and `next48h` sat here unreachable until ABL-12 wired
+// the categorised picker. It is a *test* failure instead —
+// components/dashboard/timePresets.test.ts asserts the picker covers every
+// key of `WINDOW_LABEL`, which the compiler guarantees is this whole union.
 //
 // The `never` guards are load-bearing, not stylistic. Both functions end in a
 // `default` that yields a trailing 7-day hourly window, so a preset with no
