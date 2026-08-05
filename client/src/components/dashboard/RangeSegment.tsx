@@ -16,7 +16,9 @@ export function RangeSegment() {
   const { timePreset, setTimePreset } = useDashboardStore();
 
   return (
-    <div className="flex overflow-hidden rounded-md border border-border">
+    // h-8 matches TabsList and ModelPicker so the three controls on the
+    // country dashboard's bar share one height instead of three.
+    <div className="flex h-8 overflow-hidden rounded-md border border-border" role="group" aria-label="Time range">
       {ITEMS.map((it, i) => {
         const active = timePreset === it.value;
         return (
@@ -25,9 +27,11 @@ export function RangeSegment() {
             onClick={() => setTimePreset(it.value)}
             aria-pressed={active}
             className={cn(
-              'cursor-pointer border-none px-2.5 py-1 font-mono-num text-[11px]',
+              'cursor-pointer border-none px-2.5 font-mono-num text-micro transition-colors',
               i > 0 && 'border-l border-border',
-              active ? 'bg-foreground text-background' : 'bg-transparent text-ink-dim',
+              active
+                ? 'bg-foreground text-background'
+                : 'bg-transparent text-ink-dim hover:bg-secondary hover:text-foreground',
             )}
           >
             {it.label}

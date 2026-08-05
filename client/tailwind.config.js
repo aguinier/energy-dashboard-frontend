@@ -26,6 +26,26 @@ export default {
           "monospace",
         ],
       },
+      // ─── type scale ────────────────────────────────────────────────────
+      // The UI previously mixed twelve arbitrary sizes chosen per component
+      // (10, 10.5, 11, 11.5, 12, 12.5, 13, 13.5, 14, 15, 26, 36px), so two
+      // labels doing the same job in different cards rendered at different
+      // sizes and nothing lined up. These seven semantic steps replace them;
+      // `text-[Npx]` in a component is now a smell, not the norm.
+      fontSize: {
+        display: ["28px", { lineHeight: "1.1", letterSpacing: "-0.022em" }],
+        stat: ["24px", { lineHeight: "1.1", letterSpacing: "-0.015em" }],
+        title: ["14px", { lineHeight: "1.35", letterSpacing: "-0.006em" }],
+        body: ["13px", { lineHeight: "1.55" }],
+        meta: ["12px", { lineHeight: "1.45" }],
+        micro: ["11px", { lineHeight: "1.4" }],
+        // Uppercase eyebrow labels ONLY — the tracking is baked in, which is
+        // right for capitals and wrong for everything else. Lowercase text
+        // that used to sit at 10px now uses `micro` (11px) instead: it is the
+        // smallest type in the product and 10px was below where it needed to
+        // be, so there is no lowercase step under `micro` on purpose.
+        label: ["10.5px", { lineHeight: "1.3", letterSpacing: "0.09em" }],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

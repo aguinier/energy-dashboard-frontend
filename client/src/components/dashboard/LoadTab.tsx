@@ -56,7 +56,7 @@ export function LoadTab() {
         }`}
       >
         {isLoading ? (
-          <div className="flex h-[300px] items-center justify-center text-[12px] text-ink-muted">
+          <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…
           </div>
         ) : (

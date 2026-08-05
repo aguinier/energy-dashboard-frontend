@@ -130,7 +130,7 @@ export function AbleStackedMix({
 
   if (series.length === 0) {
     return (
-      <div className="flex items-center justify-center text-[12px] text-ink-muted" style={{ height }}>
+      <div className="flex items-center justify-center text-meta text-ink-muted" style={{ height }}>
         No generation data for this window.
       </div>
     );
@@ -228,7 +228,7 @@ export function AbleStackedMix({
 
       {h && (
         <div
-          className="font-mono-num pointer-events-none absolute min-w-[160px] whitespace-nowrap rounded-md border border-input bg-foreground px-3 py-2.5 text-[11px] text-background shadow-[0_4px_16px_rgba(0,0,0,0.25)]"
+          className="font-mono-num pointer-events-none absolute min-w-[160px] whitespace-nowrap rounded-md border border-input bg-foreground px-3 py-2.5 text-micro text-background shadow-[0_4px_16px_rgba(0,0,0,0.25)]"
           style={{
             left: `${(hx / width) * 100}%`,
             top: 6,
@@ -238,7 +238,7 @@ export function AbleStackedMix({
                 : 'translateX(14px)',
           }}
         >
-          <div className="mb-1.5 text-[10px] opacity-60">
+          <div className="mb-1.5 text-micro opacity-60">
             {h.future ? 'forecast' : 'actual'} ·{' '}
             {new Date(h.ts).toLocaleString([], {
               month: 'short',
@@ -252,14 +252,14 @@ export function AbleStackedMix({
               <span className="h-2 w-2 rounded-sm" style={{ background: colors[k] }} />
               <span className="flex-1 opacity-85">{LABELS[k]}</span>
               <span className="font-semibold">{((h[k] || 0) / 1000).toFixed(2)}</span>
-              <span className="text-[10px] opacity-55">GW</span>
+              <span className="text-micro opacity-55">GW</span>
             </div>
           ))}
           <div className="mt-1.5 flex items-baseline justify-between border-t border-input pt-1.5 opacity-90">
-            <span className="text-[10px] opacity-70">Total renewable</span>
+            <span className="text-micro opacity-70">Total renewable</span>
             <span>
               <span className="font-semibold">{(total / 1000).toFixed(2)}</span>
-              <span className="ml-1 text-[10px] opacity-55">GW</span>
+              <span className="ml-1 text-micro opacity-55">GW</span>
             </span>
           </div>
         </div>

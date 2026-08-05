@@ -28,11 +28,11 @@ export function SourceTable({ mix }: Props) {
               className={s.mw == null ? 'h-2 w-2 rounded-sm border border-border' : 'h-2 w-2 rounded-sm'}
               style={s.mw == null ? undefined : { background: s.color }}
             />
-            <span className="text-[12.5px]">{s.label}</span>
-            <span className="font-mono-num text-right text-[12px]">
+            <span className="text-meta">{s.label}</span>
+            <span className="font-mono-num text-right text-meta">
               {s.mw == null ? '—' : (s.mw / 1000).toFixed(2)}
             </span>
-            <span className="font-mono-num text-right text-[11px] text-ink-dim">
+            <span className="font-mono-num text-right text-micro text-ink-dim">
               {s.pctOfGeneration == null ? '—' : `${s.pctOfGeneration.toFixed(1)}%`}
             </span>
             <span className="relative block h-1 rounded-sm bg-secondary">
@@ -56,7 +56,7 @@ export function SourceTable({ mix }: Props) {
         );
       })}
 
-      <p className="mt-2 border-t border-input pt-2 text-[10.5px] text-ink-muted">
+      <p className="mt-2 border-t border-input pt-2 text-micro text-ink-muted">
         Nuclear, every fossil type, and storage are ingested from the same ENTSO-E document as the
         renewables above — Fossil and Other each group several reported types into one row. A dash
         means this country does not report that type at all. Percentages are each row's share of

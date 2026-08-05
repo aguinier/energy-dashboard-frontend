@@ -35,15 +35,15 @@ export default function ComparisonView() {
         <div className="mb-3.5 flex items-center gap-2">
           <button
             onClick={goToMap}
-            className="cursor-pointer border-none bg-transparent p-0 text-[12px] text-ink-dim hover:text-foreground"
+            className="cursor-pointer border-none bg-transparent p-0 text-meta text-ink-dim hover:text-foreground"
           >
             ← Map
           </button>
-          <span className="text-[12px] text-ink-faint">/</span>
-          <span className="text-[12px] text-ink-dim">Cross-country comparison</span>
+          <span className="text-meta text-ink-faint">/</span>
+          <span className="text-meta text-ink-dim">Cross-country comparison</span>
         </div>
 
-        <h1 className="m-0 mb-6 text-[36px] font-medium leading-none tracking-[-0.025em]">
+        <h1 className="m-0 mb-6 text-display font-medium">
           Cross-country comparison
         </h1>
 
