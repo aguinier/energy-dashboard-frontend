@@ -625,15 +625,36 @@ forecast_type=? AND target_timestamp_utc>? AND target_timestamp_utc<?)` to
 `(country_code=? AND forecast_type=?)`. See the `date()`/`strftime()` entry in
 Common Issues for the 51s scar this repo already has from that class of change.
 
-**Still open (not fixed by ABL-21):** the forecast↔actual *join* predicates
-still read `REPLACE(f.target_timestamp_utc, 'T', ' ') = a.timestamp_utc`
-(`crossCountryMetricsService.ts:124`, `mlForecastService.ts`,
-`tsoForecastService.ts:297`). Those normalise only the forecast side, so a
-window reaching before the 2025-11-26 cutover silently fails to join
-`T`-separated actuals — a WAPE over a biased sample rather than a short series.
-Measured on `energy_price` FR, 2025-11-20..25: 741 rows matched of 860. Filed
-as its own ticket; current default windows (7d/30d/90d) do not reach back that
-far.
+**Still open (not fixed by ABL-21):** the forecast↔actual *join* predicates are
+not separator-agnostic, so a window reaching before the 2025-11-26 cutover
+silently fails to join `T`-separated actuals — a WAPE over a biased sample
+rather than a short series. Measured on `energy_price` FR, 2025-11-20..25: 741
+rows matched of 860. Filed as its own ticket; current default windows
+(7d/30d/90d) do not reach back that far.
+
+**They are not all the same shape, and grepping for one misses the others:**
+
+- `crossCountryMetricsService.ts:125`, `mlForecastService.ts:200` and `:247`
+  normalise **only the forecast side**:
+  `REPLACE(f.target_timestamp_utc, 'T', ' ') = a.<timestampCol>`.
+- `tsoForecastService.ts:293` has **no normalisation at all** —
+  `f.target_timestamp_utc = a.timestamp_utc`, joining
+  `energy_generation_forecast` to `energy_renewable`. That forecast column is
+  100% space-form (measured 2026-08-05: 0 `T` of 3,033,167), so a one-sided
+  `REPLACE` on it would be a no-op and this bare form fails on exactly the same
+  rows — the impact is identical, but a grep for `REPLACE(f.` does not find the
+  site. Fixing this class means normalising the **actuals** side, which is the
+  side that is mixed.
+
+Sizing, measured 2026-08-05 over the whole `T` era (`energy_renewable` holds
+90,636 `T` rows, 2021-12-31..2025-11-25): solar pairs a separator-agnostic join
+would match and `:293` drops — BA 9,315 (vs 43,043 matched), DE 7,396 (vs
+24,658), PL 4,804 (vs 23,122), FI 4,740 (vs 24,632), RO 4,600, IT 4,535. So
+roughly a fifth of the available history on the affected countries, not a
+rounding error — it is invisible today only because the default windows are
+recent. Note the naive both-sides `REPLACE` fix is the expensive one this repo
+already has a scar from: it defeats the index on a 3.0M × 811k join and did not
+complete in 120 s during this measurement.
 
 ## Data the database does not have
 
