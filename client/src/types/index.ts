@@ -303,6 +303,40 @@ export interface ForecastComparisonSummary {
   [forecastType: string]: ForecastComparisonResponse;
 }
 
+/**
+ * Why an ML accuracy window produced the metrics it did. Mirrors the server's
+ * `MLAccuracyCoverage` (`server/src/services/mlForecastService.ts:59`).
+ *
+ * `no_model_coverage` is a NORMAL answer, not an error: catboost and xgboost
+ * cover disjoint country sets, so for any one country roughly half the
+ * registered models legitimately have nothing. It exists so that case is
+ * distinguishable from a measurement — a model that does not serve a country
+ * must never render as a flawless 0% error.
+ */
+export type MLAccuracyCoverage = 'served' | 'no_model_coverage' | 'no_paired_actuals';
+
+/** Per-model ML accuracy metrics. Every null means "not measurable", never zero. */
+export interface MLForecastAccuracyMetrics {
+  mae: number | null;
+  mape: number | null;   // null when no point in the window had a positive actual
+  rmse: number | null;
+  bias: number | null;
+  dataPoints: number;
+  /** Count of points MAPE was computed over; <= dataPoints. */
+  mapeSamples: number;
+}
+
+/**
+ * `/forecast-comparison/:cc/ml-accuracy`, minus the hourly point array the
+ * callers of this type do not read.
+ */
+export interface MLForecastAccuracyResult {
+  metrics: MLForecastAccuracyMetrics;
+  coverage: MLAccuracyCoverage;
+  /** Which model was pinned. `null` means unpinned — NOT "the production model". */
+  model: string | null;
+}
+
 // ============================================================================
 // Cross-Country Comparison Types
 // ============================================================================
