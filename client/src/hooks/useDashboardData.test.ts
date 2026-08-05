@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { getDateRangeForPreset, getGranularityForPreset } from './useDashboardData';
+import { PRESET_SHIFT_HOURS } from '@/lib/constants';
 import type { TimeAnchor, Granularity, TimePreset } from '@/types';
 
 // `getDateRangeForPreset` and `getGranularityForPreset` switch on `TimePreset`
@@ -109,5 +110,69 @@ describe('getDateRangeForPreset', () => {
 describe('getGranularityForPreset', () => {
   it.each(ALL_PRESETS)('gives "%s" its own granularity rather than inheriting the fallback', (preset) => {
     expect(getGranularityForPreset(preset)).toBe(EXPECTED[preset].granularity);
+  });
+});
+
+// ============================================================================
+// Shifted windows (ABL-12)
+// ============================================================================
+//
+// `offsetHours` was dead until the navigation arrows shipped — nothing called
+// `shiftTimeWindow`, so every window was computed at offset 0 and the offset
+// path had never actually run. These cover it.
+describe('getDateRangeForPreset with a shifted window', () => {
+  it.each(ALL_PRESETS)('moves "%s" strictly earlier when stepped back', (preset) => {
+    freezeSummer();
+    const live = getDateRangeForPreset(preset, 0);
+    const back = getDateRangeForPreset(preset, -PRESET_SHIFT_HOURS[preset]);
+
+    // A step that lands on the same window is a click that redraws an
+    // identical chart while the caption claims a different period. That is how
+    // a half-window step behaved for the two day-aligned presets, which is why
+    // the step is stated per preset rather than derived from the length.
+    expect(back.start.getTime()).toBeLessThan(live.start.getTime());
+    expect(back.end.getTime()).toBeLessThan(live.end.getTime());
+  });
+
+  it.each(ALL_PRESETS)('keeps "%s" the same length when shifted', (preset) => {
+    freezeSummer();
+    const live = getDateRangeForPreset(preset, 0);
+    const back = getDateRangeForPreset(preset, -PRESET_SHIFT_HOURS[preset] * 2);
+    const lengthOf = (r: { start: Date; end: Date }) => r.end.getTime() - r.start.getTime();
+
+    // Brussels days are 23-25h across a DST boundary, so allow an hour there.
+    expect(Math.abs(lengthOf(back) - lengthOf(live))).toBeLessThanOrEqual(60 * 60 * 1000);
+  });
+
+  it('steps "today" back a whole Brussels market day, staying midnight-aligned', () => {
+    freezeSummer(); // 2026-08-05 13:30 Brussels
+    expect(getDateRangeForPreset('today', -24).start.toISOString()).toBe('2026-08-03T22:00:00.000Z');
+    expect(getDateRangeForPreset('today', -24).end.toISOString()).toBe('2026-08-04T21:59:59.999Z');
+    expect(getDateRangeForPreset('today', -48).start.toISOString()).toBe('2026-08-02T22:00:00.000Z');
+  });
+
+  it('steps "next1d" back a whole market day too', () => {
+    freezeSummer();
+    // Offset -24 turns "tomorrow" into "today", still midnight-aligned.
+    expect(getDateRangeForPreset('next1d', -24).start.toISOString()).toBe('2026-08-04T22:00:00.000Z');
+  });
+
+  // The reason `today`/`next1d` shift by calendar days rather than by hours.
+  // 25 Oct 2026 is the 25-hour Brussels day (DST ends 03:00 CEST -> 02:00 CET).
+  // Standing at 23:00 CET that day, subtracting 24 hours of real time lands on
+  // 25 Oct 00:00 CEST — the *same* market day. The old
+  // `getTodayBrussels(now - 24h)` therefore returned an identical window for a
+  // click that told the user it had moved to the previous day.
+  it('crosses the 25-hour DST day instead of landing back on it', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(Date.UTC(2026, 9, 25, 22, 0, 0))); // 25 Oct 23:00 CET
+
+    const live = getDateRangeForPreset('today', 0);
+    const back = getDateRangeForPreset('today', -24);
+
+    expect(live.start.toISOString()).toBe('2026-10-24T22:00:00.000Z'); // 25 Oct 00:00 CEST
+    // Must be 24 Oct, not 25 Oct again.
+    expect(back.start.toISOString()).toBe('2026-10-23T22:00:00.000Z');
+    expect(back.start.getTime()).toBeLessThan(live.start.getTime());
   });
 });

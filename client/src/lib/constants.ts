@@ -1,62 +1,32 @@
 import type { TimePreset } from '@/types';
 
-// UNBUILT DESIGN SPEC — not wired to anything. This describes a categorised
-// time picker (quick access / historical / around now / forecast) that was
-// designed and never built; the shipped control is `RangeSegment.tsx`, five
-// hardcoded buttons. Kept deliberately (ABL-4) as the record of that design
-// while the product decision is with the CEO — it is the only place the
-// intended shape is written down.
+// How far one click of `shiftTimeWindow` (store/dashboardStore.ts) moves the
+// window, per preset. Replaces the old `PRESET_DURATIONS_HOURS`, which stored
+// the window *length* and let the store derive a step of half of it — that
+// derivation was wrong for the two day-aligned presets and is the reason the
+// step is stated explicitly here instead:
 //
-// Do not read it as a description of the code. It is NOT typed as
-// `TimePreset[]` and does not track that union: `90d` and `1y` below are no
-// longer `TimePreset` values at all (removed in ABL-4 — see
-// `client/src/types/index.ts:115`), and `today`/`thisWeek`/`next1d`/`next48h`
-// are valid `TimePreset` values that no control can currently set. Wiring any
-// of this up means re-adding the missing union members and durations, not just
-// rendering this object.
-export const TIME_PRESETS = {
-  // Quick access presets (shown in main bar)
-  quickAccess: [
-    { value: '7d', label: 'Last 7d', anchor: 'past' },
-    { value: 'today', label: 'Today', anchor: 'now' },
-    { value: 'next1d', label: 'Next Day', anchor: 'future' },
-    { value: 'next7d', label: 'Next 7d', anchor: 'future' },
-  ],
-  // Historical presets (backward-looking)
-  historical: [
-    { value: '24h', label: 'Last 24h' },
-    { value: '7d', label: 'Last 7d' },
-    { value: '30d', label: 'Last 30d' },
-    { value: '90d', label: 'Last 90d' },
-    { value: '1y', label: 'Last year' },
-  ],
-  // Around now presets (centered on current time)
-  aroundNow: [
-    { value: 'today', label: 'Today (±12h)' },
-    { value: 'thisWeek', label: 'This week' },
-  ],
-  // Forecast presets (forward-looking)
-  forecast: [
-    { value: 'next24h', label: 'Next 24h' },
-    { value: 'next48h', label: 'Next 48h' },
-    { value: 'next7d', label: 'Next 7d' },
-  ],
-} as const;
-
-// Window duration in hours per `TimePreset`, used by `shiftTimeWindow` to move
-// the window by half its length. One entry per `TimePreset` value and no more —
-// `90d`/`1y` were dropped from both together (ABL-4) so the union and this map
-// cannot disagree about which presets exist.
-export const PRESET_DURATIONS_HOURS: Record<TimePreset, number> = {
-  '24h': 24,
-  '7d': 168,
-  '30d': 720,
-  'today': 24,
-  'thisWeek': 168,
-  'next1d': 24,
-  'next24h': 24,
-  'next48h': 48,
-  'next7d': 168,
+//   - Continuous presets step by half their length, so consecutive windows
+//     overlap and a feature near a boundary stays visible while browsing.
+//   - `today` and `next1d` are Brussels market days, not "now ± N hours"
+//     (lib/timezone.ts). Half of 24h would have re-derived the *same* calendar
+//     day about half the time — a click that redraws an identical chart while
+//     the caption claims a different day. They step one whole day, which
+//     `getDateRangeForPreset` applies as calendar arithmetic rather than as an
+//     hour offset (see `wholeDays`, hooks/useDashboardData.ts).
+//
+// Typed `Record<TimePreset, number>` so a preset added to the union without a
+// step here is named by the compiler rather than silently inheriting one.
+export const PRESET_SHIFT_HOURS: Record<TimePreset, number> = {
+  '24h': 12,
+  '7d': 84,
+  '30d': 360,
+  'today': 24,      // one Brussels market day
+  'thisWeek': 84,
+  'next1d': 24,     // one Brussels market day
+  'next24h': 12,
+  'next48h': 24,
+  'next7d': 84,
 };
 
 // The single source of truth for map metric copy. `unit` is the unit the map

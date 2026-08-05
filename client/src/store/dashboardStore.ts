@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { TimePreset, TimeAnchor, MetricType, TSOForecastType, AppView } from '@/types';
-import { DEFAULT_COUNTRY, PRESET_DURATIONS_HOURS } from '@/lib/constants';
+import { DEFAULT_COUNTRY, PRESET_SHIFT_HOURS } from '@/lib/constants';
 import { migratePersisted, PERSIST_VERSION } from './migrate';
 
 // Default ML forecast horizons (D+1 and D+2)
@@ -150,13 +150,29 @@ export const useDashboardStore = create<DashboardState>()(
           ...(isFuturePreset && { showForecast: true }),
         });
       },
+      // Move the window by one step of the current preset (PRESET_SHIFT_HOURS).
+      //
+      // `timeOffset` is clamped at 0 rather than allowed to go positive: 0 is
+      // the live position, where every preset already means exactly what its
+      // label says, and "forward" exists to walk back toward it after going
+      // back. A positive offset would push a historical window past now into a
+      // region with no actuals yet — a chart guaranteed to be empty on its
+      // right-hand side — and would let a forecast window run past the ~D+2
+      // horizon anything is actually stored for. The clamp lives here rather
+      // than only in the control so the invariant holds for every caller; the
+      // forward arrow's disabled state (TimePicker.tsx) is the visible half of
+      // the same rule.
       shiftTimeWindow: (direction) => {
         set((state) => {
-          const durationHours = PRESET_DURATIONS_HOURS[state.timePreset] || 168;
-          const shiftAmount = Math.floor(durationHours / 2); // Shift by half the window
-          const newOffset = direction === 'back'
-            ? state.timeOffset - shiftAmount
-            : state.timeOffset + shiftAmount;
+          // Typed access always hits; `?? 168` covers a `timePreset` that
+          // reached the store from a persisted blob without passing migration.
+          const shiftAmount = PRESET_SHIFT_HOURS[state.timePreset] ?? 168;
+          const newOffset = Math.min(
+            0,
+            direction === 'back'
+              ? state.timeOffset - shiftAmount
+              : state.timeOffset + shiftAmount,
+          );
           return {
             timeOffset: newOffset,
             isLive: newOffset === 0 && ['today', 'thisWeek'].includes(state.timePreset),

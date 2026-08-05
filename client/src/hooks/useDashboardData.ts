@@ -21,9 +21,25 @@ import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType } fr
 // ============================================================================
 
 /**
+ * `offsetHours` for the two day-aligned presets (`today`, `next1d`), expressed
+ * as the whole Brussels calendar days it stands for.
+ *
+ * `shiftTimeWindow` steps those two by exactly 24h per click
+ * (PRESET_SHIFT_HOURS, lib/constants.ts), so this division is exact in
+ * practice; `Math.round` only keeps it total. Shifting the *reference instant*
+ * by the same hours would not work — see `dayOffset` in lib/timezone.ts for
+ * the DST cases where 24h back lands on the same market day, or skips one.
+ */
+function wholeDays(offsetHours: number): number {
+  return Math.round(offsetHours / 24);
+}
+
+/**
  * Calculate date range based on new TimePreset system
  * @param preset - The time preset (e.g., '7d', 'today', 'next7d')
- * @param offsetHours - Hours to offset from now (for navigation arrows)
+ * @param offsetHours - Hours to offset from now (for navigation arrows).
+ *   Always <= 0: `shiftTimeWindow` clamps forward navigation at the live
+ *   position, so a window never runs ahead of the preset's own definition.
  * @returns Object with start and end ISO date strings
  */
 export function getDateRangeForPreset(
@@ -58,7 +74,7 @@ export function getDateRangeForPreset(
 
      // Around now presets - Brussels timezone-based
      case 'today': {
-       const todayRange = getTodayBrussels(adjustedNow);
+       const todayRange = getTodayBrussels(now, wholeDays(offsetHours));
        start = todayRange.start;
        end = todayRange.end;
        anchor = 'now';
@@ -72,7 +88,7 @@ export function getDateRangeForPreset(
 
      // Forecast presets - Brussels timezone-based
      case 'next1d': {
-       const nextDayRange = getNextDayBrussels(adjustedNow);
+       const nextDayRange = getNextDayBrussels(now, wholeDays(offsetHours));
        start = nextDayRange.start;
        end = nextDayRange.end;
        anchor = 'future';
