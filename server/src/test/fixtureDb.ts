@@ -1,0 +1,449 @@
+import Database, { type Database as DatabaseType } from 'better-sqlite3';
+
+/**
+ * The fixture database the route tests run against.
+ *
+ * WHY IN-MEMORY, AND NEVER A FILE
+ *
+ * `config/database.ts` opens `ENERGY_DB_PATH` at import time. Every route test
+ * mocks that module out and hands the routers this database instead, so the
+ * real shared SQLite file is never opened at all — not readonly, not writable,
+ * not even stat'ed. An in-memory handle makes that structurally true rather
+ * than a convention someone has to remember, and it keeps the suite fast and
+ * free of Windows file-lock flake.
+ *
+ * WHY THE DDL IS COPIED VERBATIM
+ *
+ * The CREATE TABLE statements below are byte-for-byte what
+ * `energy_dashboard.db` carries (read out of it on 2026-08-05), because the
+ * defaults are the thing under test. `energy_generation` deliberately has NO
+ * `DEFAULT 0` — a production type a country does not report must stay NULL, and
+ * a fixture that quietly defaulted it to 0 would test the opposite of what this
+ * dashboard cares about. `energy_renewable`, the older frozen table, DOES carry
+ * `DEFAULT 0`; that difference is real and is preserved here.
+ *
+ * WHAT THE FIXTURE ENCODES
+ *
+ * Six countries, each standing for one failure shape this codebase has actually
+ * shipped a wrong number for:
+ *
+ * - `DE` — the ordinary case. Full load/price/generation, catboost D+1 and D+2,
+ *   TSO day-ahead and week-ahead. Also carries a SUPERSEDED forecast vintage
+ *   (an older `generated_at` with an absurd value) so the MAX(generated_at)
+ *   dedup is exercised end to end rather than assumed.
+ * - `FR` — legitimate negatives. `hydro_pumped_mw` is -300 (pumping) and
+ *   `fossil_hard_coal_mw` is -50 (a consumption-only type). `solar_mw` is a
+ *   measured 0.0 while `wind_onshore_mw` is NULL: zero and unknown side by side
+ *   in one row, which must stay distinguishable on the wire.
+ * - `BE` — negative day-ahead prices, and a window whose solar actuals are all a
+ *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null.
+ * - `PT` — rows exist but every generation column is NULL (a country reporting
+ *   nothing). Must read as "no data", never 0%.
+ * - `GR` — stopped publishing mid-window, the GR/IE shape.
+ * - `AT` — served by xgboost only, with no catboost row anywhere. The disjoint
+ *   catboost/xgboost coverage that makes "no rows for this country" a normal
+ *   answer rather than an error.
+ *
+ * `LU` exists with a single contradictory `net_position` row, the real ingest
+ * artifact `dashboardService.getMapNetPositionData` overwrites with DE_LU's.
+ */
+
+/** The window every test queries unless it is deliberately looking outside it. */
+export const WINDOW = { start: '2026-07-01T00:00:00Z', end: '2026-07-01T03:00:00Z' };
+
+/** A window one day later: forecasts exist here, actuals never do. */
+export const NEXT_DAY = { start: '2026-07-02T00:00:00Z', end: '2026-07-02T03:00:00Z' };
+
+/** `?start=…&end=…` for WINDOW, ready to concatenate onto a query string. */
+export const WINDOW_QS = `start=${WINDOW.start}&end=${WINDOW.end}`;
+export const NEXT_DAY_QS = `start=${NEXT_DAY.start}&end=${NEXT_DAY.end}`;
+
+/** The four hours in WINDOW, in the space format every actuals table uses. */
+export const HOURS = [0, 1, 2, 3] as const;
+
+/** Actuals-table timestamp: `2026-07-01 02:00:00`. */
+export const at = (hour: number, day = 1): string =>
+  `2026-07-0${day} ${String(hour).padStart(2, '0')}:00:00`;
+
+/** `forecasts.target_timestamp_utc` timestamp: `2026-07-01T02:00:00`. */
+export const atT = (hour: number, day = 1): string => at(hour, day).replace(' ', 'T');
+
+/** The current vintage every non-stale forecast row is generated at. */
+const GENERATED_AT = '2026-06-30T18:00:00.000000';
+/** An older, superseded vintage. Its values are absurd on purpose. */
+const STALE_GENERATED_AT = '2026-06-29T18:00:00.000000';
+
+const SCHEMA = `
+CREATE TABLE countries (
+    country_code TEXT PRIMARY KEY,
+    country_name TEXT NOT NULL,
+    entsoe_domain TEXT,
+    has_load_data BOOLEAN DEFAULT 0,
+    has_price_data BOOLEAN DEFAULT 0,
+    has_renewable_data BOOLEAN DEFAULT 0,
+    has_weather_data BOOLEAN DEFAULT 0,
+    priority INTEGER DEFAULT 2,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE energy_load (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    timestamp_utc TIMESTAMP NOT NULL,
+    load_mw REAL NOT NULL,
+    data_quality TEXT DEFAULT 'actual',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    publication_timestamp_utc TIMESTAMP
+);
+
+CREATE TABLE energy_price (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    timestamp_utc TIMESTAMP NOT NULL,
+    price_eur_mwh REAL NOT NULL,
+    data_quality TEXT DEFAULT 'actual',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    publication_timestamp_utc TIMESTAMP
+);
+
+-- No DEFAULT 0 on any *_mw column. This is deliberate upstream and load-bearing
+-- here: NULL means "this country does not report this type", 0.0 means "we
+-- measured zero".
+CREATE TABLE energy_generation (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    timestamp_utc TIMESTAMP NOT NULL,
+    solar_mw REAL,
+    wind_onshore_mw REAL,
+    wind_offshore_mw REAL,
+    hydro_run_mw REAL,
+    hydro_reservoir_mw REAL,
+    hydro_pumped_mw REAL,
+    biomass_mw REAL,
+    geothermal_mw REAL,
+    marine_mw REAL,
+    other_renewable_mw REAL,
+    energy_storage_mw REAL,
+    nuclear_mw REAL,
+    fossil_gas_mw REAL,
+    fossil_hard_coal_mw REAL,
+    fossil_brown_coal_mw REAL,
+    fossil_oil_mw REAL,
+    fossil_oil_shale_mw REAL,
+    fossil_peat_mw REAL,
+    fossil_coal_derived_gas_mw REAL,
+    waste_mw REAL,
+    other_mw REAL,
+    data_quality TEXT DEFAULT 'actual',
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    publication_timestamp_utc TIMESTAMP
+);
+
+-- The older frozen table. It DOES carry DEFAULT 0; preserved as-is.
+CREATE TABLE energy_renewable (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    timestamp_utc TIMESTAMP NOT NULL,
+    solar_mw REAL DEFAULT 0,
+    wind_onshore_mw REAL DEFAULT 0,
+    wind_offshore_mw REAL DEFAULT 0,
+    hydro_run_mw REAL DEFAULT 0,
+    hydro_reservoir_mw REAL DEFAULT 0,
+    biomass_mw REAL DEFAULT 0,
+    geothermal_mw REAL DEFAULT 0,
+    other_renewable_mw REAL DEFAULT 0,
+    total_renewable_mw REAL,
+    data_quality TEXT DEFAULT 'actual',
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    publication_timestamp_utc TIMESTAMP
+);
+
+CREATE TABLE forecasts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    forecast_type TEXT NOT NULL,
+    target_timestamp_utc TIMESTAMP NOT NULL,
+    generated_at TIMESTAMP NOT NULL,
+    horizon_hours INTEGER NOT NULL,
+    forecast_value REAL NOT NULL,
+    model_name TEXT NOT NULL,
+    model_version TEXT,
+    renewable_type TEXT,
+    UNIQUE(country_code, forecast_type, target_timestamp_utc, horizon_hours, model_name, generated_at)
+);
+
+CREATE TABLE forecast_quantiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    forecast_type TEXT NOT NULL,
+    target_timestamp_utc TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    quantile REAL NOT NULL,
+    forecast_value REAL NOT NULL,
+    model_name TEXT NOT NULL
+);
+
+CREATE TABLE net_position (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    timestamp_utc TEXT NOT NULL,
+    net_position_mw REAL NOT NULL,
+    data_quality TEXT DEFAULT 'actual',
+    publication_timestamp_utc TEXT,
+    fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(country_code, timestamp_utc)
+);
+
+CREATE TABLE energy_load_forecast (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    target_timestamp_utc TIMESTAMP NOT NULL,
+    forecast_value_mw REAL NOT NULL,
+    forecast_type TEXT NOT NULL,
+    forecast_run_time TIMESTAMP,
+    horizon_hours INTEGER,
+    data_quality TEXT DEFAULT 'forecast',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    publication_timestamp_utc TIMESTAMP,
+    forecast_min_mw REAL,
+    forecast_max_mw REAL
+);
+
+CREATE TABLE energy_generation_forecast (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    target_timestamp_utc TIMESTAMP NOT NULL,
+    solar_mw REAL,
+    wind_onshore_mw REAL,
+    wind_offshore_mw REAL,
+    total_forecast_mw REAL,
+    forecast_type TEXT DEFAULT 'day_ahead',
+    data_quality TEXT DEFAULT 'forecast',
+    publication_timestamp_utc TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(country_code, target_timestamp_utc, forecast_type)
+);
+`;
+
+/** Every `*_mw` column on `energy_generation`, in table order. */
+const GENERATION_COLUMNS = [
+  'solar_mw', 'wind_onshore_mw', 'wind_offshore_mw', 'hydro_run_mw',
+  'hydro_reservoir_mw', 'hydro_pumped_mw', 'biomass_mw', 'geothermal_mw',
+  'marine_mw', 'other_renewable_mw', 'energy_storage_mw', 'nuclear_mw',
+  'fossil_gas_mw', 'fossil_hard_coal_mw', 'fossil_brown_coal_mw',
+  'fossil_oil_mw', 'fossil_oil_shale_mw', 'fossil_peat_mw',
+  'fossil_coal_derived_gas_mw', 'waste_mw', 'other_mw',
+] as const;
+
+type GenerationRow = Partial<Record<typeof GENERATION_COLUMNS[number], number | null>>;
+
+/**
+ * Insert one `energy_generation` row. Columns the caller does not name are
+ * inserted as NULL, never 0 — writing them as 0 is precisely the bug class
+ * these fixtures exist to catch, so the helper cannot express it by accident.
+ */
+function insertGeneration(db: DatabaseType, country: string, timestamp: string, row: GenerationRow) {
+  const stmt = db.prepare(
+    `INSERT INTO energy_generation (country_code, timestamp_utc, ${GENERATION_COLUMNS.join(', ')})
+     VALUES (?, ?, ${GENERATION_COLUMNS.map(() => '?').join(', ')})`
+  );
+  stmt.run(country, timestamp, ...GENERATION_COLUMNS.map((c) => row[c] ?? null));
+}
+
+function seed(db: DatabaseType): void {
+  const country = db.prepare('INSERT INTO countries (country_code, country_name) VALUES (?, ?)');
+  for (const [code, name] of [
+    ['DE', 'Germany'], ['FR', 'France'], ['BE', 'Belgium'],
+    ['PT', 'Portugal'], ['GR', 'Greece'], ['AT', 'Austria'], ['LU', 'Luxembourg'],
+  ]) {
+    country.run(code, name);
+  }
+
+  // ---------------------------------------------------------------- actuals
+
+  const load = db.prepare('INSERT INTO energy_load (country_code, timestamp_utc, load_mw) VALUES (?, ?, ?)');
+  // DE: 1000 / 1100 / 1200 / 1300 — avg 1150, peak 1300.
+  HOURS.forEach((h, i) => load.run('DE', at(h), 1000 + i * 100));
+  HOURS.forEach((h) => load.run('FR', at(h), 800));
+  HOURS.forEach((h) => load.run('BE', at(h), 500));
+  HOURS.forEach((h) => load.run('PT', at(h), 200));
+  // AT: 600 / 620 / 640 / 660.
+  HOURS.forEach((h, i) => load.run('AT', at(h), 600 + i * 20));
+  // GR went silent after 01:00. The last two hours of the window simply are
+  // not there — the shape GR and IE have had since 2026-03-14.
+  load.run('GR', at(0), 300);
+  load.run('GR', at(1), 310);
+
+  const price = db.prepare('INSERT INTO energy_price (country_code, timestamp_utc, price_eur_mwh) VALUES (?, ?, ?)');
+  // DE: 50 / 60 / 70 / 80 — avg 65.
+  HOURS.forEach((h, i) => price.run('DE', at(h), 50 + i * 10));
+  // BE: a genuinely negative day-ahead window. Avg is -25, not +25 and not 0.
+  HOURS.forEach((h, i) => price.run('BE', at(h), -10 - i * 10));
+  HOURS.forEach((h) => price.run('FR', at(h), 5));
+
+  // ------------------------------------------------------------- generation
+
+  // DE — an ordinary mix. Renewable 300 of 1000 positive MW per row => 30.00%.
+  HOURS.forEach((h) =>
+    insertGeneration(db, 'DE', at(h), {
+      solar_mw: 100, wind_onshore_mw: 200, nuclear_mw: 300, fossil_gas_mw: 400,
+    })
+  );
+
+  // FR — the negatives case, and the 0-vs-NULL case in a single row:
+  //   solar_mw = 0.0    measured zero
+  //   wind_onshore_mw   absent => NULL, not reported
+  //   hydro_pumped_mw   -300, pumping
+  //   fossil_hard_coal  -50, consumption-only
+  // Renewable numerator = solar 0 + hydro_run 100 = 100 (pumped storage is a
+  // store, not primary generation). Denominator clamps each column at 0, so the
+  // two negatives contribute nothing rather than shrinking it: 0+100+700 = 800.
+  // Share = 100/800 = 12.50%.
+  HOURS.forEach((h) =>
+    insertGeneration(db, 'FR', at(h), {
+      solar_mw: 0, hydro_run_mw: 100, nuclear_mw: 700,
+      hydro_pumped_mw: -300, fossil_hard_coal_mw: -50,
+    })
+  );
+
+  // BE — every generation column a measured zero. Total positive generation is
+  // 0, so the share is undefined: null, never 0%.
+  HOURS.forEach((h) => insertGeneration(db, 'BE', at(h), { solar_mw: 0, wind_onshore_mw: 0 }));
+
+  // PT — rows exist, but this country reports no production type at all. Every
+  // column NULL. Must read as no data, not as 0%.
+  HOURS.forEach((h) => insertGeneration(db, 'PT', at(h), {}));
+
+  // GR — generation stops when publication stops.
+  insertGeneration(db, 'GR', at(0), { solar_mw: 50, nuclear_mw: 50 });
+  insertGeneration(db, 'GR', at(1), { solar_mw: 50, nuclear_mw: 50 });
+
+  // AT — no energy_generation rows at all (still mid-backfill). A different
+  // null path than PT's: zero rows, rather than rows summing to nothing.
+
+  // ------------------------------------------------- energy_renewable (frozen)
+
+  const renewable = db.prepare(
+    `INSERT INTO energy_renewable
+       (country_code, timestamp_utc, solar_mw, wind_onshore_mw, wind_offshore_mw, total_renewable_mw)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  );
+  // DE: 100 / 120 / 140 / 160 solar.
+  HOURS.forEach((h, i) => renewable.run('DE', at(h), 100 + i * 20, 200, null, 300 + i * 20));
+  // BE: solar overnight — a measured zero at every hour. Sum of actuals is 0.
+  HOURS.forEach((h) => renewable.run('BE', at(h), 0, 0, null, 0));
+
+  // ---------------------------------------------------------- net_position
+
+  const netPosition = db.prepare(
+    'INSERT INTO net_position (country_code, timestamp_utc, net_position_mw) VALUES (?, ?, ?)'
+  );
+  // DE: 100 / 150 / 200 / 250 — avg 175.
+  HOURS.forEach((h, i) => netPosition.run('DE', at(h), 100 + i * 50));
+  HOURS.forEach((h) => netPosition.run('BE', at(h), -200));
+  // GR: silent after 01:00, same as its load.
+  netPosition.run('GR', at(0), -50);
+  netPosition.run('GR', at(1), -60);
+  // LU's own rows are an ingest artifact from before the DE_LU zone mapping
+  // existed. Left alone they render Luxembourg at -6201 MW beside Germany at
+  // +175 MW: two contradictory colours for one bidding zone.
+  netPosition.run('LU', at(0), -6201);
+
+  // -------------------------------------------------------- ml forecasts
+
+  const forecast = db.prepare(
+    `INSERT INTO forecasts
+       (country_code, forecast_type, target_timestamp_utc, generated_at, horizon_hours, forecast_value, model_name, model_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  // DE load, catboost, D+1 (horizon 12 falls in the 0-30 band). Forecast is
+  // 100 MW under the actual at every hour => MAE 100, bias +100, RMSE 100.
+  HOURS.forEach((h, i) =>
+    forecast.run('DE', 'load', atT(h), GENERATED_AT, 12, 900 + i * 100, 'catboost', 'v1')
+  );
+  // The same targets from a SUPERSEDED run. If the MAX(generated_at) dedup ever
+  // stops working, these 1 MW values land in the metrics and MAE explodes — the
+  // failure is loud rather than a plausible-looking drift.
+  HOURS.forEach((h) =>
+    forecast.run('DE', 'load', atT(h), STALE_GENERATED_AT, 12, 1, 'catboost', 'v0')
+  );
+  // DE load, catboost, D+2 (horizon 36 falls in the 24-54 band, and outside
+  // D+1's). 200 MW under the actual => MAE 200.
+  HOURS.forEach((h, i) =>
+    forecast.run('DE', 'load', atT(h), GENERATED_AT, 36, 800 + i * 100, 'catboost', 'v1')
+  );
+  // DE load one day later: forecasts with no actual to pair against. This is
+  // `no_paired_actuals`, which must not be confused with `no_model_coverage`.
+  HOURS.forEach((h, i) =>
+    forecast.run('DE', 'load', atT(h, 2), GENERATED_AT, 12, 900 + i * 100, 'catboost', 'v1')
+  );
+
+  // AT load, xgboost ONLY — no catboost row exists for AT anywhere in this
+  // database. Asking for catboost's accuracy in AT is a well-formed question
+  // whose answer is "that model does not serve this country".
+  HOURS.forEach((h, i) =>
+    forecast.run('AT', 'load', atT(h), GENERATED_AT, 12, 540 + i * 20, 'xgboost', 'v1')
+  );
+
+  // BE solar, catboost: forecasts 5 MW against actuals that are all a measured
+  // zero. Error is real (MAE 5) but every percentage is undefined, so MAPE is
+  // null and WAPE is null — never a flawless 0%.
+  HOURS.forEach((h) =>
+    forecast.run('BE', 'solar', atT(h), GENERATED_AT, 12, 5, 'catboost', 'v1')
+  );
+
+  // BE net position, the registered Chronos run, with a p10/p90 band.
+  const quantile = db.prepare(
+    `INSERT INTO forecast_quantiles
+       (country_code, forecast_type, target_timestamp_utc, generated_at, quantile, forecast_value, model_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  HOURS.forEach((h) => {
+    forecast.run('BE', 'net_position', at(h), '2026-06-30 18:00:00', 40, -190, 'chronos-2-V010', 'V010');
+    quantile.run('BE', 'net_position', at(h), '2026-06-30 18:00:00', 0.1, -260, 'chronos-2-V010');
+    quantile.run('BE', 'net_position', at(h), '2026-06-30 18:00:00', 0.9, -120, 'chronos-2-V010');
+  });
+
+  // ------------------------------------------------------- tso forecasts
+
+  const loadForecast = db.prepare(
+    `INSERT INTO energy_load_forecast
+       (country_code, target_timestamp_utc, forecast_value_mw, forecast_type, forecast_min_mw, forecast_max_mw)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  );
+  // DE day-ahead: 50 MW under the actual at every hour => MAE 50.
+  HOURS.forEach((h, i) => loadForecast.run('DE', at(h), 950 + i * 100, 'day_ahead', null, null));
+  // DE week-ahead: 200 MW under, with the daily min/max band the D+7 series
+  // carries and the day-ahead one does not.
+  HOURS.forEach((h, i) =>
+    loadForecast.run('DE', at(h), 800 + i * 100, 'week_ahead', 700 + i * 100, 900 + i * 100)
+  );
+
+  const generationForecast = db.prepare(
+    `INSERT INTO energy_generation_forecast
+       (country_code, target_timestamp_utc, solar_mw, wind_onshore_mw, wind_offshore_mw, total_forecast_mw, forecast_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  // DE solar day-ahead: 10 MW under the actual at every hour => MAE 10.
+  HOURS.forEach((h, i) =>
+    generationForecast.run('DE', at(h), 90 + i * 20, 190, null, 280 + i * 20, 'day_ahead')
+  );
+  // BE solar day-ahead against the all-zero overnight actuals.
+  HOURS.forEach((h) => generationForecast.run('BE', at(h), 3, 0, null, 3, 'day_ahead'));
+}
+
+/**
+ * A fresh, fully-seeded in-memory fixture database.
+ *
+ * Call once per test file and hand it to `vi.mock('../config/database.js')`.
+ * Nothing here touches the filesystem.
+ */
+export function buildFixtureDb(): DatabaseType {
+  const db = new Database(':memory:');
+  db.exec(SCHEMA);
+  seed(db);
+  return db;
+}

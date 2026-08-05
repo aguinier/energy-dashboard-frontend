@@ -62,7 +62,9 @@ energy-dashboard-frontend/
 │       │   │   ├── AbleStatRow.tsx       # Top 4-stat strip (price/load/renewable share/peak)
 │       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
 │       │   │   ├── ForecastMetadataBadge.tsx  # ORPHANED — no importer (see State management)
-│       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts  # Pure helpers (each has a .test.ts)
+│       │   │   ├── ModelComparisonPanel.tsx    # "Compare forecast models" table (ForecastTab)
+│       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts, modelComparison.ts
+│       │   │                                   # Pure helpers (each has a .test.ts)
 │       │   ├── comparison/           # ComparisonView's heatmap/map/leaderboard/filter bar
 │       │   ├── map/                  # EuropeMap.tsx (choropleth), MapMetricSelector.tsx, mapGeometry.ts
 │       │   ├── layout/               # AbleHeader.tsx
@@ -72,6 +74,7 @@ energy-dashboard-frontend/
 │       │   ├── useLoadChartData.ts, usePriceChartData.ts, useRenewableChartData.ts,
 │       │   │   useNetPositionData.ts     # Per-tab batched-query hooks
 │       │   ├── useForecastModels.ts      # Registry query + model-selection resolution
+│       │   ├── useModelComparison.ts     # Per-model accuracy, one query per registered model
 │       │   └── useCountries.ts, usePrefetch.ts, useAnimatedValue.ts
 │       ├── services/
 │       │   ├── api.ts                    # Axios API functions
@@ -259,15 +262,44 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
   two countries whose `net_position` stops before 2026-08.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
-  (`horizonBars.ts`, ML D+1/D+2 and TSO D+1/D+7 — never extrapolated), and a
-  forecast-vs-actual overlay chart. The "Compare forecast models" panel is
-  still a placeholder, but the server side it was waiting on now exists — the
-  accuracy endpoints accept `model` (see "Accuracy by model" below). What is
-  left is client work: the panel itself, and a hook that sends the picker's
-  selection to `/forecast-comparison/*`. Note the placeholder's on-screen text
-  (`ForecastTab.tsx:222-225`) still tells the user "the accuracy endpoints do
-  not accept a model parameter" — that sentence is now false, and should be
-  deleted with the panel work.
+  (`horizonBars.ts`, ML D+1/D+2 and TSO D+1/D+7 — never extrapolated), a
+  forecast-vs-actual overlay chart, and the **"Compare forecast models"** panel
+  (`ModelComparisonPanel.tsx` + `useModelComparison.ts`, ABL-6). That panel is
+  no longer a placeholder, and the sentence it used to print — "the accuracy
+  endpoints do not accept a model parameter" — is gone; it had been false since
+  ABL-5.
+
+  The panel lists **every** model the registry declares for this tab's forecast
+  type (`TAB_FORECAST_TYPE.analytics` → `load`), one row each, and measures each
+  by name: ml models via `/forecast-comparison/:cc/ml-accuracy` pinned to
+  `horizon=1`, tso models via `/tso-forecast/accuracy/load/:cc`. The ml horizon
+  pin is load-bearing — unpinned, that endpoint blends every stored horizon
+  (2-63h), so a model whose runs skew short would beat one whose runs skew long
+  for reasons that are not about the model. Adding a model to
+  `forecastModels.ts` adds a row with no client change.
+
+  It is a table, not bars, and that is a correctness choice: a bar chart has no
+  honest mark for "this model does not serve this country", and with disjoint
+  catboost/xgboost coverage that is the common case, not an edge case. Measured
+  against a local server on 2026-08-05 over a 7d window: FR reads catboost
+  `no_model_coverage` / xgboost MAPE 6.62, DE is the mirror (catboost 9.25,
+  xgboost none). A row with zero paired points renders a sentence — "No data —
+  this model does not forecast DE." — and **no metric cell of any kind**, so it
+  cannot read as a flawless 0%. The mapping is a pure helper
+  (`modelComparison.ts`, with `.test.ts`), and the panel's rendered HTML is
+  asserted too (`ModelComparisonPanel.test.tsx`, `renderToString` — no DOM
+  needed, so it runs in the default node environment).
+
+  Two limits worth knowing. The TSO accuracy route reports no `coverage`
+  classification, so an empty TSO window stays "no forecast/actual pairs in this
+  window" rather than claiming that TSO does not publish for the country. And a
+  tso model registered for a type this client has no accuracy route for
+  (solar/wind live on `/tso-forecast/accuracy/generation/:cc`, which nothing
+  here calls) still gets a row, saying it was not measured — wire that route
+  into `useModelComparison.ts`'s `isMeasurable` if you need it.
+
+  Nothing is persisted for this panel, so no `PERSIST_VERSION` bump was needed:
+  it compares every registered model rather than a user-chosen subset.
 
 ### 4. Time navigation
 
@@ -548,6 +580,49 @@ Three things to know before touching this:
   D+1`, and `TSO D+7`; a previous version multiplied the measured D+1 error by
   fixed factors to fabricate D+3/D+5/D+7 bars, which is why they were removed
   rather than kept.
+
+## Testing
+
+```bash
+cd client && npx vitest run && npx tsc -b
+cd server && npx vitest run
+```
+
+Green as of 2026-08-05: **244 client tests / 20 files**, **189 server tests /
+13 files**, clean typecheck. Fewer passing than that means something broke.
+
+Two conventions, and they are for different layers.
+
+**Pure helpers get a colocated `.test.ts`.** `horizonBars.ts`, `sourceRows.ts`,
+`windowLabel.ts`, `store/migrate.ts`, `config/forecastModels.ts`. Logic is
+extracted into a pure function specifically so it can be tested this way.
+
+**Routes get an end-to-end test against a fixture database.**
+`server/src/routes/*.test.ts` for `dashboard`, `forecastComparison`,
+`tsoForecast`, `crossCountryComparison` and `netPosition`: a real request in, the
+real `ApiResponse<T>` envelope out. Two shared pieces:
+
+- `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its
+  `CREATE TABLE` statements are copied verbatim from `energy_dashboard.db`
+  because the column defaults are what is under test: `energy_generation` has no
+  `DEFAULT 0`, `energy_renewable` does.
+- `server/src/test/apiHarness.ts` — mounts the real `/api` router with the real
+  `notFoundHandler`/`errorHandler` on an ephemeral port.
+
+A route test mocks `../config/database.js` to the fixture and
+`../config/writeDatabase.js` to `noWriteDb.ts`'s thrower, so **the real shared
+database is never opened — not readonly, not writable.** That is structural, not
+a convention someone has to remember. Call `clearResponseCache()` in
+`beforeEach`: `cacheMiddleware` is a module singleton keyed on URL, and without
+it a broken route keeps returning the correct cached answer.
+
+The fixture's six countries each stand for a failure shape this repo has shipped
+a wrong number for — `PT` all-NULL generation, `AT` no generation rows *and*
+xgboost-only coverage, `BE` negative day-ahead prices plus all-zero solar
+actuals, `FR` pumped storage and consumption-only fossil going negative, `GR`
+stopped publishing mid-window, `DE` the ordinary case plus a superseded forecast
+vintage that catches a broken `MAX(generated_at)` dedup. Add to that set rather
+than inventing a seventh country for a shape already covered.
 
 ## Common Development Tasks
 

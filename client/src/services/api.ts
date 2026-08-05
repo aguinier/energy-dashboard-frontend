@@ -22,6 +22,9 @@ import type {
   TSOForecastAccuracyDataPoint,
   TSOForecastAccuracyMetrics,
   DataFreshness,
+  MLAccuracyCoverage,
+  MLForecastAccuracyMetrics,
+  MLForecastAccuracyResult,
   ForecastComparisonSummary,
   CrossCountryMetrics,
   CrossCountryMetricsEntry,
@@ -240,12 +243,19 @@ export async function fetchTSOLoadForecast(params: {
   return unwrap(data, endpoint);
 }
 
+/**
+ * `model` and `forecastType` are two spellings of one choice here — a tso model
+ * id IS a horizon (`tso-d1` = day_ahead, `tso-d7` = week_ahead) — and the server
+ * rejects a disagreement with `MODEL_HORIZON_CONFLICT` (`tsoForecast.ts:57-64`).
+ * Send one or the other, never both.
+ */
 export async function fetchTSOLoadForecastAccuracy(params: {
   countryCode: string;
   start?: string;
   end?: string;
   forecastType?: TSOForecastType;
   granularity?: Granularity;
+  model?: string;
 }): Promise<{ data: TSOForecastAccuracyDataPoint[]; metrics: TSOForecastAccuracyMetrics }> {
   const { countryCode, ...queryParams } = params;
   const endpoint = `/tso-forecast/accuracy/load/${countryCode}`;
@@ -321,6 +331,50 @@ export async function fetchForecastComparisonSummary(params: {
     { params: queryParams }
   );
   return unwrap(data, endpoint);
+}
+
+/**
+ * Accuracy of one named ML model, for one country/type/horizon window.
+ *
+ * The endpoint also returns the hourly forecast-vs-actual points; this function
+ * drops them. Callers here want the aggregate, and a per-model comparison
+ * fetches once per registered model.
+ *
+ * `model` is resolved strictly server-side (`resolveAccuracyModel`): an
+ * unregistered id is a 400, never a silent substitution of the production
+ * model. Omitting `model` leaves the query unpinned — the latest run per target
+ * timestamp whichever model produced it — and `coverage`/`model` describe that,
+ * so do not omit it when you intend to attribute the numbers to a model.
+ */
+export async function fetchMLForecastAccuracy(params: {
+  countryCode: string;
+  forecastType: string;
+  start?: string;
+  end?: string;
+  horizon?: MLHorizon;
+  model?: string;
+}): Promise<MLForecastAccuracyResult> {
+  const { countryCode, ...queryParams } = params;
+  const endpoint = `/forecast-comparison/${countryCode}/ml-accuracy`;
+  const { data } = await api.get<{
+    success: boolean;
+    data: unknown[];
+    metrics: MLForecastAccuracyMetrics;
+    meta: { coverage: MLAccuracyCoverage; model: string | null };
+  }>(endpoint, { params: queryParams });
+
+  // `unwrap` is called for its envelope guard, not its return value: an HTML
+  // error page (which this API still serves for 4xx whenever client/dist
+  // exists) would otherwise arrive as `metrics: undefined` and render as a row
+  // of dashes — "not measurable" — when the truth is "the request failed".
+  unwrap(data, endpoint);
+  if (data.metrics == null || data.meta?.coverage == null) {
+    throw new Error(
+      `Malformed response from ${endpoint}: expected { metrics, meta.coverage }`,
+    );
+  }
+
+  return { metrics: data.metrics, coverage: data.meta.coverage, model: data.meta.model ?? null };
 }
 
 // ============================================================================

@@ -1,39 +1,32 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import express from 'express';
-import type { Server } from 'node:http';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { buildFixtureDb, WINDOW_QS, NEXT_DAY_QS } from '../test/fixtureDb.js';
 
-// The router pulls in services that import the shared database connection,
-// which opens a real SQLite file at import time (same pattern as
-// mlForecastService.test.ts). Every case here is rejected during validation,
-// before any query runs, so the handle only needs to not exist.
-vi.mock('../config/database.js', () => ({ default: null }));
+// The router's services open the shared SQLite file at import time. Hand them
+// the in-memory fixture instead, so no test can reach the real database. The
+// harness is imported dynamically, below, so these mocks are registered before
+// the router graph loads.
+const fixtureDb = buildFixtureDb();
+vi.mock('../config/database.js', () => ({ default: fixtureDb }));
+vi.mock('../config/writeDatabase.js', async () => (await import('../test/noWriteDb.js')).forbidWriteDb());
 
-const { default: router } = await import('./forecastComparison.js');
-const { errorHandler } = await import('../middleware/errorHandler.js');
+const { startTestApi, clearResponseCache } = await import('../test/apiHarness.js');
 
-let server: Server;
-let base: string;
+type Api = Awaited<ReturnType<typeof startTestApi>>;
+let api: Api;
 
-beforeAll(async () => {
-  const app = express();
-  app.use('/api/forecast-comparison', router);
-  app.use(errorHandler);
-  await new Promise<void>((resolve) => {
-    server = app.listen(0, resolve);
-  });
-  const addr = server.address();
-  if (!addr || typeof addr === 'string') throw new Error('no port');
-  base = `http://127.0.0.1:${addr.port}/api/forecast-comparison`;
-});
+beforeAll(async () => { api = await startTestApi(); });
+afterAll(() => api.close());
+beforeEach(() => clearResponseCache());
 
-afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+/** `forecast-comparison/<path>`, so each test reads as the URL a client sends. */
+const get = (path: string) => api.get(`forecast-comparison/${path}`);
 
-const WINDOW = 'start=2026-07-25T00:00:00Z&end=2026-08-01T00:00:00Z';
+const WINDOW = WINDOW_QS;
 
-async function get(path: string) {
-  const res = await fetch(`${base}/${path}`);
-  return { status: res.status, body: await res.json() as Record<string, unknown> };
-}
+// ---------------------------------------------------------------------------
+// Validation. These run before any query, so they held even when this file
+// mocked the database out entirely.
+// ---------------------------------------------------------------------------
 
 describe('GET /:countryCode/ml-accuracy — model parameter', () => {
   it('rejects an unregistered model rather than querying for it', async () => {
@@ -80,5 +73,262 @@ describe('GET /:countryCode/ml-accuracy — model parameter', () => {
     const { status, body } = await get(`DE/ml-accuracy?${WINDOW}&forecastType=nonsense&model=catboost`);
     expect(status).toBe(400);
     expect(body.code).toBe('INVALID_FORECAST_TYPE');
+  });
+
+  it('rejects a horizon that is neither D+1 nor D+2', async () => {
+    // There is no stored forecast beyond ~D+2. Accepting horizon=3 would invite
+    // an extrapolated answer to a question the data cannot support.
+    const { status, body } = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load&horizon=3`);
+    expect(status).toBe(400);
+    expect(body.code).toBe('INVALID_HORIZON');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Measured accuracy, end to end against the fixture database.
+// ---------------------------------------------------------------------------
+
+describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
+  it('returns the full envelope with per-point errors and aggregate metrics', async () => {
+    const { status, body } = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load&horizon=1`);
+
+    expect(status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.data).toEqual([
+      { timestamp: '2026-07-01T00:00:00', forecast_value: 900, actual_value: 1000, error: 100, error_pct: 10, horizon_hours: 12 },
+      { timestamp: '2026-07-01T01:00:00', forecast_value: 1000, actual_value: 1100, error: 100, error_pct: 9.09, horizon_hours: 12 },
+      { timestamp: '2026-07-01T02:00:00', forecast_value: 1100, actual_value: 1200, error: 100, error_pct: 8.33, horizon_hours: 12 },
+      { timestamp: '2026-07-01T03:00:00', forecast_value: 1200, actual_value: 1300, error: 100, error_pct: 7.69, horizon_hours: 12 },
+    ]);
+    expect(body.metrics).toEqual({
+      mae: 100, mape: 8.78, rmse: 100, bias: 100, dataPoints: 4, mapeSamples: 4,
+    });
+    expect(body.meta).toMatchObject({
+      count: 4,
+      countryCode: 'DE',
+      forecastType: 'load',
+      horizon: 1,
+      model: null,
+      modelRequested: null,
+      coverage: 'served',
+    });
+  });
+
+  it('measures the newest vintage only, never a superseded run', async () => {
+    // The fixture carries the same four targets from an older generated_at at
+    // an absurd 1 MW. If the MAX(generated_at) dedup ever stops working, those
+    // land in the metrics — so an MAE of exactly 100 is the assertion that the
+    // dedup ran.
+    const { body } = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load&horizon=1`);
+    expect((body.metrics as Record<string, unknown>).mae).toBe(100);
+    expect((body.metrics as Record<string, unknown>).dataPoints).toBe(4);
+  });
+
+  it('separates D+1 from D+2 by horizon band', async () => {
+    const d2 = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load&horizon=2`);
+    expect(d2.body.metrics).toEqual({
+      mae: 200, mape: 17.56, rmse: 200, bias: 200, dataPoints: 4, mapeSamples: 4,
+    });
+  });
+
+  it('covers both horizons when none is requested', async () => {
+    const { body } = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load`);
+    // Four D+1 points at 100 MW error plus four D+2 points at 200 MW.
+    expect(body.metrics).toEqual({
+      mae: 150, mape: 13.17, rmse: 158.11, bias: 150, dataPoints: 8, mapeSamples: 8,
+    });
+    expect((body.meta as Record<string, unknown>).horizon).toBeUndefined();
+  });
+});
+
+describe('GET /:countryCode/ml-accuracy — a window whose actuals are all zero', () => {
+  it('returns a null MAPE and zero mapeSamples, never a flawless 0%', async () => {
+    // BE's solar actuals are a measured 0.0 at every hour (overnight). The
+    // forecast was wrong by 5 MW each hour — real error — but a percentage
+    // error is undefined at zero. Reporting 0% here would rank BE as the most
+    // accurate solar forecast in Europe.
+    const { status, body } = await get(`BE/ml-accuracy?${WINDOW}&forecastType=solar&horizon=1`);
+
+    expect(status).toBe(200);
+    expect(body.metrics).toEqual({
+      mae: 5, mape: null, rmse: 5, bias: -5, dataPoints: 4, mapeSamples: 0,
+    });
+    // The points were measured — this is not a coverage gap.
+    expect((body.meta as Record<string, unknown>).coverage).toBe('served');
+  });
+
+  it('reports a null error_pct per point rather than 0', async () => {
+    const { body } = await get(`BE/ml-accuracy?${WINDOW}&forecastType=solar&horizon=1`);
+    const data = body.data as Array<{ actual_value: number; error: number; error_pct: number | null }>;
+    expect(data).toHaveLength(4);
+    for (const point of data) {
+      expect(point.actual_value).toBe(0);   // measured zero, not missing
+      expect(point.error).toBe(-5);
+      expect(point.error_pct).toBeNull();
+    }
+  });
+});
+
+describe('GET /:countryCode/ml-accuracy — disjoint model coverage', () => {
+  it('answers "this model does not serve this country" with nulls and no_model_coverage', async () => {
+    // AT is served by xgboost; catboost has no row for it anywhere. This is a
+    // normal answer, not an error — and every metric must be null so the
+    // country cannot render as a flawless 0% error.
+    const { status, body } = await get(`AT/ml-accuracy?${WINDOW}&forecastType=load&horizon=1&model=catboost`);
+
+    expect(status).toBe(200);
+    expect(body.data).toEqual([]);
+    expect(body.metrics).toEqual({
+      mae: null, mape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0,
+    });
+    expect(body.meta).toMatchObject({
+      model: 'catboost',
+      modelRequested: 'catboost',
+      coverage: 'no_model_coverage',
+    });
+  });
+
+  it('measures the model that does serve that country', async () => {
+    const { body } = await get(`AT/ml-accuracy?${WINDOW}&forecastType=load&horizon=1&model=xgboost`);
+    expect(body.metrics).toMatchObject({ mae: 60, bias: 60, dataPoints: 4 });
+    expect((body.meta as Record<string, unknown>).coverage).toBe('served');
+    expect((body.meta as Record<string, unknown>).model).toBe('xgboost');
+  });
+
+  it('reports model: null when unpinned, rather than naming the production model', async () => {
+    // Unpinned, the query really is model-agnostic — it takes the latest run
+    // per timestamp whichever model produced it. AT's rows are xgboost's, and
+    // catboost is production for load, so naming a model here would be a
+    // fabricated attribution.
+    const { body } = await get(`AT/ml-accuracy?${WINDOW}&forecastType=load&horizon=1`);
+    expect((body.meta as Record<string, unknown>).model).toBeNull();
+    expect((body.meta as Record<string, unknown>).modelRequested).toBeNull();
+    expect(body.metrics).toMatchObject({ mae: 60, dataPoints: 4 });
+  });
+
+  it('distinguishes forecasts with no actual yet from a model that never serves here', async () => {
+    // The day after the window: catboost forecast it, but no actual has landed.
+    // no_paired_actuals and no_model_coverage both produce zero data points and
+    // must not be collapsed into one answer.
+    const { body } = await get(`DE/ml-accuracy?${NEXT_DAY_QS}&forecastType=load&horizon=1&model=catboost`);
+    expect((body.metrics as Record<string, unknown>).dataPoints).toBe(0);
+    expect((body.meta as Record<string, unknown>).coverage).toBe('no_paired_actuals');
+  });
+});
+
+describe('GET /:countryCode — unified TSO vs ML comparison', () => {
+  it('reports both providers and both horizons for the same window', async () => {
+    const { status, body } = await get(`DE?${WINDOW}&forecastType=load`);
+    expect(status).toBe(200);
+
+    const data = body.data as {
+      tso: Record<string, Record<string, unknown>>;
+      ml: Record<string, Record<string, unknown>>;
+      meta: Record<string, unknown>;
+    };
+    expect(data.tso.dayAhead).toMatchObject({ mae: 50, mape: 4.39, rmse: 50, dataPoints: 4 });
+    expect(data.tso.weekAhead).toMatchObject({ mae: 200, mape: 17.56, rmse: 200, dataPoints: 4 });
+    expect(data.ml.d1).toMatchObject({ mae: 100, mape: 8.78, rmse: 100, dataPoints: 4 });
+    expect(data.ml.d2).toMatchObject({ mae: 200, mape: 17.56, rmse: 200, dataPoints: 4 });
+    expect(data.meta.dataAvailability).toEqual({
+      tso: { dayAhead: true, weekAhead: true },
+      ml: { d1: true, d2: true },
+    });
+    expect(data.meta.mlModel).toBeNull();
+  });
+
+  it('pins only the ml side when a model is given, never the TSO metrics', async () => {
+    // xgboost has no DE rows, so the ml side empties out — while the TSO
+    // numbers, which no ml model id can affect, stay exactly as they were.
+    const { body } = await get(`DE?${WINDOW}&forecastType=load&model=xgboost`);
+    const data = body.data as {
+      tso: Record<string, Record<string, unknown>>;
+      ml: Record<string, unknown>;
+      meta: Record<string, unknown>;
+    };
+    expect(data.tso.dayAhead).toMatchObject({ mae: 50, dataPoints: 4 });
+    expect(data.ml).toEqual({});
+    expect(data.meta.dataAvailability).toMatchObject({ ml: { d1: false, d2: false } });
+    expect(data.meta.mlModel).toBe('xgboost');
+  });
+
+  it('omits a provider with no data instead of reporting it at zero error', async () => {
+    // GR has no forecast of any kind. Absent beats a zero-filled block.
+    const { body } = await get(`GR?${WINDOW}&forecastType=load`);
+    const data = body.data as { tso: unknown; ml: unknown; meta: Record<string, unknown> };
+    expect(data.tso).toEqual({});
+    expect(data.ml).toEqual({});
+    expect(data.meta.dataAvailability).toEqual({
+      tso: { dayAhead: false, weekAhead: false },
+      ml: { d1: false, d2: false },
+    });
+  });
+});
+
+describe('GET /:countryCode/best', () => {
+  it('picks the lowest measured MAPE across providers and horizons', async () => {
+    // TSO day-ahead at 4.39 beats ml D+1 at 8.78 and both D+2 series at 17.56.
+    const { status, body } = await get(`DE/best?${WINDOW}&forecastType=load`);
+    expect(status).toBe(200);
+    expect(body.data).toEqual({ provider: 'tso', horizon: 'day_ahead', mape: 4.39 });
+    expect(body.meta).toMatchObject({ countryCode: 'DE', forecastType: 'load', mlModel: null });
+  });
+
+  it('returns null when no candidate has a measurable MAPE', async () => {
+    // BE's solar actuals are all zero, so every candidate's MAPE is null. A
+    // null MAPE is not a measurement and cannot be ranked — the honest answer
+    // is "no best", not whichever provider happened to sort first.
+    const { body } = await get(`BE/best?${WINDOW}&forecastType=solar`);
+    expect(body.data).toBeNull();
+  });
+
+  it('echoes the pinned ml model id back', async () => {
+    const { body } = await get(`DE/best?${WINDOW}&forecastType=load&model=catboost`);
+    expect((body.meta as Record<string, unknown>).mlModel).toBe('catboost');
+  });
+});
+
+describe('GET /:countryCode/rolling', () => {
+  const ROLLING = 'start=2026-06-20T00:00:00Z&end=2026-07-01T00:00:00Z';
+
+  it('emits a point only for days whose window actually contains data', async () => {
+    const { status, body } = await get(`DE/rolling?${ROLLING}&forecastType=load&windowDays=7`);
+    expect(status).toBe(200);
+
+    const data = body.data as Array<{ date: string; tso?: Record<string, unknown>; ml_d1?: Record<string, unknown> }>;
+    expect(data).toHaveLength(1);
+    expect(data[0].date).toBe('2026-07-01');
+    expect(data[0].tso).toEqual({ mape: 4.39, mae: 50 });
+    expect(data[0].ml_d1).toEqual({ mape: 8.78, mae: 100 });
+    expect(body.windowDays).toBe(7);
+  });
+
+  it('drops the ml series but keeps TSO when the pinned model has no rows', async () => {
+    const { body } = await get(`DE/rolling?${ROLLING}&forecastType=load&windowDays=7&model=xgboost`);
+    const data = body.data as Array<{ tso?: unknown; ml_d1?: unknown; ml_d2?: unknown }>;
+    expect(data).toHaveLength(1);
+    expect(data[0].tso).toEqual({ mape: 4.39, mae: 50 });
+    expect(data[0].ml_d1).toBeUndefined();
+    expect(data[0].ml_d2).toBeUndefined();
+    expect((body.meta as Record<string, unknown>).mlModel).toBe('xgboost');
+  });
+
+  it('clamps windowDays to the supported 1-30 range', async () => {
+    const { body } = await get(`DE/rolling?${ROLLING}&forecastType=load&windowDays=999`);
+    expect(body.windowDays).toBe(30);
+  });
+});
+
+describe('GET /:countryCode/summary', () => {
+  it('spans every forecast type without being swallowed by the /:countryCode route', async () => {
+    const { status, body } = await get(`DE/summary?${WINDOW}`);
+    expect(status).toBe(200);
+
+    const data = body.data as Record<string, { ml: Record<string, Record<string, unknown>> }>;
+    expect(Object.keys(data)).toEqual(['load', 'price', 'solar', 'wind_onshore', 'wind_offshore']);
+    expect(data.load.ml.d1).toMatchObject({ mae: 100, mape: 8.78, dataPoints: 4 });
+    // DE has no price forecast in the fixture — an empty block, not zeros.
+    expect(data.price.ml).toEqual({});
+    expect(body.meta).toMatchObject({ countryCode: 'DE' });
   });
 });
