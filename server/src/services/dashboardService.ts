@@ -292,7 +292,12 @@ export function getCombinedTimeseries(
       ROUND(AVG(COALESCE(solar_mw, 0)), 2) as solar,
       ROUND(AVG(COALESCE(wind_onshore_mw, 0)), 2) as wind_onshore,
       ROUND(AVG(COALESCE(wind_offshore_mw, 0)), 2) as wind_offshore,
-      ROUND(AVG(COALESCE(hydro_mw, 0)), 2) as hydro,
+      -- energy_renewable has no hydro_mw column; it splits hydro into
+      -- run-of-river and reservoir. Selecting the non-existent name made this
+      -- statement fail to compile, so GET /api/dashboard/timeseries answered
+      -- every request with a 500. Summed the same way every other consumer of
+      -- "hydro total" does (renewableService.ts:22, mlForecastService.ts:24).
+      ROUND(AVG(COALESCE(hydro_run_mw, 0) + COALESCE(hydro_reservoir_mw, 0)), 2) as hydro,
       ROUND(AVG(COALESCE(biomass_mw, 0)), 2) as biomass,
       ROUND(AVG(COALESCE(geothermal_mw, 0)), 2) as geothermal
     FROM energy_renewable

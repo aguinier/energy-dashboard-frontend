@@ -571,6 +571,49 @@ Three things to know before touching this:
   fixed factors to fabricate D+3/D+5/D+7 bars, which is why they were removed
   rather than kept.
 
+## Testing
+
+```bash
+cd client && npx vitest run && npx tsc -b
+cd server && npx vitest run
+```
+
+Green as of 2026-08-05: **204 client tests / 18 files**, **189 server tests /
+13 files**, clean typecheck. Fewer passing than that means something broke.
+
+Two conventions, and they are for different layers.
+
+**Pure helpers get a colocated `.test.ts`.** `horizonBars.ts`, `sourceRows.ts`,
+`windowLabel.ts`, `store/migrate.ts`, `config/forecastModels.ts`. Logic is
+extracted into a pure function specifically so it can be tested this way.
+
+**Routes get an end-to-end test against a fixture database.**
+`server/src/routes/*.test.ts` for `dashboard`, `forecastComparison`,
+`tsoForecast`, `crossCountryComparison` and `netPosition`: a real request in, the
+real `ApiResponse<T>` envelope out. Two shared pieces:
+
+- `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its
+  `CREATE TABLE` statements are copied verbatim from `energy_dashboard.db`
+  because the column defaults are what is under test: `energy_generation` has no
+  `DEFAULT 0`, `energy_renewable` does.
+- `server/src/test/apiHarness.ts` — mounts the real `/api` router with the real
+  `notFoundHandler`/`errorHandler` on an ephemeral port.
+
+A route test mocks `../config/database.js` to the fixture and
+`../config/writeDatabase.js` to `noWriteDb.ts`'s thrower, so **the real shared
+database is never opened — not readonly, not writable.** That is structural, not
+a convention someone has to remember. Call `clearResponseCache()` in
+`beforeEach`: `cacheMiddleware` is a module singleton keyed on URL, and without
+it a broken route keeps returning the correct cached answer.
+
+The fixture's six countries each stand for a failure shape this repo has shipped
+a wrong number for — `PT` all-NULL generation, `AT` no generation rows *and*
+xgboost-only coverage, `BE` negative day-ahead prices plus all-zero solar
+actuals, `FR` pumped storage and consumption-only fossil going negative, `GR`
+stopped publishing mid-window, `DE` the ordinary case plus a superseded forecast
+vintage that catches a broken `MAX(generated_at)` dedup. Add to that set rather
+than inventing a seventh country for a shape already covered.
+
 ## Common Development Tasks
 
 ### Adding a New API Endpoint
