@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { getWindowLabel, WINDOW_LABEL } from './windowLabel';
+import { getWindowLabel, WINDOW_LABEL, describeWindow, formatWindowRange } from './windowLabel';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { getDateRangeForPreset } from '@/hooks/useDashboardData';
 import type { TimePreset } from '@/types';
@@ -68,7 +68,7 @@ describe('getWindowLabel', () => {
 //
 // We still can't render AbleStatRow itself (vitest here has no jsdom / RTL),
 // so this test pins the invariant one layer down: it drives the *real* store
-// action every RangeSegment button calls (`setTimePreset`), computes the
+// action every picker button calls (`setTimePreset`), computes the
 // *real* window `useDashboardOverview()` would fetch, and asserts the label
 // truthfully describes that window's actual shape and direction.
 describe('qualifier source matches what useDashboardOverview() actually fetches on', () => {
@@ -76,10 +76,10 @@ describe('qualifier source matches what useDashboardOverview() actually fetches 
     useDashboardStore.setState({ timePreset: '7d', timeOffset: 0 });
   });
 
-  const RANGE_SEGMENT_PRESETS: TimePreset[] = ['24h', '7d', '30d', 'next24h', 'next7d'];
+  const QUICK_PRESETS: TimePreset[] = ['24h', '7d', '30d', 'next24h', 'next7d'];
 
-  it.each(RANGE_SEGMENT_PRESETS)(
-    'for RangeSegment preset "%s", the label is keyed off the same field useDashboardOverview() fetches on',
+  it.each(QUICK_PRESETS)(
+    'for preset "%s", the label is keyed off the same field useDashboardOverview() fetches on',
     (preset) => {
       useDashboardStore.getState().setTimePreset(preset);
       const { timePreset } = useDashboardStore.getState();
@@ -131,5 +131,78 @@ describe('qualifier source matches what useDashboardOverview() actually fetches 
     // direction (trailing vs. forward). Asserting the exact "next 7d" wording
     // (not merely "not '7d'") catches that.
     expect(getWindowLabel(timePreset)).toBe('next 7d');
+  });
+});
+
+// ============================================================================
+// Shifted windows (ABL-12)
+// ============================================================================
+//
+// `timeOffset` was structurally always 0 until the navigation arrows shipped:
+// nothing called `shiftTimeWindow`, so every preset label was trivially true.
+// Now that the window can move, the preset name is a claim that expires — "7d"
+// means the *last* seven days, and a window sitting three days back is not
+// that. These tests pin the rule that a moved window never reuses a
+// now-anchored label.
+describe('describeWindow', () => {
+  const someRange = { start: new Date(2026, 7, 1, 6, 0), end: new Date(2026, 7, 4, 6, 0) };
+
+  it('is the plain preset label at the live position', () => {
+    ALL_PRESETS.forEach((p) => {
+      expect(describeWindow(p, 0, getDateRangeForPreset(p, 0))).toBe(getWindowLabel(p));
+    });
+  });
+
+  // The defect this exists to prevent: a stat captioned "7d avg" over a
+  // window the fetch anchored three days earlier.
+  it('never reuses the now-anchored preset label once the window has moved', () => {
+    ALL_PRESETS.forEach((p) => {
+      const shifted = describeWindow(p, -72, getDateRangeForPreset(p, -72));
+      expect(shifted).not.toBe(getWindowLabel(p));
+      expect(shifted).not.toBe(WINDOW_LABEL[p]);
+    });
+  });
+
+  it('describes different shifts differently', () => {
+    const one = describeWindow('7d', -84, getDateRangeForPreset('7d', -84));
+    const two = describeWindow('7d', -168, getDateRangeForPreset('7d', -168));
+    expect(one).not.toBe(two);
+  });
+
+  it('reads the bounds it is given rather than recomputing its own', () => {
+    // Guards the coupling: the caption must describe the window handed to it —
+    // i.e. the one the fetch used — not a fresh window derived from `now`.
+    expect(describeWindow('7d', -24, someRange)).toBe(formatWindowRange(someRange.start, someRange.end));
+  });
+});
+
+describe('formatWindowRange', () => {
+  it('omits the time when the window is whole local days', () => {
+    const start = new Date(2026, 7, 4, 0, 0, 0, 0);
+    const end = new Date(2026, 7, 4, 23, 59, 59, 999);
+    expect(formatWindowRange(start, end)).not.toContain(':');
+  });
+
+  it('states the time when the window straddles a day boundary part-way', () => {
+    const start = new Date(2026, 7, 4, 20, 0);
+    const end = new Date(2026, 7, 5, 20, 0);
+    expect(formatWindowRange(start, end)).toContain(':');
+  });
+
+  it('collapses a single whole day to one date rather than repeating it', () => {
+    const start = new Date(2026, 7, 4, 0, 0, 0, 0);
+    const end = new Date(2026, 7, 4, 23, 59, 59, 999);
+    expect(formatWindowRange(start, end)).not.toContain('–');
+  });
+
+  it('names both ends when a whole-day window spans more than one day', () => {
+    const start = new Date(2026, 7, 1, 0, 0, 0, 0);
+    const end = new Date(2026, 7, 4, 23, 59, 59, 999);
+    expect(formatWindowRange(start, end)).toContain('–');
+  });
+
+  // Rather than rendering "Invalid Date – Invalid Date" as if it were a window.
+  it('says so instead of formatting an unusable date', () => {
+    expect(formatWindowRange(new Date(NaN), new Date(2026, 7, 4))).toBe('unknown window');
   });
 });

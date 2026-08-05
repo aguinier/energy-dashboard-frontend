@@ -1,4 +1,5 @@
 import {
+  getDateRangeForPreset,
   useDashboardOverview,
   useLoadData,
   usePriceData,
@@ -7,7 +8,7 @@ import {
 import { useDashboardStore } from '@/store/dashboardStore';
 import { AbleSparkline } from '@/components/charts/AbleSparkline';
 import { cn } from '@/lib/utils';
-import { getWindowLabel } from './windowLabel';
+import { describeWindow } from './windowLabel';
 
 // Top 4-stat strip on the country page. Each cell shows a big number, unit,
 // 24h delta, and a tiny sparkline pulled from the time series the page is
@@ -44,13 +45,19 @@ export function AbleStatRow() {
   const { data: load } = useLoadData();
   const { data: price } = usePriceData();
   const { data: renewable } = useRenewableData();
-  // Keyed off `timePreset`: `useDashboardOverview()` fetches on
-  // `getDateRangeForPreset(timePreset, timeOffset)`, so the qualifier
-  // describes the same field that produced the number and cannot end up
-  // claiming a window the server never actually computed the aggregate over
-  // (see windowLabel.ts and Task 8's original "next 24h" Critical finding).
+  // Keyed off both fields `useDashboardOverview()` fetches on —
+  // `getDateRangeForPreset(timePreset, timeOffset)` — so the qualifier
+  // describes the window that produced the number and cannot end up claiming
+  // one the server never computed the aggregate over (see windowLabel.ts and
+  // Task 8's original "next 24h" Critical finding).
+  //
+  // `timeOffset` is read, not assumed 0. It was structurally always 0 until
+  // ABL-12 gave `shiftTimeWindow` a control; reading only `timePreset` now
+  // would caption a window shifted three days back as "7d avg", which is the
+  // same wrong-window-under-a-plausible-label defect by a new route.
   const timePreset = useDashboardStore((s) => s.timePreset);
-  const win = getWindowLabel(timePreset);
+  const timeOffset = useDashboardStore((s) => s.timeOffset);
+  const win = describeWindow(timePreset, timeOffset, getDateRangeForPreset(timePreset, timeOffset));
 
   const loadSpark = lastN(load?.map((p) => p.load ?? p.avg_load ?? null) ?? [], 48);
   const priceSpark = lastN(
