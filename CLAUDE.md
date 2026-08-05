@@ -56,13 +56,15 @@ energy-dashboard-frontend/
 │       │   ├── dashboard/            # Country-view composition
 │       │   │   ├── PriceTab.tsx, LoadTab.tsx, GenerationTab.tsx,
 │       │   │   │   NetPositionTab.tsx, ForecastTab.tsx  # One file per tab
+│       │   │   ├── AbleCard.tsx          # Card shell all five tabs wrap their charts in
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
 │       │   │   ├── RangeSegment.tsx      # 24h/7d/30d/+24h/+7d range buttons
 │       │   │   ├── AbleStatRow.tsx       # Top 4-stat strip (price/load/renewable share/peak)
-│       │   │   ├── ForecastMetadataBadge.tsx, CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
+│       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
+│       │   │   ├── ForecastMetadataBadge.tsx  # ORPHANED — no importer (see State management)
 │       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts  # Pure helpers (each has a .test.ts)
 │       │   ├── comparison/           # ComparisonView's heatmap/map/leaderboard/filter bar
-│       │   ├── map/                  # EuropeMap.tsx (choropleth) + mapGeometry.ts
+│       │   ├── map/                  # EuropeMap.tsx (choropleth), MapMetricSelector.tsx, mapGeometry.ts
 │       │   ├── layout/               # AbleHeader.tsx
 │       │   └── ui/                   # shadcn/radix primitives (button, card, tabs, select, ...)
 │       ├── hooks/
@@ -81,16 +83,18 @@ energy-dashboard-frontend/
 │       ├── types/
 │       │   └── index.ts                  # TypeScript interfaces
 │       └── lib/
-│           ├── constants.ts, comparisonConstants.ts  # TIME_PRESETS, TAB_FORECAST_TYPE, etc.
-│           ├── chartAdapters.ts, chartTicks.ts, colors.ts, divergingScale.ts,
-│           │   servedModel.ts, trailingGap.ts, timezone.ts, queryRetry.ts
+│           ├── constants.ts, comparisonConstants.ts  # TAB_FORECAST_TYPE, MAP_METRICS, etc.
+│           ├── chartAdapters.ts, chartTicks.ts, chartSummary.ts, colors.ts,
+│           │   divergingScale.ts, servedModel.ts, trailingGap.ts, timezone.ts,
+│           │   queryRetry.ts, netPositionProvenance.ts, formatters.ts,
+│           │   providerRegistry.ts, utils.ts
 │
 └── server/
     └── src/
         ├── routes/
         │   ├── index.ts               # Mounts every router below /api
         │   ├── dashboard.ts           # /dashboard/overview, /map, /timeseries, /initial
-        │   ├── load.ts, prices.ts, renewables.ts  # Actuals
+        │   ├── load.ts, prices.ts, renewables.ts, generation.ts  # Actuals
         │   ├── forecast.ts            # /forecasts, /forecasts/models, /forecasts/compare, ...
         │   ├── tsoForecast.ts         # /tso-forecast/* (ENTSO-E official forecasts)
         │   ├── forecastComparison.ts  # /forecast-comparison/:cc, /summary, /best, /rolling, /ml-accuracy
@@ -100,9 +104,11 @@ energy-dashboard-frontend/
         ├── services/                  # One service module per route group
         ├── config/
         │   ├── database.ts            # SQLite connection (ENERGY_DB_PATH)
-        │   ├── writeDatabase.ts       # Separate writable handle for ingest routes
+        │   ├── writeDatabase.ts       # Separate writable handle, opened lazily —
+        │   │                          #   used by netPositionIngest.ts and weather.ts
         │   └── forecastModels.ts      # The model registry — see below
         ├── middleware/                # cache.ts, errorHandler.ts, writeAuth.ts
+        ├── utils/                     # timestamp.ts (normalizeTimestamp)
         └── types/
 ```
 
@@ -149,14 +155,37 @@ model must be listed there to be served at all.**
 
 **The client sends `model=` only when the user explicitly picked one** in
 `ModelPicker` (`client/src/components/dashboard/ModelPicker.tsx`, driven by
-`useForecastModels.ts`'s `resolveSelection`). Leaving it off lets the server
-walk its candidate ladder (`resolveModelCandidates`): production model first,
-then the other registered ml models, returning the first with rows for that
-country. This matters because catboost and xgboost cover **disjoint country
-sets** — no country has data from both. Pinning the production model (catboost)
-blanks `load` for AT/BE/FR and `price` for BE/DE/ES/FR/PT. The picker labels
-whichever model the response's `meta.model` reports actually served, which can
-differ from the picker's own selection when the ladder fell back.
+`useForecastModels.ts`'s `resolveSelection` — `requestModelId` is set from an
+id the user actually chose and from nothing else, `useForecastModels.ts:62`).
+Leaving it off lets the server walk its candidate ladder
+(`resolveModelCandidates`, `forecastModels.ts:180-190`): production model
+first, then the other registered ml models, returning the first with rows for
+that country.
+
+This matters because catboost and xgboost barely overlap. Measured against
+`energy_dashboard.db` on 2026-08-05: for `load` the sets are strictly
+**disjoint** (catboost 21 countries, xgboost AT/BE/FR, none with both); for
+`price` they are near-disjoint but not fully — catboost 19, xgboost 6, and
+**AT is served by both**. Pinning the production model (catboost) blanks
+`load` for AT/BE/FR and `price` for BE/DE/ES/FR/PT. The picker labels whichever
+model the response's `meta.model` reports actually served, which can differ
+from the picker's own selection when the ladder fell back.
+
+(`forecastModels.ts:168` still asserts the sets are fully disjoint, as measured
+on 2026-07-26. That comment is now stale for `price`; the behaviour it
+justifies — ordered rather than absolute preference — is unaffected.)
+
+**A pin cannot be cleared from the UI.** Every dropdown entry calls
+`setSelectedModel(forecastType, m.id)` (`ModelPicker.tsx:99`), including the
+one badged "Default", and the on/off button re-pins `selected?.id` when it
+switches the forecast back on (`ModelPicker.tsx:56`). Once the user has touched
+the picker for a type, `selectedModelByType[type]` holds a concrete id
+permanently, `requestModelId` is set, and the server honours an explicit
+request strictly — "if you asked for xgboost and it has nothing, you get
+nothing, not a silent substitution" (`forecastModels.ts:177`, implemented at
+`:183-185`). Only the untouched initial state (`selectedModelByType: {}`,
+`dashboardStore.ts:202`) or clearing localStorage returns a type to the
+candidate ladder.
 
 **Accuracy by model.** The accuracy endpoints also accept `model`, but resolve
 it through `resolveAccuracyModel` rather than `resolveModel`/`resolveModelCandidates`
@@ -192,8 +221,9 @@ choice on one tab never leaks into a type where that model doesn't exist. The
 older `showForecast` / `showTSOForecast` / `tsoForecastType` boolean toggles
 and the D+1/D+7 button are gone — `LoadTab`/`PriceTab`/`NetPositionTab` derive
 `useMl` / `useTso` / `tsoHorizon` straight from the picker's selected model
-(`selected.source`, `selected.tsoHorizon`). Those booleans remain in the store
-only as unread legacy fields (see State management below).
+(`selected.source`, `selected.tsoHorizon`, `useLoadChartData.ts:89-91`). Those
+booleans remain in the store as legacy persisted fields, but they are not
+uniformly dead — see State management below for which are still read.
 
 ### 3. Country dashboard tabs
 
@@ -211,16 +241,22 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
   `generationService.getRenewableShare`). The donut's percentage and the
   header stat row's "Renewable share" card both read this same server-computed
   ratio of window sums, so they cannot disagree.
-  No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER` in
-  `CountryDashboardView.tsx` limits it to the tabs whose chart actually reads a
-  selection (`price`, `load`, `net-position`). It used to render and do
-  nothing, while `useRenewableChartData` fired five per-type forecast queries
-  that no component consumed: six API calls per view, discarded. Both are gone.
-  If you add a forecast overlay to this tab, add it back to that set.
+  No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
+  (`CountryDashboardView.tsx:56`, applied at `:115`) limits it to the tabs
+  whose chart actually reads a selection (`price`, `load`, `net-position`). It
+  used to render and do nothing, while `useRenewableChartData` fired five
+  per-type ML forecast queries plus a TSO one that no component consumed: six
+  API calls per view, discarded (`useRenewableChartData.ts:18-28`). Both are
+  gone. If you add a forecast overlay to this tab, add it back to that set.
 - **`NetPositionTab`** — `AbleLineChart` for ENTSO-E day-ahead net position
   plus the Chronos forecast (median, and a p10-p90 band where stored). Handles
-  a zone going silent upstream (e.g. GR/IE since 2026-03-14) as an explicit
-  "stopped publishing on <date>" state rather than a loading spinner.
+  a zone going silent upstream as an explicit "stopped publishing on <date>"
+  state rather than a loading spinner. GR and IE are the live examples: their
+  continuous series ends `2026-03-14 22:00`, but both got a single-day
+  reappearance (`2026-07-23 22:00` → `2026-07-24 21:00`), and the date the tab
+  prints is `MAX(timestamp_utc)` (`netPositionService.ts:291`) — so it now
+  reads 2026-07-24, not the March date. Measured 2026-08-05; they are the only
+  two countries whose `net_position` stops before 2026-08.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
   (`horizonBars.ts`, ML D+1/D+2 and TSO D+1/D+7 — never extrapolated), and a
@@ -228,7 +264,10 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
   still a placeholder, but the server side it was waiting on now exists — the
   accuracy endpoints accept `model` (see "Accuracy by model" below). What is
   left is client work: the panel itself, and a hook that sends the picker's
-  selection to `/forecast-comparison/*`.
+  selection to `/forecast-comparison/*`. Note the placeholder's on-screen text
+  (`ForecastTab.tsx:222-225`) still tells the user "the accuracy endpoints do
+  not accept a model parameter" — that sentence is now false, and should be
+  deleted with the panel work.
 
 ### 4. Time navigation
 
@@ -246,8 +285,8 @@ type TimePreset =
   | 'next1d' | 'next24h' | 'next48h' | 'next7d';  // Forecast
 ```
 
-`getDateRangeForPreset()` (`useDashboardData.ts`) turns a preset + `timeOffset`
-into concrete start/end dates.
+`getDateRangeForPreset()` (`useDashboardData.ts:29`) turns a preset +
+`timeOffset` into concrete start/end dates.
 
 **Unreachable presets and dead time-navigation actions.** `90d` and `1y` used
 to be in this union with no button to set them; they were removed outright
@@ -276,38 +315,97 @@ value on the next `PERSIST_VERSION` bump.
 
 Zustand store (`dashboardStore.ts`) with `persist` to localStorage
 (`energy-dashboard-storage`). **The persisted shape is versioned:**
-`PERSIST_VERSION` in `store/migrate.ts`, bumped and given a `migratePersisted()`
-clause whenever a persisted field's shape or meaning changes — e.g. the v2
-migration folds the removed `layers` slice into `showForecast`/`showTSOForecast`
-and remaps a stored `comparisonMetric: 'mape'` to `'wape'`. `migratePersisted`
-must never throw: `state` is an arbitrary, possibly years-old localStorage blob.
-Skipping this step leaves returning users on a shape the current code doesn't
-understand — previously a blank tab panel or a view nobody chose.
+`PERSIST_VERSION` in `store/migrate.ts` (currently `6`, `migrate.ts:1`), bumped
+with a matching clause in `migratePersisted()` whenever a persisted field's
+shape or meaning changes. `migratePersisted` must never throw: `state` is an
+arbitrary, possibly years-old localStorage blob. Skipping this step leaves
+returning users on a shape the current code doesn't understand — previously a
+blank tab panel or a view nobody chose.
+
+It is **not** a per-version switch. `migrate.ts:42` short-circuits only on
+`fromVersion >= PERSIST_VERSION`; below that, *every* clause runs for *any*
+older blob, so each clause must be safe to apply to a blob that never had the
+field. The clauses today coerce an unknown `currentView` / `activeChartTab` /
+`timePreset` back to a valid value (`migrate.ts:121` for the last), remap a
+stored `comparisonMetric: 'mape'` to `'wape'` (`:79`), and **delete** three
+dead keys: `layers` (`:73`), `timeRange` (`:93`), `analyticsConfig` (`:105`).
+Note `layers` is deleted, not folded into `showForecast`/`showTSOForecast` as
+an earlier version did — that folding unconditionally overwrote `showForecast`
+with `false` on every migration, clobbering a value the current code had
+legitimately set moments earlier.
 
 **`timeRange` is gone.** This section used to say `timeRange` (the legacy
 closed enum) and `timePreset` both persisted and both drove UI, and that the
 `/dashboard/*` endpoints forced it. Neither is true any more: nothing in
-`client/src` declares or reads a `timeRange` field, `useDashboardOverview`
-sends an explicit `start`/`end` computed by `getDateRangeForPreset`
-(`useDashboardData.ts:135`), and `migratePersisted` deletes a stored
+`client/src` declares or reads a `timeRange` field, there is no `TimeRange`
+type in `client/src/types/index.ts` at all (the enum survives only server-side,
+`server/src/types/index.ts:187`), `useDashboardOverview` sends an explicit
+`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:135`,
+and `useMapData` likewise at `:172`), and `migratePersisted` deletes a stored
 `timeRange` outright (`store/migrate.ts:93`). `timePreset` is the single field
 describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
 field for `ComparisonView`, is unrelated and does still exist.)
 
+Nor was there ever a *backend* blocker forcing it to stay. The
+`/dashboard/overview|map|initial` endpoints take an explicit `start`/`end`
+window and let it **win** over the legacy enum whenever both are present
+(`server/src/routes/dashboard.ts:49`, `:76`, `:138`; `timeRange` is consulted
+only as the fallback, via `getTimeRangeDates` in `dashboardService.ts:6`, and
+each site carries a comment explaining the backward compatibility). That
+passthrough predates ABL-4: the blocker this file described — "the client can't
+drop `timeRange` without a backend change first" — had already been removed
+when it was written.
+
 Note `timePreset` is validated on migration against `VALID_TIME_PRESETS`
-(`store/migrate.ts`) and `timeAnchor` is re-derived from it, because the two
-persist separately and only `setTimePreset` keeps them in step.
+(`store/migrate.ts:10`, checked at `:121`) and `timeAnchor` is re-derived from
+it, because the two persist separately and only `setTimePreset` keeps them in
+step.
 
 ```typescript
-// Key persisted state properties
+// The COMPLETE persisted set — `partialize`, dashboardStore.ts:279-302.
+// Anything absent here (timeOffset, isLive, servedModelByType, …) is
+// session-only and resets on reload.
+currentView: AppView;                                // 'map' | 'country' | 'comparison'
 selectedCountry: string;
 timePreset: TimePreset;
 timeAnchor: TimeAnchor;
+mapMetric: MetricType;
+activeChartTab: string;              // price|load|renewables|net-position|analytics
 selectedModelByType: Record<string, string | null>;  // per forecast-type model choice; null = hidden
+comparisonCountries: string[];
+sidebarOpen: boolean;
+showForecast: boolean;               // legacy — see below
+showComparisonMode: boolean;
+showTSOForecast: boolean;
+tsoForecastType: TSOForecastType;
+showTSOComparisonMode: boolean;
+visibleRenewableTypes: string[];
+selectedMLHorizons: number[];
 comparisonMetric: 'wape' | 'mae' | 'rmse';
 comparisonForecastType: string;
 comparisonTimeRange: '7d' | '30d' | '90d';
 ```
+
+The legacy forecast fields are **not uniformly dead**. Before deleting one,
+check which group it is in:
+
+- **Live.** `showComparisonMode` / `showTSOComparisonMode` gate the comparison
+  queries (`useLoadChartData.ts:148`, `:189`; `usePriceChartData.ts:117`);
+  `selectedMLHorizons` drives the multi-horizon fetch
+  (`useLoadChartData.ts:107`, `:153`).
+- **Written, and read only by dead code.** `showForecast`. `setTimePreset`
+  still sets it `true` for future presets (`dashboardStore.ts:150`) and
+  `useLatestForecast` gates its query on it (`useDashboardData.ts:254`, `:262`)
+  — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
+  nothing, so it has no on-screen effect today.
+- **No reader at all.** `showTSOForecast`, `tsoForecastType`,
+  `visibleRenewableTypes`, `sidebarOpen`, `comparisonCountries`.
+
+Careful with the name `showForecast`: `useLoadChartData`/`usePriceChartData`
+declare *local* consts of that name derived from the picker
+(`selected?.source === 'ml'`, `useLoadChartData.ts:89`;
+`usePriceChartData.ts:61`), which shadow the store field. A grep hit is not
+necessarily a store read.
 
 `servedModelByType` (which model actually served the last response, per type)
 is deliberately **not** persisted — it describes the last network response,
@@ -333,8 +431,10 @@ where every actual is legitimately zero.
 ## Generation data
 
 Two tables, both written from **one** A75 fetch per country per window
-(`fetch_renewable.py` → `query_generation_and_renewable_with_metadata`). Never
-add a second request to fill one of them.
+(`../energy-data-gathering/src/fetch_renewable.py` →
+`ENTSOEClient.query_generation_and_renewable_with_metadata`,
+`../energy-data-gathering/src/entsoe_client.py:1187`). Never add a second
+request to fill one of them.
 
 - **`energy_generation`** — the whole document. 21 `*_mw` columns, one per
   ENTSO-E production type. Prefer this for anything new.
@@ -372,9 +472,8 @@ Three things to know before touching this:
   unavailable. They are not: `energy_generation` holds the complete ENTSO-E
   A75 document — nuclear, every fossil type, waste, storage and the renewables
   — backfilled to 2021-01-01 across 34 countries. See "Generation data" below.
-- **A real publication time.** `publication_timestamp_utc` exists on
-  `energy_load`, `energy_price`, `energy_renewable` and others (~4.9M non-null
-  rows) and **does not mean what its name says**. It is filled from the ENTSO-E
+- **A real publication time.** `publication_timestamp_utc` exists on eight
+  tables and **does not mean what its name says**. It is filled from the ENTSO-E
   response's `createdDateTime`, but ENTSO-E builds the document *on request* and
   stamps it with the generation time — so the column records **when we fetched**,
   not when the value was published. Measured: a Belgian day-ahead price for
@@ -383,13 +482,41 @@ Three things to know before touching this:
   Nothing in the client renders it, so it is not currently lying to a user — but
   do not build on it, and do not backfill it. A historical backfill re-queries
   the API and therefore stamps every row with the date the backfill ran, which
-  is worse than the NULL it replaces. `net_position` is deliberately left fully
-  NULL for this reason. If you need "was this published as day-ahead or
-  observed after the fact", derive it from the target timestamp relative to
-  fetch time, or from `forecasts.horizon_hours` — not from this column.
+  is worse than the NULL it replaces. If you need "was this published as
+  day-ahead or observed after the fact", derive it from the target timestamp
+  relative to fetch time, or from `forecasts.horizon_hours` — not from this
+  column.
+
+  Non-null counts, measured 2026-08-05 — **13,619,060** in total, not the
+  ~4.9M this entry used to claim (that figure covers only the three tables it
+  happened to name):
+
+  | table | non-null | rows |
+  |---|---|---|
+  | `energy_generation` | 3,160,657 | 3,160,657 |
+  | `energy_generation_forecast` | 3,033,167 | 3,033,167 |
+  | `energy_load` | 2,746,776 | 2,760,216 |
+  | `energy_load_forecast` | 2,430,020 | 2,430,020 |
+  | `energy_price` | 1,430,549 | 1,530,298 |
+  | `energy_renewable` | 811,955 | 811,955 |
+  | `net_position` | 5,936 | 644,658 |
+  | `crossborder_flows` | 0 | 3,540,460 |
+
+  **`net_position` is no longer fully NULL, and this doc used to say it was.**
+  As of 2026-08-05 it carries 5,936 stamps — every one written on or after
+  2026-07-31 13:31, for target timestamps from 2026-07-24 onward, i.e. exactly
+  the cron-run-time pathology described above. The writer is the sibling
+  module (`../energy-data-gathering/src/db.py:1096-1109`), not this repo: our
+  own net-position ingest route writes `forecasts`/`forecast_quantiles`
+  (`netPositionIngestService.ts:72`, `:78`), never `net_position`. Escalated to
+  the CEO under ABL-3 — do not treat "net_position is a clean NULL" as an
+  invariant you can rely on. `crossborder_flows` still is.
 - **Forecast horizons beyond ~D+2.** `forecasts.horizon_hours` runs roughly
-  2-64h depending on model (catboost tops out at 63h, xgboost at 64h) — there
-  is no stored forecast for D+3 and beyond. `ForecastTab`'s error-by-horizon
+  2-64h depending on model — there is no stored forecast for D+3 and beyond.
+  Re-measured 2026-08-05: catboost 2-63h, xgboost 2-64h, chronos-2-V010 40-64h
+  (the three registered ml models); the unregistered/stale ones sit inside that
+  envelope too (chronos-bolt-small 1-60h, lightgbm 4-54h, tso_raw and
+  tso_corrected 24-46h). `ForecastTab`'s error-by-horizon
   bars only ever render measured `ML D+1` (0-30h), `ML D+2` (24-54h), `TSO
   D+1`, and `TSO D+7`; a previous version multiplied the measured D+1 error by
   fixed factors to fabricate D+3/D+5/D+7 bars, which is why they were removed
@@ -479,18 +606,29 @@ type ForecastModelRegistry = Record<string, ForecastTypeConfig>;
 
 ### TSO Forecast Types
 
-```typescript
-type TSOForecastType = 'day_ahead' | 'week_ahead';
+The client and server declarations are **not** mirror images here — check which
+side you are on.
 
+```typescript
+// client/src/types/index.ts:172 — note the third member; the server's
+// TSOForecastType (server/src/types/index.ts:168) is identical.
+type TSOForecastType = 'day_ahead' | 'week_ahead' | 'all';
+
+// client/src/types/index.ts:174. The server's TSOLoadForecastDataPoint
+// (server/src/types/index.ts:170) has NO min/max fields; the two the client
+// adds are populated by the week-ahead branch of the query
+// (tsoForecastService.ts:56-57, NULL on the day-ahead branches).
 interface TSOLoadForecastDataPoint {
   timestamp: string;
   forecast_value_mw: number;
   forecast_min_mw: number | null;    // Week-ahead only: daily min
   forecast_max_mw: number | null;    // Week-ahead only: daily max
-  forecast_type: 'day_ahead' | 'week_ahead';
-  publication_timestamp_utc?: string;
+  forecast_type: string;             // not narrowed to the union
+  publication_timestamp_utc: string | null;   // required, nullable — not optional
 }
 
+// server-only: server/src/types/index.ts:177 (and a duplicate at
+// tsoForecastService.ts:18). There is no client counterpart.
 interface TSOGenerationForecastDataPoint {
   timestamp: string;
   solar_mw: number | null;
@@ -520,8 +658,13 @@ interface TSOForecastAccuracyMetrics {
 ## Debugging Tips
 
 - Check browser DevTools Network tab for API responses
-- Use React Query DevTools (enabled in dev mode)
-- Check server console for database query logs and the connected `ENERGY_DB_PATH`
+- There is **no** React Query DevTools here — `@tanstack/react-query-devtools`
+  is not a dependency of `client/package.json` and no source file mounts it.
+  Inspect query state through the Network tab or a temporary log instead.
+- The server logs the connected `ENERGY_DB_PATH` at startup
+  (`config/database.ts:15`) and again if the write handle opens
+  (`config/writeDatabase.ts:29`). It does **not** log queries — there is no
+  per-query logging to check
 - If acceptance is pointed at prod (`client/.env.local`'s `API_PROXY_TARGET`),
   a server-side fix won't show up until prod is redeployed — verify against a
   local server first
@@ -534,9 +677,14 @@ interface TSOForecastAccuracyMetrics {
 
 **A country's load/price forecast is blank:**
 - Check whether a specific model is pinned in `ModelPicker` — catboost and
-  xgboost cover disjoint country sets, so a pinned model with no data for that
-  country renders nothing. Clear the pin (select the type's default again) to
-  let the server's candidate ladder try the other registered model.
+  xgboost coverage barely overlaps (see Forecast model selection), so a pinned
+  model with no data for that country renders nothing.
+- **Selecting the type's "Default" entry does not clear the pin — it creates
+  one.** Every dropdown entry calls `setSelectedModel` with a concrete id
+  (`ModelPicker.tsx:99`), and an explicit request is honoured strictly
+  (`forecastModels.ts:183-185`). There is no UI path back to the unpinned
+  candidate ladder; clear `selectedModelByType` out of the
+  `energy-dashboard-storage` localStorage key instead.
 - Confirm the model is actually registered in `server/src/config/forecastModels.ts`
 
 **TSO forecasts not showing:**
@@ -544,9 +692,9 @@ interface TSOForecastAccuracyMetrics {
   both D+1 and D+7 registered; `solar`/`wind_onshore`/`wind_offshore` have D+1
   only; `price`/`renewable`/`biomass`/`hydro_total`/`net_position` have no TSO
   model at all — check `forecastModels.ts` before assuming a bug
-- On the Generation tab specifically, note that selecting a model in
-  `ModelPicker` does nothing today — `GenerationTab.tsx` doesn't read the
-  selection (see Country dashboard tabs above)
+- Note the picker does not render on the Generation or Forecast-accuracy tabs
+  at all (`TABS_WITH_MODEL_PICKER`, `CountryDashboardView.tsx:56`, applied at
+  `:115`), so there is no "picker that does nothing" to hit there
 - Check the API response has data for the selected country
 - Verify database tables have data: `energy_load_forecast`, `energy_generation_forecast`
 
@@ -564,10 +712,12 @@ interface TSOForecastAccuracyMetrics {
 **Time navigation not working:**
 - Check `timePreset` and `timeAnchor` in store
 - Verify date range calculation in `getDateRangeForPreset()`
-  (`useDashboardData.ts`) — there is no `useComputedDateRange()`, despite what
-  this file claimed until ABL-4
+  (`useDashboardData.ts:29`) — there is no `useComputedDateRange()`, despite
+  what this file claimed until ABL-4
 - A preset with no `case` there resolves to the `default` 7-day window with no
   error, so check the preset is actually in `TimePreset` and in that switch
+- Nothing calls `shiftTimeWindow`/`jumpToLive`, so `timeOffset` is always 0 —
+  confirm the preset you are testing can actually be set before debugging deeper
 - Bump `PERSIST_VERSION` and add a `migratePersisted()` clause if you changed
   the shape of anything in `partialize`
 
