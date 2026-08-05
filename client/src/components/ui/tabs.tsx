@@ -12,7 +12,7 @@ const TabsList = React.forwardRef<
     ref={ref}
     className={cn(
       // h-8 (not the shadcn default h-9) so the tab strip matches the height
-      // of RangeSegment and ModelPicker sitting beside it on the country
+      // of TimePicker and ModelPicker sitting beside it on the country
       // dashboard's control bar.
       "inline-flex h-8 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground",
       className

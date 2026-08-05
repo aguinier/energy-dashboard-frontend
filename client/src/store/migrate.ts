@@ -115,12 +115,12 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
 
   // `90d` and `1y` are no longer `TimePreset` values (ABL-4): nothing in the
   // UI could set them, and `getDateRangeForPreset` / `WINDOW_LABEL` /
-  // `PRESET_DURATIONS_HOURS` no longer carry a branch for either. A returning
+  // `PRESET_SHIFT_HOURS` no longer carry a branch for either. A returning
   // user can still have one persisted from a build that did, and the persist
   // middleware shallow-merges old state over the defaults — so an unmigrated
   // '90d' would survive into a store the code no longer understands: the
   // header qualifier would fall through to the raw string ("90d"), no
-  // RangeSegment button would read as active, and `getDateRangeForPreset`
+  // TimePicker button would read as active, and `getDateRangeForPreset`
   // would quietly serve the `default` 7-day window while the page claimed 90
   // days. Reset anything outside the union to the store's own default.
   //
