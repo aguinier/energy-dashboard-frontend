@@ -1,20 +1,27 @@
+import type { TimePreset, TimeAnchor } from '@/types';
+
 export const PERSIST_VERSION = 6;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
-// Every value the `TimePreset` union can still hold (client/src/types/index.ts).
-// Deliberately duplicated as a plain literal rather than derived from a shared
-// constant: this module must stay importable by the store alone, with no pull
-// on the hooks/React Query graph. Keep it in step with the union — a value
-// missing here is silently reset to '7d' on the next version bump.
-const VALID_TIME_PRESETS = new Set([
-  '24h', '7d', '30d',
-  'today', 'thisWeek',
-  'next1d', 'next24h', 'next48h', 'next7d',
-]);
-
-// Anchor implied by each preset, mirroring `setTimePreset` (dashboardStore.ts).
-const ANCHOR_FOR_PRESET: Record<string, string> = {
+// Anchor implied by each preset, mirroring `setTimePreset` (dashboardStore.ts),
+// and — via its keys — the set of values `TimePreset` can still hold.
+//
+// Typed `Record<TimePreset, TimeAnchor>` so the compiler names any preset added
+// to the union without a decision here (`client/src/types/index.ts:115`). It
+// used to be a `Record<string, string>` listing only the non-past presets, with
+// a `?? 'past'` default and a hand-maintained `VALID_TIME_PRESETS` literal
+// beside it: a new preset was then silently reset to '7d' on the next version
+// bump, or silently anchored 'past'. Neither failed a build or a test.
+//
+// The literal was kept separate to avoid importing anything into this module —
+// it must stay loadable by the store alone, with no pull on the hooks/React
+// Query graph. That still holds: `@/types` declares only types (no runtime
+// exports at all), so `import type` erases entirely and adds no edge.
+const ANCHOR_FOR_PRESET: Record<TimePreset, TimeAnchor> = {
+  '24h': 'past',
+  '7d': 'past',
+  '30d': 'past',
   today: 'now',
   thisWeek: 'now',
   next1d: 'future',
@@ -22,6 +29,8 @@ const ANCHOR_FOR_PRESET: Record<string, string> = {
   next48h: 'future',
   next7d: 'future',
 };
+
+const VALID_TIME_PRESETS = new Set<string>(Object.keys(ANCHOR_FOR_PRESET));
 
 // Real tab values, read off the `TabsTrigger` elements in
 // CountryDashboardView.tsx — NOT their visible labels. `renewables` renders
@@ -121,7 +130,9 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
   if (typeof next.timePreset !== 'string' || !VALID_TIME_PRESETS.has(next.timePreset)) {
     next.timePreset = '7d';
   }
-  next.timeAnchor = ANCHOR_FOR_PRESET[next.timePreset as string] ?? 'past';
+  // `timePreset` is guaranteed to be in the union by the check above, so this
+  // lookup always hits; the `?? 'past'` guards the cast, not a real gap.
+  next.timeAnchor = ANCHOR_FOR_PRESET[next.timePreset as TimePreset] ?? 'past';
 
   return next;
 }

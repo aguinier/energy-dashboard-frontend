@@ -302,14 +302,29 @@ live/now control would need, so they were kept pending a product decision on
 the time picker — see `TIME_PRESETS` in `lib/constants.ts`, an unbuilt design
 spec kept deliberately and not wired to this union.
 
-Adding a preset back means touching six places. Two are keyed
-`Record<TimePreset, …>` and the compiler will name them for you:
-`PRESET_DURATIONS_HOURS` (`lib/constants.ts`) and `WINDOW_LABEL`
-(`dashboard/windowLabel.ts`). The other four fail silently:
-`getDateRangeForPreset` and `getGranularityForPreset` (`useDashboardData.ts`)
-fall through to a `default` 7-day hourly window, `RangeSegment` needs the
-button, and `VALID_TIME_PRESETS` (`store/migrate.ts`) will otherwise reset the
-value on the next `PERSIST_VERSION` bump.
+Adding a preset back means touching six places. Five are a compile error if you
+miss them, by two mechanisms:
+
+- Keyed `Record<TimePreset, …>`, so the missing key is named directly:
+  `PRESET_DURATIONS_HOURS` (`lib/constants.ts:50`), `WINDOW_LABEL`
+  (`dashboard/windowLabel.ts:23`), and `ANCHOR_FOR_PRESET`
+  (`store/migrate.ts:21`), whose keys `VALID_TIME_PRESETS` derives from.
+- A `const unhandled: never = preset` in the `default` branch, so the new value
+  is reported as not assignable to `never`: `getDateRangeForPreset`
+  (`useDashboardData.ts:103`) and `getGranularityForPreset`
+  (`useDashboardData.ts:144`).
+
+The sixth — the button in `RangeSegment` — still fails silently, and always
+will: a preset with no control is unreachable, not ill-typed. That gap is
+exactly what ABL-12 is about.
+
+Until ABL-12 those last three failed silently, which mattered: both functions
+`default` to a trailing 7-day hourly window, so a preset with no `case` compiled
+clean and rendered a last-7-days window beneath its own (correct, exhaustively
+keyed) `WINDOW_LABEL` caption — a confidently mislabelled window. `migrate.ts`
+separately reset any preset missing from a hand-maintained `VALID_TIME_PRESETS`
+literal to `7d` on the next `PERSIST_VERSION` bump; that literal is now derived,
+so it cannot drift from the union.
 
 ### 5. State management
 
@@ -714,8 +729,10 @@ interface TSOForecastAccuracyMetrics {
 - Verify date range calculation in `getDateRangeForPreset()`
   (`useDashboardData.ts:29`) — there is no `useComputedDateRange()`, despite
   what this file claimed until ABL-4
-- A preset with no `case` there resolves to the `default` 7-day window with no
-  error, so check the preset is actually in `TimePreset` and in that switch
+- A preset with no `case` there is a compile error since ABL-12 (`never` guard
+  in the `default` branch), so this is caught by `tsc -b` rather than by
+  reading — but the `default` still resolves to a 7-day window at runtime, for
+  the unvalidated string a same-version persisted blob can carry
 - Nothing calls `shiftTimeWindow`/`jumpToLive`, so `timeOffset` is always 0 —
   confirm the preset you are testing can actually be set before debugging deeper
 - Bump `PERSIST_VERSION` and add a `migratePersisted()` clause if you changed

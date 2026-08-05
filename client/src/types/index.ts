@@ -107,11 +107,27 @@ export type AppView = 'map' | 'country' | 'comparison';
 export type TimeAnchor = 'past' | 'now' | 'future';
 
 // `90d` and `1y` were removed here (ABL-4): no control could set them, so no
-// user could reach them and nothing exercised their branches. Re-adding either
-// means adding it to `PRESET_DURATIONS_HOURS`, `WINDOW_LABEL`,
-// `getDateRangeForPreset`, `getGranularityForPreset` and `RangeSegment` in the
-// same change — the first three are keyed `Record<TimePreset, …>` so the
-// compiler will name the ones you missed.
+// user could reach them and nothing exercised their branches. Adding a preset
+// means updating six places; five of them are a compile error if you don't,
+// by two different mechanisms:
+//
+//   - keyed `Record<TimePreset, …>`, so the missing key is named directly:
+//     `PRESET_DURATIONS_HOURS` (lib/constants.ts), `WINDOW_LABEL`
+//     (components/dashboard/windowLabel.ts), `ANCHOR_FOR_PRESET`
+//     (store/migrate.ts — `VALID_TIME_PRESETS` derives from its keys).
+//   - a `const unhandled: never = preset` in the `default` branch, so the new
+//     value is reported as not assignable to `never`: `getDateRangeForPreset`
+//     and `getGranularityForPreset` (hooks/useDashboardData.ts).
+//
+// The sixth — a button in `RangeSegment` — stays silent by nature: a preset
+// with no control is unreachable, not ill-typed. That is ABL-12's subject.
+//
+// The `never` guards are load-bearing, not stylistic. Both functions end in a
+// `default` that yields a trailing 7-day hourly window, so a preset with no
+// case there used to compile clean and render numbers computed over the last
+// 7 days beneath that preset's own label — `WINDOW_LABEL`, being exhaustive,
+// would have named it correctly. A confidently mislabelled window is the
+// failure this dashboard exists to prevent.
 export type TimePreset =
   // Historical (backward-looking from now)
   | '24h' | '7d' | '30d'
