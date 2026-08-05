@@ -94,6 +94,73 @@ export function resolveModelName(forecastType: string, requestedId?: string): st
 }
 
 /**
+ * Outcome of resolving an accuracy endpoint's optional `model` parameter.
+ *
+ * `{ ok: true, model: null }` means the caller asked for no particular model —
+ * the endpoint must behave exactly as it did before this parameter existed.
+ */
+export type AccuracyModelResolution =
+  | { ok: true; model: ForecastModel | null }
+  | { ok: false; code: string; message: string };
+
+/**
+ * Resolve a `model` id for an *accuracy* query. Deliberately STRICTER than
+ * `resolveModel`, which silently degrades an unlisted id to the production
+ * model.
+ *
+ * That leniency is right for a chart: a stale bookmark should still draw the
+ * trusted series rather than an empty panel. It is wrong for accuracy. Asking
+ * "how accurate is xgboost?" and receiving catboost's numbers is precisely the
+ * failure this dashboard exists to avoid — a plausible, wrong number under a
+ * label nobody asked for. So an unregistered id is rejected, not substituted.
+ *
+ * `source` is the kind of accuracy the calling endpoint actually reports. A tso
+ * model id on an ml-accuracy route (or the reverse) is registered but not
+ * servable there, and is rejected rather than ignored — ignoring it would
+ * silently answer a different question than the one asked.
+ */
+export function resolveAccuracyModel(
+  forecastType: string,
+  requestedId: string | undefined,
+  source: ForecastSource
+): AccuracyModelResolution {
+  if (!requestedId) return { ok: true, model: null };
+
+  const cfg = getTypeConfig(forecastType);
+  if (!cfg) {
+    return {
+      ok: false,
+      code: 'UNKNOWN_FORECAST_TYPE',
+      message: `Unknown forecast type: ${forecastType}`,
+    };
+  }
+
+  const model = cfg.models.find((m) => m.id === requestedId);
+  if (!model) {
+    return {
+      ok: false,
+      code: 'UNREGISTERED_MODEL',
+      message:
+        `Model '${requestedId}' is not registered for forecast type '${forecastType}'. ` +
+        `Registered: ${cfg.models.map((m) => m.id).join(', ')}`,
+    };
+  }
+
+  if (model.source !== source) {
+    const alternatives = cfg.models.filter((m) => m.source === source).map((m) => m.id);
+    return {
+      ok: false,
+      code: 'WRONG_MODEL_SOURCE',
+      message:
+        `Model '${requestedId}' is a ${model.source} model; this endpoint reports ${source} accuracy. ` +
+        `Registered ${source} models for '${forecastType}': ${alternatives.join(', ') || 'none'}`,
+    };
+  }
+
+  return { ok: true, model };
+}
+
+/**
  * Ordered ml candidates to try for a type: the production model first, then the
  * remaining registered ml models.
  *

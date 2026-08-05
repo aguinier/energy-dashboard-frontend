@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 // never touches `db`, so the default export just needs to not exist.
 vi.mock('../config/database.js', () => ({ default: null }));
 
-const { calculateMetrics } = await import('./mlForecastService.js');
+const { calculateMetrics, classifyCoverage, modelFilterSql } = await import('./mlForecastService.js');
 
 const pt = (actual: number, forecast: number) => ({
   timestamp: '2026-07-27T00:00:00Z',
@@ -50,5 +50,40 @@ describe('calculateMetrics', () => {
     const m = calculateMetrics([pt(100, 90), pt(100, 110)]);
     // errors are +10 and -10, so bias is 0
     expect(m.bias).toBe(0);
+  });
+});
+
+describe('modelFilterSql', () => {
+  it('produces no clause when no model was requested', () => {
+    // Load-bearing: an empty clause is what keeps the unpinned query identical
+    // to the one that ran before the `model` parameter existed.
+    expect(modelFilterSql('f1', undefined)).toBe('');
+    expect(modelFilterSql('f1', '')).toBe('');
+  });
+
+  it('pins the requested alias to a bound parameter, never an interpolated value', () => {
+    // The model name reaches SQLite as a bound parameter; the SQL text itself
+    // must never carry it.
+    expect(modelFilterSql('f1', 'xgboost')).toBe('AND f1.model_name = ?');
+    expect(modelFilterSql('f2', 'xgboost')).toBe('AND f2.model_name = ?');
+    expect(modelFilterSql('f1', "'; DROP TABLE forecasts--")).toBe('AND f1.model_name = ?');
+  });
+});
+
+describe('classifyCoverage', () => {
+  it('reports served when points were actually paired', () => {
+    expect(classifyCoverage(42, true)).toBe('served');
+  });
+
+  it('distinguishes a model that does not serve this country from zero error', () => {
+    // catboost has no rows for FR load — measured 2026-08-05, coverage is
+    // disjoint. This must read as "no coverage", never as a flawless 0%.
+    expect(classifyCoverage(0, false)).toBe('no_model_coverage');
+  });
+
+  it('distinguishes no-coverage from forecast-present-but-unpaired', () => {
+    // The model forecast this window, but no actual has landed against it —
+    // a different fact from "this model does not serve here".
+    expect(classifyCoverage(0, true)).toBe('no_paired_actuals');
   });
 });

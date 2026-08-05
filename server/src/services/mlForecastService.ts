@@ -46,6 +46,47 @@ export interface MLForecastAccuracyMetrics {
   mapeSamples: number;
 }
 
+/**
+ * Why an accuracy window produced the metrics it did.
+ *
+ * `no_model_coverage` is a NORMAL answer, not an error: catboost and xgboost
+ * cover disjoint country sets (measured 2026-08-05 on `load`: catboost for 21
+ * countries, xgboost for AT/BE/FR, zero countries with both). Asking for
+ * catboost's accuracy in France is a well-formed question with the answer
+ * "that model does not serve this country" — which must never be rendered as a
+ * flawless 0% error, and must be distinguishable from a request that failed.
+ */
+export type MLAccuracyCoverage = 'served' | 'no_model_coverage' | 'no_paired_actuals';
+
+/**
+ * Classify an empty accuracy result. Split out as a pure function so the three
+ * cases are testable without a database.
+ *
+ * - `served` — points were paired; the metrics are a measurement.
+ * - `no_model_coverage` — the model has no forecast rows here at all.
+ * - `no_paired_actuals` — the model forecast this window, but no actual value
+ *   lined up with it (actuals not ingested yet, or a future window).
+ */
+export function classifyCoverage(
+  dataPoints: number,
+  modelHasForecastRows: boolean
+): MLAccuracyCoverage {
+  if (dataPoints > 0) return 'served';
+  return modelHasForecastRows ? 'no_paired_actuals' : 'no_model_coverage';
+}
+
+/**
+ * SQL fragment pinning a query to one `forecasts.model_name`, or the empty
+ * string when no model was requested.
+ *
+ * Empty is load-bearing: with no model the query must stay exactly what it was
+ * before this parameter existed — the latest run per target timestamp
+ * regardless of which model produced it.
+ */
+export function modelFilterSql(alias: string, modelName?: string): string {
+  return modelName ? `AND ${alias}.model_name = ?` : '';
+}
+
 // Helper to normalize timestamps for the forecasts table (uses 'T' format)
 function normalizeForForecastsTable(isoTimestamp: string): string {
   return isoTimestamp.replace('Z', '').split('.')[0];
@@ -65,6 +106,11 @@ function normalizeForActualsTable(isoTimestamp: string): string {
  * @param end - End date ISO string
  * @param horizon - Optional horizon filter (1 for D+1, 2 for D+2)
  * @param granularity - Data granularity
+ * @param modelName - Optional `forecasts.model_name` to pin to. Omit for the
+ *   pre-existing behaviour: the latest run per target timestamp, whichever
+ *   model produced it. When set, the MAX(generated_at) dedup also narrows to
+ *   that model, so the result is that model's own latest run rather than
+ *   whichever model happened to run last.
  */
 export function getMLForecastAccuracy(
   countryCode: string,
@@ -72,7 +118,8 @@ export function getMLForecastAccuracy(
   start: string,
   end: string,
   horizon?: 1 | 2,
-  granularity: Granularity = 'hourly'
+  granularity: Granularity = 'hourly',
+  modelName?: string
 ): MLForecastAccuracyDataPoint[] {
   // Validate forecast type
   if (!VALID_FORECAST_TYPES.includes(forecastType)) {
@@ -104,6 +151,15 @@ export function getMLForecastAccuracy(
     horizonClauseSubquery = 'AND f2.horizon_hours BETWEEN 24 AND 54';
   }
 
+  // Model pin. Empty string when no model was requested, which leaves the
+  // query semantically identical to the pre-existing one.
+  const modelClauseCTE = modelFilterSql('f1', modelName);
+  const modelClauseSubquery = modelFilterSql('f2', modelName);
+
+  // Bound in the order the `?` placeholders appear in the SQL below: the CTE's
+  // own model pin, then the correlated MAX(generated_at) subquery's.
+  const modelParams = modelName ? [modelName, modelName] : [];
+
   // For hourly granularity, join forecasts with actuals
   if (granularity === 'hourly') {
     // Handle special case for hydro_total which is a computed column
@@ -122,6 +178,7 @@ export function getMLForecastAccuracy(
           AND f1.forecast_type = ?
           AND f1.target_timestamp_utc BETWEEN ? AND ?
           ${horizonClauseCTE}
+          ${modelClauseCTE}
           AND f1.generated_at = (
             SELECT MAX(f2.generated_at)
             FROM forecasts f2
@@ -129,6 +186,7 @@ export function getMLForecastAccuracy(
               AND f2.forecast_type = f1.forecast_type
               AND f2.target_timestamp_utc = f1.target_timestamp_utc
               ${horizonClauseSubquery}
+              ${modelClauseSubquery}
           )
       )
       SELECT
@@ -149,7 +207,9 @@ export function getMLForecastAccuracy(
       ORDER BY f.target_timestamp_utc
     `);
 
-    return stmt.all(upperCode, forecastType, normalizedStart, normalizedEnd, upperCode) as MLForecastAccuracyDataPoint[];
+    return stmt.all(
+      upperCode, forecastType, normalizedStart, normalizedEnd, ...modelParams, upperCode
+    ) as MLForecastAccuracyDataPoint[];
   }
 
   // For aggregated granularity (daily, weekly, monthly)
@@ -169,6 +229,7 @@ export function getMLForecastAccuracy(
         AND f1.forecast_type = ?
         AND f1.target_timestamp_utc BETWEEN ? AND ?
         ${horizonClauseCTE}
+        ${modelClauseCTE}
         AND f1.generated_at = (
           SELECT MAX(f2.generated_at)
           FROM forecasts f2
@@ -176,6 +237,7 @@ export function getMLForecastAccuracy(
             AND f2.forecast_type = f1.forecast_type
             AND f2.target_timestamp_utc = f1.target_timestamp_utc
             ${horizonClauseSubquery}
+            ${modelClauseSubquery}
         )
     ),
     joined_data AS (
@@ -202,7 +264,9 @@ export function getMLForecastAccuracy(
     ORDER BY timestamp
   `);
 
-  return stmt.all(upperCode, forecastType, normalizedStart, normalizedEnd, upperCode) as MLForecastAccuracyDataPoint[];
+  return stmt.all(
+    upperCode, forecastType, normalizedStart, normalizedEnd, ...modelParams, upperCode
+  ) as MLForecastAccuracyDataPoint[];
 }
 
 /**
@@ -213,10 +277,43 @@ export function getMLForecastAccuracyMetrics(
   forecastType: ForecastType,
   start: string,
   end: string,
-  horizon?: 1 | 2
+  horizon?: 1 | 2,
+  modelName?: string
 ): MLForecastAccuracyMetrics {
-  const data = getMLForecastAccuracy(countryCode, forecastType, start, end, horizon, 'hourly');
+  const data = getMLForecastAccuracy(countryCode, forecastType, start, end, horizon, 'hourly', modelName);
   return calculateMetrics(data);
+}
+
+/**
+ * Does this model have any forecast row for this country/type/window at all?
+ *
+ * Only meaningful to ask when the accuracy join produced nothing: it separates
+ * "this model does not serve this country" (expected — disjoint coverage) from
+ * "it forecast this window but no actual has landed against it yet".
+ */
+export function hasMLForecastRowsInWindow(
+  countryCode: string,
+  forecastType: ForecastType,
+  start: string,
+  end: string,
+  modelName?: string
+): boolean {
+  const stmt = db.prepare(`
+    SELECT 1 FROM forecasts f1
+    WHERE f1.country_code = ?
+      AND f1.forecast_type = ?
+      AND f1.target_timestamp_utc BETWEEN ? AND ?
+      ${modelFilterSql('f1', modelName)}
+    LIMIT 1
+  `);
+  const params = modelName ? [modelName] : [];
+  return stmt.get(
+    countryCode.toUpperCase(),
+    forecastType,
+    normalizeForForecastsTable(start),
+    normalizeForForecastsTable(end),
+    ...params
+  ) !== undefined;
 }
 
 /**
@@ -272,10 +369,11 @@ export function getMLForecastMetricsByHorizon(
   countryCode: string,
   forecastType: ForecastType,
   start: string,
-  end: string
+  end: string,
+  modelName?: string
 ): { d1?: MLForecastAccuracyMetrics; d2?: MLForecastAccuracyMetrics } {
-  const d1 = getMLForecastAccuracyMetrics(countryCode, forecastType, start, end, 1);
-  const d2 = getMLForecastAccuracyMetrics(countryCode, forecastType, start, end, 2);
+  const d1 = getMLForecastAccuracyMetrics(countryCode, forecastType, start, end, 1, modelName);
+  const d2 = getMLForecastAccuracyMetrics(countryCode, forecastType, start, end, 2, modelName);
 
   return {
     d1: d1.dataPoints > 0 ? d1 : undefined,

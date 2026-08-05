@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   FORECAST_MODELS,
   getTypeConfig,
+  resolveAccuracyModel,
   resolveModel,
   resolveModelName,
 } from './forecastModels.js';
@@ -71,5 +72,75 @@ describe('resolveModel', () => {
 
   it('is undefined for a type with no registry entry', () => {
     expect(resolveModel('not_a_type')).toBeUndefined();
+  });
+});
+
+describe('resolveAccuracyModel', () => {
+  it('resolves to no model when none was requested', () => {
+    // The absent case must stay unpinned — this is what keeps existing callers
+    // seeing exactly what they saw before the parameter existed.
+    expect(resolveAccuracyModel('load', undefined, 'ml')).toEqual({ ok: true, model: null });
+    expect(resolveAccuracyModel('load', '', 'ml')).toEqual({ ok: true, model: null });
+  });
+
+  it('resolves a registered ml model to its forecasts.model_name', () => {
+    const r = resolveAccuracyModel('load', 'xgboost', 'ml');
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.model?.modelName).toBe('xgboost');
+  });
+
+  it('rejects an unregistered model instead of degrading to production', () => {
+    // This is the deliberate divergence from resolveModel. Answering "how
+    // accurate is model X?" with the production model's numbers would be a
+    // confidently wrong attribution.
+    const r = resolveAccuracyModel('load', 'does-not-exist', 'ml');
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.code).toBe('UNREGISTERED_MODEL');
+    expect(resolveModel('load', 'does-not-exist')?.id).toBe('catboost');
+  });
+
+  it('rejects a model registered for a different forecast type', () => {
+    // catboost does not serve biomass; only xgboost is registered there.
+    const r = resolveAccuracyModel('biomass', 'catboost', 'ml');
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.code).toBe('UNREGISTERED_MODEL');
+  });
+
+  it('rejects a tso model on an ml-accuracy endpoint', () => {
+    const r = resolveAccuracyModel('load', 'tso-d1', 'ml');
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.code).toBe('WRONG_MODEL_SOURCE');
+  });
+
+  it('rejects an ml model on a tso-accuracy endpoint', () => {
+    const r = resolveAccuracyModel('load', 'catboost', 'tso');
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.code).toBe('WRONG_MODEL_SOURCE');
+  });
+
+  it('resolves registered tso models by horizon', () => {
+    const d1 = resolveAccuracyModel('load', 'tso-d1', 'tso');
+    const d7 = resolveAccuracyModel('load', 'tso-d7', 'tso');
+    expect(d1.ok && d1.model?.tsoHorizon).toBe('day_ahead');
+    expect(d7.ok && d7.model?.tsoHorizon).toBe('week_ahead');
+  });
+
+  it('rejects week-ahead for a type that only registers D+1', () => {
+    // solar has TSO_D1 only — there is no week-ahead solar forecast to measure.
+    const r = resolveAccuracyModel('solar', 'tso-d7', 'tso');
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.code).toBe('UNREGISTERED_MODEL');
+  });
+
+  it('rejects a model on an unknown forecast type', () => {
+    const r = resolveAccuracyModel('not_a_type', 'catboost', 'ml');
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.code).toBe('UNKNOWN_FORECAST_TYPE');
+  });
+
+  it('names the servable alternatives in its rejection message', () => {
+    // The picker and any human debugging a 400 need to know what IS servable.
+    const r = resolveAccuracyModel('price', 'tso-d1', 'ml');
+    expect(!r.ok && r.message).toContain('catboost');
   });
 });

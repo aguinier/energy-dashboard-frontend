@@ -3,6 +3,7 @@ import * as forecastComparisonService from '../services/forecastComparisonServic
 import * as mlForecastService from '../services/mlForecastService.js';
 import { cacheMiddleware, TTL } from '../middleware/cache.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { resolveAccuracyModel } from '../config/forecastModels.js';
 import { ForecastType } from '../types/index.js';
 
 const router = Router();
@@ -23,6 +24,22 @@ interface MLAccuracyQuery {
   start?: string;
   end?: string;
   horizon?: string; // '1' for D+1, '2' for D+2
+  /** Registered ml model id from the registry. Omit to keep the pre-existing unpinned behaviour. */
+  model?: string;
+}
+
+/**
+ * Resolve an accuracy request's `model` to a `forecasts.model_name`, or throw a
+ * 400. Rejecting beats querying for an unregistered model: an unregistered id
+ * returns no rows, which is indistinguishable from a model that legitimately
+ * has no coverage here.
+ */
+function resolveMlModelOr400(forecastType: string, model: string | undefined) {
+  const resolved = resolveAccuracyModel(forecastType, model, 'ml');
+  if (!resolved.ok) {
+    throw new AppError(resolved.message, 400, resolved.code);
+  }
+  return resolved.model;
 }
 
 interface RollingAccuracyQuery {
@@ -207,7 +224,7 @@ router.get(
   cacheMiddleware(TTL.MEDIUM),
   (req: Request<{ countryCode: string }, unknown, unknown, MLAccuracyQuery>, res) => {
     const { countryCode } = req.params;
-    const { forecastType = 'load', start, end, horizon } = req.query;
+    const { forecastType = 'load', start, end, horizon, model } = req.query;
 
     // Validate forecast type
     if (!VALID_FORECAST_TYPES.includes(forecastType) && forecastType !== 'renewable') {
@@ -217,6 +234,8 @@ router.get(
         'INVALID_FORECAST_TYPE'
       );
     }
+
+    const selectedModel = resolveMlModelOr400(forecastType, model);
 
     // Parse horizon
     const horizonNum = horizon ? parseInt(horizon, 10) as 1 | 2 : undefined;
@@ -239,7 +258,8 @@ router.get(
       startDate,
       endDate,
       horizonNum,
-      'hourly'
+      'hourly',
+      selectedModel?.modelName
     );
 
     const metrics = mlForecastService.getMLForecastAccuracyMetrics(
@@ -247,7 +267,18 @@ router.get(
       forecastType,
       startDate,
       endDate,
-      horizonNum
+      horizonNum,
+      selectedModel?.modelName
+    );
+
+    // Only ask the coverage question when the join produced nothing — that is
+    // the only case where the answer is ambiguous.
+    const coverage = mlForecastService.classifyCoverage(
+      metrics.dataPoints,
+      metrics.dataPoints > 0 ||
+        mlForecastService.hasMLForecastRowsInWindow(
+          countryCode, forecastType, startDate, endDate, selectedModel?.modelName
+        )
     );
 
     res.json({
@@ -260,6 +291,14 @@ router.get(
         forecastType,
         horizon: horizonNum,
         timeRange: { start: startDate, end: endDate },
+        // What served. `model: null` means unpinned — the latest run per
+        // timestamp regardless of model — NOT "catboost". Naming a model here
+        // that was not filtered on would be a fabricated attribution.
+        model: selectedModel?.id ?? null,
+        modelRequested: model ?? null,
+        // 'no_model_coverage' is a normal answer for a disjoint-coverage model,
+        // not an error. It is what stops a country reading as a flawless 0%.
+        coverage,
       },
     });
   }
