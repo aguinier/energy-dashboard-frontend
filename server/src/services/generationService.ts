@@ -1,7 +1,7 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
 import { GenerationMix } from '../types/index.js';
-import { normalizeTimestamp } from '../utils/timestamp.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 
 /**
  * SQL for getGenerationMix, exported so tests can assert on the exact text
@@ -49,7 +49,7 @@ export const GENERATION_MIX_SQL = `
       ROUND(AVG(other_mw), 2) as other
     FROM energy_generation
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
   `;
 
 // `renewable_percentage` is attached to GenerationMix after the SQL row comes
@@ -71,11 +71,10 @@ export function getGenerationMix(
   db: DatabaseType = defaultDb
 ): GenerationMix | null {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   const stmt = db.prepare(GENERATION_MIX_SQL);
-  const row = stmt.get(upperCode, normalizedStart, normalizedEnd) as GenerationMixRow | undefined;
+  const row = stmt.get(upperCode, ...rangeArgs(range)) as GenerationMixRow | undefined;
 
   if (!row || row.row_count === 0) {
     return null;
@@ -90,7 +89,7 @@ export function getGenerationMix(
   // itself, so it cannot drift from what the header shows.
   return {
     ...mix,
-    renewable_percentage: getRenewableShare(upperCode, normalizedStart, normalizedEnd, db),
+    renewable_percentage: getRenewableShare(upperCode, start, end, db),
   };
 }
 
@@ -183,7 +182,7 @@ export const RENEWABLE_SHARE_SQL = `
       ROUND(SUM${RENEWABLE_MW_SUM} * 100.0 / NULLIF(SUM${TOTAL_POSITIVE_MW_SUM}, 0), 2) as renewable_pct
     FROM energy_generation
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
   `;
 
 /**
@@ -209,11 +208,10 @@ export function getRenewableShare(
   db: DatabaseType = defaultDb
 ): number | null {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   const stmt = db.prepare(RENEWABLE_SHARE_SQL);
-  const row = stmt.get(upperCode, normalizedStart, normalizedEnd) as
+  const row = stmt.get(upperCode, ...rangeArgs(range)) as
     | { row_count: number; renewable_pct: number | null }
     | undefined;
 

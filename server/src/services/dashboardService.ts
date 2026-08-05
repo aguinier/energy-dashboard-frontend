@@ -1,6 +1,6 @@
 import db from '../config/database.js';
 import { DashboardOverview, MapDataPoint, MetricType, TimeRange } from '../types/index.js';
-import { normalizeTimestamp } from '../utils/timestamp.js';
+import { normalizeTimestamp, timestampRange, rangeClause, rangeArgs, type TimestampRange } from '../utils/timestamp.js';
 import { getRenewableShare, RENEWABLE_MW_SUM, TOTAL_POSITIVE_MW_SUM } from './generationService.js';
 
 function getTimeRangeDates(timeRange: TimeRange): { start: string; end: string } {
@@ -43,8 +43,7 @@ export function getDashboardOverview(
 ): DashboardOverview {
   const upperCode = countryCode.toUpperCase();
   const { start: rawStart, end: rawEnd } = range ?? getTimeRangeDates(timeRange);
-  const start = normalizeTimestamp(rawStart);
-  const end = normalizeTimestamp(rawEnd);
+  const bounds = timestampRange(rawStart, rawEnd);
 
   // Get current load
   const loadStmt = db.prepare(`
@@ -64,9 +63,9 @@ export function getDashboardOverview(
       ROUND(AVG(price_eur_mwh), 2) as avg_price
     FROM energy_price
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
   `);
-  const priceResult = priceStmt.get(upperCode, start, end) as { avg_price: number } | undefined;
+  const priceResult = priceStmt.get(upperCode, ...rangeArgs(bounds)) as { avg_price: number } | undefined;
 
   // Get peak demand for the period
   const peakStmt = db.prepare(`
@@ -74,9 +73,9 @@ export function getDashboardOverview(
       ROUND(MAX(load_mw), 2) as peak_demand
     FROM energy_load
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
   `);
-  const peakResult = peakStmt.get(upperCode, start, end) as { peak_demand: number } | undefined;
+  const peakResult = peakStmt.get(upperCode, ...rangeArgs(bounds)) as { peak_demand: number } | undefined;
 
   // Renewable share - the same generationService.getRenewableShare every
   // other "Renewable share" figure in the app reads (the Generation tab's
@@ -88,7 +87,7 @@ export function getDashboardOverview(
   // Null - not 0, not a fallback to that old load-based figure - when this
   // country has no energy_generation rows yet (still mid-backfill) or the
   // window's total positive generation is zero/negative.
-  const renewablePct = getRenewableShare(upperCode, start, end, db);
+  const renewablePct = getRenewableShare(upperCode, rawStart, rawEnd, db);
 
   // Calculate 24h changes
   const change24hStart = normalizeTimestamp(new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString());
@@ -120,24 +119,23 @@ export function getMapData(
   range?: DateRange
 ): MapDataPoint[] {
   const { start: rawStart, end: rawEnd } = range ?? getTimeRangeDates(timeRange);
-  const start = normalizeTimestamp(rawStart);
-  const end = normalizeTimestamp(rawEnd);
+  const bounds = timestampRange(rawStart, rawEnd);
 
   switch (metric) {
     case 'load':
-      return getMapLoadData(start, end);
+      return getMapLoadData(bounds);
     case 'price':
-      return getMapPriceData(start, end);
+      return getMapPriceData(bounds);
     case 'renewable_pct':
-      return getMapRenewableData(start, end);
+      return getMapRenewableData(bounds);
     case 'net_position':
-      return getMapNetPositionData(start, end);
+      return getMapNetPositionData(bounds);
     default:
-      return getMapLoadData(start, end);
+      return getMapLoadData(bounds);
   }
 }
 
-function getMapLoadData(start: string, end: string): MapDataPoint[] {
+function getMapLoadData(range: TimestampRange): MapDataPoint[] {
   const stmt = db.prepare(`
     SELECT
       l.country_code,
@@ -146,11 +144,11 @@ function getMapLoadData(start: string, end: string): MapDataPoint[] {
       MAX(l.timestamp_utc) as timestamp
     FROM energy_load l
     JOIN countries c ON l.country_code = c.country_code
-    WHERE l.timestamp_utc BETWEEN ? AND ?
+    WHERE ${rangeClause('l.timestamp_utc')}
     GROUP BY l.country_code, c.country_name
     ORDER BY c.country_name
   `);
-  return stmt.all(start, end) as MapDataPoint[];
+  return stmt.all(...rangeArgs(range)) as MapDataPoint[];
 }
 
 /**
@@ -167,7 +165,7 @@ function getMapLoadData(start: string, end: string): MapDataPoint[] {
  * Overwriting is deliberate - a hole would at least read as missing, but a
  * wrong number reads as fact.
  */
-function getMapNetPositionData(start: string, end: string): MapDataPoint[] {
+function getMapNetPositionData(range: TimestampRange): MapDataPoint[] {
   const stmt = db.prepare(`
     SELECT
       n.country_code,
@@ -176,11 +174,11 @@ function getMapNetPositionData(start: string, end: string): MapDataPoint[] {
       MAX(n.timestamp_utc) as timestamp
     FROM net_position n
     JOIN countries c ON n.country_code = c.country_code
-    WHERE n.timestamp_utc BETWEEN ? AND ?
+    WHERE ${rangeClause('n.timestamp_utc')}
     GROUP BY n.country_code, c.country_name
     ORDER BY c.country_name
   `);
-  const rows = stmt.all(start, end) as MapDataPoint[];
+  const rows = stmt.all(...rangeArgs(range)) as MapDataPoint[];
 
   const de = rows.find((r) => r.country_code === 'DE');
   if (!de) return rows;
@@ -199,7 +197,7 @@ function getMapNetPositionData(start: string, end: string): MapDataPoint[] {
   return rows;
 }
 
-function getMapPriceData(start: string, end: string): MapDataPoint[] {
+function getMapPriceData(range: TimestampRange): MapDataPoint[] {
   const stmt = db.prepare(`
     SELECT
       p.country_code,
@@ -208,11 +206,11 @@ function getMapPriceData(start: string, end: string): MapDataPoint[] {
       MAX(p.timestamp_utc) as timestamp
     FROM energy_price p
     JOIN countries c ON p.country_code = c.country_code
-    WHERE p.timestamp_utc BETWEEN ? AND ?
+    WHERE ${rangeClause('p.timestamp_utc')}
     GROUP BY p.country_code, c.country_name
     ORDER BY c.country_name
   `);
-  return stmt.all(start, end) as MapDataPoint[];
+  return stmt.all(...rangeArgs(range)) as MapDataPoint[];
 }
 
 /**
@@ -233,7 +231,7 @@ function getMapPriceData(start: string, end: string): MapDataPoint[] {
  * country as "no data" (EuropeMap filters `value == null`), never a
  * fabricated reading.
  */
-function getMapRenewableData(start: string, end: string): MapDataPoint[] {
+function getMapRenewableData(range: TimestampRange): MapDataPoint[] {
   const stmt = db.prepare(`
     SELECT
       g.country_code,
@@ -242,12 +240,12 @@ function getMapRenewableData(start: string, end: string): MapDataPoint[] {
       MAX(g.timestamp_utc) as timestamp
     FROM energy_generation g
     JOIN countries c ON c.country_code = g.country_code
-    WHERE g.timestamp_utc BETWEEN ? AND ?
+    WHERE ${rangeClause('g.timestamp_utc')}
     GROUP BY g.country_code, c.country_name
     HAVING value IS NOT NULL
     ORDER BY c.country_name
   `);
-  return stmt.all(start, end) as MapDataPoint[];
+  return stmt.all(...rangeArgs(range)) as MapDataPoint[];
 }
 
 export function getCombinedTimeseries(
@@ -256,8 +254,7 @@ export function getCombinedTimeseries(
   end: string
 ) {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   // Get load data
   const loadStmt = db.prepare(`
@@ -266,11 +263,11 @@ export function getCombinedTimeseries(
       ROUND(AVG(load_mw), 2) as load
     FROM energy_load
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     GROUP BY date(timestamp_utc)
     ORDER BY date
   `);
-  const loadData = loadStmt.all(upperCode, normalizedStart, normalizedEnd) as Array<{ date: string; load: number }>;
+  const loadData = loadStmt.all(upperCode, ...rangeArgs(range)) as Array<{ date: string; load: number }>;
 
   // Get price data
   const priceStmt = db.prepare(`
@@ -279,11 +276,11 @@ export function getCombinedTimeseries(
       ROUND(AVG(price_eur_mwh), 2) as price
     FROM energy_price
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     GROUP BY date(timestamp_utc)
     ORDER BY date
   `);
-  const priceData = priceStmt.all(upperCode, normalizedStart, normalizedEnd) as Array<{ date: string; price: number }>;
+  const priceData = priceStmt.all(upperCode, ...rangeArgs(range)) as Array<{ date: string; price: number }>;
 
   // Get renewable data
   const renewableStmt = db.prepare(`
@@ -302,7 +299,7 @@ export function getCombinedTimeseries(
       ROUND(AVG(COALESCE(geothermal_mw, 0)), 2) as geothermal
     FROM energy_renewable
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     GROUP BY date(timestamp_utc)
     ORDER BY date
   `);
@@ -315,7 +312,7 @@ export function getCombinedTimeseries(
     biomass: number;
     geothermal: number;
   }
-  const renewableData = renewableStmt.all(upperCode, normalizedStart, normalizedEnd) as RenewableRow[];
+  const renewableData = renewableStmt.all(upperCode, ...rangeArgs(range)) as RenewableRow[];
 
   // Merge data by date
   const mergedMap = new Map<string, Record<string, unknown>>();

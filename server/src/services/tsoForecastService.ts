@@ -1,6 +1,6 @@
 import db from '../config/database.js';
 import { Granularity } from '../types/index.js';
-import { normalizeTimestamp } from '../utils/timestamp.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 
 // Valid generation types for SQL column interpolation - prevents injection
 const VALID_GENERATION_TYPES = ['solar', 'wind_onshore', 'wind_offshore'] as const;
@@ -44,8 +44,7 @@ export function getLoadForecast(
   granularity: Granularity = 'hourly'
 ): TSOLoadForecastDataPoint[] {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   // Week-ahead forecasts have daily granularity with min/max values
   if (forecastType === 'week_ahead') {
@@ -59,17 +58,17 @@ export function getLoadForecast(
         MAX(publication_timestamp_utc) as publication_timestamp_utc
       FROM energy_load_forecast
       WHERE country_code = ?
-        AND target_timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('target_timestamp_utc')}
         AND forecast_type = 'week_ahead'
       GROUP BY date(target_timestamp_utc)
       ORDER BY timestamp
     `);
-    return stmt.all(upperCode, normalizedStart, normalizedEnd) as TSOLoadForecastDataPoint[];
+    return stmt.all(upperCode, ...rangeArgs(range)) as TSOLoadForecastDataPoint[];
   }
 
   // Day-ahead forecasts: no min/max
-  let whereClause = 'country_code = ? AND target_timestamp_utc BETWEEN ? AND ?';
-  const params: (string | number)[] = [upperCode, normalizedStart, normalizedEnd];
+  let whereClause = `country_code = ? AND ${rangeClause('target_timestamp_utc')}`;
+  const params: (string | number)[] = [upperCode, ...rangeArgs(range)];
 
   if (forecastType !== 'all') {
     whereClause += ' AND forecast_type = ?';
@@ -122,8 +121,7 @@ export function getGenerationForecast(
   granularity: Granularity = 'hourly'
 ): TSOGenerationForecastDataPoint[] {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   if (granularity === 'hourly') {
     const stmt = db.prepare(`
@@ -135,10 +133,10 @@ export function getGenerationForecast(
         ROUND(total_forecast_mw, 2) as total_forecast_mw
       FROM energy_generation_forecast
       WHERE country_code = ?
-        AND target_timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('target_timestamp_utc')}
       ORDER BY target_timestamp_utc
     `);
-    return stmt.all(upperCode, normalizedStart, normalizedEnd) as TSOGenerationForecastDataPoint[];
+    return stmt.all(upperCode, ...rangeArgs(range)) as TSOGenerationForecastDataPoint[];
   }
 
   // For aggregated granularity
@@ -152,11 +150,11 @@ export function getGenerationForecast(
       ROUND(AVG(total_forecast_mw), 2) as total_forecast_mw
     FROM energy_generation_forecast
     WHERE country_code = ?
-      AND target_timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('target_timestamp_utc')}
     GROUP BY ${groupByClause}
     ORDER BY timestamp
   `);
-  return stmt.all(upperCode, normalizedStart, normalizedEnd) as TSOGenerationForecastDataPoint[];
+  return stmt.all(upperCode, ...rangeArgs(range)) as TSOGenerationForecastDataPoint[];
 }
 
 /**
@@ -170,11 +168,10 @@ export function getLoadForecastAccuracy(
   granularity: Granularity = 'hourly'
 ): ForecastAccuracyDataPoint[] {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   let forecastTypeFilter = '';
-  const params: (string | number)[] = [upperCode, normalizedStart, normalizedEnd];
+  const params: (string | number)[] = [upperCode, ...rangeArgs(range)];
 
   if (forecastType !== 'all') {
     forecastTypeFilter = 'AND forecast_type = ?';
@@ -190,7 +187,7 @@ export function getLoadForecastAccuracy(
           ROUND(AVG(forecast_value_mw), 2) as forecast_value
         FROM energy_load_forecast
         WHERE country_code = ?
-          AND target_timestamp_utc BETWEEN ? AND ?
+          AND ${rangeClause('target_timestamp_utc')}
           ${forecastTypeFilter}
         GROUP BY strftime('%Y-%m-%dT%H:00:00Z', target_timestamp_utc)
       ),
@@ -200,7 +197,7 @@ export function getLoadForecastAccuracy(
           ROUND(AVG(load_mw), 2) as actual_value
         FROM energy_load
         WHERE country_code = ?
-          AND timestamp_utc BETWEEN ? AND ?
+          AND ${rangeClause('timestamp_utc')}
         GROUP BY strftime('%Y-%m-%dT%H:00:00Z', timestamp_utc)
       )
       SELECT
@@ -217,7 +214,7 @@ export function getLoadForecastAccuracy(
       ORDER BY f.timestamp
     `);
     // Need to add country and date range params twice (for forecast and actual CTEs)
-    return stmt.all(...params, upperCode, normalizedStart, normalizedEnd) as ForecastAccuracyDataPoint[];
+    return stmt.all(...params, upperCode, ...rangeArgs(range)) as ForecastAccuracyDataPoint[];
   }
 
   // For aggregated granularity
@@ -229,7 +226,7 @@ export function getLoadForecastAccuracy(
         ROUND(AVG(forecast_value_mw), 2) as forecast_value
       FROM energy_load_forecast
       WHERE country_code = ?
-        AND target_timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('target_timestamp_utc')}
         ${forecastTypeFilter}
       GROUP BY ${groupByClause.replace('timestamp_utc', 'target_timestamp_utc')}
     ),
@@ -239,7 +236,7 @@ export function getLoadForecastAccuracy(
         ROUND(AVG(load_mw), 2) as actual_value
       FROM energy_load
       WHERE country_code = ?
-        AND timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('timestamp_utc')}
       GROUP BY ${groupByClause}
     )
     SELECT
@@ -255,7 +252,7 @@ export function getLoadForecastAccuracy(
     INNER JOIN agg_actual a ON f.timestamp = a.timestamp
     ORDER BY f.timestamp
   `);
-  return stmt.all(...params, upperCode, normalizedStart, normalizedEnd) as ForecastAccuracyDataPoint[];
+  return stmt.all(...params, upperCode, ...rangeArgs(range)) as ForecastAccuracyDataPoint[];
 }
 
 /**
@@ -274,8 +271,7 @@ export function getGenerationForecastAccuracy(
   }
   
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   const forecastColumn = `${generationType}_mw`;
   const actualColumn = `${generationType}_mw`;
@@ -296,12 +292,12 @@ export function getGenerationForecastAccuracy(
         ON f.country_code = a.country_code
         AND f.target_timestamp_utc = a.timestamp_utc
       WHERE f.country_code = ?
-        AND f.target_timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('f.target_timestamp_utc')}
         AND f.${forecastColumn} IS NOT NULL
         AND a.${actualColumn} IS NOT NULL
       ORDER BY f.target_timestamp_utc
     `);
-    return stmt.all(upperCode, normalizedStart, normalizedEnd) as ForecastAccuracyDataPoint[];
+    return stmt.all(upperCode, ...rangeArgs(range)) as ForecastAccuracyDataPoint[];
   }
 
   // For aggregated granularity
@@ -313,7 +309,7 @@ export function getGenerationForecastAccuracy(
         ROUND(AVG(${forecastColumn}), 2) as forecast_value
       FROM energy_generation_forecast
       WHERE country_code = ?
-        AND target_timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('target_timestamp_utc')}
         AND ${forecastColumn} IS NOT NULL
       GROUP BY ${groupByClause.replace('timestamp_utc', 'target_timestamp_utc')}
     ),
@@ -323,7 +319,7 @@ export function getGenerationForecastAccuracy(
         ROUND(AVG(${actualColumn}), 2) as actual_value
       FROM energy_renewable
       WHERE country_code = ?
-        AND timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('timestamp_utc')}
         AND ${actualColumn} IS NOT NULL
       GROUP BY ${groupByClause}
     )
@@ -340,7 +336,7 @@ export function getGenerationForecastAccuracy(
     INNER JOIN agg_actual a ON f.timestamp = a.timestamp
     ORDER BY f.timestamp
   `);
-  return stmt.all(upperCode, normalizedStart, normalizedEnd, upperCode, normalizedStart, normalizedEnd) as ForecastAccuracyDataPoint[];
+  return stmt.all(upperCode, ...rangeArgs(range), upperCode, ...rangeArgs(range)) as ForecastAccuracyDataPoint[];
 }
 
 /**

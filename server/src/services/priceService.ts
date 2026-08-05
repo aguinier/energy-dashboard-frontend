@@ -1,6 +1,6 @@
 import db from '../config/database.js';
 import { PriceDataPoint, PriceStats, Granularity } from '../types/index.js';
-import { normalizeTimestamp } from '../utils/timestamp.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 
 export function getPriceData(
   countryCode: string,
@@ -9,8 +9,7 @@ export function getPriceData(
   granularity: Granularity = 'hourly'
 ): PriceDataPoint[] {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   if (granularity === 'hourly') {
     const stmt = db.prepare(`
@@ -19,10 +18,10 @@ export function getPriceData(
         ROUND(price_eur_mwh, 2) as price
       FROM energy_price
       WHERE country_code = ?
-        AND timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('timestamp_utc')}
       ORDER BY timestamp_utc
     `);
-    return stmt.all(upperCode, normalizedStart, normalizedEnd) as PriceDataPoint[];
+    return stmt.all(upperCode, ...rangeArgs(range)) as PriceDataPoint[];
   }
 
   // Aggregated queries
@@ -33,11 +32,11 @@ export function getPriceData(
       ROUND(AVG(price_eur_mwh), 2) as price
     FROM energy_price
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     GROUP BY ${groupByClause}
     ORDER BY timestamp
   `);
-  return stmt.all(upperCode, normalizedStart, normalizedEnd) as PriceDataPoint[];
+  return stmt.all(upperCode, ...rangeArgs(range)) as PriceDataPoint[];
 }
 
 export function getLatestPrices(countryCode?: string) {
@@ -82,8 +81,7 @@ export function getPriceStats(
   end: string
 ): PriceStats {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   const stmt = db.prepare(`
     SELECT
@@ -92,9 +90,9 @@ export function getPriceStats(
       ROUND(MAX(price_eur_mwh), 2) as max
     FROM energy_price
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
   `);
-  const stats = stmt.get(upperCode, normalizedStart, normalizedEnd) as { avg: number; min: number; max: number };
+  const stats = stmt.get(upperCode, ...rangeArgs(range)) as { avg: number; min: number; max: number };
 
   // Get current (latest) price
   const currentStmt = db.prepare(`
@@ -160,8 +158,7 @@ export function getPriceComparison(
   const upperCodes = countries.map(c => c.toUpperCase());
   const placeholders = upperCodes.map(() => '?').join(',');
   const groupByClause = getGroupByClause(granularity);
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   const stmt = db.prepare(`
     SELECT
@@ -170,12 +167,12 @@ export function getPriceComparison(
       ROUND(AVG(price_eur_mwh), 2) as avg_price
     FROM energy_price
     WHERE country_code IN (${placeholders})
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     GROUP BY ${groupByClause}, country_code
     ORDER BY date, country_code
   `);
 
-  const rawData = stmt.all(...upperCodes, normalizedStart, normalizedEnd) as Array<{
+  const rawData = stmt.all(...upperCodes, ...rangeArgs(range)) as Array<{
     date: string;
     country_code: string;
     avg_price: number;

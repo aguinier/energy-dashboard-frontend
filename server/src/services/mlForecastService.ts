@@ -1,5 +1,6 @@
 import db from '../config/database.js';
 import { ForecastType, Granularity } from '../types/index.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 
 /**
  * ML Forecast Accuracy Service
@@ -87,15 +88,10 @@ export function modelFilterSql(alias: string, modelName?: string): string {
   return modelName ? `AND ${alias}.model_name = ?` : '';
 }
 
-// Helper to normalize timestamps for the forecasts table (uses 'T' format)
-function normalizeForForecastsTable(isoTimestamp: string): string {
-  return isoTimestamp.replace('Z', '').split('.')[0];
-}
-
-// Helper to normalize timestamps for actual data tables (uses space format)
-function normalizeForActualsTable(isoTimestamp: string): string {
-  return isoTimestamp.replace('T', ' ').replace('Z', '').split('.')[0];
-}
+// Two local normalizers used to live here — `normalizeForForecastsTable`
+// (kept 'T') and `normalizeForActualsTable` (kept space, and had no caller at
+// all). Neither form is correct on its own: both `forecasts` and the actuals
+// tables store a mix of the two separators. See `timestampRange` (ABL-21).
 
 /**
  * Get ML forecast accuracy data by comparing forecasts with actuals
@@ -132,8 +128,7 @@ export function getMLForecastAccuracy(
   }
 
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeForForecastsTable(start);
-  const normalizedEnd = normalizeForForecastsTable(end);
+  const range = timestampRange(start, end);
 
   // Build horizon filter for CTE (uses f1 alias)
   let horizonClauseCTE = '';
@@ -176,7 +171,7 @@ export function getMLForecastAccuracy(
         FROM forecasts f1
         WHERE f1.country_code = ?
           AND f1.forecast_type = ?
-          AND f1.target_timestamp_utc BETWEEN ? AND ?
+          AND ${rangeClause('f1.target_timestamp_utc')}
           ${horizonClauseCTE}
           ${modelClauseCTE}
           AND f1.generated_at = (
@@ -208,7 +203,7 @@ export function getMLForecastAccuracy(
     `);
 
     return stmt.all(
-      upperCode, forecastType, normalizedStart, normalizedEnd, ...modelParams, upperCode
+      upperCode, forecastType, ...rangeArgs(range), ...modelParams, upperCode
     ) as MLForecastAccuracyDataPoint[];
   }
 
@@ -227,7 +222,7 @@ export function getMLForecastAccuracy(
       FROM forecasts f1
       WHERE f1.country_code = ?
         AND f1.forecast_type = ?
-        AND f1.target_timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('f1.target_timestamp_utc')}
         ${horizonClauseCTE}
         ${modelClauseCTE}
         AND f1.generated_at = (
@@ -265,7 +260,7 @@ export function getMLForecastAccuracy(
   `);
 
   return stmt.all(
-    upperCode, forecastType, normalizedStart, normalizedEnd, ...modelParams, upperCode
+    upperCode, forecastType, ...rangeArgs(range), ...modelParams, upperCode
   ) as MLForecastAccuracyDataPoint[];
 }
 
@@ -302,7 +297,7 @@ export function hasMLForecastRowsInWindow(
     SELECT 1 FROM forecasts f1
     WHERE f1.country_code = ?
       AND f1.forecast_type = ?
-      AND f1.target_timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('f1.target_timestamp_utc')}
       ${modelFilterSql('f1', modelName)}
     LIMIT 1
   `);
@@ -310,8 +305,7 @@ export function hasMLForecastRowsInWindow(
   return stmt.get(
     countryCode.toUpperCase(),
     forecastType,
-    normalizeForForecastsTable(start),
-    normalizeForForecastsTable(end),
+    ...rangeArgs(timestampRange(start, end)),
     ...params
   ) !== undefined;
 }

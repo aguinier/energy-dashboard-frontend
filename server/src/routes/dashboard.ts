@@ -141,10 +141,8 @@ router.get('/initial', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknow
   // Get load data for the default chart
   const endDate = end || new Date().toISOString();
   const startDate = start || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const normalizedStart = normalizeTimestamp(startDate);
-  const normalizedEnd = normalizeTimestamp(endDate);
-  
-  const loadData = loadService.getLoadData(country, normalizedStart, normalizedEnd, granularity);
+  // Passed as raw ISO; getLoadData derives its own bounds via `timestampRange`.
+  const loadData = loadService.getLoadData(country, startDate, endDate, granularity);
 
   res.json({
     success: true,

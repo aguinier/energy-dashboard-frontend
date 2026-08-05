@@ -579,8 +579,72 @@ Three things to know before touching this:
   map), disagreeing with each other. Share-of-load is wrong here: a net
   exporter generates more than it consumes, so single rows read over 100%.
 
+## Timestamp storage: two separators in one column
+
+**Every timestamp column in this database can hold both `2026-07-20T00:00:00`
+and `2026-07-20 00:00:00`.** Not one form per table — both forms inside the same
+column. Measured 2026-08-05:
+
+| column | `T` | space |
+|---|---:|---:|
+| `forecasts.target_timestamp_utc` | 2,035,692 | 5,208 |
+| `energy_price.timestamp_utc` | 828,878 | 701,420 |
+| `energy_load.timestamp_utc` | 279,880 | 2,480,336 |
+| `energy_renewable.timestamp_utc` | 90,636 | 721,319 |
+| `energy_generation`, `net_position`, `crossborder_flows`, `forecast_quantiles`, `energy_load_forecast`, `energy_generation_forecast` | 0 | all |
+
+Two independent causes. In `forecasts` the split is **by writer**: every
+`catboost`/`xgboost`/`lightgbm`/`tso_*` row is `T`, the two `chronos` models
+write space. In the actuals it is a **historical cutover** — the last `T` row is
+2025-11-26 (`energy_load`), 2025-11-25 (`energy_price`, `energy_renewable`);
+everything ingested since is space.
+
+SQLite compares these as plain strings, and `'T'` (84) > `' '` (32). So on the
+end date of a window, a `T` row sorts *above* a space-form upper bound and a
+space row sorts *below* a `T`-form upper bound. **Neither single form is a
+correct bound while both exist** — that was ABL-21, where
+`/forecasts/compare` normalised to a space and silently dropped every ML
+forecast dated on the end date (the default window ends at *now*, so the missing
+day was today).
+
+`server/src/utils/timestamp.ts` is the single answer. `timestampRange(start,
+end)` + `rangeClause(column)` + `rangeArgs(range)` build a two-clause predicate:
+a wide, bare-column `BETWEEN` that keeps the index seek, plus an exact
+`REPLACE(col, 'T', ' ') BETWEEN` re-check over the rows it found. **Use it for
+every window predicate**, including on the tables measured 100% space — the
+per-table matrix above is a measurement, not a guarantee, and three separate
+hand-rolled normalizers had already drifted apart before it existed
+(`forecastService`, `mlForecastService` and `crossCountryMetricsService` each
+kept a private copy; two kept `T`, one kept space, and that is precisely why
+those endpoints disagreed about the same window).
+
+Putting `REPLACE` on the column *alone* is correct but forfeits the seek —
+measured on FR/load over 7 days: 0.086 ms bare, 0.27 ms two-clause, 4.41 ms
+`REPLACE`-only, with the plan degrading from `(country_code=? AND
+forecast_type=? AND target_timestamp_utc>? AND target_timestamp_utc<?)` to
+`(country_code=? AND forecast_type=?)`. See the `date()`/`strftime()` entry in
+Common Issues for the 51s scar this repo already has from that class of change.
+
+**Still open (not fixed by ABL-21):** the forecast↔actual *join* predicates
+still read `REPLACE(f.target_timestamp_utc, 'T', ' ') = a.timestamp_utc`
+(`crossCountryMetricsService.ts:124`, `mlForecastService.ts`,
+`tsoForecastService.ts:297`). Those normalise only the forecast side, so a
+window reaching before the 2025-11-26 cutover silently fails to join
+`T`-separated actuals — a WAPE over a biased sample rather than a short series.
+Measured on `energy_price` FR, 2025-11-20..25: 741 rows matched of 860. Filed
+as its own ticket; current default windows (7d/30d/90d) do not reach back that
+far.
+
 ## Data the database does not have
 
+- **Timestamps that are all really UTC.** 26,405 rows carry a trailing offset
+  instead of a bare instant — `2025-11-28T00:00:00+02:00`, length 25 rather
+  than 19 — in `energy_price` (6,942), `energy_load` (11,717) and
+  `energy_renewable` (7,746). All of them fall in one band, 2025-11-13 to
+  2025-11-28, around the same ingest change that produced the separator cutover
+  above. A `+02:00` row is displayed two hours from where it belongs. This is
+  the sibling module's ingest, not ours; do not "fix" it here and do not
+  backfill it. Escalated under ABL-21.
 - **Nothing, for generation.** This entry used to say nuclear and fossil were
   unavailable. They are not: `energy_generation` holds the complete ENTSO-E
   A75 document — nuclear, every fossil type, waste, storage and the renewables
@@ -642,19 +706,23 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-05: **328 client tests / 24 files**, **209 server tests /
-15 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-05: **328 client tests / 24 files**, **219 server tests /
+16 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
-the client figure and touched no server file.)
+the client figure and touched no server file; ABL-21 added
+`utils/timestamp.test.ts` and one more `forecast.test.ts` case.)
 
 Two conventions, and they are for different layers.
 
 **Pure helpers get a colocated `.test.ts`.** `horizonBars.ts`, `sourceRows.ts`,
 `windowLabel.ts`, `lib/dataScale.ts`, `comparison/accuracyScale.ts`,
-`comparison/leaderboardRows.ts`, `store/migrate.ts`, `config/forecastModels.ts`.
-Logic is extracted into a pure function specifically so it can be tested this
-way.
+`comparison/leaderboardRows.ts`, `store/migrate.ts`, `config/forecastModels.ts`,
+`server/src/utils/timestamp.ts`. Logic is extracted into a pure function
+specifically so it can be tested this way. `timestamp.test.ts` also drives a
+throwaway in-memory SQLite holding both separator forms, and asserts the query
+*plan* still shows a range seek — the correctness and the performance property
+are both easy to break and neither is visible by reading.
 
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
@@ -910,3 +978,16 @@ interface TSOForecastAccuracyMetrics {
   equality join. Grouping/formatting output with `date()`/`strftime()` is
   fine — only filtering or joining on a function of the timestamp column
   defeats the index.
+- This is why window predicates go through `rangeClause`/`rangeArgs` rather
+  than wrapping the column in `REPLACE`: see "Timestamp storage: two separators
+  in one column".
+
+**A series is short by exactly one day, at the end of the window:**
+- Almost certainly a hand-rolled timestamp bound instead of
+  `timestampRange`/`rangeClause`/`rangeArgs`. `'T'` sorts above `' '`, so a
+  space-form upper bound excludes every `T`-separated row on the end date — and
+  the default window ends at *now*, making the dropped day today. That was
+  ABL-21; see "Timestamp storage: two separators in one column".
+- The symptom is a missing series with no error and no empty state, which reads
+  as "the model didn't run" rather than as a bug. Check the row count against
+  raw SQL before believing the chart.

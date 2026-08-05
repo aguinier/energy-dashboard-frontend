@@ -1,13 +1,14 @@
 import db from '../config/database.js';
 import { ForecastDataPoint, ForecastType, Granularity } from '../types/index.js';
-import { normalizeTimestamp } from '../utils/timestamp.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { resolveModelCandidates } from '../config/forecastModels.js';
 
-// Helper to normalize timestamps for the forecasts table which uses 'T' format
-function normalizeForForecastsTable(isoTimestamp: string): string {
-  // Remove Z suffix and milliseconds, keep 'T' separator
-  return isoTimestamp.replace('Z', '').split('.')[0];
-}
+// There used to be a second normalizer here, `normalizeForForecastsTable`,
+// which kept the 'T' separator "for the forecasts table". It had the mirror of
+// the ABL-21 defect: `forecasts` is 99.7% 'T' but the two chronos models write
+// a space, so a 'T'-form lower bound dropped every space-form row later in the
+// start day, and a 'T'-form upper bound pulled in every space-form row later in
+// the end day. Neither single form is right — see `timestampRange`.
 
 export function getForecastData(
   countryCode: string,
@@ -45,9 +46,7 @@ function queryForecasts(
   horizon: number | undefined,
   modelName: string
 ): ForecastDataPoint[] {
-  // Use forecast-specific normalization that keeps 'T' format
-  const normalizedStart = normalizeForForecastsTable(start);
-  const normalizedEnd = normalizeForForecastsTable(end);
+  const range = timestampRange(start, end);
 
   const modelClause = 'AND model_name = ?';
 
@@ -74,7 +73,7 @@ function queryForecasts(
       FROM forecasts f1
       WHERE country_code = ?
         AND forecast_type = ?
-        AND target_timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('target_timestamp_utc')}
         ${modelClause}
         ${horizonClause}
         AND generated_at = (
@@ -89,7 +88,7 @@ function queryForecasts(
       ORDER BY target_timestamp_utc
     `);
     return stmt.all(
-      upperCode, forecastType, normalizedStart, normalizedEnd, modelName, modelName
+      upperCode, forecastType, ...rangeArgs(range), modelName, modelName
     ) as ForecastDataPoint[];
   }
 
@@ -105,14 +104,14 @@ function queryForecasts(
     FROM forecasts
     WHERE country_code = ?
       AND forecast_type = ?
-      AND target_timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('target_timestamp_utc')}
       ${modelClause}
       ${horizonClause}
     GROUP BY ${groupByClause}
     ORDER BY timestamp
   `);
   return stmt.all(
-    upperCode, forecastType, normalizedStart, normalizedEnd, modelName
+    upperCode, forecastType, ...rangeArgs(range), modelName
   ) as ForecastDataPoint[];
 }
 
@@ -182,8 +181,7 @@ export function getForecastWithActuals(
   end: string
 ) {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   // Map forecast type to actual data table and column.
   //
@@ -225,10 +223,10 @@ export function getForecastWithActuals(
     FROM forecasts
     WHERE country_code = ?
       AND forecast_type = ?
-      AND target_timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('target_timestamp_utc')}
     ORDER BY target_timestamp_utc
   `);
-  const forecasts = forecastStmt.all(upperCode, forecastType, normalizedStart, normalizedEnd);
+  const forecasts = forecastStmt.all(upperCode, forecastType, ...rangeArgs(range));
 
   // Get actuals
   const actualStmt = db.prepare(`
@@ -237,10 +235,10 @@ export function getForecastWithActuals(
       ${mapping.column} as value
     FROM ${mapping.table}
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     ORDER BY timestamp_utc
   `);
-  const actuals = actualStmt.all(upperCode, normalizedStart, normalizedEnd);
+  const actuals = actualStmt.all(upperCode, ...rangeArgs(range));
 
   return { forecasts, actuals };
 }
@@ -274,8 +272,7 @@ export function getMultiHorizonForecastData(
   end: string
 ): MultiHorizonDataPoint[] {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeForForecastsTable(start);
-  const normalizedEnd = normalizeForForecastsTable(end);
+  const range = timestampRange(start, end);
 
   // Get D+1 forecasts (horizon 0-30 hours)
   const d1Stmt = db.prepare(`
@@ -285,7 +282,7 @@ export function getMultiHorizonForecastData(
     FROM forecasts f1
     WHERE country_code = ?
       AND forecast_type = ?
-      AND target_timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('target_timestamp_utc')}
       AND horizon_hours BETWEEN 0 AND 30
       AND generated_at = (
         SELECT MAX(f2.generated_at)
@@ -297,7 +294,7 @@ export function getMultiHorizonForecastData(
       )
     ORDER BY target_timestamp_utc
   `);
-  const d1Data = d1Stmt.all(upperCode, forecastType, normalizedStart, normalizedEnd) as Array<{ timestamp: string; value: number }>;
+  const d1Data = d1Stmt.all(upperCode, forecastType, ...rangeArgs(range)) as Array<{ timestamp: string; value: number }>;
 
   // Get D+2 forecasts (horizon 24-54 hours)
   const d2Stmt = db.prepare(`
@@ -307,7 +304,7 @@ export function getMultiHorizonForecastData(
     FROM forecasts f1
     WHERE country_code = ?
       AND forecast_type = ?
-      AND target_timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('target_timestamp_utc')}
       AND horizon_hours BETWEEN 24 AND 54
       AND generated_at = (
         SELECT MAX(f2.generated_at)
@@ -319,7 +316,7 @@ export function getMultiHorizonForecastData(
       )
     ORDER BY target_timestamp_utc
   `);
-  const d2Data = d2Stmt.all(upperCode, forecastType, normalizedStart, normalizedEnd) as Array<{ timestamp: string; value: number }>;
+  const d2Data = d2Stmt.all(upperCode, forecastType, ...rangeArgs(range)) as Array<{ timestamp: string; value: number }>;
 
   // Merge into a map by timestamp
   const dataMap = new Map<string, MultiHorizonDataPoint>();

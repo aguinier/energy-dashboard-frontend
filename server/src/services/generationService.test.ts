@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
+import { timestampRange, rangeArgs } from '../utils/timestamp.js';
 
 // The module under test imports the shared connection, which opens a real
 // SQLite file at import time. getGenerationMix always receives its own
@@ -235,7 +236,7 @@ describe('getGenerationMix query plan', () => {
 
     const plan = db
       .prepare(`EXPLAIN QUERY PLAN ${GENERATION_MIX_SQL}`)
-      .all('FR', '2026-07-29 12:00:00', '2026-07-29 14:00:00') as Array<{ detail: string }>;
+      .all('FR', ...rangeArgs(timestampRange('2026-07-29T12:00:00Z', '2026-07-29T14:00:00Z'))) as Array<{ detail: string }>;
     const detail = plan.map((row) => row.detail).join('\n');
 
     expect(detail).toMatch(/SEARCH energy_generation USING (COVERING )?INDEX idx_generation_country_time \(country_code=\? AND timestamp_utc>\? AND timestamp_utc<\?\)/);
@@ -357,7 +358,7 @@ describe('getRenewableShare query plan', () => {
 
     const plan = db
       .prepare(`EXPLAIN QUERY PLAN ${RENEWABLE_SHARE_SQL}`)
-      .all('FR', '2026-07-29 12:00:00', '2026-07-29 14:00:00') as Array<{ detail: string }>;
+      .all('FR', ...rangeArgs(timestampRange('2026-07-29T12:00:00Z', '2026-07-29T14:00:00Z'))) as Array<{ detail: string }>;
     const detail = plan.map((row) => row.detail).join('\n');
 
     expect(detail).toMatch(/SEARCH energy_generation USING (COVERING )?INDEX idx_generation_country_time \(country_code=\? AND timestamp_utc>\? AND timestamp_utc<\?\)/);
@@ -395,7 +396,7 @@ describe.skipIf(!replicaHasGenerationTable())('getGenerationMix against the repl
 
       const plan = db
         .prepare(`EXPLAIN QUERY PLAN ${GENERATION_MIX_SQL}`)
-        .all('FR', start.replace('T', ' ').split('.')[0], end.replace('T', ' ').split('.')[0]) as Array<{ detail: string }>;
+        .all('FR', ...rangeArgs(timestampRange(start, end))) as Array<{ detail: string }>;
       const detail = plan.map((row) => row.detail).join('\n');
       expect(detail).toMatch(/SEARCH energy_generation USING (COVERING )?INDEX idx_generation_country_time/);
 
@@ -423,7 +424,7 @@ describe.skipIf(!replicaHasGenerationTable())('getRenewableShare against the rep
 
       const plan = db
         .prepare(`EXPLAIN QUERY PLAN ${RENEWABLE_SHARE_SQL}`)
-        .all('FR', start.replace('T', ' ').split('.')[0], end.replace('T', ' ').split('.')[0]) as Array<{ detail: string }>;
+        .all('FR', ...rangeArgs(timestampRange(start, end))) as Array<{ detail: string }>;
       const detail = plan.map((row) => row.detail).join('\n');
       expect(detail).toMatch(/SEARCH energy_generation USING (COVERING )?INDEX idx_generation_country_time/);
 

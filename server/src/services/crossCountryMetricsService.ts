@@ -1,5 +1,6 @@
 import db from '../config/database.js';
 import { ForecastType } from '../types/index.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 
 /**
  * Cross-Country Forecast Metrics Service
@@ -37,10 +38,12 @@ export interface CountryMetrics {
 
 export type CrossCountryMetricsResult = Record<string, CountryMetrics>;
 
-// Helper to normalize timestamps for the forecasts table (uses 'T' format)
-function normalizeTimestamp(isoTimestamp: string): string {
-  return isoTimestamp.replace('Z', '').split('.')[0];
-}
+// A private `normalizeTimestamp` used to shadow the shared one here, keeping
+// the 'T' separator "for the forecasts table". That shadow is why this endpoint
+// and /forecasts/compare disagreed about the same window over the same table
+// (ABL-21): compare normalised its bounds to a space and lost the end day,
+// this one kept 'T' and did not. Both were wrong in opposite directions; see
+// `timestampRange`.
 
 /**
  * Weighted absolute percentage error: 100 * sum|e| / sum|actual|.
@@ -82,8 +85,7 @@ export function getCrossCountryMetrics(
     return {};
   }
 
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   // Handle special case for hydro_total which is a computed column
   const actualColumn = forecastType === 'hydro_total'
@@ -98,7 +100,7 @@ export function getCrossCountryMetrics(
         f1.forecast_value
       FROM forecasts f1
       WHERE f1.forecast_type = ?
-        AND f1.target_timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('f1.target_timestamp_utc')}
         AND f1.generated_at = (
           SELECT MAX(f2.generated_at)
           FROM forecasts f2
@@ -126,7 +128,7 @@ export function getCrossCountryMetrics(
     ORDER BY f.country_code
   `);
 
-  const rows = stmt.all(forecastType, normalizedStart, normalizedEnd) as Array<{
+  const rows = stmt.all(forecastType, ...rangeArgs(range)) as Array<{
     country_code: string;
     mae: number | null;
     wape: number | null;

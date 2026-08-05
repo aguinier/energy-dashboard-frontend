@@ -1,6 +1,6 @@
 import db from '../config/database.js';
 import { LoadDataPoint, AggregatedLoad, Granularity } from '../types/index.js';
-import { normalizeTimestamp } from '../utils/timestamp.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 
 export function getLoadData(
   countryCode: string,
@@ -9,8 +9,7 @@ export function getLoadData(
   granularity: Granularity = 'hourly'
 ): LoadDataPoint[] | AggregatedLoad[] {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   if (granularity === 'hourly') {
     const stmt = db.prepare(`
@@ -20,10 +19,10 @@ export function getLoadData(
         data_quality as quality
       FROM energy_load
       WHERE country_code = ?
-        AND timestamp_utc BETWEEN ? AND ?
+        AND ${rangeClause('timestamp_utc')}
       ORDER BY timestamp_utc
     `);
-    return stmt.all(upperCode, normalizedStart, normalizedEnd) as LoadDataPoint[];
+    return stmt.all(upperCode, ...rangeArgs(range)) as LoadDataPoint[];
   }
 
   // Aggregated queries
@@ -36,11 +35,11 @@ export function getLoadData(
       ROUND(MIN(load_mw), 2) as min_load
     FROM energy_load
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     GROUP BY ${groupByClause}
     ORDER BY date
   `);
-  return stmt.all(upperCode, normalizedStart, normalizedEnd) as AggregatedLoad[];
+  return stmt.all(upperCode, ...rangeArgs(range)) as AggregatedLoad[];
 }
 
 export function getLatestLoad(countryCode?: string) {
@@ -90,8 +89,7 @@ export function getLoadComparison(
   const upperCodes = countries.map(c => c.toUpperCase());
   const placeholders = upperCodes.map(() => '?').join(',');
   const groupByClause = getGroupByClause(granularity);
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   const stmt = db.prepare(`
     SELECT
@@ -100,12 +98,12 @@ export function getLoadComparison(
       ROUND(AVG(load_mw), 2) as avg_load
     FROM energy_load
     WHERE country_code IN (${placeholders})
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     GROUP BY ${groupByClause}, country_code
     ORDER BY date, country_code
   `);
 
-  const rawData = stmt.all(...upperCodes, normalizedStart, normalizedEnd) as Array<{
+  const rawData = stmt.all(...upperCodes, ...rangeArgs(range)) as Array<{
     date: string;
     country_code: string;
     avg_load: number;
@@ -125,8 +123,7 @@ export function getLoadComparison(
 }
 
 export function getLoadStats(countryCode: string, start: string, end: string) {
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
   const stmt = db.prepare(`
     SELECT
       ROUND(AVG(load_mw), 2) as avg_load,
@@ -135,9 +132,9 @@ export function getLoadStats(countryCode: string, start: string, end: string) {
       COUNT(*) as data_points
     FROM energy_load
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
   `);
-  return stmt.get(countryCode.toUpperCase(), normalizedStart, normalizedEnd);
+  return stmt.get(countryCode.toUpperCase(), ...rangeArgs(range));
 }
 
 function getGroupByClause(granularity: Granularity): string {

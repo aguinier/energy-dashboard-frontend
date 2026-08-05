@@ -1,6 +1,6 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
-import { normalizeTimestamp } from '../utils/timestamp.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { resolveModelName } from '../config/forecastModels.js';
 import {
   NetPositionActualPoint,
@@ -61,13 +61,12 @@ export function getNetPositionActuals(
       net_position_mw as net_position_mw
     FROM net_position
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     ORDER BY timestamp_utc
   `);
   return stmt.all(
     storageCode(countryCode),
-    normalizeTimestamp(start),
-    normalizeTimestamp(end)
+    ...rangeArgs(timestampRange(start, end))
   ) as NetPositionActualPoint[];
 }
 
@@ -165,8 +164,7 @@ export function getNetPositionForecast(
   modelId?: string
 ): { points: NetPositionForecastPoint[]; meta: ForecastMeta } {
   const code = storageCode(countryCode);
-  const from = normalizeTimestamp(start);
-  const to = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
   // Pin to the registered model. Selecting purely on generated_at let any
   // newer run take over the display by being newer - including V011, rejected
   // on evidence 2026-07-25 at +11.7% pooled MAE. A model must be registered.
@@ -204,7 +202,7 @@ export function getNetPositionForecast(
              SELECT target_timestamp_utc, MAX(generated_at) AS generated_at
                FROM forecasts
               WHERE country_code = ? AND forecast_type = 'net_position' AND model_name = ?
-                AND target_timestamp_utc BETWEEN ? AND ?
+                AND ${rangeClause('target_timestamp_utc')}
               GROUP BY target_timestamp_utc
            )
            SELECT
@@ -226,7 +224,7 @@ export function getNetPositionForecast(
                  AND q.generated_at         = f.generated_at
                  AND q.model_name           = f.model_name
           WHERE f.country_code = ? AND f.forecast_type = 'net_position' AND f.model_name = ?
-            AND f.target_timestamp_utc BETWEEN ? AND ?
+            AND ${rangeClause('f.target_timestamp_utc')}
           GROUP BY f.target_timestamp_utc, f.forecast_value, f.generated_at, f.horizon_hours, f.model_version
           ORDER BY f.target_timestamp_utc`
         )
@@ -235,7 +233,7 @@ export function getNetPositionForecast(
              SELECT target_timestamp_utc, MAX(generated_at) AS generated_at
                FROM forecasts
               WHERE country_code = ? AND forecast_type = 'net_position' AND model_name = ?
-                AND target_timestamp_utc BETWEEN ? AND ?
+                AND ${rangeClause('target_timestamp_utc')}
               GROUP BY target_timestamp_utc
            )
            SELECT
@@ -251,10 +249,10 @@ export function getNetPositionForecast(
              ON w.target_timestamp_utc = f.target_timestamp_utc
             AND w.generated_at         = f.generated_at
           WHERE f.country_code = ? AND f.forecast_type = 'net_position' AND f.model_name = ?
-            AND f.target_timestamp_utc BETWEEN ? AND ?
+            AND ${rangeClause('f.target_timestamp_utc')}
           ORDER BY f.target_timestamp_utc`
         )
-  ).all(code, modelName, from, to, code, modelName, from, to) as RawForecastRow[];
+  ).all(code, modelName, ...rangeArgs(range), code, modelName, ...rangeArgs(range)) as RawForecastRow[];
 
   const meta: ForecastMeta = {
     bidding_zone: resolveBiddingZone(countryCode),

@@ -421,6 +421,15 @@ function seed(db: DatabaseType): void {
   HOURS.forEach((h, i) =>
     forecast.run('FR', 'renewable', atT(h), GENERATED_AT, 12, 125 + i * 10, 'catboost', 'v1')
   );
+  // Two more FR hydro_total rows, PAST the end of WINDOW (04:00 and 05:00 on the
+  // same day) and deliberately stored in the SPACE form, which the chronos
+  // models really do write. They are the trap for the obvious-looking fix to
+  // ABL-21: bounding the window with a plain 'T'-form upper bound admits every
+  // space-form row later in the end day, because ' ' sorts below 'T'. Nothing
+  // may return these for WINDOW.
+  [4, 5].forEach((h, i) =>
+    forecast.run('FR', 'hydro_total', at(h), GENERATED_AT, 12, 500 + i * 10, 'chronos-2-V010', 'V010')
+  );
 
   // BE net position, the registered Chronos run, with a p10/p90 band.
   const quantile = db.prepare(

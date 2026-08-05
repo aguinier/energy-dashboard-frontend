@@ -1,6 +1,6 @@
 import defaultDb from '../config/database.js';
 import { RenewableMix, RenewableTimeSeriesPoint, Granularity } from '../types/index.js';
-import { normalizeTimestamp } from '../utils/timestamp.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 
 export function getRenewableData(
   countryCode: string,
@@ -9,8 +9,7 @@ export function getRenewableData(
   granularity: Granularity = 'daily'
 ): RenewableTimeSeriesPoint[] {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
   const groupByClause = getGroupByClause(granularity);
 
   const stmt = defaultDb.prepare(`
@@ -25,12 +24,12 @@ export function getRenewableData(
       ROUND(AVG(COALESCE(other_renewable_mw, 0)), 2) as other
     FROM energy_renewable
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
     GROUP BY ${groupByClause}
     ORDER BY timestamp
   `);
 
-  return stmt.all(upperCode, normalizedStart, normalizedEnd) as RenewableTimeSeriesPoint[];
+  return stmt.all(upperCode, ...rangeArgs(range)) as RenewableTimeSeriesPoint[];
 }
 
 export function getRenewableMix(
@@ -39,8 +38,7 @@ export function getRenewableMix(
   end: string
 ): RenewableMix {
   const upperCode = countryCode.toUpperCase();
-  const normalizedStart = normalizeTimestamp(start);
-  const normalizedEnd = normalizeTimestamp(end);
+  const range = timestampRange(start, end);
 
   const stmt = defaultDb.prepare(`
     SELECT
@@ -53,10 +51,10 @@ export function getRenewableMix(
       ROUND(AVG(COALESCE(other_renewable_mw, 0)), 2) as other
     FROM energy_renewable
     WHERE country_code = ?
-      AND timestamp_utc BETWEEN ? AND ?
+      AND ${rangeClause('timestamp_utc')}
   `);
 
-  const data = stmt.get(upperCode, normalizedStart, normalizedEnd) as RenewableMix | undefined;
+  const data = stmt.get(upperCode, ...rangeArgs(range)) as RenewableMix | undefined;
 
   if (!data) {
     return {
