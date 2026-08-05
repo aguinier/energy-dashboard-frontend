@@ -1,11 +1,10 @@
-import { useState, useCallback, memo } from 'react';
+import { useState, useCallback, useMemo, memo } from 'react';
 import { m } from 'framer-motion';
 import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
 import { useDashboardStore } from '@/store/dashboardStore';
-import { getMetricColorHSL, METRIC_THRESHOLDS } from '@/lib/colors';
-import { FORECAST_TYPE_MAP_OPTIONS } from '@/lib/comparisonConstants';
-import { cn } from '@/lib/utils';
+import { SCALE_CLEAN, SCALE_DIRTY, SCALE_MEDIUM } from '@/lib/dataScale';
 import type { CrossCountryMetrics, CrossCountryMetricsEntry } from '@/types';
+import { wapeColor, wapeScale } from './accuracyScale';
 
 // Shared map constants
 const EUROPE_GEO_URL = '/europe.topojson';
@@ -55,32 +54,32 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
     if (data[code]) goToCountry(code);
   }, [data, goToCountry]);
 
-  // Get the threshold info for the legend
-  const thresholds = METRIC_THRESHOLDS[mapForecastType] || METRIC_THRESHOLDS.load;
+  // The scale is this forecast type's own observed spread across countries —
+  // the same relative basis the heatmap and leaderboard use. The legend below
+  // prints its real ends rather than a fixed cutoff, so the colours and the
+  // legend cannot disagree. See accuracyScale.ts.
+  const scale = useMemo(
+    () => wapeScale(Object.values(data).map((byType) => byType[mapForecastType]?.wape)),
+    [data, mapForecastType],
+  );
 
   return (
     <div className="relative rounded-lg border bg-card overflow-hidden">
-      {/* Forecast type selector — only shown when store is 'all' */}
+      {/* In "All" mode the map has to pick one type to colour by, and it picks
+          load. Say so, rather than leaving the choice implicit.
+
+          A row of forecast-type buttons used to sit here with an empty
+          onClick — "Load" rendered as selected and every other button did
+          nothing when pressed, so it read as a filter that silently refused to
+          filter. The Type control in the filter bar above does the real thing
+          and is always visible, so the dead copy is gone rather than wired up
+          twice. */}
       {comparisonForecastType === 'all' && (
-        <div className="absolute top-4 left-4 z-10 flex gap-0.5 rounded-lg bg-muted p-1">
-          {FORECAST_TYPE_MAP_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => {
-                // We can't set the store to a single type here since that
-                // would affect heatmap/leaderboard too. We'd need local override.
-                // For now, this selector is hidden when a specific type is selected.
-              }}
-              className={cn(
-                'rounded-md px-3 py-1 text-xs font-medium transition-all',
-                mapForecastType === opt.value
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              )}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div className="absolute top-4 left-4 z-10 rounded-lg border bg-background/90 px-3 py-1.5 backdrop-blur">
+          <span className="text-xs text-muted-foreground">
+            Coloured by <span className="font-medium text-foreground">load</span> — pick a Type above
+            to map another
+          </span>
         </div>
       )}
 
@@ -102,12 +101,11 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
                 const metricValue = entry?.[comparisonMetric];
                 const hasData = typeof metricValue === 'number' && !isNaN(metricValue);
 
-                // For WAPE use HSL interpolation; for others use primary color
-                const fill = comparisonMetric === 'wape' && typeof metricValue === 'number' && !isNaN(metricValue)
-                  ? getMetricColorHSL(metricValue, mapForecastType)
-                  : hasData
-                    ? 'hsl(var(--primary))'
-                    : 'hsl(var(--muted))';
+                // WAPE gets the ranked teal->terracotta ramp; anything else is
+                // a flat "has data" fill, since MAE/RMSE across countries of
+                // wildly different size is a magnitude, not a score.
+                const rankedFill = comparisonMetric === 'wape' ? wapeColor(metricValue, scale) : null;
+                const fill = rankedFill ?? (hasData ? 'hsl(var(--primary))' : 'hsl(var(--muted))');
 
                 return (
                   <Geography
@@ -161,23 +159,35 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
         </m.div>
       )}
 
-      {/* Legend */}
+      {/* Legend — the ends are the measured best and worst for this forecast
+          type in this window, not fixed cutoffs, because the fill is each
+          country's rank within that set. */}
       {comparisonMetric === 'wape' && (
         <div className="absolute bottom-4 left-4 rounded-lg border bg-background/90 backdrop-blur p-3 z-10">
           <p className="text-xs font-medium mb-2">WAPE ({mapForecastType})</p>
-          <div className="flex items-center gap-2">
-            <div
-              className="h-3 w-24 rounded"
-              style={{
-                background: 'linear-gradient(to right, hsl(120, 75%, 45%), hsl(60, 75%, 45%), hsl(0, 75%, 45%))',
-              }}
-            />
-          </div>
-          <div className="flex justify-between text-micro text-muted-foreground mt-1 gap-2">
-            <span>0%</span>
-            <span>{thresholds.excellent}%</span>
-            <span>{thresholds.good}%+</span>
-          </div>
+          {scale.usable ? (
+            <>
+              <div
+                className="h-3 w-24 rounded"
+                style={{
+                  background: `linear-gradient(to right, ${SCALE_CLEAN}, ${SCALE_MEDIUM}, ${SCALE_DIRTY})`,
+                }}
+              />
+              <div className="flex justify-between text-micro text-muted-foreground mt-1 gap-2">
+                <span>{scale.min.toFixed(1)}%</span>
+                <span>{scale.max.toFixed(1)}%</span>
+              </div>
+              <p className="mt-1 text-micro text-muted-foreground max-w-[15rem]">
+                rank, best → worst of {scale.count}
+              </p>
+            </>
+          ) : (
+            <p className="text-micro text-muted-foreground max-w-[15rem]">
+              {scale.count === 0
+                ? 'No country has a measurable WAPE for this type in this window.'
+                : `Only ${scale.count} measured — too few to rank, so countries are left uncoloured.`}
+            </p>
+          )}
         </div>
       )}
     </div>

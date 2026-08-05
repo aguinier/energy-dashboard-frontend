@@ -6,6 +6,7 @@ import { useDashboardStore } from '@/store/dashboardStore';
 import { usePrefetchCountry } from '@/hooks/usePrefetch';
 import { MAP_METRICS } from '@/lib/constants';
 import { divergingT, symmetricBound } from '@/lib/divergingScale';
+import { lerpHex, SCALE_CLEAN, SCALE_DIRTY, SCALE_MEDIUM } from '@/lib/dataScale';
 import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
 import { selectMapGeometry, hoverCardClearsSelector, countryAriaLabel } from './mapGeometry';
@@ -28,9 +29,12 @@ const COUNTRY_NAME_MAP: Record<string, string> = {
 // Load is a magnitude → single-hue teal ramp, light → dark.
 // Price / renewable share carry real polarity (cheap/expensive, clean/dirty)
 // → diverging clean (green) → medium (amber) → dirty (terracotta).
-const CLEAN = '#2C8A6B';
-const MEDIUM = '#C99A2A';
-const DIRTY = '#8E3D2C';
+// The three diverging stops moved to lib/dataScale.ts when ComparisonView
+// adopted the same ramp — one definition, so the two views cannot disagree
+// about which colour a given position on the scale is.
+const CLEAN = SCALE_CLEAN;
+const MEDIUM = SCALE_MEDIUM;
+const DIRTY = SCALE_DIRTY;
 const LOAD_LOW = '#CFE3DC';
 const LOAD_HIGH = '#12503F';
 // No-data must not sit on the same beige axis as the diverging scale's zero,
@@ -44,16 +48,7 @@ const IMPORT_STRONG = '#B45309';
 const NEUTRAL_ZERO = '#F4F1EC';
 const EXPORT_STRONG = '#14506E';
 
-function lerp(a: string, b: string, t: number): string {
-  const ah = parseInt(a.slice(1), 16);
-  const bh = parseInt(b.slice(1), 16);
-  const ar = (ah >> 16) & 0xff, ag = (ah >> 8) & 0xff, ab = ah & 0xff;
-  const br = (bh >> 16) & 0xff, bg = (bh >> 8) & 0xff, bb = bh & 0xff;
-  const r = Math.round(ar + (br - ar) * t);
-  const g = Math.round(ag + (bg - ag) * t);
-  const c = Math.round(ab + (bb - ab) * t);
-  return `rgb(${r},${g},${c})`;
-}
+const lerp = lerpHex;
 
 function dataColor(metric: MetricType, value: number, min: number, max: number): string {
   // Net position is signed, so it cannot use the min→max normalisation below:

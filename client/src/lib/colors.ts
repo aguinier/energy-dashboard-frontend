@@ -90,45 +90,25 @@ export function getRenewableChartColors() {
 // ============================================================================
 // Cross-Country Comparison Metric Thresholds
 // ============================================================================
-
-export const METRIC_THRESHOLDS: Record<string, { excellent: number; good: number }> = {
-  load: { excellent: 3, good: 5 },
-  price: { excellent: 12, good: 18 },
-  renewable: { excellent: 20, good: 30 },
-  solar: { excellent: 20, good: 30 },
-  wind_onshore: { excellent: 20, good: 30 },
-  wind_offshore: { excellent: 20, good: 30 },
-  hydro_total: { excellent: 20, good: 30 },
-  biomass: { excellent: 20, good: 30 },
-};
-
-/**
- * Get a discrete color for a WAPE value based on forecast type thresholds.
- * Green if excellent, yellow if good, red otherwise.
- */
-export function getMetricColor(wape: number, forecastType: string): string {
-  const thresholds = METRIC_THRESHOLDS[forecastType] || METRIC_THRESHOLDS.load;
-  if (wape < thresholds.excellent) return '#22C55E';
-  if (wape < thresholds.good) return '#F59E0B';
-  return '#EF4444';
-}
-
-/**
- * Get an HSL-interpolated color for smooth choropleth maps.
- * Smoothly transitions green -> yellow -> red based on WAPE thresholds.
- */
-export function getMetricColorHSL(wape: number, forecastType: string): string {
-  const thresholds = METRIC_THRESHOLDS[forecastType] || METRIC_THRESHOLDS.load;
-  const maxVal = thresholds.good * 1.5; // Red zone starts at 1.5x the "good" threshold
-
-  // Clamp between 0 and maxVal
-  const clamped = Math.max(0, Math.min(wape, maxVal));
-  // Normalize to 0..1 range
-  const normalized = clamped / maxVal;
-  // Hue: 120 (green) -> 60 (yellow) -> 0 (red)
-  const hue = 120 - normalized * 120;
-  return `hsl(${hue}, 75%, 45%)`;
-}
+//
+// `METRIC_THRESHOLDS`, `getMetricColor` and `getMetricColorHSL` used to live
+// here: fixed per-type "excellent"/"good" WAPE cutoffs driving a green/amber/
+// red scale. They were removed under ABL-19. Two reasons, in order:
+//
+//  - The cutoffs (load 3%/5%, price 12%/18%) were never calibrated against
+//    measured accuracy, and the real data does not reach them — over the
+//    default 30-day window on 2026-08-05, 21 of 24 load cells and 23 of 24
+//    price cells were the same red, so the colour carried no information and
+//    the leaderboard graded every country "Needs Improvement" at once.
+//  - Green-vs-red is the one pair a red-green colour blind viewer cannot
+//    separate, and `EuropeMap` had already settled the house scale away from
+//    it (see `lib/dataScale.ts`).
+//
+// The replacement is `components/comparison/accuracyScale.ts` — normalise
+// within one forecast type's own observed spread, colour on the shared
+// teal -> amber -> terracotta ramp. Nothing in the data supports an absolute
+// grade, so nothing renders one. If a calibrated target ever exists, it is a
+// stated business number, not a constant to reinvent here.
 
 /**
  * Append an alpha channel to a hex color string.

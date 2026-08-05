@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import { useDashboardStore } from '@/store/dashboardStore';
-import { getMetricColor, withOpacity } from '@/lib/colors';
+import { withOpacity } from '@/lib/colors';
 import { FORECAST_TYPE_CONFIG, sortForecastTypes } from '@/lib/comparisonConstants';
 import type { CrossCountryMetrics } from '@/types';
+import { wapeColor, wapeScale, type WapeScale } from './accuracyScale';
 
 interface ComparisonHeatmapProps {
   data: CrossCountryMetrics;
@@ -26,6 +27,18 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
     });
     return sortForecastTypes(Array.from(types));
   }, [data, comparisonForecastType]);
+
+  // One scale per column. A column is one forecast type, so its spread is the
+  // only comparable basis for colouring its cells — sharing a range across
+  // columns would paint every load cell teal and every wind cell terracotta
+  // purely because wind is harder to forecast. See accuracyScale.ts.
+  const scaleByType = useMemo(() => {
+    const scales = new Map<string, WapeScale>();
+    for (const type of forecastTypes) {
+      scales.set(type, wapeScale(Object.values(data).map((byType) => byType[type]?.wape)));
+    }
+    return scales;
+  }, [data, forecastTypes]);
 
   // Sort countries
   const sortedCountries = useMemo(() => {
@@ -57,6 +70,7 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
   }
 
   return (
+    <div className="space-y-2">
     <div className="overflow-x-auto rounded-lg border bg-card">
       <table className="w-full text-sm">
         <thead>
@@ -102,7 +116,10 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
                   );
                 }
 
-                const color = comparisonMetric === 'wape' ? getMetricColor(value, type) : undefined;
+                const scale = scaleByType.get(type);
+                const color = comparisonMetric === 'wape' && scale
+                  ? wapeColor(value, scale)
+                  : null;
                 const formatted = comparisonMetric === 'wape'
                   ? `${value.toFixed(1)}%`
                   : value.toFixed(2);
@@ -122,6 +139,15 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
           ))}
         </tbody>
       </table>
+    </div>
+    {comparisonMetric === 'wape' && (
+      <p className="px-1 text-micro text-ink-dim">
+        Colour is a country's rank <em>within its own column</em> — best teal, worst terracotta.
+        Columns do not compare to each other: load and wind are not equally forecastable, so a teal
+        wind cell is not as accurate as a teal load cell. Rank, not distance — read the number for
+        the size of the gap. A column with fewer than three measured countries is left uncoloured.
+      </p>
+    )}
     </div>
   );
 }

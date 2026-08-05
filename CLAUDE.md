@@ -66,6 +66,7 @@ energy-dashboard-frontend/
 │       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts, modelComparison.ts
 │       │   │                                   # Pure helpers (each has a .test.ts)
 │       │   ├── comparison/           # ComparisonView's heatmap/map/leaderboard/filter bar
+│       │   │   └── accuracyScale.ts, leaderboardRows.ts  # Pure helpers (each has a .test.ts)
 │       │   ├── map/                  # EuropeMap.tsx (choropleth), MapMetricSelector.tsx, mapGeometry.ts
 │       │   ├── layout/               # AbleHeader.tsx
 │       │   └── ui/                   # shadcn/radix primitives (button, card, tabs, select, ...)
@@ -88,7 +89,7 @@ energy-dashboard-frontend/
 │       └── lib/
 │           ├── constants.ts, comparisonConstants.ts  # TAB_FORECAST_TYPE, MAP_METRICS, etc.
 │           ├── chartAdapters.ts, chartTicks.ts, chartSummary.ts, colors.ts,
-│           │   divergingScale.ts, servedModel.ts, trailingGap.ts, timezone.ts,
+│           │   dataScale.ts, divergingScale.ts, servedModel.ts, trailingGap.ts, timezone.ts,
 │           │   queryRetry.ts, netPositionProvenance.ts, formatters.ts,
 │           │   providerRegistry.ts, utils.ts
 │
@@ -487,6 +488,59 @@ positive actual (`mapeSamples` in the response, always <= `dataPoints`) and
 returns `null` rather than `0` when no point qualified — e.g. solar overnight,
 where every actual is legitimately zero.
 
+**Colouring a WAPE is a ranking, never a grade** (ABL-19). All three tabs
+colour through `components/comparison/accuracyScale.ts`: `wapeScale()` collects
+one forecast type's measured values, `wapeColor()` places a country at its
+**rank** within them on the shared teal → amber → terracotta ramp
+(`lib/dataScale.ts`, the same three stops `EuropeMap` uses).
+
+Three properties are load-bearing:
+
+- **Per forecast type, never across types.** A 7% load WAPE and a 90% wind WAPE
+  are not the same amount of wrong. The heatmap builds one scale per column
+  (`ComparisonHeatmap.tsx`), the map one per selected type, the leaderboard one
+  per table.
+- **Rank, not magnitude.** Value-normalising into min..max was tried first and
+  fails on this data: measured 2026-08-05, 21 of the 24 load WAPEs sit in
+  2.1-8.3% and then NL is 30.4%, so a magnitude scale pins those 21 into the
+  first fifth of the ramp as one indistinguishable teal. Every caller prints the
+  WAPE next to the colour, because colour distance no longer means error
+  distance.
+- **Fewer than `MIN_COUNTRIES_FOR_SCALE` (3) measured countries gets no colour
+  at all.** With two values the colour only restates which number is bigger
+  while implying a spread nobody measured. Live example: the `hydro_total`,
+  `wind_offshore` and `biomass` heatmap columns hold BE and FR only.
+
+The predecessors are gone, and the reason is the failure mode this repo keeps
+hitting. `METRIC_THRESHOLDS`, `getMetricColor` and `getMetricColorHSL` (in
+`lib/colors.ts`) and `getStatusLabel` (in `lib/comparisonConstants.ts`) graded a
+WAPE against fixed cutoffs — load 3%/5%, price 12%/18% — that nothing had ever
+calibrated and the data does not reach. On the default 30-day window that made
+21 of 24 load cells and 23 of 24 price cells the identical red, and stamped
+every one of the 24 countries "Needs Improvement" from 9.9% to 76.8%. Both
+files keep a comment where the code was. Green-vs-red was the second problem:
+it is the one pair a red-green colour blind viewer cannot separate, and
+`EuropeMap` had already moved the house scale off it.
+
+**The leaderboard needs a single forecast type; "All" renders a prompt, not a
+table.** It used to build each row by averaging every metric over whatever
+types that country had, which produced two wrong numbers at once. `mae` for
+`load` is megawatts and `mae` for `price` is EUR/MWh, so the MAE column added
+euros to megawatts. And coverage is not uniform — measured 2026-08-05, 20 of 24
+countries had exactly {load, price}, DE/AT had 5 types, FR/BE had 8 — so IT's
+9.9% "average WAPE" was load and price while BE's 76.8% also carried
+wind_onshore (191%) and wind_offshore (156%). The table sorted on that by
+default, ranking IT far above BE for forecasts IT is not measured on; per type,
+BE actually forecasts load better than IT (5.6% vs 8.1%). No composite is
+recoverable without a weighting the data does not define, so
+`buildLeaderboardRows` takes a concrete type and returns `[]` for `'all'`
+(`components/comparison/leaderboardRows.ts`), and the view offers type buttons
+instead. The heatmap is the cross-type view; it never averages.
+
+The "Status" column is now "Standing", carrying an exact `#rank / n` rather
+than an adjective. Unmeasurable countries are unranked, not last, and are
+excluded from `n`.
+
 ## Generation data
 
 Two tables, both written from **one** A75 fetch per country per window
@@ -588,14 +642,18 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-05: **296 client tests / 21 files**, **189 server tests /
-13 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-05: **328 client tests / 24 files**, **209 server tests /
+15 files**, clean typecheck. Fewer passing than that means something broke.
+(The server figure this said until ABL-19 — 189 / 13 — had drifted; nothing in
+that ticket touched `server/`.)
 
 Two conventions, and they are for different layers.
 
 **Pure helpers get a colocated `.test.ts`.** `horizonBars.ts`, `sourceRows.ts`,
-`windowLabel.ts`, `store/migrate.ts`, `config/forecastModels.ts`. Logic is
-extracted into a pure function specifically so it can be tested this way.
+`windowLabel.ts`, `lib/dataScale.ts`, `comparison/accuracyScale.ts`,
+`comparison/leaderboardRows.ts`, `store/migrate.ts`, `config/forecastModels.ts`.
+Logic is extracted into a pure function specifically so it can be tested this
+way.
 
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecastComparison`,

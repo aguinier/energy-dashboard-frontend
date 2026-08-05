@@ -1,5 +1,3 @@
-import { METRIC_THRESHOLDS } from './colors';
-
 // Forecast type display config
 export const FORECAST_TYPE_CONFIG: Record<string, { label: string; shortLabel: string; unit: string }> = {
   load:          { label: 'Load',           shortLabel: 'Load',  unit: 'MW' },
@@ -41,13 +39,9 @@ export const FORECAST_TYPE_MAP_OPTIONS = FORECAST_TYPE_ORDER.map((t) => ({
   label: FORECAST_TYPE_CONFIG[t].shortLabel,
 }));
 
-// Status badge helper (value is a WAPE percentage)
-export function getStatusLabel(
-  wape: number,
-  forecastType: string,
-): { label: string; level: 'excellent' | 'good' | 'poor' } {
-  const thresholds = METRIC_THRESHOLDS[forecastType] || METRIC_THRESHOLDS.load;
-  if (wape < thresholds.excellent) return { label: 'Excellent', level: 'excellent' };
-  if (wape < thresholds.good) return { label: 'Good', level: 'good' };
-  return { label: 'Needs Improvement', level: 'poor' };
-}
+// `getStatusLabel` lived here — it turned a WAPE into "Excellent" / "Good" /
+// "Needs Improvement" against `METRIC_THRESHOLDS`. Removed under ABL-19 along
+// with those thresholds: on real data it returned "Needs Improvement" for all
+// 24 countries at once, spanning 9.9% to 76.8% WAPE, which is a verdict the
+// numbers never earned. `ComparisonLeaderboard` now shows an exact rank within
+// the forecast type instead. See `components/comparison/accuracyScale.ts`.
