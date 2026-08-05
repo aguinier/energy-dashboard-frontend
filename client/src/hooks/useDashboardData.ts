@@ -21,15 +21,6 @@ import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType } fr
 // ============================================================================
 
 /**
- * Get the time anchor from a preset
- */
-export function getAnchorFromPreset(preset: TimePreset): TimeAnchor {
-  if (['24h', '7d', '30d', '90d', '1y'].includes(preset)) return 'past';
-  if (['today', 'thisWeek'].includes(preset)) return 'now';
-  return 'future';
-}
-
-/**
  * Calculate date range based on new TimePreset system
  * @param preset - The time preset (e.g., '7d', 'today', 'next7d')
  * @param offsetHours - Hours to offset from now (for navigation arrows)
@@ -61,16 +52,6 @@ export function getDateRangeForPreset(
       break;
     case '30d':
       start = new Date(adjustedNow.getTime() - 30 * 24 * 60 * 60 * 1000);
-      end = adjustedNow;
-      anchor = 'past';
-      break;
-    case '90d':
-      start = new Date(adjustedNow.getTime() - 90 * 24 * 60 * 60 * 1000);
-      end = adjustedNow;
-      anchor = 'past';
-      break;
-    case '1y':
-      start = new Date(adjustedNow.getTime() - 365 * 24 * 60 * 60 * 1000);
       end = adjustedNow;
       anchor = 'past';
       break;
@@ -139,10 +120,7 @@ export function getGranularityForPreset(preset: TimePreset): Granularity {
     case 'next7d':
       return 'hourly';
     case '30d':
-    case '90d':
       return 'daily';
-    case '1y':
-      return 'weekly';
     default:
       return 'hourly';
   }

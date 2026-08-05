@@ -5,7 +5,7 @@ import { getDateRangeForPreset } from '@/hooks/useDashboardData';
 import type { TimePreset } from '@/types';
 
 const ALL_PRESETS: TimePreset[] = [
-  '24h', '7d', '30d', '90d', '1y',
+  '24h', '7d', '30d',
   'today', 'thisWeek',
   'next1d', 'next24h', 'next48h', 'next7d',
 ];
@@ -21,6 +21,13 @@ describe('getWindowLabel', () => {
     expect(getWindowLabel('24h')).toBe('24h');
     expect(getWindowLabel('7d')).toBe('7d');
     expect(getWindowLabel('30d')).toBe('30d');
+  });
+
+  // `90d`/`1y` were removed from `TimePreset` (ABL-4). A blob persisted before
+  // that can still carry one, and `migratePersisted` resets it — but if that
+  // ever regresses, the qualifier must degrade to the raw string rather than
+  // throw or render `undefined` next to a number computed over a 7-day window.
+  it('falls back to the raw value for a preset that no longer exists', () => {
     expect(getWindowLabel('90d')).toBe('90d');
     expect(getWindowLabel('1y')).toBe('1y');
   });

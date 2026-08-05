@@ -24,8 +24,6 @@ export const WINDOW_LABEL: Record<TimePreset, string> = {
   '24h': '24h',
   '7d': '7d',
   '30d': '30d',
-  '90d': '90d',
-  '1y': '1y',
   today: 'today',
   thisWeek: 'this week',
   next1d: 'next day',

@@ -79,6 +79,39 @@ describe('migratePersisted', () => {
     expect(out.analyticsConfig).toBeUndefined();
   });
 
+  // `90d`/`1y` left the `TimePreset` union in ABL-4 (nothing in the UI could
+  // set them). Left unmigrated, the persist middleware's shallow merge keeps a
+  // stored '90d' alive in a store with no branch for it: `getDateRangeForPreset`
+  // silently serves its `default` 7-day window while the header qualifier says
+  // "90d" — a wrong window under a confident label.
+  it.each(['90d', '1y'])('resets a persisted %s timePreset that no longer exists', (preset) => {
+    const out = migratePersisted({ timePreset: preset, timeAnchor: 'past' }, 0);
+    expect(out.timePreset).toBe('7d');
+    expect(out.timeAnchor).toBe('past');
+  });
+
+  it.each(['24h', '7d', '30d', 'today', 'thisWeek', 'next1d', 'next24h', 'next48h', 'next7d'])(
+    'keeps the still-valid timePreset %s',
+    (preset) => {
+      expect(migratePersisted({ timePreset: preset }, 0).timePreset).toBe(preset);
+    },
+  );
+
+  it('defaults timePreset when absent entirely', () => {
+    const out = migratePersisted({}, 0);
+    expect(out.timePreset).toBe('7d');
+    expect(out.timeAnchor).toBe('past');
+  });
+
+  // The anchor is persisted separately from the preset and only `setTimePreset`
+  // keeps the pair in step, so a mismatched pair must not survive: a 'past'
+  // anchor on 'next7d' describes a window the fetch never uses.
+  it('re-derives a stale timeAnchor from the preset', () => {
+    expect(migratePersisted({ timePreset: 'next7d', timeAnchor: 'past' }, 0).timeAnchor).toBe('future');
+    expect(migratePersisted({ timePreset: 'today', timeAnchor: 'past' }, 0).timeAnchor).toBe('now');
+    expect(migratePersisted({ timePreset: '30d', timeAnchor: 'future' }, 0).timeAnchor).toBe('past');
+  });
+
   it('is a no-op at the current version', () => {
     const s = { currentView: 'map' as const };
     expect(migratePersisted(s, PERSIST_VERSION)).toEqual(s);
@@ -117,6 +150,10 @@ describe('migratePersisted', () => {
       ['layers as null', { layers: null }],
       ['layers.tso as a string', { layers: { tso: 'nope', ml: {} } }],
       ['layers missing tso/ml', { layers: {} }],
+      ['null timePreset', { timePreset: null }],
+      ['numeric timePreset', { timePreset: 90 }],
+      ['object timePreset', { timePreset: { value: '90d' } }],
+      ['null timeAnchor', { timePreset: '7d', timeAnchor: null }],
       ['completely empty object', {}],
       ['unrelated junk fields only', { foo: 'bar', baz: [1, 2, 3] }],
     ];

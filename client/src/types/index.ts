@@ -106,9 +106,15 @@ export type AppView = 'map' | 'country' | 'comparison';
 // New time navigation types
 export type TimeAnchor = 'past' | 'now' | 'future';
 
+// `90d` and `1y` were removed here (ABL-4): no control could set them, so no
+// user could reach them and nothing exercised their branches. Re-adding either
+// means adding it to `PRESET_DURATIONS_HOURS`, `WINDOW_LABEL`,
+// `getDateRangeForPreset`, `getGranularityForPreset` and `RangeSegment` in the
+// same change — the first three are keyed `Record<TimePreset, …>` so the
+// compiler will name the ones you missed.
 export type TimePreset =
   // Historical (backward-looking from now)
-  | '24h' | '7d' | '30d' | '90d' | '1y'
+  | '24h' | '7d' | '30d'
   // Around now (centered on current time)
   | 'today' | 'thisWeek'
   // Forecast (forward-looking from now)

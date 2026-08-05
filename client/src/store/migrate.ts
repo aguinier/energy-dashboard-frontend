@@ -1,6 +1,27 @@
-export const PERSIST_VERSION = 5;
+export const PERSIST_VERSION = 6;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
+
+// Every value the `TimePreset` union can still hold (client/src/types/index.ts).
+// Deliberately duplicated as a plain literal rather than derived from a shared
+// constant: this module must stay importable by the store alone, with no pull
+// on the hooks/React Query graph. Keep it in step with the union — a value
+// missing here is silently reset to '7d' on the next version bump.
+const VALID_TIME_PRESETS = new Set([
+  '24h', '7d', '30d',
+  'today', 'thisWeek',
+  'next1d', 'next24h', 'next48h', 'next7d',
+]);
+
+// Anchor implied by each preset, mirroring `setTimePreset` (dashboardStore.ts).
+const ANCHOR_FOR_PRESET: Record<string, string> = {
+  today: 'now',
+  thisWeek: 'now',
+  next1d: 'future',
+  next24h: 'future',
+  next48h: 'future',
+  next7d: 'future',
+};
 
 // Real tab values, read off the `TabsTrigger` elements in
 // CountryDashboardView.tsx — NOT their visible labels. `renewables` renders
@@ -82,6 +103,25 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
   // resetAnalyticsConfig) are gone too — nothing calls them. Drop the blob so
   // it doesn't outlive the slice it configured.
   delete next.analyticsConfig;
+
+  // `90d` and `1y` are no longer `TimePreset` values (ABL-4): nothing in the
+  // UI could set them, and `getDateRangeForPreset` / `WINDOW_LABEL` /
+  // `PRESET_DURATIONS_HOURS` no longer carry a branch for either. A returning
+  // user can still have one persisted from a build that did, and the persist
+  // middleware shallow-merges old state over the defaults — so an unmigrated
+  // '90d' would survive into a store the code no longer understands: the
+  // header qualifier would fall through to the raw string ("90d"), no
+  // RangeSegment button would read as active, and `getDateRangeForPreset`
+  // would quietly serve the `default` 7-day window while the page claimed 90
+  // days. Reset anything outside the union to the store's own default.
+  //
+  // The anchor is re-derived rather than trusted: it is persisted separately
+  // and only `setTimePreset` keeps the pair consistent, so a blob written by
+  // any other path can carry a mismatched one.
+  if (typeof next.timePreset !== 'string' || !VALID_TIME_PRESETS.has(next.timePreset)) {
+    next.timePreset = '7d';
+  }
+  next.timeAnchor = ANCHOR_FOR_PRESET[next.timePreset as string] ?? 'past';
 
   return next;
 }

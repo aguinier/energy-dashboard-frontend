@@ -1,13 +1,19 @@
-// Legacy time ranges (kept for backward compatibility)
-export const TIME_RANGES = [
-  { value: '24h', label: '24 Hours' },
-  { value: '7d', label: '7 Days' },
-  { value: '30d', label: '30 Days' },
-  { value: '90d', label: '90 Days' },
-  { value: '1y', label: '1 Year' },
-] as const;
+import type { TimePreset } from '@/types';
 
-// New categorized time presets
+// UNBUILT DESIGN SPEC — not wired to anything. This describes a categorised
+// time picker (quick access / historical / around now / forecast) that was
+// designed and never built; the shipped control is `RangeSegment.tsx`, five
+// hardcoded buttons. Kept deliberately (ABL-4) as the record of that design
+// while the product decision is with the CEO — it is the only place the
+// intended shape is written down.
+//
+// Do not read it as a description of the code. It is NOT typed as
+// `TimePreset[]` and does not track that union: `90d` and `1y` below are no
+// longer `TimePreset` values at all (removed in ABL-4 — see
+// `client/src/types/index.ts:115`), and `today`/`thisWeek`/`next1d`/`next48h`
+// are valid `TimePreset` values that no control can currently set. Wiring any
+// of this up means re-adding the missing union members and durations, not just
+// rendering this object.
 export const TIME_PRESETS = {
   // Quick access presets (shown in main bar)
   quickAccess: [
@@ -37,13 +43,14 @@ export const TIME_PRESETS = {
   ],
 } as const;
 
-// Preset duration in hours (for navigation arrows)
-export const PRESET_DURATIONS_HOURS: Record<string, number> = {
+// Window duration in hours per `TimePreset`, used by `shiftTimeWindow` to move
+// the window by half its length. One entry per `TimePreset` value and no more —
+// `90d`/`1y` were dropped from both together (ABL-4) so the union and this map
+// cannot disagree about which presets exist.
+export const PRESET_DURATIONS_HOURS: Record<TimePreset, number> = {
   '24h': 24,
   '7d': 168,
   '30d': 720,
-  '90d': 2160,
-  '1y': 8760,
   'today': 24,
   'thisWeek': 168,
   'next1d': 24,
@@ -51,13 +58,6 @@ export const PRESET_DURATIONS_HOURS: Record<string, number> = {
   'next48h': 48,
   'next7d': 168,
 };
-
-export const GRANULARITIES = [
-  { value: 'hourly', label: 'Hourly' },
-  { value: 'daily', label: 'Daily' },
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'monthly', label: 'Monthly' },
-] as const;
 
 // The single source of truth for map metric copy. `unit` is the unit the map
 // actually renders — EuropeMap divides load by 1000, so it is GW, not MW.
@@ -71,29 +71,9 @@ export const MAP_METRICS = [
   { value: 'net_position', label: 'Net position', unit: 'MW', legendLabel: 'Avg net position' },
 ] as const;
 
-export const ANIMATION_DURATION = {
-  fast: 200,
-  normal: 300,
-  slow: 500,
-  chart: 1500,
-} as const;
-
 export const API_BASE_URL = '/api';
 
 export const DEFAULT_COUNTRY = 'DE'; // Germany as default
-
-export const MAJOR_COUNTRIES = [
-  'DE', // Germany
-  'FR', // France
-  'IT', // Italy
-  'ES', // Spain
-  'GB', // United Kingdom
-  'PL', // Poland
-  'NL', // Netherlands
-  'BE', // Belgium
-  'AT', // Austria
-  'CH', // Switzerland
-] as const;
 
 // Refresh intervals in milliseconds
 export const REFRESH_INTERVALS = {
@@ -106,6 +86,21 @@ export const REFRESH_INTERVALS = {
  * Primary forecast type per country-view tab. The model picker renders the
  * registry entry for whichever tab is active, so the models offered always
  * match the data on screen.
+ *
+ * Keys are tab *ids*, read off the `TabsTrigger` elements in
+ * `CountryDashboardView.tsx:106-110` — they do not match the visible labels.
+ * `renewables` renders as "Generation" and `analytics` renders as "Forecast
+ * accuracy". Both ids are live: `analytics` outlived the analytics dashboard
+ * that `ebdb5ab` removed, because the accuracy tab reuses the id.
+ *
+ * Those two entries are currently unread — `TABS_WITH_MODEL_PICKER`
+ * (`CountryDashboardView.tsx:56`) keeps `ModelPicker` off the Generation and
+ * Forecast-accuracy tabs, so `useActiveForecastType` never looks them up.
+ * Keep them anyway: adding a forecast overlay to either tab puts it back in
+ * that set, and a missing key falls through to `?? 'load'`
+ * (`useForecastModels.ts:74`) — the Generation tab would then offer load
+ * models for solar data, which is the wrong-number-under-a-plausible-label
+ * failure this dashboard exists to avoid.
  */
 export const TAB_FORECAST_TYPE: Record<string, string> = {
   price: 'price',

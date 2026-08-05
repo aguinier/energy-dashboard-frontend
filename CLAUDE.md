@@ -202,26 +202,45 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
 
 ### 4. Time navigation
 
-`RangeSegment.tsx` renders five buttons (`24h`, `7d`, `30d`, `+24h`, `+7d`)
-that set `timePreset` in the store. The full `TimePreset` union is wider than
-what's exposed there:
+`RangeSegment.tsx` (`client/src/components/dashboard/RangeSegment.tsx:7-13`)
+renders five buttons (`24h`, `7d`, `30d`, `+24h`, `+7d`) that set `timePreset`
+in the store. It is the **only** writer of `timePreset` anywhere in the client.
+The `TimePreset` union is still wider than what it exposes:
 
 ```typescript
 type TimeAnchor = 'past' | 'now' | 'future';
 
 type TimePreset =
-  | '24h' | '7d' | '30d' | '90d' | '1y'          // Historical
+  | '24h' | '7d' | '30d'                          // Historical
   | 'today' | 'thisWeek'                          // Around now
   | 'next1d' | 'next24h' | 'next48h' | 'next7d';  // Forecast
 ```
 
-`useComputedDateRange()` / `getDateRangeForPreset()` (`useDashboardData.ts`)
-turn a preset + `timeOffset` into concrete start/end dates; `shiftTimeWindow()`
-moves the window by half its duration; `jumpToLive()` resets to `today`/now.
+`getDateRangeForPreset()` (`useDashboardData.ts`) turns a preset + `timeOffset`
+into concrete start/end dates.
 
-`90d` and `1y` are defined but currently unreachable from the UI (only the
-`24h`/`7d`/`30d`/`+24h`/`+7d` buttons are wired up) — worth knowing before
-"fixing" a 90-day bug nobody can hit through the app.
+**Unreachable presets and dead time-navigation actions.** `90d` and `1y` used
+to be in this union with no button to set them; they were removed outright
+(ABL-4) rather than wired up. Four values are still unreachable —
+`today`, `thisWeek`, `next1d`, `next48h` — and they are unreachable for a
+different reason: the store actions that would set them have lost their
+callers. `jumpToLive()` (`dashboardStore.ts:166`, sets `today`) and
+`shiftTimeWindow()` (`dashboardStore.ts:153`) are **called from nowhere** in
+`client/src`, so `timeOffset` is always `0` and `isLive` is never `true`
+(nothing reads `isLive` either). Those four keep market-aligned window logic
+(`getTodayBrussels`/`getNextDayBrussels`, `lib/timezone.ts`) that a restored
+live/now control would need, so they were kept pending a product decision on
+the time picker — see `TIME_PRESETS` in `lib/constants.ts`, an unbuilt design
+spec kept deliberately and not wired to this union.
+
+Adding a preset back means touching six places. Two are keyed
+`Record<TimePreset, …>` and the compiler will name them for you:
+`PRESET_DURATIONS_HOURS` (`lib/constants.ts`) and `WINDOW_LABEL`
+(`dashboard/windowLabel.ts`). The other four fail silently:
+`getDateRangeForPreset` and `getGranularityForPreset` (`useDashboardData.ts`)
+fall through to a `default` 7-day hourly window, `RangeSegment` needs the
+button, and `VALID_TIME_PRESETS` (`store/migrate.ts`) will otherwise reset the
+value on the next `PERSIST_VERSION` bump.
 
 ### 5. State management
 
@@ -235,16 +254,23 @@ must never throw: `state` is an arbitrary, possibly years-old localStorage blob.
 Skipping this step leaves returning users on a shape the current code doesn't
 understand — previously a blank tab panel or a view nobody chose.
 
-`timeRange` (legacy) and `timePreset` (current) both persist and both drive
-UI, duplicating one concept. This is deliberate, not an oversight: the
-`/dashboard/overview|map|initial` endpoints accept `TimeRange` as a closed enum
-and compute start/end server-side, with no `start`/`end` passthrough, so the
-client can't drop `timeRange` without a backend change first.
+**`timeRange` is gone.** This section used to say `timeRange` (the legacy
+closed enum) and `timePreset` both persisted and both drove UI, and that the
+`/dashboard/*` endpoints forced it. Neither is true any more: nothing in
+`client/src` declares or reads a `timeRange` field, `useDashboardOverview`
+sends an explicit `start`/`end` computed by `getDateRangeForPreset`
+(`useDashboardData.ts:135`), and `migratePersisted` deletes a stored
+`timeRange` outright (`store/migrate.ts:93`). `timePreset` is the single field
+describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
+field for `ComparisonView`, is unrelated and does still exist.)
+
+Note `timePreset` is validated on migration against `VALID_TIME_PRESETS`
+(`store/migrate.ts`) and `timeAnchor` is re-derived from it, because the two
+persist separately and only `setTimePreset` keeps them in step.
 
 ```typescript
 // Key persisted state properties
 selectedCountry: string;
-timeRange: TimeRange;                          // legacy, still read by /dashboard/* endpoints
 timePreset: TimePreset;
 timeAnchor: TimeAnchor;
 selectedModelByType: Record<string, string | null>;  // per forecast-type model choice; null = hidden
@@ -386,7 +412,7 @@ Key files:
 type TimeAnchor = 'past' | 'now' | 'future';
 
 type TimePreset =
-  | '24h' | '7d' | '30d' | '90d' | '1y'
+  | '24h' | '7d' | '30d'
   | 'today' | 'thisWeek'
   | 'next1d' | 'next24h' | 'next48h' | 'next7d';
 
@@ -506,7 +532,11 @@ interface TSOForecastAccuracyMetrics {
 
 **Time navigation not working:**
 - Check `timePreset` and `timeAnchor` in store
-- Verify date range calculation in `useComputedDateRange()`
+- Verify date range calculation in `getDateRangeForPreset()`
+  (`useDashboardData.ts`) — there is no `useComputedDateRange()`, despite what
+  this file claimed until ABL-4
+- A preset with no `case` there resolves to the `default` 7-day window with no
+  error, so check the preset is actually in `TimePreset` and in that switch
 - Bump `PERSIST_VERSION` and add a `migratePersisted()` clause if you changed
   the shape of anything in `partialize`
 
