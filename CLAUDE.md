@@ -644,8 +644,9 @@ cd server && npx vitest run
 
 Green as of 2026-08-05: **328 client tests / 24 files**, **209 server tests /
 15 files**, clean typecheck. Fewer passing than that means something broke.
-(The server figure this said until ABL-19 — 189 / 13 — had drifted; nothing in
-that ticket touched `server/`.)
+(The server figure moved from 189 / 13 in ABL-17, which added
+`routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
+the client figure and touched no server file.)
 
 Two conventions, and they are for different layers.
 
@@ -656,7 +657,7 @@ Logic is extracted into a pure function specifically so it can be tested this
 way.
 
 **Routes get an end-to-end test against a fixture database.**
-`server/src/routes/*.test.ts` for `dashboard`, `forecastComparison`,
+`server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
 `tsoForecast`, `crossCountryComparison` and `netPosition`: a real request in, the
 real `ApiResponse<T>` envelope out. Two shared pieces:
 
@@ -677,10 +678,20 @@ it a broken route keeps returning the correct cached answer.
 The fixture's six countries each stand for a failure shape this repo has shipped
 a wrong number for — `PT` all-NULL generation, `AT` no generation rows *and*
 xgboost-only coverage, `BE` negative day-ahead prices plus all-zero solar
-actuals, `FR` pumped storage and consumption-only fossil going negative, `GR`
-stopped publishing mid-window, `DE` the ordinary case plus a superseded forecast
-vintage that catches a broken `MAX(generated_at)` dedup. Add to that set rather
-than inventing a seventh country for a shape already covered.
+actuals, `FR` pumped storage and consumption-only fossil going negative **plus
+the two-column hydro shape** (`hydro_run_mw` + `hydro_reservoir_mw`, with the
+02:00 reservoir reading NULL so `NULL + 40` staying NULL is asserted rather than
+assumed — ABL-17), `GR` stopped publishing mid-window, `DE` the ordinary case
+plus a superseded forecast vintage that catches a broken `MAX(generated_at)`
+dedup. Add to that set rather than inventing a seventh country for a shape
+already covered.
+
+One format difference the fixture encodes on purpose: `forecasts.target_timestamp_utc`
+is written with a **`T`** separator (`atT`), matching production, while the
+actuals tables use a space (`at`). That is not cosmetic — `normalizeTimestamp`
+converts query bounds to the space form, and `'T'` > `' '` as a string, so a
+range predicate on `forecasts` silently excludes the window's end date. See
+ABL-21; do not "tidy" the fixture into one format, or the bug becomes untestable.
 
 ## Common Development Tasks
 
