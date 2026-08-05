@@ -94,11 +94,26 @@ export function getDateRangeForPreset(
       anchor = 'future';
       break;
 
-    default:
-      // Default to 7d historical
+    default: {
+      // Adding a `TimePreset` without a case above is a compile error here,
+      // not a silent trailing-7d window under that preset's own label — the
+      // failure this dashboard exists to prevent. `TimePreset` is not a
+      // `Record` key here, so nothing else would have named the omission
+      // (client/src/types/index.ts:115).
+      const unhandled: never = preset;
+      void unhandled;
+
+      // The runtime fallback stays. `preset` is typed, but it originates in a
+      // persisted blob, and `migratePersisted` only runs when the stored
+      // PERSIST_VERSION differs — a same-version blob with a hand-edited or
+      // future-build `timePreset` reaches here as an unvalidated string. A 7d
+      // window is wrong, but `getWindowLabel` degrades to the raw string
+      // beside it (windowLabel.ts:36), so it does not render as a confident
+      // known-preset claim, and it beats a crash on every chart.
       start = new Date(adjustedNow.getTime() - 7 * 24 * 60 * 60 * 1000);
       end = adjustedNow;
       anchor = 'past';
+    }
   }
 
   return { start, end, anchor };
@@ -121,8 +136,15 @@ export function getGranularityForPreset(preset: TimePreset): Granularity {
       return 'hourly';
     case '30d':
       return 'daily';
-    default:
+    default: {
+      // Same guard as `getDateRangeForPreset`: a new preset must state its own
+      // granularity rather than inherit 'hourly' by falling through. Hourly
+      // over a long window is a request the API answers slowly, not a wrong
+      // number, so the runtime fallback is safe to keep.
+      const unhandled: never = preset;
+      void unhandled;
       return 'hourly';
+    }
   }
 }
 
