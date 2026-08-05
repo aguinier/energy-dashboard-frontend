@@ -38,6 +38,8 @@ export interface UnifiedComparisonResponse {
     forecastType: string;
     countryCode: string;
     timeRange: { start: string; end: string };
+    /** `forecasts.model_name` the ml side was pinned to; null when unpinned. */
+    mlModel: string | null;
     dataAvailability: {
       tso: { dayAhead: boolean; weekAhead: boolean };
       ml: { d1: boolean; d2: boolean };
@@ -52,7 +54,8 @@ export function getUnifiedComparison(
   countryCode: string,
   forecastType: ForecastType,
   start: string,
-  end: string
+  end: string,
+  mlModelName?: string
 ): UnifiedComparisonResponse {
   const upperCode = countryCode.toUpperCase();
 
@@ -64,6 +67,9 @@ export function getUnifiedComparison(
       forecastType,
       countryCode: upperCode,
       timeRange: { start, end },
+      // null means the ml side is unpinned — the latest run per timestamp
+      // whichever model produced it. Not a claim that any given model served.
+      mlModel: mlModelName ?? null,
       dataAvailability: {
         tso: { dayAhead: false, weekAhead: false },
         ml: { d1: false, d2: false },
@@ -82,7 +88,9 @@ export function getUnifiedComparison(
   }
 
   // Get ML metrics
-  const mlMetrics = mlForecastService.getMLForecastMetricsByHorizon(upperCode, forecastType, start, end);
+  const mlMetrics = mlForecastService.getMLForecastMetricsByHorizon(
+    upperCode, forecastType, start, end, mlModelName
+  );
   response.ml = {
     d1: mlMetrics.d1 ? addBiasToMetrics(mlMetrics.d1) : undefined,
     d2: mlMetrics.d2 ? addBiasToMetrics(mlMetrics.d2) : undefined,
@@ -124,9 +132,10 @@ export function getBestForecastByType(
   countryCode: string,
   forecastType: ForecastType,
   start: string,
-  end: string
+  end: string,
+  mlModelName?: string
 ): { provider: 'tso' | 'ml'; horizon: string; mape: number } | null {
-  const comparison = getUnifiedComparison(countryCode, forecastType, start, end);
+  const comparison = getUnifiedComparison(countryCode, forecastType, start, end, mlModelName);
 
   // Collect all available metrics with their identifiers
   const candidates: Array<{ provider: 'tso' | 'ml'; horizon: string; mape: number }> = [];
@@ -308,6 +317,8 @@ export interface RollingAccuracyResponse {
     forecastType: string;
     countryCode: string;
     timeRange: { start: string; end: string };
+    /** `forecasts.model_name` the ml side was pinned to; null when unpinned. */
+    mlModel: string | null;
   };
 }
 
@@ -320,7 +331,8 @@ export function getRollingAccuracy(
   forecastType: ForecastType,
   start: string,
   end: string,
-  windowDays: number = 7
+  windowDays: number = 7,
+  mlModelName?: string
 ): RollingAccuracyResponse {
   const upperCode = countryCode.toUpperCase();
   const startDate = new Date(start);
@@ -378,7 +390,7 @@ export function getRollingAccuracy(
     // Get ML D+1 metrics
     try {
       const mlD1 = mlForecastService.getMLForecastAccuracyMetrics(
-        upperCode, forecastType, windowStartISO, windowEndISO, 1
+        upperCode, forecastType, windowStartISO, windowEndISO, 1, mlModelName
       );
       if (mlD1.dataPoints > 0) {
         // mae is only null when dataPoints === 0, excluded by the guard above.
@@ -391,7 +403,7 @@ export function getRollingAccuracy(
     // Get ML D+2 metrics
     try {
       const mlD2 = mlForecastService.getMLForecastAccuracyMetrics(
-        upperCode, forecastType, windowStartISO, windowEndISO, 2
+        upperCode, forecastType, windowStartISO, windowEndISO, 2, mlModelName
       );
       if (mlD2.dataPoints > 0) {
         // mae is only null when dataPoints === 0, excluded by the guard above.
@@ -414,6 +426,7 @@ export function getRollingAccuracy(
       forecastType,
       countryCode: upperCode,
       timeRange: { start, end },
+      mlModel: mlModelName ?? null,
     },
   };
 }

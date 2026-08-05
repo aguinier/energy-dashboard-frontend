@@ -2,6 +2,7 @@ import { Router, Request } from 'express';
 import * as tsoForecastService from '../services/tsoForecastService.js';
 import { cacheMiddleware, TTL } from '../middleware/cache.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { resolveAccuracyModel } from '../config/forecastModels.js';
 import { Granularity } from '../types/index.js';
 
 const router = Router();
@@ -25,6 +26,43 @@ interface AccuracyQuery {
   forecastType?: 'day_ahead' | 'week_ahead' | 'all';
   type?: 'solar' | 'wind_onshore' | 'wind_offshore';
   granularity?: Granularity;
+  /** Registered tso model id ('tso-d1' | 'tso-d7'). An alias for the horizon. */
+  model?: string;
+}
+
+/**
+ * Resolve a `model` id on a TSO accuracy route to the horizon it names.
+ *
+ * On these routes a tso model IS a horizon — `tso-d1` is day-ahead, `tso-d7`
+ * is week-ahead — so `model` and `forecastType` are two spellings of one
+ * choice. When both are given and disagree, reject: silently honouring one
+ * would label the response with a horizon the caller did not ask for, which
+ * is the same class of wrong-number bug as a mislabelled model.
+ *
+ * Returns undefined when no model was given, leaving `forecastType` in charge
+ * exactly as before.
+ */
+function resolveTsoHorizonOr400(
+  registryType: string,
+  model: string | undefined,
+  explicitForecastType: 'day_ahead' | 'week_ahead' | 'all' | undefined
+): 'day_ahead' | 'week_ahead' | undefined {
+  const resolved = resolveAccuracyModel(registryType, model, 'tso');
+  if (!resolved.ok) {
+    throw new AppError(resolved.message, 400, resolved.code);
+  }
+  const horizon = resolved.model?.tsoHorizon;
+  if (!horizon) return undefined;
+
+  if (explicitForecastType && explicitForecastType !== horizon) {
+    throw new AppError(
+      `model='${model}' is the ${horizon} forecast but forecastType='${explicitForecastType}' was also given. ` +
+        `Send one or the other.`,
+      400,
+      'MODEL_HORIZON_CONFLICT'
+    );
+  }
+  return horizon;
 }
 
 // GET /api/tso-forecast/load/:countryCode - Get TSO load forecasts
@@ -99,7 +137,12 @@ router.get(
   cacheMiddleware(TTL.MEDIUM),
   (req: Request<{ countryCode: string }, unknown, unknown, AccuracyQuery>, res) => {
     const { countryCode } = req.params;
-    const { start, end, forecastType = 'day_ahead', granularity = 'hourly' } = req.query;
+    const { start, end, forecastType, granularity = 'hourly', model } = req.query;
+
+    // `model` is an alias for the horizon here; when absent, forecastType keeps
+    // its pre-existing 'day_ahead' default.
+    const horizon = resolveTsoHorizonOr400('load', model, forecastType);
+    const resolvedForecastType = horizon ?? forecastType ?? 'day_ahead';
 
     // Default to last 7 days for accuracy comparison
     const now = new Date();
@@ -110,7 +153,7 @@ router.get(
       countryCode,
       startDate,
       endDate,
-      forecastType,
+      resolvedForecastType,
       granularity
     );
 
@@ -118,7 +161,7 @@ router.get(
       countryCode,
       startDate,
       endDate,
-      forecastType
+      resolvedForecastType
     );
 
     res.json({
@@ -128,8 +171,13 @@ router.get(
       meta: {
         count: data.length,
         timeRange: { start: startDate, end: endDate },
-        forecastType,
+        forecastType: resolvedForecastType,
         granularity,
+        // The registry id for the horizon that served, so a caller that asked
+        // by model gets its own vocabulary back.
+        model: resolvedForecastType === 'week_ahead' ? 'tso-d7'
+          : resolvedForecastType === 'day_ahead' ? 'tso-d1' : null,
+        modelRequested: model ?? null,
       },
     });
   }
@@ -141,7 +189,7 @@ router.get(
   cacheMiddleware(TTL.MEDIUM),
   (req: Request<{ countryCode: string }, unknown, unknown, AccuracyQuery>, res) => {
     const { countryCode } = req.params;
-    const { start, end, type, granularity = 'hourly' } = req.query;
+    const { start, end, type, granularity = 'hourly', model } = req.query;
 
     if (!type || !['solar', 'wind_onshore', 'wind_offshore'].includes(type)) {
       throw new AppError(
@@ -150,6 +198,11 @@ router.get(
         'INVALID_GENERATION_TYPE'
       );
     }
+
+    // Generation TSO forecasts are day-ahead only in the registry, so `model`
+    // here can only ever be 'tso-d1'. Validating it still matters: asking for
+    // 'tso-d7' solar must be rejected, not silently answered with D+1.
+    resolveTsoHorizonOr400(type, model, undefined);
 
     // Default to last 7 days for accuracy comparison
     const now = new Date();
@@ -180,6 +233,9 @@ router.get(
         timeRange: { start: startDate, end: endDate },
         generationType: type,
         granularity,
+        // Day-ahead is the only registered generation TSO forecast.
+        model: 'tso-d1',
+        modelRequested: model ?? null,
       },
     });
   }

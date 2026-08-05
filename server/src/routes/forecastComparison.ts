@@ -17,6 +17,8 @@ interface ComparisonQuery {
   forecastType?: ForecastType;
   start?: string;
   end?: string;
+  /** Registered ml model id. Pins only the ml side; TSO metrics are unaffected. */
+  model?: string;
 }
 
 interface MLAccuracyQuery {
@@ -47,6 +49,8 @@ interface RollingAccuracyQuery {
   start?: string;
   end?: string;
   windowDays?: string; // default: 7
+  /** Registered ml model id. Pins only the ml series; TSO is unaffected. */
+  model?: string;
 }
 
 /**
@@ -60,7 +64,7 @@ router.get(
   cacheMiddleware(TTL.MEDIUM),
   (req: Request<{ countryCode: string }, unknown, unknown, ComparisonQuery>, res) => {
     const { countryCode } = req.params;
-    const { forecastType = 'load', start, end } = req.query;
+    const { forecastType = 'load', start, end, model } = req.query;
 
     // Validate forecast type
     if (!VALID_FORECAST_TYPES.includes(forecastType)) {
@@ -71,6 +75,8 @@ router.get(
       );
     }
 
+    const selectedModel = resolveMlModelOr400(forecastType, model);
+
     // Default to last 30 days for historical accuracy comparison
     const now = new Date();
     const endDate = end || now.toISOString();
@@ -80,7 +86,8 @@ router.get(
       countryCode,
       forecastType,
       startDate,
-      endDate
+      endDate,
+      selectedModel?.modelName
     );
 
     res.json({
@@ -134,7 +141,7 @@ router.get(
   cacheMiddleware(TTL.MEDIUM),
   (req: Request<{ countryCode: string }, unknown, unknown, ComparisonQuery>, res) => {
     const { countryCode } = req.params;
-    const { forecastType = 'load', start, end } = req.query;
+    const { forecastType = 'load', start, end, model } = req.query;
 
     // Validate forecast type
     if (!VALID_FORECAST_TYPES.includes(forecastType)) {
@@ -145,6 +152,8 @@ router.get(
       );
     }
 
+    const selectedModel = resolveMlModelOr400(forecastType, model);
+
     // Default to last 30 days
     const now = new Date();
     const endDate = end || now.toISOString();
@@ -154,7 +163,8 @@ router.get(
       countryCode,
       forecastType,
       startDate,
-      endDate
+      endDate,
+      selectedModel?.modelName
     );
 
     res.json({
@@ -164,6 +174,8 @@ router.get(
         countryCode: countryCode.toUpperCase(),
         forecastType,
         timeRange: { start: startDate, end: endDate },
+        // Which ml model the 'ml' candidates were measured from. null = unpinned.
+        mlModel: selectedModel?.id ?? null,
       },
     });
   }
@@ -180,7 +192,7 @@ router.get(
   cacheMiddleware(TTL.MEDIUM),
   (req: Request<{ countryCode: string }, unknown, unknown, RollingAccuracyQuery>, res) => {
     const { countryCode } = req.params;
-    const { forecastType = 'load', start, end, windowDays: windowDaysStr } = req.query;
+    const { forecastType = 'load', start, end, windowDays: windowDaysStr, model } = req.query;
 
     // Validate forecast type
     if (!VALID_FORECAST_TYPES.includes(forecastType)) {
@@ -190,6 +202,8 @@ router.get(
         'INVALID_FORECAST_TYPE'
       );
     }
+
+    const selectedModel = resolveMlModelOr400(forecastType, model);
 
     // Parse window days (default 7, max 30)
     const windowDays = windowDaysStr ? Math.min(Math.max(parseInt(windowDaysStr, 10), 1), 30) : 7;
@@ -204,7 +218,8 @@ router.get(
       forecastType,
       startDate,
       endDate,
-      windowDays
+      windowDays,
+      selectedModel?.modelName
     );
 
     res.json({
