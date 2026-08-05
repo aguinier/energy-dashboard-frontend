@@ -4,7 +4,7 @@ import { useDashboardStore } from '@/store/dashboardStore';
 import { useCountries } from '@/hooks/useCountries';
 import { CountryBreadcrumb } from '@/components/dashboard/CountryBreadcrumb';
 import { AbleStatRow } from '@/components/dashboard/AbleStatRow';
-import { RangeSegment } from '@/components/dashboard/RangeSegment';
+import { TimePicker } from '@/components/dashboard/TimePicker';
 import { ModelPicker } from '@/components/dashboard/ModelPicker';
 import { ApiCta } from '@/components/dashboard/ApiCta';
 
@@ -95,11 +95,12 @@ export function CountryDashboardView() {
         <AbleStatRow />
 
         {/* One control bar, one control height. Tabs (h-9, the radix default),
-            RangeSegment (~24px) and ModelPicker (~26px) previously each set
-            their own, so the row read as three unrelated widgets that had
-            landed next to each other rather than one bar. All three are h-8
-            now: "what am I looking at" on the left, "over what window / which
-            model" on the right, sharing a baseline. */}
+            the range control (~24px) and ModelPicker (~26px) previously each
+            set their own, so the row read as three unrelated widgets that had
+            landed next to each other rather than one bar. All are h-8 now:
+            "what am I looking at" on the left, "over what window / which
+            model" on the right, sharing a baseline. `TimePicker` keeps that
+            height for both of its pills and for the shifted-window caption. */}
         <div className="mb-3.5 flex flex-wrap items-center gap-x-3 gap-y-2">
           <Tabs value={activeChartTab} onValueChange={setActiveChartTab} className="flex-shrink-0">
             <TabsList>
@@ -111,7 +112,7 @@ export function CountryDashboardView() {
             </TabsList>
           </Tabs>
           <div className="flex-1" />
-          <RangeSegment />
+          <TimePicker />
           {TABS_WITH_MODEL_PICKER.has(activeChartTab) && <ModelPicker />}
         </div>
 
