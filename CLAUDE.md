@@ -158,6 +158,34 @@ blanks `load` for AT/BE/FR and `price` for BE/DE/ES/FR/PT. The picker labels
 whichever model the response's `meta.model` reports actually served, which can
 differ from the picker's own selection when the ladder fell back.
 
+**Accuracy by model.** The accuracy endpoints also accept `model`, but resolve
+it through `resolveAccuracyModel` rather than `resolveModel`/`resolveModelCandidates`
+— **deliberately stricter**: an unregistered id is rejected with a 400, not
+degraded to the production model, and a tso id on an ml-accuracy route (or the
+reverse) is rejected too. The leniency that is right for a chart — a stale
+bookmark still draws the trusted series — would answer "how accurate is
+xgboost?" with catboost's numbers. Which endpoints:
+
+- `/forecast-comparison/:cc/ml-accuracy`, `/:cc`, `/:cc/rolling`, `/:cc/best`
+  take an **ml** model id; it pins the ml side only, never the TSO metrics.
+  `/:cc/summary` does not take one — it spans five forecast types at once, and
+  one id cannot be valid for all of them.
+- `/tso-forecast/accuracy/load/:cc` and `/accuracy/generation/:cc` take a
+  **tso** id, where the model *is* the horizon (`tso-d1` = day-ahead, `tso-d7`
+  = week-ahead). `model` and `forecastType` are two spellings of one choice, so
+  a disagreement is a 400 (`MODEL_HORIZON_CONFLICT`) rather than one side
+  quietly winning.
+
+Omitting `model` leaves every one of these exactly as it was: unpinned, the
+latest run per target timestamp whichever model produced it. `meta.model` is
+then `null` — it does **not** name the production model, because the unpinned
+query really is model-agnostic.
+
+Because coverage is disjoint, "this model has no rows for this country" is a
+normal answer. `meta.coverage` on `/ml-accuracy` distinguishes `served` /
+`no_model_coverage` / `no_paired_actuals`, so a country pinned to a model that
+does not serve it reads as *no coverage* and never as a flawless 0% error.
+
 `ModelPicker` renders once per active tab (`TAB_FORECAST_TYPE` maps tab ->
 forecast type) and stores the choice per type in `selectedModelByType`, so a
 choice on one tab never leaks into a type where that model doesn't exist. The
@@ -196,9 +224,11 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
   (`horizonBars.ts`, ML D+1/D+2 and TSO D+1/D+7 — never extrapolated), and a
-  forecast-vs-actual overlay chart. The "Compare forecast models" panel is a
-  deliberate placeholder: per-model accuracy needs the accuracy endpoints to
-  accept a `model` param, which they do not yet.
+  forecast-vs-actual overlay chart. The "Compare forecast models" panel is
+  still a placeholder, but the server side it was waiting on now exists — the
+  accuracy endpoints accept `model` (see "Accuracy by model" below). What is
+  left is client work: the panel itself, and a hook that sends the picker's
+  selection to `/forecast-comparison/*`.
 
 ### 4. Time navigation
 
@@ -390,9 +420,10 @@ Three things to know before touching this:
 ### Adding a model to the forecast registry
 
 Register it in `server/src/config/forecastModels.ts` (`FORECAST_MODELS[type].models`,
-and `production` if it should be the default). `ModelPicker` and
-`resolveModelCandidates`'s fallback ladder both read this registry directly —
-nothing else needs to change for the model to appear and be servable.
+and `production` if it should be the default). `ModelPicker`,
+`resolveModelCandidates`'s fallback ladder and `resolveAccuracyModel`'s
+validation all read this registry directly — nothing else needs to change for
+the model to appear, be servable, and be measurable by name.
 
 ### Modifying TSO or ML forecast display
 
