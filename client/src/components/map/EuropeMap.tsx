@@ -302,22 +302,22 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           )}
         >
           <div className="mb-2 flex items-baseline gap-2">
-            <span className="font-mono-num text-[11px] text-ink-muted">
+            <span className="font-mono-num text-micro text-ink-muted">
               {hoveredCountry.country_code}
             </span>
-            <span className="text-[15px] font-medium text-foreground">
+            <span className="text-title font-medium text-foreground">
               {hoveredCountry.country_name}
             </span>
           </div>
-          <div className="num text-[26px] font-medium text-foreground">
+          <div className="num text-stat font-medium text-foreground">
             {formatHoverValue(hoveredCountry.value, mapMetric)}
-            <span className="ml-1 font-mono-num text-[11px] text-ink-muted">
+            <span className="ml-1 font-mono-num text-micro text-ink-muted">
               {metricInfo?.unit ?? ''}
             </span>
           </div>
           <p className="mt-1 text-xs text-ink-dim">{metricInfo?.label}</p>
           {fullScreen && (
-            <div className="mt-2.5 border-t border-input pt-2 font-mono-num text-[10px] text-ink-muted">
+            <div className="mt-2.5 border-t border-input pt-2 font-mono-num text-micro text-ink-muted">
               Click or press Enter to open →
             </div>
           )}
@@ -327,10 +327,10 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
       {/* Empty state — the API returned no countries for this metric */}
       {!isLoading && dataMap.size === 0 && (
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[10px] border border-border bg-card px-5 py-4 text-center shadow-[0_4px_20px_rgba(0,0,0,0.06)]">
-          <div className="text-[13px] font-medium text-foreground">
+          <div className="text-body font-medium text-foreground">
             No {metricInfo?.label.toLowerCase() ?? 'metric'} data right now
           </div>
-          <p className="mt-1 text-[12px] text-ink-dim">
+          <p className="mt-1 text-meta text-ink-dim">
             Pick another metric above, or check back after the next ENTSO-E sync.
           </p>
         </div>
@@ -342,7 +342,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           <span className="text-xs font-medium text-foreground">
             {metricInfo?.legendLabel}
           </span>
-          <span className="font-mono-num text-[10.5px] text-ink-muted">
+          <span className="font-mono-num text-micro text-ink-muted">
             {metricInfo?.unit}
           </span>
         </div>
@@ -363,18 +363,18 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           <>
             {/* Ends are ±bound, so the centre tick is a true zero rather than
                 the midpoint of the data range. */}
-            <div className="flex justify-between font-mono-num text-[10.5px] text-ink-muted">
+            <div className="flex justify-between font-mono-num text-micro text-ink-muted">
               <span>−{formatLegendValue(symmetricBound(min, max), mapMetric)}</span>
               <span>0</span>
               <span>+{formatLegendValue(symmetricBound(min, max), mapMetric)}</span>
             </div>
-            <div className="flex justify-between text-[10px] text-ink-muted">
+            <div className="flex justify-between text-micro text-ink-muted">
               <span>importing</span>
               <span>exporting</span>
             </div>
           </>
         ) : (
-          <div className="flex justify-between font-mono-num text-[10.5px] text-ink-muted">
+          <div className="flex justify-between font-mono-num text-micro text-ink-muted">
             <span>{formatLegendValue(min, mapMetric)}</span>
             <span>{formatLegendValue((min + max) / 2, mapMetric)}</span>
             <span>{formatLegendValue(max, mapMetric)}</span>
@@ -390,7 +390,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
             </defs>
             <rect width="10" height="10" fill={`url(#${noDataHatchId}-legend)`} />
           </svg>
-          <span className="font-mono-num text-[10px] text-ink-muted">no data</span>
+          <span className="font-mono-num text-micro text-ink-muted">no data</span>
         </div>
       </div>
     </div>

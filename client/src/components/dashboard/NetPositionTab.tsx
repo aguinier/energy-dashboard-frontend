@@ -101,15 +101,15 @@ export function NetPositionTab() {
     <div className="space-y-3.5">
       <AbleCard title="Net position" subtitle={subtitleParts.join(' · ')}>
         {isLoading ? (
-          <div className="flex h-[300px] items-center justify-center text-[12px] text-ink-muted">
+          <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…
           </div>
         ) : isError ? (
-          <div className="flex h-[300px] items-center justify-center text-[12px] text-ink-muted">
+          <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Could not load net position.
           </div>
         ) : hasNothing ? (
-          <div className="flex h-[300px] flex-col items-center justify-center gap-1 text-center text-[12px] text-ink-muted">
+          <div className="flex h-[300px] flex-col items-center justify-center gap-1 text-center text-meta text-ink-muted">
             {lastSeen ? (
               <>
                 <span>
@@ -122,7 +122,7 @@ export function NetPositionTab() {
                   })}
                   .
                 </span>
-                <span className="text-[11px] text-ink-faint">
+                <span className="text-micro text-ink-muted">
                   The series ended upstream at ENTSO-E, not here.
                 </span>
               </>
@@ -131,7 +131,7 @@ export function NetPositionTab() {
                 <span>
                   No net position published for {country?.country_name ?? selectedCountry}.
                 </span>
-                <span className="text-[11px] text-ink-faint">
+                <span className="text-micro text-ink-muted">
                   Not every bidding zone publishes one.
                 </span>
               </>
@@ -148,11 +148,11 @@ export function NetPositionTab() {
               preset={timePreset}
               label="Net position"
             />
-            <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-muted">
+            <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-micro text-ink-muted">
               {latest && (
                 <span className="font-mono-num">
                   latest {formatMw(latest.net_position_mw)}{' '}
-                  <span className="text-ink-faint">
+                  <span className="text-ink-muted">
                     ({latest.net_position_mw >= 0 ? 'exporting' : 'importing'})
                   </span>
                 </span>
@@ -166,7 +166,7 @@ export function NetPositionTab() {
                 vintage on screen - a single run is already named in the
                 subtitle above, so a one-row repeat here would be noise. */}
             {!forecastHidden && vintages.length > 1 && (
-              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint">
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-micro text-ink-muted">
                 {shownVintages.map((v) => (
                   <span key={v.generated_at} className="font-mono-num">
                     {v.dayLabel} run generated{' '}
@@ -193,7 +193,7 @@ export function NetPositionTab() {
         {/* Only as a footnote under a chart that still has points; the empty
             state above already says it when there is nothing to draw. */}
         {isStale && lastSeen && !hasNothing && (
-          <p className="mt-2 text-[11px] text-ink-muted">
+          <p className="mt-2 text-micro text-ink-muted">
             No data published since{' '}
             {lastSeen.toLocaleDateString([], {
               year: 'numeric',
@@ -204,7 +204,7 @@ export function NetPositionTab() {
           </p>
         )}
 
-        {zoneNote && <p className="mt-2 text-[11px] text-ink-muted">{zoneNote}</p>}
+        {zoneNote && <p className="mt-2 text-micro text-ink-muted">{zoneNote}</p>}
       </AbleCard>
     </div>
   );

@@ -78,7 +78,7 @@ export function GenerationTab() {
     <div className="space-y-3.5">
       <AbleCard title="Generation mix" subtitle="GW · stacked by source · ENTSO-E">
         {isLoading ? (
-          <div className="flex h-[220px] items-center justify-center text-[12px] text-ink-muted">
+          <div className="flex h-[220px] items-center justify-center text-meta text-ink-muted">
             Loading…
           </div>
         ) : (
@@ -93,7 +93,7 @@ export function GenerationTab() {
                 biomass: SOURCE_COLORS.biomass,
               }}
             />
-            <div className="mt-2.5 flex flex-wrap gap-4 font-mono-num text-[10.5px] text-ink-muted">
+            <div className="mt-2.5 flex flex-wrap gap-4 font-mono-num text-micro text-ink-muted">
               {LEGEND.map((l) => (
                 <div key={l.key} className="flex items-center gap-1.5">
                   <span
@@ -123,11 +123,11 @@ export function GenerationTab() {
       <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
         <AbleCard title="Window average" subtitle="share of generation">
           {mixLoading ? (
-            <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
+            <div className="flex h-[180px] items-center justify-center text-meta text-ink-muted">
               Loading…
             </div>
           ) : mixError || !mix || mix.renewable_percentage == null || totalMw == null || totalMw <= 0 ? (
-            <div className="flex h-[180px] items-center justify-center text-center text-[12px] text-ink-muted">
+            <div className="flex h-[180px] items-center justify-center text-center text-meta text-ink-muted">
               Generation mix unavailable.
             </div>
           ) : (
@@ -139,11 +139,11 @@ export function GenerationTab() {
 
         <AbleCard title="By source" subtitle="GW · window average">
           {mixLoading ? (
-            <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
+            <div className="flex h-[180px] items-center justify-center text-meta text-ink-muted">
               Loading…
             </div>
           ) : mixError || !mix ? (
-            <div className="flex h-[180px] items-center justify-center text-center text-[12px] text-ink-muted">
+            <div className="flex h-[180px] items-center justify-center text-center text-meta text-ink-muted">
               Generation mix unavailable.
             </div>
           ) : (

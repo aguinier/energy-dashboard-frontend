@@ -27,7 +27,7 @@ export function AblePriceHeatmap({
 }: Props) {
   if (cells.length === 0) {
     return (
-      <div className="flex items-center justify-center text-[12px] text-ink-muted" style={{ height }}>
+      <div className="flex items-center justify-center text-meta text-ink-muted" style={{ height }}>
         No data for this window.
       </div>
     );

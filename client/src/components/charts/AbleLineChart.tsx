@@ -289,7 +289,7 @@ export function AbleLineChart({
   if (series.length === 0) {
     return (
       <div
-        className="flex items-center justify-center text-[12px] text-ink-muted"
+        className="flex items-center justify-center text-meta text-ink-muted"
         style={{ height }}
       >
         No data in this window — try a longer range like 30d.
@@ -527,14 +527,14 @@ export function AbleLineChart({
 
       {h && (
         <div
-          className="font-mono-num pointer-events-none absolute whitespace-nowrap rounded-md border border-input bg-foreground px-2.5 py-1.5 text-[11px] text-background shadow-[0_4px_12px_rgba(0,0,0,0.25)]"
+          className="font-mono-num pointer-events-none absolute whitespace-nowrap rounded-md border border-input bg-foreground px-2.5 py-1.5 text-micro text-background shadow-[0_4px_12px_rgba(0,0,0,0.25)]"
           style={{
             left: `${(hx / width) * 100}%`,
             top: 4,
             transform: 'translateX(-50%)',
           }}
         >
-          <div className="mb-0.5 text-[10px] opacity-60">
+          <div className="mb-0.5 text-micro opacity-60">
             {h.value != null ? (h.future ? 'published' : 'actual') : 'forecast'} ·{' '}
             {new Date(h.ts).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
           </div>
@@ -542,7 +542,7 @@ export function AbleLineChart({
               screen at once, so the generation time is named per point
               rather than once for the whole series. */}
           {h.value == null && h.forecastDayLabel && (
-            <div className="mb-0.5 text-[10px] opacity-60">
+            <div className="mb-0.5 text-micro opacity-60">
               {h.forecastDayLabel}
               {h.forecastGeneratedAt &&
                 ` · run ${new Date(h.forecastGeneratedAt).toLocaleString([], {

@@ -186,7 +186,7 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
                 <td className="px-4 py-3 text-center">
                   {status && statusColor && (
                     <span
-                      className="inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                      className="inline-block rounded-full px-2 py-0.5 text-micro font-semibold"
                       style={{
                         backgroundColor: withOpacity(statusColor, 0.15),
                         color: statusColor,

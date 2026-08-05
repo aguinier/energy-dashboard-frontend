@@ -27,7 +27,8 @@ function StatCell({
   delta,
   good,
   spark,
-  last,
+  index,
+  count,
 }: {
   label: string;
   value: string;
@@ -35,22 +36,34 @@ function StatCell({
   delta?: string;
   good?: boolean;
   spark?: number[];
-  last?: boolean;
+  /** Position in the strip — drives the dividers (see AbleStatRow). */
+  index: number;
+  count: number;
 }) {
   return (
-    <div className={cn('px-5 py-4', !last && 'md:border-r md:border-border')}>
-      <div className="mb-2 font-mono-num text-[10px] uppercase tracking-[0.1em] text-ink-muted">
+    <div
+      className={cn(
+        'px-5 py-4',
+        index < count - 1 && 'md:border-r md:border-border',
+        // The 2×2 mobile layout previously had no dividers at all: four
+        // numbers in a borderless block, which is exactly where a reader
+        // most needs the grid.
+        index % 2 === 0 && 'border-r border-border md:border-r',
+        index < 2 && 'border-b border-border md:border-b-0',
+      )}
+    >
+      <div className="mb-2 font-mono-num text-label uppercase text-ink-muted">
         {label}
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className="num text-[26px] font-medium text-foreground">{value}</span>
-        <span className="text-[11px] text-ink-muted">{unit}</span>
+        <span className="num text-stat font-medium text-foreground">{value}</span>
+        <span className="text-micro text-ink-muted">{unit}</span>
       </div>
-      <div className="mt-2 flex min-h-[22px] items-center justify-between">
+      <div className="mt-2 flex min-h-[22px] items-center justify-between gap-2">
         {delta != null ? (
           <span
             className={cn(
-              'font-mono-num text-[11px]',
+              'font-mono-num text-micro',
               good == null ? 'text-ink-muted' : good ? 'text-up' : 'text-down',
             )}
           >
@@ -126,52 +139,43 @@ export function ForecastTab() {
             label="MAE"
             value={loadMetrics?.mae != null ? loadMetrics.mae.toFixed(0) : '—'}
             unit="MW"
+            index={0}
+            count={4}
           />
           <StatCell
             label="MAPE"
             value={loadMetrics?.mape != null ? loadMetrics.mape.toFixed(2) : '—'}
             unit="%"
+            index={1}
+            count={4}
           />
           <StatCell
             label="RMSE"
             value={loadMetrics?.rmse != null ? loadMetrics.rmse.toFixed(0) : '—'}
             unit="MW"
+            index={2}
+            count={4}
           />
           <StatCell
             label="Samples"
             value={loadMetrics?.dataPoints != null ? loadMetrics.dataPoints.toString() : '—'}
             unit=""
-            last
+            index={3}
+            count={4}
           />
         </div>
         {loadMetrics?.dataPoints != null && loadMetrics.dataPoints < MIN_RELIABLE_SAMPLES && (
-          <p className="mt-2 text-[11px] text-ink-muted">
+          <p className="mt-2 text-micro text-ink-muted">
             Only {loadMetrics.dataPoints} paired points in this window — these figures are
             indicative, not a stable estimate. Widen the range for a firmer read.
           </p>
         )}
         {loadMetrics != null && loadMetrics.mapeSamples < loadMetrics.dataPoints && (
-          <p className="mt-2 text-[11px] text-ink-muted">
+          <p className="mt-2 text-micro text-ink-muted">
             MAPE covers {loadMetrics.mapeSamples} of {loadMetrics.dataPoints} points — the rest
             had a zero or negative actual, where percentage error is undefined.
           </p>
         )}
-      </div>
-
-      {/* Compare forecast models */}
-      <div className="rounded-xl border border-border bg-card">
-        <div className="px-[18px] pb-[18px] pt-4">
-          <div className="text-[13.5px] font-medium">Compare forecast models</div>
-          <div className="mt-0.5 font-mono-num text-[11px] text-ink-muted">
-            not available yet
-          </div>
-          <p className="mt-3 max-w-[520px] text-[12px] leading-relaxed text-ink-dim">
-            This panel used to plot per-model MAPE from hardcoded constants rather
-            than measurements. Per-model accuracy needs the accuracy endpoints to
-            accept a model, which they do not yet — so it shows nothing instead of
-            numbers that were never measured. Measured error by horizon is below.
-          </p>
-        </div>
       </div>
 
       {/* Bottom grid: error by horizon + forecast vs actual */}
@@ -192,7 +196,7 @@ export function ForecastTab() {
           subtitle="GW · past 7 days · solid = actual, dashed = forecast"
         >
           {overlayQuery.isLoading ? (
-            <div className="flex h-[180px] items-center justify-center text-[12px] text-ink-muted">
+            <div className="flex h-[180px] items-center justify-center text-meta text-ink-muted">
               Loading…
             </div>
           ) : (
@@ -207,6 +211,18 @@ export function ForecastTab() {
           )}
         </AbleCard>
       </div>
+
+      {/* Per-model comparison was a full-width card the size of a real chart
+          whose entire content was a paragraph explaining that it has no
+          content — the largest element on the tab carrying the least. The
+          disclosure still matters (ABL-6 builds the panel; until then a
+          reader should know why the comparison is absent rather than assume
+          it was never planned), so it stays — as a footnote, at footnote
+          weight. Restore it to a card when it has numbers to show. */}
+      <p className="text-micro text-ink-muted">
+        Per-model comparison is not available yet — the accuracy endpoints do not accept a
+        model parameter, and this tab will not print per-model figures it has not measured.
+      </p>
     </div>
   );
 }

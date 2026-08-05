@@ -173,7 +173,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
               }}
             />
           </div>
-          <div className="flex justify-between text-[10px] text-muted-foreground mt-1 gap-2">
+          <div className="flex justify-between text-micro text-muted-foreground mt-1 gap-2">
             <span>0%</span>
             <span>{thresholds.excellent}%</span>
             <span>{thresholds.good}%+</span>

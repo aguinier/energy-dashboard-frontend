@@ -122,25 +122,30 @@ export function AbleStatRow() {
           key={it.label}
           className={cn(
             'px-5 py-4',
+            // Four cells wide: a rule between each pair.
             i < items.length - 1 && 'md:border-r md:border-border',
-            i % 2 === 0 && i < items.length - 1 && 'border-r border-border md:border-r',
+            // Two cells wide (2×2): a rule down the middle…
+            i % 2 === 0 && 'border-r border-border md:border-r',
+            // …and one between the rows, which was missing entirely — the
+            // top and bottom pairs ran together into one block of numbers.
+            i < 2 && 'border-b border-border md:border-b-0',
           )}
         >
-          <div className="mb-2 flex items-baseline gap-1.5 font-mono-num text-[10px] uppercase tracking-[0.1em] text-ink-muted">
+          <div className="mb-2 flex items-baseline gap-1.5 font-mono-num text-label uppercase text-ink-muted">
             <span>{it.label}</span>
-            {it.qualifier && <span className="normal-case tracking-normal opacity-70">{it.qualifier}</span>}
+            {it.qualifier && <span className="normal-case tracking-normal">{it.qualifier}</span>}
           </div>
           <div className="flex items-baseline gap-1.5">
-            <span className="num text-[26px] font-medium text-foreground">
+            <span className="num text-stat font-medium text-foreground">
               {isLoading ? '…' : it.value}
             </span>
-            <span className="text-[11px] text-ink-muted">{it.unit}</span>
+            <span className="text-micro text-ink-muted">{it.unit}</span>
           </div>
-          <div className="mt-2 flex min-h-[22px] items-center justify-between">
+          <div className="mt-2 flex min-h-[22px] items-center justify-between gap-2">
             {it.delta != null ? (
               <span
                 className={cn(
-                  'font-mono-num text-[11px]',
+                  'font-mono-num text-micro',
                   it.good == null ? 'text-ink-muted' : it.good ? 'text-up' : 'text-down',
                 )}
               >

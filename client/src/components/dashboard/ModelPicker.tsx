@@ -56,7 +56,7 @@ export function ModelPicker() {
         onClick={() => setSelectedModel(forecastType, hidden ? (selected?.id ?? production ?? models[0].id) : null)}
         aria-pressed={enabled}
         className={cn(
-          'flex cursor-pointer items-center gap-1.5 rounded-l-md border border-r-0 px-2.5 py-[5px] text-[12px] font-sans',
+          'flex h-8 cursor-pointer items-center gap-1.5 rounded-l-md border border-r-0 px-2.5 text-meta font-sans',
           enabled ? 'border-primary bg-accent text-primary' : 'border-border bg-transparent text-ink-dim',
         )}
       >
@@ -70,12 +70,12 @@ export function ModelPicker() {
         aria-haspopup="listbox"
         aria-expanded={open}
         className={cn(
-          'flex cursor-pointer items-center gap-2 rounded-r-md border border-border bg-card px-2.5 py-[5px] text-[12px] text-foreground',
+          'flex h-8 cursor-pointer items-center gap-2 rounded-r-md border border-border bg-card px-2.5 text-meta text-foreground',
           !enabled && 'opacity-60',
         )}
       >
         <span className="font-medium">{servedLabel(models, servedModelId, selected) || 'none'}</span>
-        <span className="text-[10px] text-ink-muted">▾</span>
+        <span aria-hidden="true" className="text-micro text-ink-muted">▾</span>
       </button>
 
       {open && (
@@ -84,7 +84,7 @@ export function ModelPicker() {
           aria-label={`Model · ${forecastType.replace('_', ' ')}`}
           className="absolute right-0 top-[110%] z-50 min-w-[300px] rounded-[10px] border border-border bg-card p-1.5 shadow-[0_8px_28px_rgba(0,0,0,0.10)]"
         >
-          <div className="px-2.5 pb-1.5 pt-2 font-mono-num text-[10px] uppercase tracking-[0.1em] text-ink-muted">
+          <div className="px-2.5 pb-1.5 pt-2 font-mono-num text-label uppercase text-ink-muted">
             Model · {forecastType.replace('_', ' ')}
           </div>
 
@@ -106,7 +106,7 @@ export function ModelPicker() {
               >
                 <span
                   className={cn(
-                    'rounded-sm px-1.5 py-[1.5px] font-mono-num text-[9px] font-semibold uppercase tracking-[0.08em]',
+                    'rounded-sm px-1.5 py-px font-mono-num text-label font-semibold uppercase',
                     m.source === 'tso'
                       ? 'bg-secondary text-ink-dim'
                       : 'bg-accent text-primary',
@@ -114,9 +114,9 @@ export function ModelPicker() {
                 >
                   {m.source === 'tso' ? 'TSO' : 'ML'}
                 </span>
-                <span className="text-[13px] font-medium text-foreground">{m.label}</span>
+                <span className="text-body font-medium text-foreground">{m.label}</span>
                 {m.id === production && (
-                  <span className="rounded-sm bg-foreground px-1.5 py-[1.5px] font-mono-num text-[9px] font-semibold uppercase tracking-[0.08em] text-background">
+                  <span className="rounded-sm bg-foreground px-1.5 py-px font-mono-num text-label font-semibold uppercase text-background">
                     Default
                   </span>
                 )}
@@ -124,7 +124,7 @@ export function ModelPicker() {
             );
           })}
 
-          <div className="mt-1 border-t border-input px-2.5 py-2 text-[11px] leading-snug text-ink-muted">
+          <div className="mt-1 border-t border-input px-2.5 py-2 text-micro text-ink-muted">
             Coverage differs by country — where the default model has no data for
             a country, the next registered model is used and the chart says which.
           </div>

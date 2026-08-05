@@ -4,8 +4,16 @@ import { formatDistanceToNowStrict } from 'date-fns';
 
 // Single top bar used on every view — replaces the older MapHeader / CountryHeader pair.
 // Mirrors the structure of the able prototype: triangle logo, "able energy" wordmark,
-// Map / Docs / API nav, live ENTSO-E pulse, API docs CTA.
+// view nav, live ENTSO-E pulse, API docs CTA.
 // Every control here does something real — no decorative dead buttons.
+//
+// The nav holds *views* only. It used to also carry "Docs" and "API": "Docs"
+// opened the same README as the "API docs →" button two elements to its right
+// (one destination, two controls, styled as if they were different things),
+// and "API" opened the raw /api/health JSON — a liveness probe, not a
+// destination for an analyst. Both are gone; the button is the single door to
+// the docs, and the real per-tab endpoint is still surfaced by ApiCta at the
+// foot of the country page, where it has context.
 
 const REPO_URL = 'https://github.com/aguinier/energy-dashboard-frontend';
 
@@ -13,19 +21,13 @@ export function AbleHeader() {
   const { currentView, goToMap, goToComparison } = useDashboardStore();
   const { data: freshness } = useDataFreshness();
 
-  const navItems: { key: 'map' | 'compare' | 'docs' | 'api'; label: string; onClick: () => void }[] = [
+  const navItems: { key: 'map' | 'compare'; label: string; onClick: () => void }[] = [
     { key: 'map', label: 'Map', onClick: goToMap },
     { key: 'compare', label: 'Compare', onClick: goToComparison },
-    { key: 'docs', label: 'Docs', onClick: () => window.open(`${REPO_URL}#readme`, '_blank') },
-    { key: 'api', label: 'API', onClick: () => window.open('/api/health', '_blank') },
   ];
 
   const isActive = (k: string) =>
-    k === 'map'
-      ? currentView === 'map' || currentView === 'country'
-      : k === 'compare'
-        ? currentView === 'comparison'
-        : false;
+    k === 'map' ? currentView === 'map' || currentView === 'country' : currentView === 'comparison';
 
   // Pulse recency comes from the MEASURED series only (load/generation).
   // Price and TSO-forecast stamps sit up to a day in the future by design
@@ -38,52 +40,67 @@ export function AbleHeader() {
         .sort()
         .at(-1)
     : null;
-  const liveLabel = latestMeasured
-    ? `Live · ENTSO-E sync ${formatDistanceToNowStrict(new Date(latestMeasured))} ago`
-    : 'Live · ENTSO-E';
+  const syncAge = latestMeasured ? formatDistanceToNowStrict(new Date(latestMeasured)) : null;
+  // Read out in full for assistive tech and on hover; the visible text is
+  // abbreviated so it can survive down to a tablet width instead of being
+  // hidden below `lg` — "when was this last refreshed" is the first thing a
+  // trader checks, and it was the first thing the layout dropped.
+  const liveTitle = syncAge
+    ? `Live data from ENTSO-E — last measured value synced ${syncAge} ago`
+    : 'Live data from ENTSO-E';
 
   return (
-    <header className="flex items-center gap-4 border-b border-border bg-background px-4 py-3.5 md:gap-7 md:px-7">
+    <header className="flex items-center gap-4 border-b border-border bg-background px-4 py-3 md:gap-6 md:px-7">
       <button
         onClick={goToMap}
         className="flex items-center gap-2.5 bg-transparent border-none cursor-pointer p-0"
       >
         <Logo />
-        <span className="text-[15px] font-medium tracking-[-0.012em] text-foreground">
+        <span className="text-title font-medium tracking-[-0.012em] text-foreground">
           able
         </span>
-        <span className="ml-0.5 hidden rounded text-[11px] text-ink-muted px-1.5 py-px border border-border bg-card sm:inline">
+        <span className="ml-0.5 hidden rounded border border-border bg-card px-1.5 py-px text-micro text-ink-muted sm:inline">
           energy
         </span>
       </button>
 
-      <nav className="flex gap-1">
-        {navItems.map(({ key, label, onClick }) => (
-          <button
-            key={key}
-            onClick={onClick}
-            className={
-              'rounded-md px-2.5 py-1.5 text-[13px] font-sans bg-transparent border-none cursor-pointer ' +
-              (isActive(key) ? 'text-foreground font-medium' : 'text-ink-dim font-normal')
-            }
-          >
-            {label}
-          </button>
-        ))}
+      <nav className="flex gap-0.5">
+        {navItems.map(({ key, label, onClick }) => {
+          const active = isActive(key);
+          return (
+            <button
+              key={key}
+              onClick={onClick}
+              aria-current={active ? 'page' : undefined}
+              className={
+                'h-7 cursor-pointer rounded-md border-none px-2.5 text-meta font-sans transition-colors ' +
+                (active
+                  ? 'bg-secondary font-medium text-foreground'
+                  : 'bg-transparent font-normal text-ink-dim hover:text-foreground')
+              }
+            >
+              {label}
+            </button>
+          );
+        })}
       </nav>
 
       <div className="flex-1" />
 
-      <div className="font-mono-num text-[11.5px] text-ink-muted flex items-center gap-3.5">
-        <span className="flex items-center gap-1.5">
-          <Pulse />
-          <span className="hidden lg:inline">{liveLabel}</span>
+      <span
+        className="flex items-center gap-1.5 font-mono-num text-micro text-ink-muted"
+        title={liveTitle}
+      >
+        <Pulse />
+        <span className="sr-only">{liveTitle}</span>
+        <span aria-hidden="true" className="hidden whitespace-nowrap sm:inline">
+          {syncAge ? `ENTSO-E · ${syncAge} ago` : 'ENTSO-E'}
         </span>
-      </div>
+      </span>
 
       <button
         onClick={() => window.open(`${REPO_URL}#readme`, '_blank')}
-        className="rounded-md border-none bg-foreground text-background px-3.5 py-[7px] text-[13px] font-medium cursor-pointer whitespace-nowrap"
+        className="h-7 cursor-pointer whitespace-nowrap rounded-md border-none bg-foreground px-3 text-meta font-medium text-background"
       >
         API docs →
       </button>

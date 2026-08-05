@@ -40,7 +40,7 @@ export function MapMetricSelector({ floating, vertical, className }: MapMetricSe
               <span className="text-sm font-medium">{label}</span>
               <span
                 className={cn(
-                  'font-mono-num text-[10px] opacity-65',
+                  'font-mono-num text-micro opacity-65',
                   mapMetric === value ? 'text-background' : 'text-ink-muted',
                 )}
               >
@@ -67,14 +67,14 @@ export function MapMetricSelector({ floating, vertical, className }: MapMetricSe
             onClick={() => setMapMetric(value)}
             aria-pressed={active}
             className={cn(
-              'flex items-baseline gap-1.5 px-3.5 py-[7px] rounded-[7px] text-[13px] border-none cursor-pointer transition-colors whitespace-nowrap shrink-0',
+              'flex items-baseline gap-1.5 px-3.5 py-[7px] rounded-[7px] text-body border-none cursor-pointer transition-colors whitespace-nowrap shrink-0',
               active
                 ? 'bg-foreground text-background font-medium'
                 : 'bg-transparent text-ink-dim font-normal hover:text-foreground',
             )}
           >
             <span>{label}</span>
-            <span className="font-mono-num text-[10px] opacity-65">{unit}</span>
+            <span className="font-mono-num text-micro opacity-65">{unit}</span>
           </button>
         );
       })}
