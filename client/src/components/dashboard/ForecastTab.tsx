@@ -9,8 +9,10 @@ import {
   fetchTSOLoadForecastAccuracy,
 } from '@/services/api';
 import { buildHorizonBars } from './horizonBars';
+import { ModelComparisonPanel } from './ModelComparisonPanel';
 import { useLoadChartData } from '@/hooks/useLoadChartData';
 import { useDashboardStore } from '@/store/dashboardStore';
+import { useActiveForecastType } from '@/hooks/useForecastModels';
 import { getDateRangeForPreset, useForecastComparisonSummary } from '@/hooks/useDashboardData';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { adaptLoadSeries } from '@/lib/chartAdapters';
@@ -86,6 +88,9 @@ export function ForecastTab() {
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
+  // 'load' for this tab (TAB_FORECAST_TYPE.analytics), read rather than
+  // hardcoded so the comparison panel offers this tab's own type's models.
+  const forecastType = useActiveForecastType();
 
   // Aggregate TSO metrics — always fetched on this tab regardless of layer toggles.
   const metricsQuery = useQuery({
@@ -212,17 +217,10 @@ export function ForecastTab() {
         </AbleCard>
       </div>
 
-      {/* Per-model comparison was a full-width card the size of a real chart
-          whose entire content was a paragraph explaining that it has no
-          content — the largest element on the tab carrying the least. The
-          disclosure still matters (ABL-6 builds the panel; until then a
-          reader should know why the comparison is absent rather than assume
-          it was never planned), so it stays — as a footnote, at footnote
-          weight. Restore it to a card when it has numbers to show. */}
-      <p className="text-micro text-ink-muted">
-        Per-model comparison is not available yet — the accuracy endpoints do not accept a
-        model parameter, and this tab will not print per-model figures it has not measured.
-      </p>
+      {/* Per-model comparison. It was a footnote saying the accuracy endpoints
+          took no model parameter; they do now (ABL-5), so the panel has
+          numbers to show and is back to being a card. */}
+      <ModelComparisonPanel forecastType={forecastType} />
     </div>
   );
 }

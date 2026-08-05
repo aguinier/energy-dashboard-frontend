@@ -93,13 +93,17 @@ export const REFRESH_INTERVALS = {
  * accuracy". Both ids are live: `analytics` outlived the analytics dashboard
  * that `ebdb5ab` removed, because the accuracy tab reuses the id.
  *
- * Those two entries are currently unread — `TABS_WITH_MODEL_PICKER`
- * (`CountryDashboardView.tsx:56`) keeps `ModelPicker` off the Generation and
- * Forecast-accuracy tabs, so `useActiveForecastType` never looks them up.
- * Keep them anyway: adding a forecast overlay to either tab puts it back in
- * that set, and a missing key falls through to `?? 'load'`
- * (`useForecastModels.ts:74`) — the Generation tab would then offer load
- * models for solar data, which is the wrong-number-under-a-plausible-label
+ * `analytics` is read: `ForecastTab` calls `useActiveForecastType()` to pick
+ * which type's registered models the "Compare forecast models" panel compares
+ * (`ForecastTab.tsx`, `ModelComparisonPanel.tsx`). It is not read by
+ * `ModelPicker`, which `TABS_WITH_MODEL_PICKER` (`CountryDashboardView.tsx:56`)
+ * still keeps off that tab.
+ *
+ * `renewables` remains unread for the same reason — the Generation tab renders
+ * actuals only and gets no picker. Keep it anyway: adding a forecast overlay
+ * there puts it back in that set, and a missing key falls through to
+ * `?? 'load'` (`useForecastModels.ts:74`) — the Generation tab would then offer
+ * load models for solar data, which is the wrong-number-under-a-plausible-label
  * failure this dashboard exists to avoid.
  */
 export const TAB_FORECAST_TYPE: Record<string, string> = {
