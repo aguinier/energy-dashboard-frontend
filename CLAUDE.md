@@ -97,6 +97,8 @@ energy-dashboard-frontend/
 │
 └── server/
     └── src/
+        ├── app.ts                     # createApp() — the whole middleware graph, no listen()
+        ├── index.ts                   # Detects the built client, calls createApp, listens
         ├── routes/
         │   ├── index.ts               # Mounts every router below /api
         │   ├── dashboard.ts           # /dashboard/overview, /map, /timeseries, /initial
@@ -753,13 +755,14 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-06: **341 client tests / 25 files**, **219 server tests /
-16 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-06: **341 client tests / 25 files**, **232 server tests /
+17 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
 `utils/timestamp.test.ts` and one more `forecast.test.ts` case; ABL-23 added
-`comparison/mapFill.test.ts` and touched no server file.)
+`comparison/mapFill.test.ts` and touched no server file; ABL-13 added
+`server/src/app.test.ts` and touched no client file.)
 
 Two conventions, and they are for different layers.
 
@@ -782,8 +785,19 @@ real `ApiResponse<T>` envelope out. Two shared pieces:
   `CREATE TABLE` statements are copied verbatim from `energy_dashboard.db`
   because the column defaults are what is under test: `energy_generation` has no
   `DEFAULT 0`, `energy_renewable` does.
-- `server/src/test/apiHarness.ts` — mounts the real `/api` router with the real
-  `notFoundHandler`/`errorHandler` on an ephemeral port.
+- `server/src/test/apiHarness.ts` — starts the **real** app (`createApp()`, in
+  its API-only mode) on an ephemeral port. It used to hand-mirror the wiring
+  instead, under a comment claiming it matched `index.ts`. It did not, and that
+  gap was ABL-13: the shipped app dropped both error handlers whenever
+  `client/dist` existed, while every route test asserted against a copy that
+  kept them. Do not reintroduce a second app graph here.
+
+**The app wiring gets its own test.** `server/src/app.test.ts` boots
+`createApp` in **both** modes — with a real built-client directory written to a
+`mkdtemp` dir, and without one — and asserts the error contract from the
+outside: content type, status, and the exact `{ success, error, code }` keys.
+The SPA-mode half cannot live in `apiHarness.ts`, because it needs an
+`index.html` on disk that no route test should have to arrange.
 
 A route test mocks `../config/database.js` to the fixture and
 `../config/writeDatabase.js` to `noWriteDb.ts`'s thrower, so **the real shared
@@ -1040,3 +1054,23 @@ interface TSOForecastAccuracyMetrics {
 - The symptom is a missing series with no error and no empty state, which reads
   as "the model didn't run" rather than as a bug. Check the row count against
   raw SQL before believing the chart.
+
+**An API call returns HTML, or `unwrap()` reports a malformed envelope:**
+- Fixed under ABL-13, but know the shape, because it is invisible in a dev
+  checkout. The server decides it is "production" from the mere existence of
+  `client/dist/index.html` (`app.ts`'s `resolveClientDist`), not from
+  `NODE_ENV` — so a built or deployed box takes a branch a plain `npm run dev`
+  never does. That branch used to skip `notFoundHandler`/`errorHandler`
+  entirely, on the belief that the SPA fallback covered them. It did not:
+  `app.get('*')` catches unmatched *routes*, never a thrown error, and Express
+  selects an error handler by arity. Measured before the fix, in production
+  mode: a thrown `AppError` came back `400 text/html` as
+  `<pre>Error: …</pre>` plus ten stack frames of absolute repo paths, and an
+  unmatched `/api/*` came back **`200` with index.html** — a success status
+  carrying HTML into `unwrap()`.
+- Both handlers are now registered unconditionally, after the SPA fallback, and
+  the fallback skips `/api`. `server/src/app.test.ts` pins all of it; removing
+  either half fails it.
+- To reproduce this class of bug at all you need `client/dist/index.html` to
+  exist — it is gitignored and absent in a fresh checkout, which is why it
+  survived. Create one, start the server, and curl an API path.

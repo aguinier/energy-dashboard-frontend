@@ -1,30 +1,32 @@
-import express from 'express';
 import type { Server } from 'node:http';
-import apiRoutes from '../routes/index.js';
-import { errorHandler, notFoundHandler } from '../middleware/errorHandler.js';
+import { createApp } from '../app.js';
 import { cache } from '../middleware/cache.js';
 
 /**
- * An Express app wired the way `src/index.ts` wires the API surface: the whole
- * `/api` router, then `notFoundHandler`, then `errorHandler`, in that order.
+ * The real application, in its API-only mode.
+ *
+ * This used to hand-mirror the wiring — `/api` router, `notFoundHandler`,
+ * `errorHandler` — under a comment claiming it was wired "the way
+ * `src/index.ts` wires the API surface". It was not, and that gap *was* ABL-13:
+ * the shipped app dropped both error handlers whenever `client/dist` existed,
+ * while every route test went on asserting against a copy that kept them. Two
+ * graphs means the tests can only ever pin the one nobody deploys, so this
+ * calls `createApp` instead and the copy is gone.
  *
  * Mounting the real router — rather than the one router under test — is the
- * point. It pins the actual mount paths, which router wins a colliding prefix,
- * and the 404/500 envelopes a client really sees. The helmet/cors/compression
- * layers are left out: they are configuration, they do not shape any response
- * body, and `compression` would gzip every response for no benefit here.
+ * other half of the point. It pins the actual mount paths, which router wins a
+ * colliding prefix, and the 404/500 envelopes a client really sees.
+ *
+ * `createApp`'s other mode, serving the built client, is covered by
+ * `src/app.test.ts`; it needs an index.html on disk, which is not something a
+ * route test should have to arrange.
  *
  * Nothing in this file touches a database. The caller mocks
  * `../config/database.js` before importing this module, and the router graph
  * picks the mock up.
  */
 export function createApiApp() {
-  const app = express();
-  app.use(express.json());
-  app.use('/api', apiRoutes);
-  app.use(notFoundHandler);
-  app.use(errorHandler);
-  return app;
+  return createApp();
 }
 
 export interface JsonResponse {
