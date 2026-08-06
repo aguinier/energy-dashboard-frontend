@@ -6,6 +6,7 @@ import {
   fetchPriceData,
   fetchRenewableData,
   fetchGenerationMix,
+  fetchGenerationSeries,
   fetchLatestForecast,
   fetchDataFreshness,
   fetchForecastComparisonSummary,
@@ -284,6 +285,27 @@ export function useGenerationMix() {
   return useQuery({
     queryKey: ['generation', 'mix', selectedCountry, timePreset, timeOffset],
     queryFn: () => fetchGenerationMix({ country: selectedCountry, start: start.toISOString(), end: end.toISOString() }),
+    staleTime: REFRESH_INTERVALS.dashboard,
+  });
+}
+
+// The same A75 mix over time, for GenerationTab's stacked trend chart - see
+// dashboard/generationSeries.ts. Same table and same nine-family grouping as
+// useGenerationMix above, so the trend and the donut cannot disagree (ABL-44).
+export function useGenerationSeries() {
+  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
+  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
+  const granularity = getGranularityForPreset(timePreset);
+
+  return useQuery({
+    queryKey: ['generation', 'series', selectedCountry, timePreset, timeOffset, granularity],
+    queryFn: () =>
+      fetchGenerationSeries({
+        country: selectedCountry,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        granularity,
+      }),
     staleTime: REFRESH_INTERVALS.dashboard,
   });
 }

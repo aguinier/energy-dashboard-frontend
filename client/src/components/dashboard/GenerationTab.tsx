@@ -4,31 +4,13 @@ import { AbleStackedMix } from '@/components/charts/AbleStackedMix';
 import { AbleDonut } from '@/components/charts/AbleDonut';
 import { SourceTable } from './SourceTable';
 import { buildSourceRows, type SourceRow } from './sourceRows';
-import { useRenewableChartData } from '@/hooks/useRenewableChartData';
-import { useGenerationMix } from '@/hooks/useDashboardData';
-import { adaptRenewableMixSeries } from '@/lib/chartAdapters';
-
-// Keep in sync with AbleStackedMix DEFAULT_COLORS (validated palette). The
-// top chart still only plots the 4 renewable types (unchanged, out of scope
-// for the A75 work), so those 4 keys must stay exactly as they were.
-const SOURCE_COLORS: Record<SourceRow['key'], string> = {
-  solar: '#D9A114',
-  wind: '#4D89C9',
-  hydro: '#2FA39C',
-  biomass: '#73A35F',
-  nuclear: '#C2665A',
-  hydroPumped: '#7FBFB9',
-  fossil: '#6B6459',
-  waste: '#A98F5D',
-  other: '#B7AFA0',
-};
-
-const LEGEND: Array<{ key: 'solar' | 'wind' | 'hydro' | 'biomass'; label: string }> = [
-  { key: 'solar', label: 'Solar' },
-  { key: 'wind', label: 'Wind' },
-  { key: 'hydro', label: 'Hydro' },
-  { key: 'biomass', label: 'Biomass' },
-];
+import {
+  buildGenerationMixSeries,
+  describeNegativeGroups,
+  GENERATION_GROUP_COLORS,
+  GENERATION_GROUP_LABELS,
+} from './generationSeries';
+import { useGenerationMix, useGenerationSeries } from '@/hooks/useDashboardData';
 
 // Which arcs AbleDonut colors green - cosmetic only. The printed "% RENEWABLE"
 // figure comes from the server (mix.renewable_percentage, see below), not
@@ -42,13 +24,19 @@ const LEGEND: Array<{ key: 'solar' | 'wind' | 'hydro' | 'biomass'; label: string
 const GREEN_KEYS = new Set<SourceRow['key']>(['solar', 'wind', 'hydro', 'biomass']);
 
 export function GenerationTab() {
-  const { renewableData, isLoading } = useRenewableChartData();
+  // Both queries read energy_generation through the same nine-family grouping
+  // (ABL-44). Before that the trend came from the frozen, renewable-only
+  // energy_renewable while the donut and table came from the full A75
+  // document, so one card carried two different mixes and the chart had no
+  // nuclear or fossil band at all.
+  const { data: seriesData, isLoading, isError } = useGenerationSeries();
   const { data: mix, isLoading: mixLoading, isError: mixError } = useGenerationMix();
 
-  const { series, nowIndex } = useMemo(
-    () => adaptRenewableMixSeries(renewableData),
-    [renewableData],
+  const { points, groups, nowIndex, negativeGroups } = useMemo(
+    () => buildGenerationMixSeries(seriesData),
+    [seriesData],
   );
+  const negativeNote = describeNegativeGroups(negativeGroups);
 
   // Donut input — the full measured mix, shared with SourceTable via
   // buildSourceRows so the two can never disagree about what's measured or
@@ -81,29 +69,41 @@ export function GenerationTab() {
           <div className="flex h-[220px] items-center justify-center text-meta text-ink-muted">
             Loading…
           </div>
+        ) : isError ? (
+          <div className="flex h-[220px] items-center justify-center text-center text-meta text-ink-muted">
+            Generation series unavailable.
+          </div>
         ) : (
           <>
             <AbleStackedMix
-              series={series}
+              series={points}
+              keys={groups}
+              labels={GENERATION_GROUP_LABELS}
+              colors={GENERATION_GROUP_COLORS}
               nowIndex={nowIndex}
-              colors={{
-                solar: SOURCE_COLORS.solar,
-                wind: SOURCE_COLORS.wind,
-                hydro: SOURCE_COLORS.hydro,
-                biomass: SOURCE_COLORS.biomass,
-              }}
             />
+            {/*
+              The legend lists only the groups actually drawn. A country that
+              does not report nuclear gets no nuclear swatch, rather than a
+              swatch above an invisible band — which would read as "nuclear,
+              zero" instead of "we have not been told".
+            */}
             <div className="mt-2.5 flex flex-wrap gap-4 font-mono-num text-micro text-ink-muted">
-              {LEGEND.map((l) => (
-                <div key={l.key} className="flex items-center gap-1.5">
+              {groups.map((key) => (
+                <div key={key} className="flex items-center gap-1.5">
                   <span
                     className="h-0.5 w-3.5"
-                    style={{ background: SOURCE_COLORS[l.key] }}
+                    style={{ background: GENERATION_GROUP_COLORS[key] }}
                   />
-                  <span>{l.label}</span>
+                  <span>{GENERATION_GROUP_LABELS[key]}</span>
                 </div>
               ))}
             </div>
+            {negativeNote && (
+              <p className="mt-2 border-t border-input pt-2 text-micro text-ink-muted">
+                {negativeNote}
+              </p>
+            )}
           </>
         )}
       </AbleCard>
@@ -132,7 +132,7 @@ export function GenerationTab() {
             </div>
           ) : (
             <div className="flex justify-center py-2">
-              <AbleDonut values={donutValues} pct={mix.renewable_percentage} colors={SOURCE_COLORS} />
+              <AbleDonut values={donutValues} pct={mix.renewable_percentage} colors={GENERATION_GROUP_COLORS} />
             </div>
           )}
         </AbleCard>

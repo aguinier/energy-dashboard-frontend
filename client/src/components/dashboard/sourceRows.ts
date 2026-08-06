@@ -1,7 +1,13 @@
 import type { GenerationMix } from '@/types';
+import { GENERATION_GROUP_COLORS, type GenerationGroupKey } from './generationSeries';
 
 export interface SourceRow {
-  key: 'nuclear' | 'solar' | 'wind' | 'hydro' | 'hydroPumped' | 'fossil' | 'biomass' | 'waste' | 'other';
+  /**
+   * The same nine families the trend chart stacks - see
+   * `generationSeries.ts`, which owns the grouping, the labels and the
+   * palette so all three marks on this tab agree.
+   */
+  key: GenerationGroupKey;
   label: string;
   /**
    * MW, window average. Null when this country's A75 document never reports
@@ -20,18 +26,6 @@ export interface SourceRow {
   pctOfGeneration: number | null;
   color: string;
 }
-
-const COLORS: Record<SourceRow['key'], string> = {
-  nuclear: '#C2665A',
-  solar: '#F0B92B',
-  wind: '#4D89C9',
-  hydro: '#2FA39C',
-  hydroPumped: '#7FBFB9',
-  fossil: '#6B6459',
-  biomass: '#73A35F',
-  waste: '#A98F5D',
-  other: '#B7AFA0',
-};
 
 /**
  * Sums the non-null members of a group. Null only when every member is
@@ -145,7 +139,7 @@ export function buildSourceRows(
       label,
       mw,
       pctOfGeneration: mw == null ? null : totalMw && totalMw > 0 ? (mw / totalMw) * 100 : null,
-      color: COLORS[key],
+      color: GENERATION_GROUP_COLORS[key],
     }))
     // Largest contributors first, by magnitude, so the mix reads at a
     // glance; types this country doesn't report sink to the bottom.

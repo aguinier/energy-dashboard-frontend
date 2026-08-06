@@ -1,6 +1,6 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
-import { GenerationMix } from '../types/index.js';
+import { GenerationMix, GenerationSeriesPoint, Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 
 /**
@@ -217,4 +217,153 @@ export function getRenewableShare(
 
   if (!row || row.row_count === 0) return null;
   return row.renewable_pct;
+}
+
+/**
+ * The 21 A75 `*_mw` columns collapsed into the nine families the Generation
+ * tab draws. **This is the same grouping `buildSourceRows` applies
+ * client-side** for the donut and the by-source table
+ * (`client/src/components/dashboard/sourceRows.ts`) - stated twice because
+ * the two live on opposite sides of the wire, and asserted equal by
+ * `generationSeries.test.ts` client-side, which walks this list's aliases.
+ *
+ * Twenty-one stacked areas is unreadable; nine is the same number of legend
+ * entries the table underneath already carries, so a viewer reads one legend
+ * for both marks rather than two that partition the same 21 columns
+ * differently.
+ *
+ * `hydro_pumped` is its own group rather than folded into `hydro` for the
+ * same reason it is its own row: it is a store, not a source, and it is the
+ * one group that is routinely negative (see GENERATION_SERIES_SQL).
+ */
+export const GENERATION_GROUPS: Record<string, readonly string[]> = {
+  nuclear: ['nuclear_mw'],
+  solar: ['solar_mw'],
+  wind: ['wind_onshore_mw', 'wind_offshore_mw'],
+  hydro: ['hydro_run_mw', 'hydro_reservoir_mw'],
+  hydro_pumped: ['hydro_pumped_mw'],
+  fossil: [
+    'fossil_gas_mw', 'fossil_hard_coal_mw', 'fossil_brown_coal_mw', 'fossil_oil_mw',
+    'fossil_oil_shale_mw', 'fossil_peat_mw', 'fossil_coal_derived_gas_mw',
+  ],
+  biomass: ['biomass_mw'],
+  waste: ['waste_mw'],
+  other: ['geothermal_mw', 'marine_mw', 'other_renewable_mw', 'energy_storage_mw', 'other_mw'],
+};
+
+/**
+ * One group's SELECT expression.
+ *
+ * The shape is `sumOrNull` (sourceRows.ts) expressed in SQL, deliberately and
+ * exactly: take each member column's own null-skipping `AVG()`, then sum the
+ * members that produced one, and return NULL only when *every* member of the
+ * group averaged to NULL.
+ *
+ * Both halves matter, and both are the opposite of the obvious one-liner:
+ *
+ *  - `AVG(COALESCE(a,0) + COALESCE(b,0))` (what renewableService does over the
+ *    frozen table) is wrong here because it charges a bucket for the rows in
+ *    which a column is simply absent: a country reporting gas for two of four
+ *    hours would read at half its true gas output rather than at its average
+ *    over the hours it actually reported.
+ *  - `AVG(a + b)` is wrong the other way: SQL's `+` propagates NULL, so one
+ *    unreported member (FR's `hydro_reservoir_mw` at 02:00) would null the
+ *    whole group for that bucket and delete a real `hydro_run_mw` reading.
+ *
+ * The COALESCE here therefore never turns "not reported" into a fabricated 0
+ * at the group level - the CASE guard in front of it is what decides that -
+ * it only lets a reported member stand alone next to an unreported sibling.
+ * Over a single bucket spanning the whole window this returns bit-for-bit
+ * what `buildSourceRows` computes from `getGenerationMix`, which is the
+ * property that keeps the trend chart and the donut from disagreeing.
+ */
+function groupExpression(alias: string, columns: readonly string[]): string {
+  const allNull = columns.map((c) => `AVG(${c}) IS NULL`).join(' AND ');
+  const sum = columns.map((c) => `COALESCE(AVG(${c}), 0)`).join(' + ');
+  return `CASE WHEN ${allNull} THEN NULL ELSE ROUND(${sum}, 2) END as ${alias}`;
+}
+
+/**
+ * Bucket key for a granularity. Mirrors renewableService's private clause of
+ * the same shape, including the `REPLACE(..., ' ', 'T')` on the hourly branch
+ * that hands the client an ISO-separated timestamp.
+ *
+ * `date()`/`strftime()` appear only in GROUP BY, never in WHERE - grouping
+ * through a function is fine, filtering or joining through one is what
+ * defeats the (country_code, timestamp_utc) index (see RENEWABLE_SHARE_SQL's
+ * note, and the 51s scar in renewableService).
+ */
+function generationGroupByClause(granularity: Granularity): string {
+  switch (granularity) {
+    case 'daily':
+      return 'date(timestamp_utc)';
+    case 'weekly':
+      return "strftime('%Y-W%W', timestamp_utc)";
+    case 'monthly':
+      return "strftime('%Y-%m', timestamp_utc)";
+    default:
+      return "REPLACE(timestamp_utc, ' ', 'T')";
+  }
+}
+
+/**
+ * SQL for getGenerationSeries at one granularity, exported so tests can assert
+ * on the exact text and on the query plan (same convention as
+ * GENERATION_MIX_SQL / RENEWABLE_SHARE_SQL).
+ *
+ * ## Negative values are returned signed, never clamped
+ *
+ * `hydro_pumped` is negative whenever a country is pumping, and a
+ * consumption-only fossil type (FR's `fossil_hard_coal_mw`) is negative
+ * outright. This query returns them as measured. Clamping them to 0 here
+ * would be the fabrication this dashboard exists to avoid, and netting them
+ * into a neighbouring group would hide a real draw inside someone else's
+ * production. **How they are drawn** is the client's decision and is
+ * documented in `dashboard/generationSeries.ts`, which stacks negative groups
+ * downward from the zero baseline rather than up.
+ */
+export function generationSeriesSql(granularity: Granularity): string {
+  const bucket = generationGroupByClause(granularity);
+  const groups = Object.entries(GENERATION_GROUPS)
+    .map(([alias, columns]) => groupExpression(alias, columns))
+    .join(',\n      ');
+  return `
+    SELECT
+      ${bucket} as timestamp,
+      ${groups}
+    FROM energy_generation
+    WHERE country_code = ?
+      AND ${rangeClause('timestamp_utc')}
+    GROUP BY ${bucket}
+    ORDER BY timestamp
+  `;
+}
+
+/**
+ * Generation by source over time, from the full A75 document
+ * (`energy_generation`) - the trend counterpart to `getGenerationMix`'s
+ * window average, reading the same table through the same grouping so the
+ * Generation tab's stacked chart, its donut and its by-source table cannot
+ * describe different mixes.
+ *
+ * Every group is independently either a number (possibly negative, possibly a
+ * measured 0.0) or null, meaning "this country reported none of this group's
+ * production types in this bucket". Callers must not read a null as a zero;
+ * see `groupExpression`.
+ *
+ * Returns `[]` when no rows fall in the window - the caller's empty state,
+ * not a series of zeros.
+ */
+export function getGenerationSeries(
+  countryCode: string,
+  start: string,
+  end: string,
+  granularity: Granularity = 'hourly',
+  db: DatabaseType = defaultDb
+): GenerationSeriesPoint[] {
+  const upperCode = countryCode.toUpperCase();
+  const range = timestampRange(start, end);
+
+  const stmt = db.prepare(generationSeriesSql(granularity));
+  return stmt.all(upperCode, ...rangeArgs(range)) as GenerationSeriesPoint[];
 }

@@ -133,6 +133,30 @@ export interface GenerationMix {
   renewable_percentage: number | null;
 }
 
+/**
+ * One time bucket of the generation mix, with the 21 A75 `*_mw` columns
+ * collapsed into the nine families the Generation tab's stacked chart draws -
+ * the same nine `buildSourceRows` groups the donut and by-source table into
+ * client-side. See generationService.GENERATION_GROUPS for the membership.
+ *
+ * Every group is independently nullable and that null is load-bearing: it
+ * means "this country reported none of this group's production types in this
+ * bucket", never a measured zero. `hydro_pumped` (and, for a consumption-only
+ * type, `fossil`) can legitimately be negative.
+ */
+export interface GenerationSeriesPoint {
+  timestamp: string;
+  nuclear: number | null;
+  solar: number | null;
+  wind: number | null;
+  hydro: number | null;
+  hydro_pumped: number | null;
+  fossil: number | null;
+  biomass: number | null;
+  waste: number | null;
+  other: number | null;
+}
+
 // Dashboard types
 export interface DashboardOverview {
   currentLoad: number | null;

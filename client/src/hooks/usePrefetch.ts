@@ -91,6 +91,10 @@ export function usePrefetchCountry() {
         staleTime: REFRESH_INTERVALS.dashboard,
       });
 
+      // Warms AbleStatRow's renewable stat. The Generation tab's own trend
+      // (['generation','series',…]) is deliberately NOT prefetched on hover —
+      // it is a second full-window query for a tab the user may never open,
+      // and the tab has its own loading state.
       queryClient.prefetchQuery({
         queryKey: ['renewables', countryCode, timePreset, timeOffset, granularity],
         queryFn: () =>

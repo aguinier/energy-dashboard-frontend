@@ -1,37 +1,45 @@
 import { useState, useMemo } from 'react';
 import { niceTicks, formatGwAxis } from '@/lib/chartTicks';
+import { divergingStack, stackExtent } from '@/lib/divergingStack';
 
-// Port of Charts.StackedMix — stacked smoothed area for renewable generation
-// by source (solar / wind / hydro / biomass).
+// Stacked smoothed area for the generation mix by source.
+//
+// ABL-44 widened this from the four hardcoded renewable families
+// (solar/wind/hydro/biomass, read from the frozen `energy_renewable`) to
+// whichever families the caller passes, so nuclear and fossil are drawn too
+// and the chart describes the same mix as the donut and by-source table on the
+// same card. Two consequences, both handled here:
+//
+//  - **Members can be negative.** Pumped storage is negative while charging and
+//    a consumption-only fossil type is negative outright. The stack is a
+//    DIVERGING one (`lib/divergingStack.ts`, where that decision is argued):
+//    positives go up from the zero baseline, negatives go down from it, and the
+//    axis only reaches below zero when something really is negative.
+//  - **A member can be absent.** `values[key]` is `number | null`, and null is
+//    "not reported", never 0. The caller drops a key that is null throughout
+//    (`buildGenerationMixSeries`), so nothing here draws a fabricated band; a
+//    null at a single point is a zero-width band and reads `—` in the tooltip
+//    rather than a number.
 
 export interface AbleStackedMixPoint {
   ts: string;
   future: boolean;
-  solar: number;
-  wind: number;
-  hydro: number;
-  biomass: number;
+  /** MW by group key. Null means "not reported", never a measured 0. */
+  values: Record<string, number | null>;
 }
 
 interface Props {
   series: AbleStackedMixPoint[];
+  /** Stack order, bottom of the stack first. Only these keys are drawn. */
+  keys: readonly string[];
+  labels: Record<string, string>;
+  colors: Record<string, string>;
   nowIndex?: number;
   height?: number;
   width?: number;
-  colors?: { solar: string; wind: string; hydro: string; biomass: string };
+  /** Tooltip footer label for the signed sum of the drawn keys. */
+  totalLabel?: string;
 }
-
-// Validated palette (dataviz six checks): solar darkened from #F0B92B, which
-// sat outside the lightness band at 1.75:1 contrast on the white card.
-const DEFAULT_COLORS = {
-  solar: '#D9A114',
-  wind: '#4D89C9',
-  hydro: '#2FA39C',
-  biomass: '#73A35F',
-};
-
-const KEYS = ['solar', 'wind', 'hydro', 'biomass'] as const;
-const LABELS = { solar: 'Solar', wind: 'Wind', hydro: 'Hydro', biomass: 'Biomass' } as const;
 
 function scale(val: number, dMin: number, dMax: number, rMin: number, rMax: number) {
   if (dMax === dMin) return (rMin + rMax) / 2;
@@ -58,10 +66,13 @@ function smoothPath(points: Array<[number, number]>): string {
 
 export function AbleStackedMix({
   series,
+  keys,
+  labels,
+  colors,
   nowIndex,
   height = 220,
   width = 680,
-  colors = DEFAULT_COLORS,
+  totalLabel = 'Net generation',
 }: Props) {
   const [hover, setHover] = useState<number | null>(null);
 
@@ -77,41 +88,47 @@ export function AbleStackedMix({
       ? Math.max(0, Math.min(series.length - 1, nowIndex))
       : Math.max(0, series.length - 1);
 
-  const { areas, yMax } = useMemo(() => {
-    if (series.length === 0) return { areas: [], yMax: 1 };
-    const totals = series.map((d) => KEYS.reduce((a, k) => a + (d[k] || 0), 0));
-    const yMax = Math.max(...totals, 1) * 1.1;
+  const { areas, yMin, yMax, zeroY } = useMemo(() => {
+    if (series.length === 0 || keys.length === 0) {
+      return { areas: [], yMin: 0, yMax: 1, zeroY: padT + ih };
+    }
+
+    const extent = stackExtent(series, keys);
+    // 10% headroom on whichever ends the domain actually uses. `min` is 0
+    // unless something is genuinely negative, so an all-positive series keeps
+    // its baseline flat on the axis exactly as before.
+    const yMax = Math.max(extent.max * 1.1, 1);
+    const yMin = extent.min < 0 ? extent.min * 1.1 : 0;
+
     const xFor = (i: number) => padL + (i / Math.max(1, series.length - 1)) * iw;
-    const yFor = (v: number) => padT + ih - scale(v, 0, yMax, 0, ih);
+    const yFor = (v: number) => padT + ih - scale(v, yMin, yMax, 0, ih);
 
-    const stacks: Array<Array<[number, number]>> = KEYS.map(() => []);
+    // One diverging stack per point, then transposed into a band per key.
+    const tops: Record<string, Array<[number, number]>> = {};
+    const bottoms: Record<string, Array<[number, number]>> = {};
+    for (const k of keys) {
+      tops[k] = [];
+      bottoms[k] = [];
+    }
     series.forEach((d, i) => {
-      let acc = 0;
-      KEYS.forEach((k, ki) => {
-        acc += d[k] || 0;
-        stacks[ki].push([xFor(i), yFor(acc)]);
-      });
+      for (const band of divergingStack(keys, d.values)) {
+        tops[band.key].push([xFor(i), yFor(band.y1)]);
+        bottoms[band.key].push([xFor(i), yFor(band.y0)]);
+      }
     });
 
-    const areas = KEYS.map((k, ki) => {
-      const top = stacks[ki];
-      const bottom =
-        ki === 0
-          ? series.map((_, i): [number, number] => [xFor(i), padT + ih])
-          : stacks[ki - 1];
-      const path =
-        smoothPath(top) +
+    const areas = keys.map((k) => ({
+      k,
+      path:
+        smoothPath(tops[k]) +
         ' L ' +
-        [...bottom]
-          .reverse()
-          .map((p) => `${p[0]},${p[1]}`)
-          .join(' L ') +
-        ' Z';
-      return { k, path, color: colors[k] };
-    });
+        [...bottoms[k]].reverse().map((p) => `${p[0]},${p[1]}`).join(' L ') +
+        ' Z',
+      color: colors[k],
+    }));
 
-    return { areas, yMax };
-  }, [series, colors, padL, ih, iw, padT]);
+    return { areas, yMin, yMax, zeroY: yFor(0) };
+  }, [series, keys, colors, padL, ih, iw, padT]);
 
   const nowX = padL + (NOW / Math.max(1, series.length - 1)) * iw;
 
@@ -126,9 +143,16 @@ export function AbleStackedMix({
 
   const h = hover != null ? series[hover] : null;
   const hx = hover != null ? padL + (hover / Math.max(1, series.length - 1)) * iw : 0;
-  const total = h ? KEYS.reduce((a, k) => a + (h[k] || 0), 0) : 0;
+  // Null contributes nothing; the total is null when nothing was reported at
+  // all, so the footer reads "—" instead of a confident 0.
+  const hoverTotal = h
+    ? keys.reduce<number | null>((acc, k) => {
+        const v = h.values[k];
+        return v == null ? acc : (acc ?? 0) + v;
+      }, null)
+    : null;
 
-  if (series.length === 0) {
+  if (series.length === 0 || keys.length === 0) {
     return (
       <div className="flex items-center justify-center text-meta text-ink-muted" style={{ height }}>
         No generation data for this window.
@@ -146,7 +170,7 @@ export function AbleStackedMix({
       >
         {areas.map((a, i) => (
           <path
-            key={`area-${i}`}
+            key={`area-${a.k}`}
             d={a.path}
             fill={a.color}
             fillOpacity={0.85}
@@ -165,9 +189,9 @@ export function AbleStackedMix({
           opacity={0.8}
         />
 
-        {niceTicks(0, yMax, 4).map((v, i) => {
+        {niceTicks(yMin, yMax, 4).map((v, i) => {
           if (v === 0) return null;
-          const y = padT + ih - scale(v, 0, yMax, 0, ih);
+          const y = padT + ih - scale(v, yMin, yMax, 0, ih);
           return (
             <g key={i}>
               <line
@@ -193,6 +217,37 @@ export function AbleStackedMix({
           );
         })}
 
+        {/*
+          The zero baseline. Only drawn when the domain reaches below it — with
+          nothing negative it coincides with the bottom of the plot area, where
+          a solid rule would just be chart junk. When something IS negative it
+          is the reference the whole stack diverges from, so it is drawn darker
+          than the gridlines and labelled.
+        */}
+        {yMin < 0 && (
+          <g>
+            <line
+              x1={padL}
+              x2={padL + iw}
+              y1={zeroY}
+              y2={zeroY}
+              stroke="hsl(var(--ink-muted))"
+              strokeWidth={1}
+              opacity={0.75}
+            />
+            <text
+              x={padL - 8}
+              y={zeroY + 3}
+              fill="hsl(var(--ink-muted))"
+              fontSize="10"
+              textAnchor="end"
+              fontFamily="'JetBrains Mono', monospace"
+            >
+              0
+            </text>
+          </g>
+        )}
+
         {h && (
           <g style={{ pointerEvents: 'none' }}>
             <line
@@ -204,24 +259,21 @@ export function AbleStackedMix({
               strokeWidth={1}
               opacity={0.45}
             />
-            {(() => {
-              let acc = 0;
-              return KEYS.map((k) => {
-                acc += h[k] || 0;
-                const cy = padT + ih - scale(acc, 0, yMax, 0, ih);
-                return (
-                  <circle
-                    key={k}
-                    cx={hx}
-                    cy={cy}
-                    r={3}
-                    fill="hsl(var(--card))"
-                    stroke={colors[k]}
-                    strokeWidth={2}
-                  />
-                );
-              });
-            })()}
+            {divergingStack(keys, h.values).map((band) =>
+              // No marker for a group with nothing to report at this point —
+              // a dot on the baseline would read as a measured zero.
+              h.values[band.key] == null ? null : (
+                <circle
+                  key={band.key}
+                  cx={hx}
+                  cy={padT + ih - scale(band.y1, yMin, yMax, 0, ih)}
+                  r={3}
+                  fill="hsl(var(--card))"
+                  stroke={colors[band.key]}
+                  strokeWidth={2}
+                />
+              ),
+            )}
           </g>
         )}
       </svg>
@@ -239,7 +291,6 @@ export function AbleStackedMix({
           }}
         >
           <div className="mb-1.5 text-micro opacity-60">
-            {h.future ? 'forecast' : 'actual'} ·{' '}
             {new Date(h.ts).toLocaleString([], {
               month: 'short',
               day: 'numeric',
@@ -247,18 +298,22 @@ export function AbleStackedMix({
               minute: '2-digit',
             })}
           </div>
-          {KEYS.map((k) => (
+          {keys.map((k) => (
             <div key={k} className="flex items-center gap-2 py-0.5">
               <span className="h-2 w-2 rounded-sm" style={{ background: colors[k] }} />
-              <span className="flex-1 opacity-85">{LABELS[k]}</span>
-              <span className="font-semibold">{((h[k] || 0) / 1000).toFixed(2)}</span>
+              <span className="flex-1 opacity-85">{labels[k] ?? k}</span>
+              <span className="font-semibold">
+                {h.values[k] == null ? '—' : ((h.values[k] as number) / 1000).toFixed(2)}
+              </span>
               <span className="text-micro opacity-55">GW</span>
             </div>
           ))}
           <div className="mt-1.5 flex items-baseline justify-between border-t border-input pt-1.5 opacity-90">
-            <span className="text-micro opacity-70">Total renewable</span>
+            <span className="text-micro opacity-70">{totalLabel}</span>
             <span>
-              <span className="font-semibold">{(total / 1000).toFixed(2)}</span>
+              <span className="font-semibold">
+                {hoverTotal == null ? '—' : (hoverTotal / 1000).toFixed(2)}
+              </span>
               <span className="ml-1 text-micro opacity-55">GW</span>
             </span>
           </div>
