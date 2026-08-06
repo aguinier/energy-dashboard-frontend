@@ -10,9 +10,10 @@ import { timestampRange, rangeArgs } from '../utils/timestamp.js';
 import { vi } from 'vitest';
 vi.mock('../config/database.js', () => ({ default: null }));
 
-const { getGenerationMix, GENERATION_MIX_SQL, getRenewableShare, RENEWABLE_SHARE_SQL } = await import(
-  './generationService.js'
-);
+const {
+  getGenerationMix, GENERATION_MIX_SQL, getRenewableShare, RENEWABLE_SHARE_SQL,
+  getGenerationSeries, generationSeriesSql, GENERATION_GROUPS,
+} = await import('./generationService.js');
 
 // Mirrors the real energy_generation schema (Task 1 of the A75 plan),
 // confirmed live against prod on 2026-07-29. All *_mw columns default to
@@ -362,6 +363,213 @@ describe('getRenewableShare query plan', () => {
     const detail = plan.map((row) => row.detail).join('\n');
 
     expect(detail).toMatch(/SEARCH energy_generation USING (COVERING )?INDEX idx_generation_country_time \(country_code=\? AND timestamp_utc>\? AND timestamp_utc<\?\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getGenerationSeries — the trend counterpart of getGenerationMix (ABL-44).
+// ---------------------------------------------------------------------------
+
+describe('GENERATION_GROUPS', () => {
+  it('partitions all 21 A75 columns exactly once', () => {
+    const grouped = Object.values(GENERATION_GROUPS).flat();
+
+    // Every column is claimed by exactly one group — no column silently
+    // dropped off the chart, and none double-counted into two stacked bands.
+    expect([...grouped].sort()).toEqual([...ALL_GENERATION_KEYS].sort());
+    expect(new Set(grouped).size).toBe(grouped.length);
+  });
+});
+
+describe('generationSeriesSql shape', () => {
+  it('does not wrap timestamp_utc in date()/strftime() inside WHERE', () => {
+    for (const g of ['hourly', 'daily', 'weekly', 'monthly'] as const) {
+      const where = generationSeriesSql(g).split('WHERE')[1].split('GROUP BY')[0];
+      expect(where).not.toMatch(/date\(\s*timestamp_utc\s*\)/);
+      expect(where).not.toMatch(/strftime\(/);
+      expect(where).toMatch(/timestamp_utc BETWEEN \? AND \?/);
+    }
+  });
+
+  it('guards every group with an all-null CASE rather than a bare COALESCE sum', () => {
+    // The bare `ROUND(COALESCE(AVG(a),0) + COALESCE(AVG(b),0), 2)` would
+    // report a country that reports none of a group's types as a flat 0 MW
+    // band — a fabricated series, and precisely what this chart must not draw.
+    const sql = generationSeriesSql('hourly');
+    for (const [alias, columns] of Object.entries(GENERATION_GROUPS)) {
+      const allNull = columns.map((c) => `AVG(${c}) IS NULL`).join(' AND ');
+      expect(sql).toContain(`CASE WHEN ${allNull} THEN NULL`);
+      expect(sql).toContain(`END as ${alias}`);
+    }
+  });
+});
+
+describe('getGenerationSeries', () => {
+  const W = ['2026-07-29T00:00:00Z', '2026-07-29T04:00:00Z'] as const;
+
+  it('groups the 21 columns into the nine families the tab draws', () => {
+    const db = buildDb();
+    insertRow(db, {
+      country_code: 'DE', timestamp_utc: '2026-07-29 01:00:00',
+      solar_mw: 100, wind_onshore_mw: 200, wind_offshore_mw: 50,
+      hydro_run_mw: 10, hydro_reservoir_mw: 20, hydro_pumped_mw: -5,
+      nuclear_mw: 300, fossil_gas_mw: 400, fossil_hard_coal_mw: 60,
+      biomass_mw: 7, waste_mw: 3, geothermal_mw: 1, other_mw: 2,
+    });
+
+    const [point] = getGenerationSeries('DE', W[0], W[1], 'hourly', db);
+
+    expect(point).toEqual({
+      timestamp: '2026-07-29T01:00:00',
+      nuclear: 300, solar: 100,
+      wind: 250,          // onshore + offshore
+      hydro: 30,          // run + reservoir, pumped kept out
+      hydro_pumped: -5,
+      fossil: 460,        // gas + hard coal
+      biomass: 7, waste: 3,
+      other: 3,           // geothermal + other
+    });
+  });
+
+  it('reports a group this country never sends as null, not a zero series', () => {
+    // PT's live shape: rows exist, every column NULL. A 0 here would draw a
+    // flat band claiming the country generates nothing rather than that we
+    // have not been told.
+    const db = buildDb();
+    for (const h of [1, 2]) {
+      insertRow(db, { country_code: 'PT', timestamp_utc: `2026-07-29 0${h}:00:00` });
+    }
+
+    const series = getGenerationSeries('PT', W[0], W[1], 'hourly', db);
+
+    expect(series).toHaveLength(2);
+    for (const point of series) {
+      for (const alias of Object.keys(GENERATION_GROUPS)) {
+        expect(point[alias as keyof typeof point]).toBeNull();
+      }
+    }
+  });
+
+  it('keeps a measured zero as zero while an unreported sibling stays out of the sum', () => {
+    // FR's real row shape: solar measured 0.0, wind never reported. The two
+    // must stay distinguishable — 0 and null on the same point.
+    const db = buildDb();
+    insertRow(db, {
+      country_code: 'FR', timestamp_utc: '2026-07-29 01:00:00',
+      solar_mw: 0, hydro_run_mw: 100, // hydro_reservoir_mw absent => NULL
+    });
+
+    const [point] = getGenerationSeries('FR', W[0], W[1], 'hourly', db);
+
+    expect(point.solar).toBe(0);
+    expect(point.wind).toBeNull();
+    // NOT null: SQL's `+` would propagate hydro_reservoir's NULL and delete a
+    // real 100 MW run-of-river reading.
+    expect(point.hydro).toBe(100);
+  });
+
+  it('returns negatives signed, never clamped', () => {
+    const db = buildDb();
+    insertRow(db, {
+      country_code: 'FR', timestamp_utc: '2026-07-29 01:00:00',
+      hydro_pumped_mw: -300, fossil_hard_coal_mw: -50, nuclear_mw: 700,
+    });
+
+    const [point] = getGenerationSeries('FR', W[0], W[1], 'hourly', db);
+
+    expect(point.hydro_pumped).toBe(-300);
+    expect(point.fossil).toBe(-50);
+    expect(point.nuclear).toBe(700);
+  });
+
+  it('averages a group over the rows in a bucket, skipping rows where a member is absent', () => {
+    // Daily bucket, two rows. `fossil_gas_mw` is reported in both (400, 600 =>
+    // 500). `fossil_oil_mw` only in the second (100 => 100, its own average
+    // over the hours it was reported). The group is the sum of the two
+    // per-column averages, exactly as buildSourceRows would sum them.
+    const db = buildDb();
+    insertRow(db, { country_code: 'DE', timestamp_utc: '2026-07-29 01:00:00', fossil_gas_mw: 400 });
+    insertRow(db, { country_code: 'DE', timestamp_utc: '2026-07-29 02:00:00', fossil_gas_mw: 600, fossil_oil_mw: 100 });
+
+    const [point] = getGenerationSeries('DE', W[0], W[1], 'daily', db);
+
+    expect(point.timestamp).toBe('2026-07-29');
+    expect(point.fossil).toBe(600);
+  });
+
+  it('over one bucket spanning the window, matches getGenerationMix group for group', () => {
+    // The property that keeps the trend chart and the donut from disagreeing:
+    // same table, same window, same per-column AVG, same sum-or-null rule.
+    const db = buildDb();
+    insertRow(db, {
+      country_code: 'FR', timestamp_utc: '2026-07-29 01:00:00',
+      solar_mw: 0, hydro_run_mw: 100, hydro_reservoir_mw: 40, nuclear_mw: 700,
+      hydro_pumped_mw: -300, fossil_hard_coal_mw: -50, fossil_gas_mw: 120,
+    });
+    insertRow(db, {
+      country_code: 'FR', timestamp_utc: '2026-07-29 02:00:00',
+      solar_mw: 10, hydro_run_mw: 120, nuclear_mw: 690,
+      hydro_pumped_mw: 200, fossil_gas_mw: 80,
+    });
+
+    const [point] = getGenerationSeries('FR', W[0], W[1], 'monthly', db);
+    const mix = getGenerationMix('FR', W[0], W[1], db)!;
+
+    // Hand-summed from the mix the donut reads, with sourceRows' sum-or-null
+    // rule applied to each family.
+    expect(point.solar).toBe(mix.solar);
+    expect(point.nuclear).toBe(mix.nuclear);
+    expect(point.hydro_pumped).toBe(mix.hydro_pumped);
+    expect(point.hydro).toBeCloseTo((mix.hydro_run ?? 0) + (mix.hydro_reservoir ?? 0), 6);
+    expect(point.fossil).toBeCloseTo((mix.fossil_gas ?? 0) + (mix.fossil_hard_coal ?? 0), 6);
+    expect(point.wind).toBeNull();
+    expect(mix.wind_onshore).toBeNull();
+  });
+
+  it('returns [] when no rows fall in the window, rather than a series of zeros', () => {
+    const db = buildDb();
+    insertRow(db, { country_code: 'AT', timestamp_utc: '2026-06-01 01:00:00', solar_mw: 5 });
+
+    expect(getGenerationSeries('AT', W[0], W[1], 'hourly', db)).toEqual([]);
+  });
+
+  it('does not leak another country into a bucket', () => {
+    const db = buildDb();
+    insertRow(db, { country_code: 'FR', timestamp_utc: '2026-07-29 01:00:00', nuclear_mw: 700 });
+    insertRow(db, { country_code: 'DE', timestamp_utc: '2026-07-29 01:00:00', nuclear_mw: 300 });
+
+    const [point] = getGenerationSeries('FR', W[0], W[1], 'hourly', db);
+
+    expect(point.nuclear).toBe(700);
+  });
+
+  it('excludes a row on the end date stored with the other separator', () => {
+    // Both separator forms live in this column class (see utils/timestamp.ts).
+    // The window bound has to admit the in-range one and exclude the later
+    // out-of-range one whichever way each is spelled.
+    const db = buildDb();
+    insertRow(db, { country_code: 'DE', timestamp_utc: '2026-07-29T01:00:00', nuclear_mw: 300 });
+    insertRow(db, { country_code: 'DE', timestamp_utc: '2026-07-29 09:00:00', nuclear_mw: 999 });
+
+    const series = getGenerationSeries('DE', W[0], W[1], 'hourly', db);
+
+    expect(series.map((p) => p.nuclear)).toEqual([300]);
+  });
+});
+
+describe('getGenerationSeries query plan', () => {
+  it('uses the (country_code, timestamp_utc) index at every granularity', () => {
+    const db = buildDb();
+    insertRow(db, { country_code: 'FR', timestamp_utc: '2026-07-29 13:00:00', solar_mw: 100 });
+
+    for (const g of ['hourly', 'daily', 'weekly', 'monthly'] as const) {
+      const plan = db
+        .prepare(`EXPLAIN QUERY PLAN ${generationSeriesSql(g)}`)
+        .all('FR', ...rangeArgs(timestampRange('2026-07-29T12:00:00Z', '2026-07-29T14:00:00Z'))) as Array<{ detail: string }>;
+      const detail = plan.map((row) => row.detail).join('\n');
+
+      expect(detail).toMatch(/SEARCH energy_generation USING (COVERING )?INDEX idx_generation_country_time \(country_code=\? AND timestamp_utc>\? AND timestamp_utc<\?\)/);
+    }
   });
 });
 

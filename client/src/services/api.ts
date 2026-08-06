@@ -7,6 +7,7 @@ import type {
   RenewableDataPoint,
   RenewableMix,
   GenerationMix,
+  GenerationSeriesPoint,
   DashboardOverview,
   MapDataPoint,
   Granularity,
@@ -102,8 +103,11 @@ export async function fetchRenewableData(params: {
   end?: string;
   granularity?: Granularity;
 }): Promise<RenewableDataPoint[]> {
-  // Drives GenerationTab's stacked chart and AbleStatRow's stat strip — both
-  // fetch unconditionally, so a 30d/90d/1y window here is a known-slow cold query.
+  // Drives AbleStatRow's stat strip. GenerationTab's stacked chart used to
+  // read this too; it now reads fetchGenerationSeries (energy_generation, the
+  // full A75 document) so it can draw nuclear and fossil alongside the
+  // renewables — see ABL-44. Fetched unconditionally, so a 30d/90d/1y window
+  // here is a known-slow cold query.
   const { data } = await api.get<ApiResponse<RenewableDataPoint[]>>('/renewables', {
     params,
     timeout: LONG_RANGE_TIMEOUT_MS,
@@ -143,6 +147,24 @@ export async function fetchGenerationMix(params: {
     timeout: LONG_RANGE_TIMEOUT_MS,
   });
   return unwrap(data, '/generation/mix');
+}
+
+// Generation by source over time — the trend counterpart of /generation/mix,
+// off the same table and the same nine-family grouping, so GenerationTab's
+// stacked chart and its donut cannot describe different mixes (ABL-44).
+// Groups are independently nullable ("not reported") and can be negative
+// (pumped storage charging); see dashboard/generationSeries.ts.
+export async function fetchGenerationSeries(params: {
+  country: string;
+  start?: string;
+  end?: string;
+  granularity?: Granularity;
+}): Promise<GenerationSeriesPoint[]> {
+  const { data } = await api.get<ApiResponse<GenerationSeriesPoint[]>>('/generation/series', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
+  return unwrap(data, '/generation/series');
 }
 
 // Dashboard Data

@@ -2,13 +2,11 @@
 // shapes the able-prototype SVG charts expect.
 
 import type { AbleSeriesPoint } from '@/components/charts/AbleLineChart';
-import type { AbleStackedMixPoint } from '@/components/charts/AbleStackedMix';
 import type { AbleHeatmapPoint } from '@/components/charts/AblePriceHeatmap';
 import type {
   LoadDataPoint,
   PriceDataPoint,
   ForecastDataPoint,
-  RenewableDataPoint,
   TSOLoadForecastDataPoint,
   NetPositionResponse,
 } from '@/types';
@@ -208,28 +206,14 @@ export function adaptNetPositionSeries(
   return { series: points, nowIndex };
 }
 
-/** Renewable mix → stacked series for AbleStackedMix. */
-export function adaptRenewableMixSeries(
-  data: RenewableDataPoint[] | undefined,
-  now: Date = new Date(),
-): { series: AbleStackedMixPoint[]; nowIndex: number } {
-  if (!data || data.length === 0) return { series: [], nowIndex: 0 };
-  const nowMs = now.getTime();
-  const series = data
-    .filter((d) => d.timestamp)
-    .map((d) => ({
-      ts: d.timestamp,
-      future: new Date(d.timestamp).getTime() > nowMs,
-      solar: d.solar || 0,
-      wind: (d.wind_onshore || 0) + (d.wind_offshore || 0),
-      hydro: d.hydro || 0,
-      biomass: d.biomass || 0,
-    }));
-  let nowIndex = series.findIndex((p) => p.future);
-  if (nowIndex === -1) nowIndex = series.length - 1;
-  else nowIndex = Math.max(0, nowIndex - 1);
-  return { series, nowIndex };
-}
+// `adaptRenewableMixSeries` lived here: RenewableDataPoint[] (from the frozen,
+// renewable-only `energy_renewable`) → the four-family stacked series
+// GenerationTab used to draw. ABL-44 moved that chart onto the full A75
+// document so it can show nuclear and fossil too; its adapter is
+// `dashboard/generationSeries.ts`'s `buildGenerationMixSeries`, which lives
+// beside the grouping and palette it shares with the donut and the by-source
+// table. Nothing else consumed this one — `useRenewableChartData`, its only
+// caller's only hook, is gone with it.
 
 /** Build the 7×24 = 168 hourly cells for the heatmap, anchored to today. */
 export function buildHeatmapCells<T extends { timestamp?: string; date?: string }>(opts: {

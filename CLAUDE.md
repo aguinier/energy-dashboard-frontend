@@ -47,7 +47,7 @@ energy-dashboard-frontend/
 │       ├── components/
 │       │   ├── charts/               # Recharts-based primitives, shared across tabs
 │       │   │   ├── AbleLineChart.tsx     # Line + forecast overlay (load, price, net position)
-│       │   │   ├── AbleStackedMix.tsx    # Stacked area — generation mix
+│       │   │   ├── AbleStackedMix.tsx    # Diverging stacked area — generation mix
 │       │   │   ├── AbleDonut.tsx         # Generation-mix share donut
 │       │   │   ├── AblePriceHeatmap.tsx  # Hour x day heatmap (load, price)
 │       │   │   ├── AbleAccuracyBars.tsx  # Measured-error-by-horizon bars
@@ -63,6 +63,8 @@ energy-dashboard-frontend/
 │       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
 │       │   │   ├── ForecastMetadataBadge.tsx  # ORPHANED — no importer (see State management)
 │       │   │   ├── ModelComparisonPanel.tsx    # "Compare forecast models" table (ForecastTab)
+│       │   │   ├── generationSeries.ts   # The nine A75 families: grouping, palette,
+│       │   │   │                         #   stack order, series builder (GenerationTab)
 │       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts, modelComparison.ts
 │       │   │                                   # Pure helpers (each has a .test.ts)
 │       │   ├── comparison/           # ComparisonView's heatmap/map/leaderboard/filter bar
@@ -74,7 +76,7 @@ energy-dashboard-frontend/
 │       │   └── ui/                   # shadcn/radix primitives (button, card, tabs, select, ...)
 │       ├── hooks/
 │       │   ├── useDashboardData.ts       # Bulk of the React Query hooks
-│       │   ├── useLoadChartData.ts, usePriceChartData.ts, useRenewableChartData.ts,
+│       │   ├── useLoadChartData.ts, usePriceChartData.ts,
 │       │   │   useNetPositionData.ts     # Per-tab batched-query hooks
 │       │   ├── useForecastModels.ts      # Registry query + model-selection resolution
 │       │   ├── useModelComparison.ts     # Per-model accuracy, one query per registered model
@@ -91,7 +93,8 @@ energy-dashboard-frontend/
 │       └── lib/
 │           ├── constants.ts, comparisonConstants.ts  # TAB_FORECAST_TYPE, MAP_METRICS, etc.
 │           ├── chartAdapters.ts, chartTicks.ts, chartSummary.ts, colors.ts,
-│           │   dataScale.ts, divergingScale.ts, servedModel.ts, trailingGap.ts, timezone.ts,
+│           │   dataScale.ts, divergingScale.ts, divergingStack.ts, servedModel.ts,
+│           │   trailingGap.ts, timezone.ts,
 │           │   queryRetry.ts, netPositionProvenance.ts, formatters.ts,
 │           │   providerRegistry.ts, utils.ts
 │
@@ -235,9 +238,10 @@ uniformly dead — see State management below for which are still read.
 
 ### 3. Country dashboard tabs
 
-Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
-`usePriceChartData`, `useRenewableChartData`, `useNetPositionData`) feeds a
-`chartAdapters.ts` adapter, which feeds an `Able*` chart primitive.
+Each tab is self-contained: a React Query hook (`useLoadChartData`,
+`usePriceChartData`, `useNetPositionData`, `useGenerationSeries`) feeds an
+adapter — `chartAdapters.ts` for the line charts, `dashboard/generationSeries.ts`
+for the stacked mix — which feeds an `Able*` chart primitive.
 
 - **`LoadTab`** — `AbleLineChart` (actual + one dashed forecast series, ml or
   TSO per the picker) and an `AblePriceHeatmap` of load by hour x day.
@@ -291,19 +295,69 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
   magnitude. Do not extend `measuredLoadClause` to it without sizing that first.
 - **`PriceTab`** — same shape for day-ahead price (ml forecast only; price has
   no TSO forecast in the registry).
-- **`GenerationTab`** — `AbleStackedMix` (solar/wind/hydro/biomass, stacked)
-  plus an `AbleDonut` and `SourceTable` showing window-average share of
-  *generation* (`energy_generation`, the full A75 document — see
-  `generationService.getRenewableShare`). The donut's percentage and the
-  header stat row's "Renewable share" card both read this same server-computed
-  ratio of window sums, so they cannot disagree.
+- **`GenerationTab`** — `AbleStackedMix` (the full mix, stacked) plus an
+  `AbleDonut` and `SourceTable` showing window-average share of *generation*.
+  **All three marks now read `energy_generation` through one grouping** (ABL-44).
+  Until then the chart alone came from the frozen, renewable-only
+  `energy_renewable` and drew four families, while the donut and table beside
+  it drew the whole A75 document — one card, two different mixes, and no
+  nuclear or fossil band at all for countries that are mostly both (France
+  reads 70.8% nuclear in the table and had none on the chart).
+
+  The 21 `*_mw` columns collapse into **nine** families, stated server-side in
+  `generationService.GENERATION_GROUPS` and mirrored by
+  `dashboard/generationSeries.ts`'s `WIRE_FIELD` and by `buildSourceRows`:
+  nuclear, solar, wind, hydro, pumped storage, fossil, biomass, waste, other.
+  `/generation/series` is the trend endpoint (`getGenerationSeries`),
+  `/generation/mix` the window average. Over a single bucket spanning the
+  window the two return the same numbers group for group — asserted in both
+  `generationService.test.ts` and `routes/generation.test.ts` — which is what
+  keeps the chart and the donut from disagreeing. The palette, labels and
+  stack order live once in `generationSeries.ts` and all three marks import
+  them; three private copies had already drifted (solar was `#D9A114` in two
+  and `#F0B92B` in the table).
+
+  Three properties are load-bearing:
+
+  - **A group nobody reports is not drawn.** Per bucket, each group is
+    `CASE WHEN AVG(a) IS NULL AND AVG(b) IS NULL THEN NULL ELSE
+    COALESCE(AVG(a),0) + COALESCE(AVG(b),0) END` — `sumOrNull` in SQL. Both
+    halves matter: `AVG(a + b)` propagates one unreported member's NULL and
+    deletes a real reading beside it (FR's `hydro_reservoir_mw` at 02:00),
+    while `AVG(COALESCE(a,0) + COALESCE(b,0))` charges a bucket for the rows a
+    column is simply absent from. `buildGenerationMixSeries` then drops a group
+    that is null at *every* point from the series, the legend and the tooltip,
+    so a country gets no swatch above an invisible band. Measured on the
+    replica over 7d, this is common, not an edge case: **DE, AT, PT, PL, IT and
+    GR report no nuclear**, SE no biomass/waste/pumped storage, GR no
+    biomass/nuclear/waste.
+  - **Negatives are stacked below zero, never clamped.** Pumped storage is
+    negative while charging and a consumption-only fossil type is negative
+    outright. `lib/divergingStack.ts` (d3's `stackOffsetDiverging`, in a dozen
+    lines, with the argument in its header) puts positives above the baseline
+    and negatives below it; the axis only reaches below zero when something
+    really is negative, so SE — which has no negatives at all — is laid out
+    exactly as a plain stack would lay it out. Measured over 7d, **11 of 12
+    countries checked have negative pumped storage**, DE as deep as −6.25 GW.
+  - **The storage groups are stacked FIRST, adjacent to the baseline, and that
+    is correctness rather than taste.** In a diverging stack a group that flips
+    sign jumps by however much is stacked beneath it. `hydroPumped` and `other`
+    (which carries `energy_storage_mw`) flip constantly at the stored
+    15-minute resolution — FR `other` 144 times in a week, `hydroPumped` 23,
+    DE 40, ES 16 — and the first cut of ABL-44 ordered them last, which
+    teleported a band across the whole 64 GW height of France's stack ~170
+    times and read as a generation collapse that never happened.
+    `dashboard/generationSeries.test.ts` pins the ordering.
+
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
   (`CountryDashboardView.tsx:56`, applied at `:115`) limits it to the tabs
   whose chart actually reads a selection (`price`, `load`, `net-position`). It
   used to render and do nothing, while `useRenewableChartData` fired five
   per-type ML forecast queries plus a TSO one that no component consumed: six
-  API calls per view, discarded (`useRenewableChartData.ts:18-28`). Both are
-  gone. If you add a forecast overlay to this tab, add it back to that set.
+  API calls per view, discarded. Both are gone, and so is that hook — ABL-44
+  moved its last consumer onto `useGenerationSeries`, taking
+  `chartAdapters.adaptRenewableMixSeries` with it. If you add a forecast
+  overlay to this tab, add it back to that set.
 - **`NetPositionTab`** — `AbleLineChart` for ENTSO-E day-ahead net position
   plus the Chronos forecast (median, and a p10-p90 band where stored). Handles
   a zone going silent upstream as an explicit "stopped publishing on <date>"
@@ -898,8 +952,8 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-06: **358 client tests / 26 files**, **279 server tests /
-20 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-06: **389 client tests / 28 files**, **301 server tests /
+21 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
@@ -910,7 +964,10 @@ the client figure and touched no server file; ABL-21 added
 `dashboard/degenerateForecastNote.test.ts`, one per side; ABL-35 added cases to
 all four of those plus `routes/netPosition.test.ts`, then a second pass added
 `services/loadQuality.test.ts` and `routes/load.test.ts` for the impossible-zero
-load rule and touched no client file.)
+load rule and touched no client file; ABL-44 added `routes/generation.test.ts`
+plus `getGenerationSeries` cases in `services/generationService.test.ts`
+server-side, and `lib/divergingStack.test.ts` +
+`dashboard/generationSeries.test.ts` client-side.)
 
 Two conventions, and they are for different layers.
 
@@ -920,7 +977,8 @@ Two conventions, and they are for different layers.
 `dashboard/degenerateForecastNote.ts`, `config/forecastModels.ts`,
 `server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
 (which now classifies both the forecast and the actuals series),
-`server/src/services/loadQuality.ts`.
+`server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
+`dashboard/generationSeries.ts`.
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query
@@ -929,8 +987,8 @@ are both easy to break and neither is visible by reading.
 
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
-`tsoForecast`, `crossCountryComparison`, `netPosition` and `load`: a real request in, the
-real `ApiResponse<T>` envelope out. Two shared pieces:
+`tsoForecast`, `crossCountryComparison`, `netPosition`, `load` and `generation`:
+a real request in, the real `ApiResponse<T>` envelope out. Two shared pieces:
 
 - `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its
   `CREATE TABLE` statements are copied verbatim from `energy_dashboard.db`
