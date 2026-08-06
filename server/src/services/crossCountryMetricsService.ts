@@ -1,6 +1,7 @@
 import db from '../config/database.js';
 import { ForecastType } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
+import { loadActualGuard } from './loadQuality.js';
 
 /**
  * Cross-Country Forecast Metrics Service
@@ -124,6 +125,7 @@ export function getCrossCountryMetrics(
       ON a.country_code = f.country_code
       AND REPLACE(f.target_timestamp_utc, 'T', ' ') = a.${mapping.timestampCol}
     WHERE ${actualColumn} IS NOT NULL
+      ${loadActualGuard(forecastType, actualColumn)}
     GROUP BY f.country_code
     ORDER BY f.country_code
   `);

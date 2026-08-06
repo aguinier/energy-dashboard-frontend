@@ -214,6 +214,19 @@ describe('GET /:countryCode/ml-accuracy — disjoint model coverage', () => {
     expect((body.metrics as Record<string, unknown>).dataPoints).toBe(0);
     expect((body.meta as Record<string, unknown>).coverage).toBe('no_paired_actuals');
   });
+
+  it('does not score a forecast against an impossible zero actual', async () => {
+    // PT's NEXT_DAY load is 200 / 0 / 220 / 0 and the forecast is a flat 210.
+    // Scored over all four hours the model looks terrible — MAE 110, because
+    // two of the "actuals" are placeholders worth a 210 MW error each. Scored
+    // over the two real hours it is MAE 10, which is the truth.
+    //
+    // This is live: measured on the replica 2026-08-06, 104 ES hours and 8 SI
+    // hours pair a stored ML load forecast with an actual of exactly 0.0, and
+    // SI's fall inside the default 30-day window.
+    const { body } = await get(`PT/ml-accuracy?${NEXT_DAY_QS}&forecastType=load&horizon=1`);
+    expect(body.metrics).toMatchObject({ mae: 10, dataPoints: 2 });
+  });
 });
 
 describe('GET /:countryCode — unified TSO vs ML comparison', () => {

@@ -1,6 +1,7 @@
 import db from '../config/database.js';
 import { LoadDataPoint, AggregatedLoad, Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
+import { measuredLoadClause } from './loadQuality.js';
 
 export function getLoadData(
   countryCode: string,
@@ -19,6 +20,7 @@ export function getLoadData(
         data_quality as quality
       FROM energy_load
       WHERE country_code = ?
+        AND ${measuredLoadClause()}
         AND ${rangeClause('timestamp_utc')}
       ORDER BY timestamp_utc
     `);
@@ -35,6 +37,7 @@ export function getLoadData(
       ROUND(MIN(load_mw), 2) as min_load
     FROM energy_load
     WHERE country_code = ?
+      AND ${measuredLoadClause()}
       AND ${rangeClause('timestamp_utc')}
     GROUP BY ${groupByClause}
     ORDER BY date
@@ -54,6 +57,7 @@ export function getLatestLoad(countryCode?: string) {
       FROM energy_load e
       JOIN countries c ON e.country_code = c.country_code
       WHERE e.country_code = ?
+        AND ${measuredLoadClause('e.load_mw')}
       ORDER BY e.timestamp_utc DESC
       LIMIT 1
     `);
@@ -70,11 +74,19 @@ export function getLatestLoad(countryCode?: string) {
       e.data_quality as quality
     FROM energy_load e
     JOIN countries c ON e.country_code = c.country_code
-    WHERE e.timestamp_utc = (
-      SELECT MAX(timestamp_utc)
-      FROM energy_load
-      WHERE country_code = e.country_code
-    )
+    WHERE ${measuredLoadClause('e.load_mw')}
+      AND e.timestamp_utc = (
+        -- Filtered inside the subquery as well as outside, and that is the
+        -- load-bearing half. MK and SI both had an impossible zero as their
+        -- newest row (measured 2026-08-06); an unfiltered MAX() would still
+        -- pick that timestamp, the outer guard would reject the row, and the
+        -- country would drop out of "latest load" entirely. What we want is
+        -- its newest *measured* hour, which is what this returns.
+        SELECT MAX(timestamp_utc)
+        FROM energy_load
+        WHERE country_code = e.country_code
+          AND ${measuredLoadClause()}
+      )
     ORDER BY c.country_name
   `);
   return stmt.all();
@@ -98,6 +110,7 @@ export function getLoadComparison(
       ROUND(AVG(load_mw), 2) as avg_load
     FROM energy_load
     WHERE country_code IN (${placeholders})
+      AND ${measuredLoadClause()}
       AND ${rangeClause('timestamp_utc')}
     GROUP BY ${groupByClause}, country_code
     ORDER BY date, country_code
@@ -132,6 +145,7 @@ export function getLoadStats(countryCode: string, start: string, end: string) {
       COUNT(*) as data_points
     FROM energy_load
     WHERE country_code = ?
+      AND ${measuredLoadClause()}
       AND ${rangeClause('timestamp_utc')}
   `);
   return stmt.get(countryCode.toUpperCase(), ...rangeArgs(range));
