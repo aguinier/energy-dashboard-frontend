@@ -172,6 +172,51 @@ describe('GET /api/net-position/:countryCode — a forecast that collapsed to ze
   });
 });
 
+describe('GET /api/net-position/:countryCode — actuals that collapsed to zero', () => {
+  it('withholds GR’s exactly-zero published rows instead of drawing them', async () => {
+    // ABL-35, and a different defect from the forecast one above even though
+    // the symptom rhymes. GR's net_position did not stop on 2025-10-01 — it
+    // turned into exact 0.0 and has stayed there for all 192 rows published
+    // since, while GR's own crossborder_flows show a median net export of
+    // 1,142 MW over the very same hours. Drawn, that is a flat line at 0 MW
+    // labelled "ENTSO-E day-ahead": a measurement, wrong by a gigawatt.
+    const { status, body } = await get(`GR?${NEXT_DAY_QS}`);
+    expect(status).toBe(200);
+    const data = body.data as { actual: unknown[]; meta: Record<string, unknown> };
+
+    expect(data.actual).toEqual([]);
+    expect(data.meta.actual_coverage).toBe('degenerate_zero');
+    expect(data.meta.degenerate_actual).toEqual({ points: 4, max_abs_mw: 0 });
+  });
+
+  it('dates the outage from the last USABLE hour, not the last row', async () => {
+    // The newest GR row in the fixture is 2026-07-02 03:00 and it is a zero.
+    // Reporting that as last_seen tells the user the series was healthy until
+    // July; the last hour GR published a measurement is 2026-07-01 01:00.
+    const { body } = await get(`GR?${NEXT_DAY_QS}`);
+    const meta = (body.data as { meta: Record<string, unknown> }).meta;
+    expect(meta.last_seen).toBe('2026-07-01T01:00:00');
+  });
+
+  it('serves GR’s own real hours in the earlier window', async () => {
+    // Same country, same table, different window: the rule is on the series,
+    // not on the country, so GR before the collapse is untouched.
+    const { body } = await get(`GR?${WINDOW_QS}`);
+    const data = body.data as { actual: unknown[]; meta: Record<string, unknown> };
+    expect(data.actual).toHaveLength(2);
+    expect(data.meta.actual_coverage).toBe('served');
+    expect(data.meta.degenerate_actual).toBeNull();
+  });
+
+  it('does not suppress a country whose actuals are real', async () => {
+    const { body } = await get(`BE?${WINDOW_QS}`);
+    const data = body.data as { actual: unknown[]; meta: Record<string, unknown> };
+    expect(data.actual).toHaveLength(4);
+    expect(data.meta.actual_coverage).toBe('served');
+    expect(data.meta.degenerate_actual).toBeNull();
+  });
+});
+
 describe('GET /api/net-position/:countryCode — required window', () => {
   it('rejects a request with no start/end', async () => {
     // Note this route hand-rolls its 400 rather than throwing AppError, so the

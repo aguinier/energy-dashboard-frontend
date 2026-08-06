@@ -542,6 +542,88 @@ describe('getLastSeen', () => {
     expect(out.actual).toEqual([]);
     expect(out.meta.last_seen).toBe('2026-03-14T22:00:00');
   });
+
+  it('does not count a day of numerically zero rows as published', () => {
+    // GR's real shape: the rows kept arriving after 2025-10-01, they just
+    // stopped meaning anything. A bare MAX(timestamp_utc) dates the outage by
+    // the newest ROW and would tell the user GR was fine until July - ten
+    // months of confidently wrong date.
+    const ins = db.prepare(
+      'INSERT INTO net_position (country_code, timestamp_utc, net_position_mw) VALUES (?, ?, ?)'
+    );
+    for (const h of ['00', '01', '02']) ins.run('GR', `2026-07-24 ${h}:00:00`, 0.0);
+
+    expect(getLastSeen('GR', db)).toBe('2026-03-14T22:00:00');
+  });
+
+  it('still counts a genuine zero hour inside an otherwise real day', () => {
+    // The rule is per day, not per row: a real net position crosses zero, and
+    // stepping back over every zero-crossing hour would misdate healthy zones.
+    const ins = db.prepare(
+      'INSERT INTO net_position (country_code, timestamp_utc, net_position_mw) VALUES (?, ?, ?)'
+    );
+    ins.run('BE', '2026-07-27 05:00:00', -400.0);
+    ins.run('BE', '2026-07-27 06:00:00', 0.0);
+
+    expect(getLastSeen('BE', db)).toBe('2026-07-27T06:00:00');
+  });
+});
+
+describe('getNetPosition actuals coverage', () => {
+  let db: DatabaseType;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(SCHEMA);
+  });
+
+  function seedZeroDay(country: string, day: string) {
+    const ins = db.prepare(
+      'INSERT INTO net_position (country_code, timestamp_utc, net_position_mw) VALUES (?, ?, ?)'
+    );
+    for (let h = 0; h < 24; h++) {
+      ins.run(country, `${day} ${String(h).padStart(2, '0')}:00:00`, 0.0);
+    }
+  }
+
+  it('withholds a window whose actuals are all exactly zero, and says so', () => {
+    seedZeroDay('GR', '2026-07-24');
+    const out = getNetPosition('GR', '2026-07-24 00:00:00', '2026-07-24 23:00:00', db);
+
+    expect(out.actual).toEqual([]);
+    expect(out.meta.actual_coverage).toBe('degenerate_zero');
+    expect(out.meta.degenerate_actual).toEqual({ points: 24, max_abs_mw: 0 });
+  });
+
+  it('reports no_actuals, not degenerate_zero, when nothing was published', () => {
+    // The two empty states must stay distinguishable: one means we withheld
+    // rows, the other means there were none.
+    const out = getNetPosition('GR', '2026-07-24 00:00:00', '2026-07-24 23:00:00', db);
+    expect(out.actual).toEqual([]);
+    expect(out.meta.actual_coverage).toBe('no_actuals');
+    expect(out.meta.degenerate_actual).toBeNull();
+  });
+
+  it('serves a real window untouched', () => {
+    seedActuals(db);
+    const out = getNetPosition('BE', '2026-07-26 00:00:00', '2026-07-26 23:00:00', db);
+    expect(out.actual).toHaveLength(2);
+    expect(out.meta.actual_coverage).toBe('served');
+    expect(out.meta.degenerate_actual).toBeNull();
+  });
+
+  it('keeps a real window that merely contains zero hours', () => {
+    const ins = db.prepare(
+      'INSERT INTO net_position (country_code, timestamp_utc, net_position_mw) VALUES (?, ?, ?)'
+    );
+    ins.run('BE', '2026-07-26 00:00:00', 0.0);
+    ins.run('BE', '2026-07-26 01:00:00', -980.0);
+    ins.run('BE', '2026-07-26 02:00:00', 0.0);
+
+    const out = getNetPosition('BE', '2026-07-26 00:00:00', '2026-07-26 23:00:00', db);
+    expect(out.meta.actual_coverage).toBe('served');
+    expect(out.actual).toHaveLength(3);
+  });
 });
 
 describe('net position model pinning', () => {

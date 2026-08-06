@@ -430,6 +430,18 @@ export interface NetPositionForecastVintage {
  */
 export type NetPositionForecastCoverage = 'served' | 'no_forecast' | 'degenerate_zero';
 
+/**
+ * The same three-way answer for the *actuals* half of the payload.
+ *
+ * `degenerate_zero` here is a separate defect from the forecast one above, not
+ * the same bug seen twice: GR has published `net_position` rows of exactly
+ * `0.0` since 2025-10-01 (192 of 192), while its own `crossborder_flows` show a
+ * median net export of 1,142 MW over the very same hours. Drawn, that is a flat
+ * line at 0 MW labelled "ENTSO-E day-ahead" — a measurement, and wrong by more
+ * than a gigawatt.
+ */
+export type NetPositionActualCoverage = 'served' | 'no_actuals' | 'degenerate_zero';
+
 export interface NetPositionResponse {
   actual: NetPositionActualPoint[];
   forecast: NetPositionForecastPoint[];
@@ -440,7 +452,10 @@ export interface NetPositionResponse {
     /** Distinct forecast runs present in `forecast`, newest first. */
     vintages: NetPositionForecastVintage[];
     has_band: boolean;
-    /** Newest published hour for this zone, ignoring the query window. */
+    /**
+     * Newest *usable* published hour for this zone, ignoring the query window.
+     * A day whose values are all numerically zero does not count as published.
+     */
     last_seen: string | null;
     /** An empty `forecast` is never self-explaining — this says which empty. */
     forecast_coverage: NetPositionForecastCoverage;
@@ -450,6 +465,13 @@ export interface NetPositionResponse {
      * can never mistake an absent measurement for a measured zero.
      */
     degenerate_forecast: { points: number; max_abs_mw: number } | null;
+    /** An empty `actual` is never self-explaining either — same three states. */
+    actual_coverage: NetPositionActualCoverage;
+    /**
+     * The withheld actuals, present only when `actual_coverage` is
+     * `degenerate_zero`. `null` otherwise.
+     */
+    degenerate_actual: { points: number; max_abs_mw: number } | null;
   };
 }
 

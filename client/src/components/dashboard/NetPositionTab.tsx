@@ -7,7 +7,7 @@ import { useDashboardStore } from '@/store/dashboardStore';
 import { adaptNetPositionSeries } from '@/lib/chartAdapters';
 import { summarizeVintages, capVintages } from '@/lib/netPositionProvenance';
 import { useModelSelection } from '@/hooks/useForecastModels';
-import { describeDegenerateForecast } from './degenerateForecastNote';
+import { describeDegenerateActual, describeDegenerateForecast } from './degenerateForecastNote';
 
 /** Countries whose net position is folded into a multi-country bidding zone. */
 const SHARED_ZONE_NOTE: Record<string, string> = {
@@ -76,10 +76,19 @@ export function NetPositionTab() {
     [data, forecastHidden, country, selectedCountry],
   );
 
+  // The actuals get the same treatment, and it is the more serious of the two:
+  // a withheld forecast costs a prediction, a withheld actual is a measurement
+  // we were stating as fact (ABL-35, GR's exact zeros since 2025-10-01). Not
+  // gated on the picker - that switches the forecast off, never the actuals.
+  const degenerateActualNote = useMemo(
+    () => describeDegenerateActual(data?.meta, country?.country_name ?? selectedCountry),
+    [data, country, selectedCountry],
+  );
+
   // A zone that stopped publishing is a data gap, not a loading state. The
-  // date has to come from meta.last_seen rather than the returned points:
-  // GR and IE both went silent on 2026-03-14, which no recent window
-  // contains, so the rows themselves can never name the date.
+  // date has to come from meta.last_seen rather than the returned points: a
+  // zone can have gone silent long before any window the user can pick, so the
+  // rows themselves can never name the date.
   const lastSeen = data?.meta.last_seen ? new Date(data.meta.last_seen) : null;
   const hasNothing = !isLoading && (data?.actual.length ?? 0) === 0;
   const isStale =
@@ -124,7 +133,29 @@ export function NetPositionTab() {
           </div>
         ) : hasNothing ? (
           <div className="flex h-[300px] flex-col items-center justify-center gap-1 text-center text-meta text-ink-muted">
-            {lastSeen ? (
+            {degenerateActualNote ? (
+              // Takes precedence over "stopped publishing": ENTSO-E is still
+              // returning rows for this zone, so blaming an ended series would
+              // be the wrong story told confidently. What ended is the data
+              // inside the rows.
+              <>
+                <span>{degenerateActualNote.headline}</span>
+                <span className="max-w-md text-micro text-ink-muted">
+                  {degenerateActualNote.detail}
+                </span>
+                {lastSeen && (
+                  <span className="text-micro text-ink-muted">
+                    Last usable hour:{' '}
+                    {lastSeen.toLocaleDateString([], {
+                      year: 'numeric',
+                      month: 'long',
+                      day: 'numeric',
+                    })}
+                    .
+                  </span>
+                )}
+              </>
+            ) : lastSeen ? (
               <>
                 <span>
                   {country?.country_name ?? selectedCountry} stopped publishing a net

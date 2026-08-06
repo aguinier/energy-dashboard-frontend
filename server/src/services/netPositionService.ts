@@ -2,16 +2,27 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { resolveModelName } from '../config/forecastModels.js';
-import { classifyForecastSeries } from './degenerateForecast.js';
 import {
+  classifyActualSeries,
+  classifyForecastSeries,
+  DEGENERATE_SERIES_MAX_ABS_MW,
+} from './degenerateForecast.js';
+import {
+  NetPositionActualCoverage,
   NetPositionActualPoint,
   NetPositionForecastPoint,
   NetPositionForecastVintage,
   NetPositionResponse,
 } from '../types/index.js';
 
-/** Forecast metadata, before the window-independent last_seen is attached. */
-type ForecastMeta = Omit<NetPositionResponse['meta'], 'last_seen'>;
+/**
+ * Forecast metadata, before the window-independent last_seen and the actuals'
+ * own coverage are attached.
+ */
+type ForecastMeta = Omit<
+  NetPositionResponse['meta'],
+  'last_seen' | 'actual_coverage' | 'degenerate_actual'
+>;
 
 /**
  * Net positions are published per BIDDING ZONE, which is not always the
@@ -69,6 +80,48 @@ export function getNetPositionActuals(
     storageCode(countryCode),
     ...rangeArgs(timestampRange(start, end))
   ) as NetPositionActualPoint[];
+}
+
+/** What `getNetPosition` puts on the wire for the actuals half. */
+interface ActualSeries {
+  points: NetPositionActualPoint[];
+  coverage: NetPositionActualCoverage;
+  degenerate: { points: number; max_abs_mw: number } | null;
+}
+
+/**
+ * The actuals for a window, with a series that is numerically zero withheld.
+ *
+ * GR is the live case and it is not the forecast bug wearing a different hat -
+ * it is a second, independent defect on the same tab. Every `net_position` row
+ * GR has published since 2025-10-01 is exactly `0.0` (192 of 192, across 7
+ * separate fetch batches), and joining those hours to GR's own
+ * `crossborder_flows` shows a median net physical export of 1,142 MW at the
+ * same time. Drawn, that is a flat line at 0 MW labelled "ENTSO-E day-ahead" -
+ * a measurement, not a gap - and it is wrong by better than a gigawatt.
+ *
+ * Withheld rather than filtered per row: see `classifyActualSeries`. A per-row
+ * `!== 0` filter would leave a shorter chart that still looks genuine, which is
+ * the same lie with fewer points.
+ */
+export function getNetPositionActualSeries(
+  countryCode: string,
+  start: string,
+  end: string,
+  db: DatabaseType = defaultDb
+): ActualSeries {
+  const points = getNetPositionActuals(countryCode, start, end, db);
+  const quality = classifyActualSeries(points.map((p) => p.net_position_mw));
+
+  if (quality.coverage === 'degenerate_zero') {
+    return {
+      points: [],
+      coverage: 'degenerate_zero',
+      degenerate: { points: quality.points, max_abs_mw: quality.max_abs_mw },
+    };
+  }
+
+  return { points, coverage: quality.coverage, degenerate: null };
 }
 
 /** Raw row shared by both variants of the per-timestamp query below. */
@@ -311,20 +364,48 @@ export function getNetPositionForecast(
 }
 
 /**
- * Newest published hour for this zone, ignoring the query window.
+ * Newest USABLE published hour for this zone, ignoring the query window.
  *
  * Needed to tell "nothing in the last 7 days" apart from "this zone stopped
- * publishing in March". Both look identical inside the window, and only the
- * unbounded maximum can name the date - GR and IE both went silent on
- * 2026-03-14, which no recent window will ever contain.
+ * publishing last September". Both look identical inside the window, and only
+ * the unbounded maximum can name the date.
+ *
+ * "Usable" is doing real work here, and it is why this is a grouped query
+ * rather than a bare `MAX(timestamp_utc)`. GR's rows do not stop - they turn
+ * into exact zeros. A plain maximum dates GR's series at 2026-07-24, which is
+ * the last day it published a *number*; the last day it published a
+ * *measurement* is 2025-09-30. Ten months of the difference would have been
+ * printed to the user as fact, under a sentence that says the series ended
+ * upstream. So a day whose largest |value| is inside the degenerate floor is
+ * not a day this zone published.
+ *
+ * Grouped by calendar day, matching `classifyActualSeries`: the unit of
+ * publication is a market day, and judging hour by hour would step back over
+ * the genuine zero-crossings every real series has. Measured over all 26,882
+ * country-days in the table, this changes the answer for exactly one zone (GR);
+ * every other country's newest day clears the floor by two orders of magnitude.
+ *
+ * `substr(…, 1, 10)` takes the date part under either timestamp separator, and
+ * the within-day maximum is taken on the space-normalised form so a stray
+ * `T`-separated row cannot sort above a later space-separated one.
  */
 export function getLastSeen(
   countryCode: string,
   db: DatabaseType = defaultDb
 ): string | null {
   const row = db
-    .prepare(`SELECT MAX(timestamp_utc) AS last FROM net_position WHERE country_code = ?`)
-    .get(storageCode(countryCode)) as { last: string | null } | undefined;
+    .prepare(
+      `SELECT MAX(REPLACE(timestamp_utc, 'T', ' ')) AS last
+         FROM net_position
+        WHERE country_code = ?
+        GROUP BY substr(timestamp_utc, 1, 10)
+       HAVING MAX(ABS(net_position_mw)) >= ?
+        ORDER BY substr(timestamp_utc, 1, 10) DESC
+        LIMIT 1`
+    )
+    .get(storageCode(countryCode), DEGENERATE_SERIES_MAX_ABS_MW) as
+    | { last: string | null }
+    | undefined;
   return row?.last ? row.last.replace(' ', 'T') : null;
 }
 
@@ -334,11 +415,16 @@ export function getNetPosition(
   end: string,
   db: DatabaseType = defaultDb
 ): NetPositionResponse {
-  const actual = getNetPositionActuals(countryCode, start, end, db);
+  const actual = getNetPositionActualSeries(countryCode, start, end, db);
   const { points, meta } = getNetPositionForecast(countryCode, start, end, db);
   return {
-    actual,
+    actual: actual.points,
     forecast: points,
-    meta: { ...meta, last_seen: getLastSeen(countryCode, db) },
+    meta: {
+      ...meta,
+      last_seen: getLastSeen(countryCode, db),
+      actual_coverage: actual.coverage,
+      degenerate_actual: actual.degenerate,
+    },
   };
 }
