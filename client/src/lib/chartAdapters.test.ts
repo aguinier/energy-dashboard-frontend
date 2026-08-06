@@ -40,6 +40,8 @@ describe('adaptNetPositionSeries', () => {
         last_seen: null,
         forecast_coverage: 'served',
         degenerate_forecast: null,
+        actual_coverage: 'served',
+        degenerate_actual: null,
         vintages: [
           {
             generated_at: '2026-07-26T07:06:28.960696',
@@ -87,6 +89,8 @@ describe('adaptNetPositionSeries', () => {
         last_seen: null,
         forecast_coverage: 'served',
         degenerate_forecast: null,
+        actual_coverage: 'served',
+        degenerate_actual: null,
         vintages: [
           {
             generated_at: '2026-07-26T07:06:28.960696',
@@ -118,6 +122,8 @@ describe('adaptNetPositionSeries', () => {
         last_seen: null,
         forecast_coverage: 'served',
         degenerate_forecast: null,
+        actual_coverage: 'served',
+        degenerate_actual: null,
         vintages: [],
       },
     };

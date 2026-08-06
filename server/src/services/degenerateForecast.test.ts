@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  classifyActualSeries,
   classifyForecastSeries,
-  DEGENERATE_FORECAST_MAX_ABS_MW,
+  DEGENERATE_SERIES_MAX_ABS_MW,
 } from './degenerateForecast.js';
 
 /**
@@ -89,10 +90,10 @@ describe('classifyForecastSeries', () => {
 
   it('treats the threshold as exclusive, so a series peaking at the floor is served', () => {
     expect(
-      classifyForecastSeries([{ p50: DEGENERATE_FORECAST_MAX_ABS_MW }]).coverage
+      classifyForecastSeries([{ p50: DEGENERATE_SERIES_MAX_ABS_MW }]).coverage
     ).toBe('served');
     expect(
-      classifyForecastSeries([{ p50: DEGENERATE_FORECAST_MAX_ABS_MW - 1e-9 }]).coverage
+      classifyForecastSeries([{ p50: DEGENERATE_SERIES_MAX_ABS_MW - 1e-9 }]).coverage
     ).toBe('degenerate_zero');
   });
 
@@ -109,5 +110,62 @@ describe('classifyForecastSeries', () => {
     const rows = [{ p50: 12 }];
     expect(classifyForecastSeries(rows, 100).coverage).toBe('degenerate_zero');
     expect(classifyForecastSeries(rows, 10).coverage).toBe('served');
+  });
+});
+
+describe('classifyActualSeries', () => {
+  it("calls GR's published net position degenerate", () => {
+    // Every net_position row GR has published since 2025-10-01 is this value:
+    // 192 of 192, across 7 separate fetch batches (measured 2026-08-06).
+    expect(classifyActualSeries([0, 0, 0, 0])).toEqual({
+      coverage: 'degenerate_zero',
+      points: 4,
+      max_abs_mw: 0,
+    });
+  });
+
+  it('serves the quietest genuine day in the whole table', () => {
+    // IE 2023-09-01, the lowest daily max|net_position_mw| of all 26,882
+    // country-days with >= 20 hours, excluding the 9 degenerate ones. It clears
+    // the 1 MW floor by two orders of magnitude - the threshold is not tuned to
+    // an edge.
+    const out = classifyActualSeries([12.4, -40.1, 92.3, -8.0]);
+    expect(out.coverage).toBe('served');
+    expect(out.max_abs_mw).toBe(92.3);
+  });
+
+  it('judges the series maximum, never a single point', () => {
+    // A real net position crosses zero several times a day. Judging point by
+    // point would punch holes through exactly the interesting part.
+    const out = classifyActualSeries([-900, 0, 0.0, 1200]);
+    expect(out.coverage).toBe('served');
+    expect(out.points).toBe(4);
+  });
+
+  it('reports no_actuals for an empty window, with a null measurement', () => {
+    // Not `max_abs_mw: 0` - there was nothing to measure, and a 0 here is the
+    // absent-read-as-measured mistake this module exists to stop.
+    expect(classifyActualSeries([])).toEqual({
+      coverage: 'no_actuals',
+      points: 0,
+      max_abs_mw: null,
+    });
+  });
+
+  it('treats the threshold as exclusive, matching the forecast rule', () => {
+    expect(classifyActualSeries([DEGENERATE_SERIES_MAX_ABS_MW]).coverage).toBe('served');
+    expect(classifyActualSeries([DEGENERATE_SERIES_MAX_ABS_MW - 1e-9]).coverage).toBe(
+      'degenerate_zero'
+    );
+  });
+
+  it('skips nulls rather than counting them as zero', () => {
+    // net_position_mw is REAL NOT NULL, so a null means a caller mapped
+    // something wrong. Skipping can only raise the maximum, never lower it, so
+    // it can never turn a real series degenerate.
+    const out = classifyActualSeries([null, undefined, NaN, -500]);
+    expect(out.coverage).toBe('served');
+    expect(out.max_abs_mw).toBe(500);
+    expect(out.points).toBe(4);
   });
 });

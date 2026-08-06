@@ -1,7 +1,10 @@
-// The one type here that is owned elsewhere: the rule that decides it lives in
-// the service, next to the measurements that justify its threshold.
-import type { NetPositionForecastCoverage } from '../services/degenerateForecast.js';
-export type { NetPositionForecastCoverage };
+// The two types here that are owned elsewhere: the rule that decides them lives
+// in the service, next to the measurements that justify its threshold.
+import type {
+  NetPositionActualCoverage,
+  NetPositionForecastCoverage,
+} from '../services/degenerateForecast.js';
+export type { NetPositionActualCoverage, NetPositionForecastCoverage };
 
 // Country types
 export interface Country {
@@ -271,8 +274,25 @@ export interface NetPositionResponse {
     vintages: NetPositionForecastVintage[];
     /** False when only the median is available. */
     has_band: boolean;
-    /** Newest published hour for this zone, ignoring the query window. */
+    /**
+     * Newest USABLE published hour for this zone, ignoring the query window.
+     * A day whose values are all numerically zero is not a day this zone
+     * published - see `getLastSeen`.
+     */
     last_seen: string | null;
+    /**
+     * Why `actual` holds what it does. `degenerate_zero` means rows WERE
+     * published for this window and every one of them is numerically zero, so
+     * they were withheld - GR since 2025-10-01, contradicted by its own
+     * cross-border flows. An empty `actual` is never self-explaining.
+     */
+    actual_coverage: NetPositionActualCoverage;
+    /**
+     * The withheld actuals, present only when `actual_coverage` is
+     * `degenerate_zero`, so the client can state the evidence rather than an
+     * unexplained gap. `null` in every other state.
+     */
+    degenerate_actual: { points: number; max_abs_mw: number } | null;
     /**
      * Why `forecast` holds what it does. `degenerate_zero` means the model DID
      * produce rows and they are all numerically zero, so they were withheld -

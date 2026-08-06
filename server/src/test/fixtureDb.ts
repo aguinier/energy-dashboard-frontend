@@ -39,10 +39,17 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
  *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null.
  * - `PT` — rows exist but every generation column is NULL (a country reporting
  *   nothing). Must read as "no data", never 0%.
- * - `GR` — stopped publishing mid-window, the GR/IE shape. Also carries a
- *   net-position forecast that has COLLAPSED TO ZERO (values ~1e-7 MW, band
- *   included), the real degenerate series measured on the replica: rows exist,
- *   none is exactly 0.0, and nothing else on the tab contradicts them.
+ * - `GR` — stopped publishing mid-window, the GR/IE shape. Also carries BOTH
+ *   degenerate net-position series this codebase has shipped, which are two
+ *   different defects that happen to share a signature:
+ *     - a FORECAST collapsed to zero (values ~1e-7 MW, band included), the real
+ *       series measured on the replica: rows exist and *none is exactly 0.0*,
+ *       so an `= 0` guard catches none of them;
+ *     - ACTUALS that are *exactly* 0.0, on the day after WINDOW — GR's real
+ *       shape since 2025-10-01, where the rows kept coming and the numbers
+ *       stopped meaning anything.
+ *   Nothing else on the tab contradicts either one, which is why the chart was
+ *   the only place the number appeared at all.
  * - `AT` — served by xgboost only, with no catboost row anywhere. The disjoint
  *   catboost/xgboost coverage that makes "no rows for this country" a normal
  *   answer rather than an error.
@@ -54,7 +61,11 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
 /** The window every test queries unless it is deliberately looking outside it. */
 export const WINDOW = { start: '2026-07-01T00:00:00Z', end: '2026-07-01T03:00:00Z' };
 
-/** A window one day later: forecasts exist here, actuals never do. */
+/**
+ * A window one day later: forecasts exist here, and the only actuals that do
+ * are GR's degenerate all-zero `net_position` rows (see below). Nothing else
+ * publishes an actual on this day, so `no_paired_actuals` stays testable.
+ */
 export const NEXT_DAY = { start: '2026-07-02T00:00:00Z', end: '2026-07-02T03:00:00Z' };
 
 /** `?start=…&end=…` for WINDOW, ready to concatenate onto a query string. */
@@ -365,6 +376,20 @@ function seed(db: DatabaseType): void {
   // GR: silent after 01:00, same as its load.
   netPosition.run('GR', at(0), -50);
   netPosition.run('GR', at(1), -60);
+  // ...and then, a day later, publishing again but ONLY exact zeros. This is
+  // GR's real production shape (ABL-35): its net position did not stop, it
+  // turned into 0.0 on 2025-10-01 and has stayed there for every one of the 192
+  // rows published since, while its own crossborder_flows show a median net
+  // export of 1,142 MW over the same hours. Unlike the degenerate FORECAST
+  // below these are exactly 0.0, so the two cases need different guards and a
+  // fixture that only had one of them would let either regress.
+  //
+  // Deliberately outside WINDOW, so the "served" reads above are untouched and
+  // the degenerate read is a different query rather than a global mode. It also
+  // pins getLastSeen: the newest ROW is now 2026-07-02 03:00, but the newest
+  // usable hour is 2026-07-01 01:00, and reporting the former would date the
+  // outage ten months late in production.
+  HOURS.forEach((h) => netPosition.run('GR', at(h, 2), 0.0));
   // LU's own rows are an ingest artifact from before the DE_LU zone mapping
   // existed. Left alone they render Luxembourg at -6201 MW beside Germany at
   // +175 MW: two contradictory colours for one bidding zone.

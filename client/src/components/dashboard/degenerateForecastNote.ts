@@ -1,8 +1,10 @@
 import type { NetPositionResponse } from '@/types';
 
 /**
- * The sentence `NetPositionTab` prints when the server withheld a forecast for
- * being numerically zero (`forecast_coverage: 'degenerate_zero'`).
+ * The sentences `NetPositionTab` prints when the server withheld a series for
+ * being numerically zero — the forecast (`forecast_coverage`) or the actuals
+ * (`actual_coverage`), which are two separate defects that happen to share a
+ * signature and both land on GR.
  *
  * Pure, and its own module, because the wording *is* the fix. Filtering the
  * rows out and drawing nothing would trade a confidently wrong chart for a
@@ -48,5 +50,39 @@ export function describeDegenerateForecast(
       `${producer} returned ${values} for this window and the largest is ` +
       `${formatTinyMw(measured.max_abs_mw)} — numerically zero. Drawn, that is a ` +
       `flat line at 0 MW, which reads as a confident forecast, so it is not drawn.`,
+  };
+}
+
+/**
+ * The same treatment for the *actuals*, which is the worse of the two: a
+ * withheld forecast costs the user a prediction, but a withheld actual is a
+ * measurement we were reporting as fact.
+ *
+ * Deliberately does NOT say "stopped publishing". ENTSO-E is still returning
+ * rows for GR — that is exactly the problem, and the empty-state sentence about
+ * a series ending upstream would be the wrong story. What ended is the *data*
+ * in the rows, and the note says so.
+ */
+export function describeDegenerateActual(
+  meta: NetPositionResponse['meta'] | undefined,
+  countryLabel: string,
+): DegenerateForecastNote | null {
+  if (!meta || meta.actual_coverage !== 'degenerate_zero') return null;
+
+  // Same contract as above: `degenerate_zero` always arrives with its
+  // measurement attached, and inventing a count for a malformed payload would
+  // be the fabrication this note exists to prevent.
+  const measured = meta.degenerate_actual;
+  if (!measured) return null;
+
+  const values = measured.points === 1 ? '1 value' : `${measured.points} values`;
+
+  return {
+    headline: `No usable net position published for ${countryLabel}.`,
+    detail:
+      `ENTSO-E returned ${values} for this window and the largest is ` +
+      `${formatTinyMw(measured.max_abs_mw)} — numerically zero, while the same ` +
+      `hours carry real cross-border flow. Those rows are a gap wearing a ` +
+      `number, so they are not drawn.`,
   };
 }

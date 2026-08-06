@@ -259,15 +259,19 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
 - **`NetPositionTab`** — `AbleLineChart` for ENTSO-E day-ahead net position
   plus the Chronos forecast (median, and a p10-p90 band where stored). Handles
   a zone going silent upstream as an explicit "stopped publishing on <date>"
-  state rather than a loading spinner. GR and IE are the live examples: their
-  continuous series ends `2026-03-14 22:00`, but both got a single-day
-  reappearance (`2026-07-23 22:00` → `2026-07-24 21:00`), and the date the tab
-  prints is `MAX(timestamp_utc)` (`netPositionService.ts:291`) — so it now
-  reads 2026-07-24, not the March date. Measured 2026-08-05; they are the only
-  two countries whose `net_position` stops before 2026-08. (Every one of GR's
-  24 reappearance hours is an exact `0.0` MW, measured 2026-08-06 — the
-  actuals, unlike the forecast below, are published that way upstream and are
-  not suppressed here.)
+  state rather than a loading spinner. GR and IE are the live examples, and
+  **this entry used to give the wrong date for both**: it said their continuous
+  series ends `2026-03-14 22:00`. Re-measured 2026-08-06, it ends
+  **`2025-09-30 21:00`** — the last hour of the CEST market day 2025-09-30.
+  Everything after that is scraps, four isolated market days that a backfill or
+  a passing cron window happened to catch (2026-02-14→16, 02-26, 03-01→02,
+  03-14, 07-24). Both zones stop in exact lockstep at the same hour, out of 22;
+  they are still the only two whose `net_position` stops before 2026-08. The
+  root cause is upstream of this repo and is tracked on **ABL-35**.
+
+  The date the tab prints is **not** `MAX(timestamp_utc)` any more — see
+  `getLastSeen`, which takes the newest *usable* day. That matters because GR's
+  series does not stop, it degenerates: see the actuals rule below.
 
   **A forecast series that has collapsed to zero is withheld, not drawn**
   (ABL-25). GR's stored `chronos-2-V010` net position is numerically zero:
@@ -281,7 +285,7 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
 
   `services/degenerateForecast.ts` is the rule, as a pure function with a
   colocated test: a series is degenerate when the largest `|value|` across
-  every median **and stored quantile** is under `DEGENERATE_FORECAST_MAX_ABS_MW`
+  every median **and stored quantile** is under `DEGENERATE_SERIES_MAX_ABS_MW`
   (1 MW). Three properties matter.
   - **The maximum over the series, never a single point.** A real net position
     crosses zero, and genuine rows go as low as 0.0094 MW (ES) — judging
@@ -309,12 +313,53 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
   drawing nothing — filtering the rows out silently would trade a confidently
   wrong chart for a mysteriously missing one.
 
-  Known gap, filed separately: with the forecast withheld, GR's chart domain
-  shrinks to its 24 actual hours while the preset button still says "30d", and
-  `AbleLineChart`'s day-marker derivation (`AbleLineChart.tsx:241`) yields a
-  single tick labelled `now` for a series that short — so the axis carries no
-  dates. The card's "last actual 300h ago" and "No data published since 24
-  July 2026" are the only time context.
+  **The same rule now covers the ACTUALS, and that was the more serious of the
+  two** (ABL-35). GR's `net_position` did not stop on 2025-10-01 — it turned
+  into exact `0.0` and stayed there: measured 2026-08-06, **192 of 192** rows
+  published since are exactly zero, written by 7 independent fetch batches
+  between 2026-02 and 2026-07. Unlike the forecast these *are* exact zeros, so
+  the two cases need different guards and neither implies the other.
+
+  They are provably false, from our own database: joining those same hours to
+  GR's `crossborder_flows` gives a **median net physical export of 1,142 MW**
+  (max 1,657; 187 of 192 hours above 100 MW). Greece was moving better than a
+  gigawatt across its borders while the tab drew a flat line at 0 MW under the
+  label "ENTSO-E day-ahead" — a measurement, not a gap, and wrong by a
+  gigawatt. Controls: BG and BE have **zero** exact-`0.0` hours in 7,438.
+
+  The threshold is sized independently for actuals and lands in the same place.
+  Over all **26,882** country-days in `net_position` with ≥20 hours, exactly
+  **9** are degenerate (8 GR days plus IE 2026-03-14) and every one has a daily
+  max of exactly `0.000000`; the next quietest day in the table is IE
+  2023-09-01 at **92.3 MW**. Every threshold between 0.5 and 50 MW selects the
+  same 9, so 1 MW is not a tuned edge. Verified against a local server on the
+  replica (2026-08-06): of 39 countries, **GR alone** is withheld, 21 are
+  `served`, 17 have no `net_position` at all.
+
+  `classifyActualSeries` is the rule and `getNetPositionActualSeries` applies
+  it, returning `actual: []` with `meta.actual_coverage: 'degenerate_zero'` and
+  `meta.degenerate_actual: { points, max_abs_mw }` — the same vocabulary as the
+  forecast half, on its own field, because a country can have either defect
+  alone. `dashboard/degenerateForecastNote.ts`'s `describeDegenerateActual`
+  prints it, and it deliberately does **not** say "stopped publishing": ENTSO-E
+  is still returning rows, and blaming an ended series would be the wrong story
+  told confidently.
+
+  **`getLastSeen` dates the outage from the newest usable day, not the newest
+  row.** A bare `MAX(timestamp_utc)` dated GR at 2026-07-24 — the last day it
+  published a *number*. The last day it published a *measurement* is
+  2025-09-30, so the tab was off by ten months, under a sentence asserting the
+  series had ended upstream. The filter is per calendar **day** (a day whose
+  largest `|value|` is inside the floor is not a day this zone published), not
+  per row: a real net position crosses zero, and stepping back over every
+  zero-crossing hour would misdate healthy zones. Measured over the whole
+  table, it changes the answer for exactly one zone.
+
+  Known gap, filed separately: with both series withheld, GR's card is now
+  entirely an empty state — which is correct, but it means the preset button
+  says "30d" beside a card with no axis at all. `AbleLineChart`'s day-marker
+  derivation (`AbleLineChart.tsx:241`) was the reason the pre-ABL-35 24-hour
+  version carried no dates either.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
   (`horizonBars.ts`, ML D+1/D+2 and TSO D+1/D+7 — never extrapolated), a
@@ -805,7 +850,7 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-06: **349 client tests / 26 files**, **248 server tests /
+Green as of 2026-08-06: **358 client tests / 26 files**, **264 server tests /
 18 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
@@ -814,7 +859,8 @@ the client figure and touched no server file; ABL-21 added
 `comparison/mapFill.test.ts` and touched no server file; ABL-13 added
 `server/src/app.test.ts` and touched no client file; ABL-25 added
 `services/degenerateForecast.test.ts` and
-`dashboard/degenerateForecastNote.test.ts`, one per side.)
+`dashboard/degenerateForecastNote.test.ts`, one per side; ABL-35 added cases to
+all four of those plus `routes/netPosition.test.ts`, and no new file.)
 
 Two conventions, and they are for different layers.
 
@@ -822,7 +868,8 @@ Two conventions, and they are for different layers.
 `windowLabel.ts`, `lib/dataScale.ts`, `comparison/accuracyScale.ts`,
 `comparison/leaderboardRows.ts`, `comparison/mapFill.ts`, `store/migrate.ts`,
 `dashboard/degenerateForecastNote.ts`, `config/forecastModels.ts`,
-`server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`.
+`server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
+(which now classifies both the forecast and the actuals series).
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query
@@ -865,9 +912,11 @@ xgboost-only coverage, `BE` negative day-ahead prices plus all-zero solar
 actuals, `FR` pumped storage and consumption-only fossil going negative **plus
 the two-column hydro shape** (`hydro_run_mw` + `hydro_reservoir_mw`, with the
 02:00 reservoir reading NULL so `NULL + 40` staying NULL is asserted rather than
-assumed — ABL-17), `GR` stopped publishing mid-window **and carries a
-net-position forecast collapsed to ~1e-7 MW** (the real degenerate series,
-ABL-25 — no row is exactly `0.0`, so an `= 0` guard misses all of them), `DE`
+assumed - ABL-17), `GR` stopped publishing mid-window **and carries both
+degenerate net-position series**: a forecast collapsed to ~1e-7 MW where no row
+is exactly `0.0` so an `= 0` guard misses all of them (ABL-25), and, on the day
+after `WINDOW`, actuals that are *exactly* `0.0` (ABL-35) - two defects with one
+signature and different guards, `DE`
 the ordinary case plus a superseded forecast vintage that catches a broken
 `MAX(generated_at)` dedup. Add to that set rather than inventing a seventh
 country for a shape already covered — ABL-25 did exactly that, giving GR its
