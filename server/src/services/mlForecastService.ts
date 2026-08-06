@@ -1,6 +1,7 @@
 import db from '../config/database.js';
-import { ForecastType, Granularity } from '../types/index.js';
+import { ForecastType, Granularity } from '../types/index.js';  
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
+import { loadActualGuard } from './loadQuality.js';
 
 /**
  * ML Forecast Accuracy Service
@@ -199,6 +200,7 @@ export function getMLForecastAccuracy(
         ON a.country_code = ?
         AND REPLACE(f.target_timestamp_utc, 'T', ' ') = a.${mapping.timestampCol}
       WHERE ${actualColumn} IS NOT NULL
+        ${loadActualGuard(forecastType, actualColumn)}
       ORDER BY f.target_timestamp_utc
     `);
 
@@ -246,6 +248,7 @@ export function getMLForecastAccuracy(
         ON a.country_code = ?
         AND REPLACE(f.target_timestamp_utc, 'T', ' ') = a.${mapping.timestampCol}
       WHERE ${actualColumn} IS NOT NULL
+        ${loadActualGuard(forecastType, actualColumn)}
     )
     SELECT
       ${groupByClause.replace('timestamp_utc', 'target_timestamp_utc')} as timestamp,

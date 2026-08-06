@@ -38,7 +38,10 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
  * - `BE` — negative day-ahead prices, and a window whose solar actuals are all a
  *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null.
  * - `PT` — rows exist but every generation column is NULL (a country reporting
- *   nothing). Must read as "no data", never 0%.
+ *   nothing). Must read as "no data", never 0%. On the day after WINDOW it also
+ *   carries MK's and SI's live `energy_load` shape: impossible exact-`0.0`
+ *   hours *interleaved with real ones*, which must be dropped row by row while
+ *   the rest of the day survives.
  * - `GR` — stopped publishing mid-window, the GR/IE shape. Also carries BOTH
  *   degenerate net-position series this codebase has shipped, which are two
  *   different defects that happen to share a signature:
@@ -50,6 +53,9 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
  *       stopped meaning anything.
  *   Nothing else on the tab contradicts either one, which is why the chart was
  *   the only place the number appeared at all.
+ *   GR's `energy_load` on that same day is all-zero too, so the "published a
+ *   placeholder instead of a measurement" defect is covered in two tables at
+ *   once. `PT` carries the interleaved variant — see below.
  * - `AT` — served by xgboost only, with no catboost row anywhere. The disjoint
  *   catboost/xgboost coverage that makes "no rows for this country" a normal
  *   answer rather than an error.
@@ -63,8 +69,10 @@ export const WINDOW = { start: '2026-07-01T00:00:00Z', end: '2026-07-01T03:00:00
 
 /**
  * A window one day later: forecasts exist here, and the only actuals that do
- * are GR's degenerate all-zero `net_position` rows (see below). Nothing else
- * publishes an actual on this day, so `no_paired_actuals` stays testable.
+ * are GR's — its degenerate all-zero `net_position` rows, and its `energy_load`
+ * day carrying impossible exact zeros (both below). **DE publishes no actual of
+ * any kind on this day**, which is what keeps `no_paired_actuals` testable, so
+ * add a DE actual here only if you mean to break that.
  */
 export const NEXT_DAY = { start: '2026-07-02T00:00:00Z', end: '2026-07-02T03:00:00Z' };
 
@@ -289,6 +297,24 @@ function seed(db: DatabaseType): void {
   // not there — the shape GR and IE have had since 2026-03-14.
   load.run('GR', at(0), 300);
   load.run('GR', at(1), 310);
+  // GR's load on NEXT_DAY is exactly `0.0` at every hour — the same shape, in a
+  // second table, as its all-zero `net_position` below. A national grid never
+  // draws 0 MW, so these are placeholders and not readings, and withholding
+  // them is what keeps "GR went silent" true: `currentLoad` has to fall back to
+  // 310, the last hour GR really published, and peak demand over this window
+  // has to stay null rather than becoming a confident 0.
+  HOURS.forEach((h) => load.run('GR', at(h, 2), 0));
+  // PT on NEXT_DAY is the OTHER shape, and the live one: impossible zeros
+  // interleaved with real hours inside a single day. That is MK's and SI's
+  // actual form — measured on the replica 2026-08-06, 543 such rows across 11
+  // countries and still arriving (SI 2026-08-06, MK 2026-08-02). It needs the
+  // opposite granularity to a degenerate net position: the bad rows are dropped
+  // and the day survives, because withholding MK's whole series would destroy
+  // 56,510 good readings to suppress 99 bad ones.
+  load.run('PT', at(0, 2), 200);
+  load.run('PT', at(1, 2), 0);
+  load.run('PT', at(2, 2), 220);
+  load.run('PT', at(3, 2), 0);
 
   const price = db.prepare('INSERT INTO energy_price (country_code, timestamp_utc, price_eur_mwh) VALUES (?, ?, ?)');
   // DE: 50 / 60 / 70 / 80 — avg 65.
@@ -401,6 +427,16 @@ function seed(db: DatabaseType): void {
     `INSERT INTO forecasts
        (country_code, forecast_type, target_timestamp_utc, generated_at, horizon_hours, forecast_value, model_name, model_version)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  // PT load on NEXT_DAY, paired against PT's interleaved impossible zeros
+  // above. This is the accuracy half of the same defect: an actual of 0.0 is
+  // not a bad forecast, it is a missing measurement, and scoring against it
+  // charges the model a 100% error for a number nobody took. Measured on the
+  // replica 2026-08-06, this really happens — 104 ES and 8 SI hours pair with a
+  // stored ML load forecast, and SI's fall inside the default 30-day window.
+  HOURS.forEach((h) =>
+    forecast.run('PT', 'load', atT(h, 2), GENERATED_AT, 12, 210, 'catboost', 'v1')
   );
 
   // DE load, catboost, D+1 (horizon 12 falls in the 0-30 band). Forecast is

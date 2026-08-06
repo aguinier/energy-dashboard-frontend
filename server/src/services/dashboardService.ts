@@ -2,6 +2,7 @@ import db from '../config/database.js';
 import { DashboardOverview, MapDataPoint, MetricType, TimeRange } from '../types/index.js';
 import { normalizeTimestamp, timestampRange, rangeClause, rangeArgs, type TimestampRange } from '../utils/timestamp.js';
 import { getRenewableShare, RENEWABLE_MW_SUM, TOTAL_POSITIVE_MW_SUM } from './generationService.js';
+import { measuredLoadClause } from './loadQuality.js';
 
 function getTimeRangeDates(timeRange: TimeRange): { start: string; end: string } {
   const end = new Date().toISOString();
@@ -52,6 +53,7 @@ export function getDashboardOverview(
       timestamp_utc as timestamp
     FROM energy_load
     WHERE country_code = ?
+      AND ${measuredLoadClause()}
     ORDER BY timestamp_utc DESC
     LIMIT 1
   `);
@@ -73,6 +75,7 @@ export function getDashboardOverview(
       ROUND(MAX(load_mw), 2) as peak_demand
     FROM energy_load
     WHERE country_code = ?
+      AND ${measuredLoadClause()}
       AND ${rangeClause('timestamp_utc')}
   `);
   const peakResult = peakStmt.get(upperCode, ...rangeArgs(bounds)) as { peak_demand: number } | undefined;
@@ -144,7 +147,8 @@ function getMapLoadData(range: TimestampRange): MapDataPoint[] {
       MAX(l.timestamp_utc) as timestamp
     FROM energy_load l
     JOIN countries c ON l.country_code = c.country_code
-    WHERE ${rangeClause('l.timestamp_utc')}
+    WHERE ${measuredLoadClause('l.load_mw')}
+      AND ${rangeClause('l.timestamp_utc')}
     GROUP BY l.country_code, c.country_name
     ORDER BY c.country_name
   `);
@@ -263,6 +267,7 @@ export function getCombinedTimeseries(
       ROUND(AVG(load_mw), 2) as load
     FROM energy_load
     WHERE country_code = ?
+      AND ${measuredLoadClause()}
       AND ${rangeClause('timestamp_utc')}
     GROUP BY date(timestamp_utc)
     ORDER BY date

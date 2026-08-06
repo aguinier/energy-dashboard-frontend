@@ -1,6 +1,7 @@
 import db from '../config/database.js';
 import { Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
+import { measuredLoadClause } from './loadQuality.js';
 
 // Valid generation types for SQL column interpolation - prevents injection
 const VALID_GENERATION_TYPES = ['solar', 'wind_onshore', 'wind_offshore'] as const;
@@ -197,6 +198,7 @@ export function getLoadForecastAccuracy(
           ROUND(AVG(load_mw), 2) as actual_value
         FROM energy_load
         WHERE country_code = ?
+          AND ${measuredLoadClause()}
           AND ${rangeClause('timestamp_utc')}
         GROUP BY strftime('%Y-%m-%dT%H:00:00Z', timestamp_utc)
       )
@@ -236,6 +238,7 @@ export function getLoadForecastAccuracy(
         ROUND(AVG(load_mw), 2) as actual_value
       FROM energy_load
       WHERE country_code = ?
+        AND ${measuredLoadClause()}
         AND ${rangeClause('timestamp_utc')}
       GROUP BY ${groupByClause}
     )

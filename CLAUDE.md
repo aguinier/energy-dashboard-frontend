@@ -241,6 +241,54 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
 
 - **`LoadTab`** — `AbleLineChart` (actual + one dashed forecast series, ml or
   TSO per the picker) and an `AblePriceHeatmap` of load by hour x day.
+
+  **An `energy_load` row of exactly `0.0` is withheld everywhere, because a
+  national grid never draws 0 MW** (ABL-35). This is the same "published a
+  placeholder as a measurement" defect as GR's net position below, in a
+  different table, and it was live: measured read-only against the replica
+  2026-08-06, **543 of 2,762,517 rows are exactly `0.0`** across 11 countries
+  (BA 277, MK 99, ME 73, ES 46, PL 25, MD 10, RO 5, AL 4, NL 2, RS 1, SI 1) and
+  **0 rows are negative**. It is ongoing, not historical — the newest were SI at
+  `2026-08-06 00:00` and MK at `2026-08-02 21:00`.
+
+  They are provably not measurements: MK's three affected days are `0.0` for all
+  22-24 hours while MK's surrounding daily peak is 543-717 MW. What that put on
+  screen — **MK and SI both had an impossible zero as their newest stored row,
+  so the header stat tile read a confident `0 MW`**; `getLoadStats` reported
+  `min_load: 0` for both over a 30-day window; and MK's 30-day mean read
+  330.7 MW against a true 378.5 MW, understated by 12.6%.
+
+  `services/loadQuality.ts` is the rule (pure, colocated test). Two properties
+  matter, and both are the *opposite* of the net-position rule below:
+
+  - **Per row, not per series.** A load is strictly positive, so a single zero
+    is impossible on its own and can be judged alone. A net position is signed
+    and legitimately crosses zero, so only its series maximum carries
+    information. Withholding MK's whole series would destroy 56,510 good
+    readings to suppress 99 bad ones.
+  - **Exactly zero, not a magnitude floor.** 24 rows sit in `0 < load < 10` MW
+    (MK 17 with a minimum of 0.01, BA 6, ME 1) and are probably false too, but
+    `0.0` needs no calibration to be disprovable while any cutoff above it is a
+    number nobody has justified. That grey zone is deliberately still served.
+
+  `measuredLoadClause()` is applied at every `energy_load` read site —
+  `loadService.ts` (5) and `dashboardService.ts` (4: current load, peak demand,
+  the map choropleth, the timeseries daily average). `loadActualGuard()` covers
+  the accuracy joins, which are generic over forecast type and so must apply it
+  **only** to `load`: a `0.0` is ordinary for solar overnight, for still wind,
+  and for a zero-clearing price, and a blanket `> 0` there would delete real
+  measurements and bias every renewable metric upward. That path was affected
+  too — joining the 543 rows to the forecast tables, ES 104 and SI 8 pair with a
+  stored ML load forecast and MK 72 / ES 46 / ME 25 / PL 25 / MD 9 / AL 4 / NL 2
+  / RS 1 / SI 1 pair with a TSO one, each scoring a 100% error against a number
+  nobody took, with SI's and MK's inside the default 30-day window.
+
+  Known gap, filed separately: `energy_renewable` has the same signature and is
+  **not** guarded, because there the rule is genuinely ambiguous — AT is exactly
+  `0.0` across solar, wind *and* hydro for all 96 rows of 2025-11-15 and 11-16,
+  sandwiched between days at 1,724-2,071 MW (impossible), while MD's near-zero
+  days sit inside a genuine 2-282 MW range and cannot be told apart by
+  magnitude. Do not extend `measuredLoadClause` to it without sizing that first.
 - **`PriceTab`** — same shape for day-ahead price (ml forecast only; price has
   no TSO forecast in the registry).
 - **`GenerationTab`** — `AbleStackedMix` (solar/wind/hydro/biomass, stacked)
@@ -850,8 +898,8 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-06: **358 client tests / 26 files**, **264 server tests /
-18 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-06: **358 client tests / 26 files**, **279 server tests /
+20 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
@@ -860,7 +908,9 @@ the client figure and touched no server file; ABL-21 added
 `server/src/app.test.ts` and touched no client file; ABL-25 added
 `services/degenerateForecast.test.ts` and
 `dashboard/degenerateForecastNote.test.ts`, one per side; ABL-35 added cases to
-all four of those plus `routes/netPosition.test.ts`, and no new file.)
+all four of those plus `routes/netPosition.test.ts`, then a second pass added
+`services/loadQuality.test.ts` and `routes/load.test.ts` for the impossible-zero
+load rule and touched no client file.)
 
 Two conventions, and they are for different layers.
 
@@ -869,7 +919,8 @@ Two conventions, and they are for different layers.
 `comparison/leaderboardRows.ts`, `comparison/mapFill.ts`, `store/migrate.ts`,
 `dashboard/degenerateForecastNote.ts`, `config/forecastModels.ts`,
 `server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
-(which now classifies both the forecast and the actuals series).
+(which now classifies both the forecast and the actuals series),
+`server/src/services/loadQuality.ts`.
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query
@@ -878,7 +929,7 @@ are both easy to break and neither is visible by reading.
 
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
-`tsoForecast`, `crossCountryComparison` and `netPosition`: a real request in, the
+`tsoForecast`, `crossCountryComparison`, `netPosition` and `load`: a real request in, the
 real `ApiResponse<T>` envelope out. Two shared pieces:
 
 - `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its
@@ -907,7 +958,10 @@ a convention someone has to remember. Call `clearResponseCache()` in
 it a broken route keeps returning the correct cached answer.
 
 The fixture's six countries each stand for a failure shape this repo has shipped
-a wrong number for — `PT` all-NULL generation, `AT` no generation rows *and*
+a wrong number for — `PT` all-NULL generation **plus MK's and SI's live
+impossible-zero `energy_load` shape** (exact `0.0` hours *interleaved with real
+ones* on the day after `WINDOW`, paired against a flat catboost forecast so the
+accuracy half is covered too - ABL-35), `AT` no generation rows *and*
 xgboost-only coverage, `BE` negative day-ahead prices plus all-zero solar
 actuals, `FR` pumped storage and consumption-only fossil going negative **plus
 the two-column hydro shape** (`hydro_run_mw` + `hydro_reservoir_mw`, with the
@@ -916,7 +970,10 @@ assumed - ABL-17), `GR` stopped publishing mid-window **and carries both
 degenerate net-position series**: a forecast collapsed to ~1e-7 MW where no row
 is exactly `0.0` so an `= 0` guard misses all of them (ABL-25), and, on the day
 after `WINDOW`, actuals that are *exactly* `0.0` (ABL-35) - two defects with one
-signature and different guards, `DE`
+signature and different guards. GR's `energy_load` on that same day is all-zero
+too, which is what pins the fallback: "latest load" has to step back over the
+whole bad day to the last hour GR really published rather than reading 0 MW or
+dropping the country. `DE`
 the ordinary case plus a superseded forecast vintage that catches a broken
 `MAX(generated_at)` dedup. Add to that set rather than inventing a seventh
 country for a shape already covered — ABL-25 did exactly that, giving GR its
