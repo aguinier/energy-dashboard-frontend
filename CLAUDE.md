@@ -255,6 +255,24 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   **0 rows are negative**. It is ongoing, not historical — the newest were SI at
   `2026-08-06 00:00` and MK at `2026-08-02 21:00`.
 
+  **Where they come from, and why this guard still earns its keep** (ABL-50).
+  At least MK's are manufactured by our own ingest. An ENTSO-E `Period`
+  declares a resolution over an interval, implying N positions, but may carry
+  fewer than N `Point` elements; entsoe-py 0.8.0 forward-fills the gap and
+  `energy-data-gathering` stored the expansion as `data_quality = 'actual'`.
+  MK's document for `2026-08-01T22:00Z` carries **one** Point — `position 1,
+  quantity 0.0` — and 24 rows were written. `src/published_points.py` in the
+  sibling module now refuses a row that is both forward-filled and exactly
+  `0.0`, so MK stores 1 row instead of 24 (verified through the real fetch
+  path, 2026-08-06).
+  **That fix is not deployed** — it is stacked behind the pending
+  `energy-data-gathering` main deploy decision, so the count on the replica
+  keeps growing until it ships. And it does not make this read-side guard
+  redundant even then: MK's `position 1` **was** genuinely published as `0.0`,
+  so it is still stored on purpose, and `measuredLoadClause()` is the only
+  thing keeping it off a chart. The two rules are complementary, not
+  duplicative — do not remove this one when the ingest fix lands.
+
   They are provably not measurements: MK's three affected days are `0.0` for all
   22-24 hours while MK's surrounding daily peak is 543-717 MW. What that put on
   screen — **MK and SI both had an impossible zero as their newest stored row,
