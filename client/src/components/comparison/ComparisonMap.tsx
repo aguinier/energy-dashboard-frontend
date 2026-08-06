@@ -1,10 +1,12 @@
-import { useState, useCallback, useMemo, memo } from 'react';
+import { useState, useCallback, useMemo, useId, memo } from 'react';
 import { m } from 'framer-motion';
 import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { SCALE_CLEAN, SCALE_DIRTY, SCALE_MEDIUM } from '@/lib/dataScale';
+import { NoDataHatchPattern, NoDataSwatch, noDataHatchUrl } from '@/components/map/NoDataHatch';
 import type { CrossCountryMetrics, CrossCountryMetricsEntry } from '@/types';
-import { wapeColor, wapeScale } from './accuracyScale';
+import { wapeScale } from './accuracyScale';
+import { countryFill, usesFlatFill, MEASURED_FLAT_FILL } from './mapFill';
 
 // Shared map constants
 const EUROPE_GEO_URL = '/europe.topojson';
@@ -41,6 +43,10 @@ function formatMetricValue(value: number | null, asPercent: boolean): string {
 export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMapProps) {
   const { comparisonMetric, comparisonForecastType, goToCountry } = useDashboardStore();
   const [hovered, setHovered] = useState<HoveredCountryInfo | null>(null);
+  // Unique per mounted instance, as in EuropeMap — a hardcoded pattern id
+  // collides if both maps ever share a page, and a collided fragment reference
+  // silently paints the wrong pattern.
+  const hatchId = `no-data-hatch-${useId()}`;
 
   // Use store forecast type; when 'all', default to 'load' for map coloring
   const mapForecastType = comparisonForecastType === 'all' ? 'load' : comparisonForecastType;
@@ -92,6 +98,9 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
           height={620}
           style={{ width: '100%', height: '100%', shapeRendering: 'geometricPrecision' }}
         >
+          <defs>
+            <NoDataHatchPattern id={hatchId} />
+          </defs>
           <Geographies geography={EUROPE_GEO_URL}>
             {({ geographies }) =>
               geographies.map((geo) => {
@@ -99,13 +108,18 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
                 const countryData = code ? data[code] : null;
                 const entry = countryData?.[mapForecastType];
                 const metricValue = entry?.[comparisonMetric];
-                const hasData = typeof metricValue === 'number' && !isNaN(metricValue);
 
-                // WAPE gets the ranked teal->terracotta ramp; anything else is
-                // a flat "has data" fill, since MAE/RMSE across countries of
-                // wildly different size is a magnitude, not a score.
-                const rankedFill = comparisonMetric === 'wape' ? wapeColor(metricValue, scale) : null;
-                const fill = rankedFill ?? (hasData ? 'hsl(var(--primary))' : 'hsl(var(--muted))');
+                // Ranked ramp / flat "has a number" / hatched "not measured" —
+                // see mapFill.ts. An unmeasured country is deliberately NOT the
+                // same mark at lower opacity: it used to be flat `--muted` at
+                // 0.5, which reads as background rather than as an answer
+                // (ABL-23).
+                const { kind, fill } = countryFill(metricValue, comparisonMetric, scale, noDataHatchUrl(hatchId));
+
+                // Clicking navigates whenever the country is in the response at
+                // all, even if this forecast type is unmeasured for it — so the
+                // cursor follows that, not the fill.
+                const clickable = !!countryData;
 
                 return (
                   <Geography
@@ -115,8 +129,18 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
                     stroke="hsl(var(--border))"
                     strokeWidth={0.3}
                     style={{
-                      default: { outline: 'none', opacity: hasData ? 1 : 0.5 },
-                      hover: { outline: 'none', opacity: 1, filter: 'brightness(1.1)', cursor: hasData ? 'pointer' : 'default' },
+                      // Full opacity even when hatched: the texture is the
+                      // signal, and fading it turns it back into background.
+                      default: { outline: 'none', opacity: 1 },
+                      hover: {
+                        outline: 'none',
+                        opacity: 1,
+                        // brightness() on a pattern fill washes the hatch out
+                        // rather than highlighting it, so hatched countries keep
+                        // their mark and get the cursor as the only feedback.
+                        filter: kind === 'none' ? undefined : 'brightness(1.1)',
+                        cursor: clickable ? 'pointer' : 'default',
+                      },
                       pressed: { outline: 'none' },
                     }}
                     onClick={() => code && handleClick(code)}
@@ -159,37 +183,64 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
         </m.div>
       )}
 
-      {/* Legend — the ends are the measured best and worst for this forecast
-          type in this window, not fixed cutoffs, because the fill is each
-          country's rank within that set. */}
-      {comparisonMetric === 'wape' && (
-        <div className="absolute bottom-4 left-4 rounded-lg border bg-background/90 backdrop-blur p-3 z-10">
-          <p className="text-xs font-medium mb-2">WAPE ({mapForecastType})</p>
-          {scale.usable ? (
-            <>
-              <div
-                className="h-3 w-24 rounded"
-                style={{
-                  background: `linear-gradient(to right, ${SCALE_CLEAN}, ${SCALE_MEDIUM}, ${SCALE_DIRTY})`,
-                }}
-              />
-              <div className="flex justify-between text-micro text-muted-foreground mt-1 gap-2">
-                <span>{scale.min.toFixed(1)}%</span>
-                <span>{scale.max.toFixed(1)}%</span>
-              </div>
-              <p className="mt-1 text-micro text-muted-foreground max-w-[15rem]">
-                rank, best → worst of {scale.count}
-              </p>
-            </>
-          ) : (
-            <p className="text-micro text-muted-foreground max-w-[15rem]">
-              {scale.count === 0
-                ? 'No country has a measurable WAPE for this type in this window.'
-                : `Only ${scale.count} measured — too few to rank, so countries are left uncoloured.`}
+      {/* Legend. The ramp's ends are the measured best and worst for this
+          forecast type in this window, not fixed cutoffs, because the fill is
+          each country's rank within that set.
+
+          It renders for every metric now, not just WAPE: the hatch needs a key
+          wherever it can appear, and on a MAE/RMSE map this box was the only
+          thing that would have named which forecast type is being drawn. */}
+      <div className="absolute bottom-4 left-4 rounded-lg border bg-background/90 backdrop-blur p-3 z-10">
+        <p className="text-xs font-medium mb-2">
+          {comparisonMetric.toUpperCase()} ({mapForecastType})
+        </p>
+
+        {comparisonMetric === 'wape' && scale.usable && (
+          <>
+            <div
+              className="h-3 w-24 rounded"
+              style={{
+                background: `linear-gradient(to right, ${SCALE_CLEAN}, ${SCALE_MEDIUM}, ${SCALE_DIRTY})`,
+              }}
+            />
+            <div className="flex justify-between text-micro text-muted-foreground mt-1 gap-2">
+              <span>{scale.min.toFixed(1)}%</span>
+              <span>{scale.max.toFixed(1)}%</span>
+            </div>
+            <p className="mt-1 text-micro text-muted-foreground max-w-[15rem]">
+              rank, best → worst of {scale.count}
             </p>
-          )}
+          </>
+        )}
+
+        {comparisonMetric === 'wape' && !scale.usable && (
+          <p className="text-micro text-muted-foreground max-w-[15rem]">
+            {scale.count === 0
+              ? 'No country has a measurable WAPE for this type in this window.'
+              : `Only ${scale.count} measured — too few to rank, so no country is coloured by rank.`}
+          </p>
+        )}
+
+        {/* The flat fill only exists on maps that draw it — see usesFlatFill. */}
+        {usesFlatFill(comparisonMetric, scale) && (
+          <div className="mt-2 flex items-center gap-1.5 border-t pt-2">
+            <span
+              className="h-2.5 w-2.5 rounded-sm border border-border"
+              style={{ backgroundColor: MEASURED_FLAT_FILL }}
+            />
+            <span className="text-micro text-muted-foreground">
+              {comparisonMetric === 'wape' ? 'measured, not ranked' : 'measured — read the value'}
+            </span>
+          </div>
+        )}
+
+        {/* "Not measured" is its own mark, not a paler one. Same hatch, same
+            words as the primary map's legend (EuropeMap), on purpose. */}
+        <div className="mt-2 flex items-center gap-1.5 border-t pt-2">
+          <NoDataSwatch id={`${hatchId}-legend`} />
+          <span className="text-micro text-muted-foreground">no data</span>
         </div>
-      )}
+      </div>
     </div>
   );
 });

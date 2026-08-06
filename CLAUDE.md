@@ -66,8 +66,10 @@ energy-dashboard-frontend/
 │       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts, modelComparison.ts
 │       │   │                                   # Pure helpers (each has a .test.ts)
 │       │   ├── comparison/           # ComparisonView's heatmap/map/leaderboard/filter bar
-│       │   │   └── accuracyScale.ts, leaderboardRows.ts  # Pure helpers (each has a .test.ts)
-│       │   ├── map/                  # EuropeMap.tsx (choropleth), MapMetricSelector.tsx, mapGeometry.ts
+│       │   │   └── accuracyScale.ts, leaderboardRows.ts, mapFill.ts
+│       │   │                                   # Pure helpers (each has a .test.ts)
+│       │   ├── map/                  # EuropeMap.tsx (choropleth), MapMetricSelector.tsx,
+│       │   │                         #   mapGeometry.ts, NoDataHatch.tsx (the shared no-data mark)
 │       │   ├── layout/               # AbleHeader.tsx
 │       │   └── ui/                   # shadcn/radix primitives (button, card, tabs, select, ...)
 │       ├── hooks/
@@ -511,6 +513,30 @@ Three properties are load-bearing:
   while implying a spread nobody measured. Live example: the `hydro_total`,
   `wind_offshore` and `biomass` heatmap columns hold BE and FR only.
 
+**"Not measured" is a hatch, never a paler fill** (ABL-23). WAPE is `null`
+whenever the window's actuals sum to zero, and most of the ~51 shapes in
+`europe.topojson` carry no entry at all — on the default 30-day window, measured
+2026-08-05, `load` and `price` cover 24 countries, `renewable`/`solar`/
+`wind_onshore` 4, and `wind_offshore`/`hydro_total`/`biomass` 2. So "we did not
+measure this" is the *majority* state of that map, not an edge case.
+
+Both choropleths render it with the same diagonal hatch, defined once in
+`components/map/NoDataHatch.tsx` (`NoDataHatchPattern` for the map,
+`NoDataSwatch` for the legend key, both keyed on a `useId()`-derived pattern id
+so two mounted maps cannot collide). It has to be a *texture*: every fill on a
+data scale is a solid colour, so a paler solid colour is the same kind of mark
+only quieter, and reads as "scored somewhere unremarkable". `ComparisonMap` drew
+exactly that — flat `--muted` at 0.5 opacity — until ABL-23.
+
+`comparison/mapFill.ts` is the decision, as a pure function, because
+`<Geographies geography={url}>` fetches its topojson and so renders no country
+shapes under `renderToString`. Three states: `ranked` (a measured WAPE on the
+ramp), `flat` (measured but unrankable — MAE/RMSE are magnitudes, not scores,
+and a sub-`MIN_COUNTRIES_FOR_SCALE` WAPE set has no ordering), `none` (the
+hatch). `usesFlatFill` keeps the legend's flat key on screen exactly when a flat
+fill is drawn. Note the map's legend now renders for every metric, not only
+WAPE — it is the only thing naming which forecast type is being coloured.
+
 The predecessors are gone, and the reason is the failure mode this repo keeps
 hitting. `METRIC_THRESHOLDS`, `getMetricColor` and `getMetricColorHSL` (in
 `lib/colors.ts`) and `getStatusLabel` (in `lib/comparisonConstants.ts`) graded a
@@ -727,18 +753,20 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-05: **328 client tests / 24 files**, **219 server tests /
+Green as of 2026-08-06: **341 client tests / 25 files**, **219 server tests /
 16 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
-`utils/timestamp.test.ts` and one more `forecast.test.ts` case.)
+`utils/timestamp.test.ts` and one more `forecast.test.ts` case; ABL-23 added
+`comparison/mapFill.test.ts` and touched no server file.)
 
 Two conventions, and they are for different layers.
 
 **Pure helpers get a colocated `.test.ts`.** `horizonBars.ts`, `sourceRows.ts`,
 `windowLabel.ts`, `lib/dataScale.ts`, `comparison/accuracyScale.ts`,
-`comparison/leaderboardRows.ts`, `store/migrate.ts`, `config/forecastModels.ts`,
+`comparison/leaderboardRows.ts`, `comparison/mapFill.ts`, `store/migrate.ts`,
+`config/forecastModels.ts`,
 `server/src/utils/timestamp.ts`. Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query

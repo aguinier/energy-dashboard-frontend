@@ -10,6 +10,7 @@ import { lerpHex, SCALE_CLEAN, SCALE_DIRTY, SCALE_MEDIUM } from '@/lib/dataScale
 import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
 import { selectMapGeometry, hoverCardClearsSelector, countryAriaLabel } from './mapGeometry';
+import { NoDataHatchPattern, NoDataSwatch, noDataHatchUrl } from './NoDataHatch';
 
 const EUROPE_GEO_URL = '/europe.topojson';
 
@@ -37,9 +38,9 @@ const MEDIUM = SCALE_MEDIUM;
 const DIRTY = SCALE_DIRTY;
 const LOAD_LOW = '#CFE3DC';
 const LOAD_HIGH = '#12503F';
-// No-data must not sit on the same beige axis as the diverging scale's zero,
-// or a balanced country and a missing one read identically.
-const NO_DATA = '#E4E0D6';
+// No-data is a diagonal hatch, not a fill — it moved to NoDataHatch.tsx when
+// ComparisonMap needed the same mark (ABL-23). See that file for why it must not
+// sit on the same beige axis as the diverging scale's zero below.
 
 // Net position is the one signed metric: amber = importing, blue = exporting,
 // meeting at a near-neutral zero. Amber/blue rather than red/green so the two
@@ -204,10 +205,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         style={{ width: '100%', height: '100%', shapeRendering: 'geometricPrecision' }}
       >
         <defs>
-          <pattern id={noDataHatchId} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-            <rect width="6" height="6" fill={NO_DATA} />
-            <line x1="0" y1="0" x2="0" y2="6" stroke="#CFCABE" strokeWidth="1.5" />
-          </pattern>
+          <NoDataHatchPattern id={noDataHatchId} />
         </defs>
         <Geographies geography={EUROPE_GEO_URL}>
           {({ geographies }) =>
@@ -236,7 +234,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                   // literally in a scanned source file, and a class that
                   // only exists inside node_modules doesn't qualify.
                   className="able-country"
-                  fill={has ? dataColor(mapMetric, d!.value, min, max) : `url(#${noDataHatchId})`}
+                  fill={has ? dataColor(mapMetric, d!.value, min, max) : noDataHatchUrl(noDataHatchId)}
                   stroke={isHover || isSelected ? 'hsl(var(--foreground))' : '#FFFFFF'}
                   strokeWidth={isHover ? 2.4 : isSelected ? 1.6 : 1.2}
                   style={{
@@ -376,15 +374,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           </div>
         )}
         <div className="mt-2 flex items-center gap-1.5 border-t border-input pt-2">
-          <svg width="10" height="10" className="rounded-sm border border-border">
-            <defs>
-              <pattern id={`${noDataHatchId}-legend`} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-                <rect width="6" height="6" fill={NO_DATA} />
-                <line x1="0" y1="0" x2="0" y2="6" stroke="#CFCABE" strokeWidth="1.5" />
-              </pattern>
-            </defs>
-            <rect width="10" height="10" fill={`url(#${noDataHatchId}-legend)`} />
-          </svg>
+          <NoDataSwatch id={`${noDataHatchId}-legend`} />
           <span className="font-mono-num text-micro text-ink-muted">no data</span>
         </div>
       </div>
