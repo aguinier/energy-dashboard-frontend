@@ -233,6 +233,70 @@ describe('getNetPositionForecast', () => {
       model_name: null,
       vintages: [],
       has_band: false,
+      forecast_coverage: 'no_forecast',
+      degenerate_forecast: null,
+    });
+  });
+
+  describe('a series that has collapsed to zero', () => {
+    // ABL-25. GR's real chronos-2-V010 net-position rows, measured on the
+    // replica 2026-08-06: 168 values between 2.3e-11 and 4.6e-7 MW, not one
+    // exactly 0.0. Drawn, they are a flat line at 0 MW that reads as a
+    // confident forecast; withheld, the client can say why.
+    const GR_P50 = [4.582052497426048e-7, -1.7743546720794257e-7, 2.3065367324437425e-11];
+
+    function seedDegenerate() {
+      const ins = db.prepare(
+        `INSERT INTO forecasts
+           (country_code, forecast_type, target_timestamp_utc, generated_at,
+            horizon_hours, forecast_value, model_name, model_version)
+         VALUES ('GR','net_position',?,'2026-07-26 07:00:00',40,?,'chronos-2-V010','V010')`
+      );
+      GR_P50.forEach((v, i) => ins.run(`2026-07-28 0${i}:00:00`, v));
+    }
+
+    it('withholds the points and says why, rather than returning them', () => {
+      seedDegenerate();
+
+      const { points, meta } = getNetPositionForecast('GR', WIDE_START, WIDE_END, db);
+      expect(points).toEqual([]);
+      expect(meta.forecast_coverage).toBe('degenerate_zero');
+      expect(meta.degenerate_forecast).toEqual({
+        points: 3,
+        max_abs_mw: 4.582052497426048e-7,
+      });
+    });
+
+    it('empties the vintages that would otherwise caption an empty chart', () => {
+      seedDegenerate();
+
+      // `vintages` is documented as the runs present in `forecast`; the client
+      // renders "N runs on screen" from it. A populated list beside zero
+      // points would just relocate the false claim into the subtitle.
+      const { meta } = getNetPositionForecast('GR', WIDE_START, WIDE_END, db);
+      expect(meta.vintages).toEqual([]);
+      expect(meta.has_band).toBe(false);
+      // The model that produced the unusable rows is still named — unlike the
+      // no-rows case above, something really did run here.
+      expect(meta.model_name).toBe('chronos-2-V010');
+    });
+
+    it('leaves a genuine series that crosses zero completely alone', () => {
+      // The rule is on the series maximum, never on individual points: a real
+      // net position passes through ~0 on its way from importing to exporting,
+      // and genuine rows go as low as 0.0094 MW (ES, measured).
+      const ins = db.prepare(
+        `INSERT INTO forecasts
+           (country_code, forecast_type, target_timestamp_utc, generated_at,
+            horizon_hours, forecast_value, model_name, model_version)
+         VALUES ('BE','net_position',?,'2026-07-26 07:00:00',40,?,'chronos-2-V010','V010')`
+      );
+      [-900, 0.0093994140625, 880].forEach((v, i) => ins.run(`2026-07-28 0${i}:00:00`, v));
+
+      const { points, meta } = getNetPositionForecast('BE', WIDE_START, WIDE_END, db);
+      expect(points).toHaveLength(3);
+      expect(meta.forecast_coverage).toBe('served');
+      expect(meta.degenerate_forecast).toBeNull();
     });
   });
 

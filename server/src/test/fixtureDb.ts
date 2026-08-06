@@ -39,7 +39,10 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
  *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null.
  * - `PT` — rows exist but every generation column is NULL (a country reporting
  *   nothing). Must read as "no data", never 0%.
- * - `GR` — stopped publishing mid-window, the GR/IE shape.
+ * - `GR` — stopped publishing mid-window, the GR/IE shape. Also carries a
+ *   net-position forecast that has COLLAPSED TO ZERO (values ~1e-7 MW, band
+ *   included), the real degenerate series measured on the replica: rows exist,
+ *   none is exactly 0.0, and nothing else on the tab contradicts them.
  * - `AT` — served by xgboost only, with no catboost row anywhere. The disjoint
  *   catboost/xgboost coverage that makes "no rows for this country" a normal
  *   answer rather than an error.
@@ -441,6 +444,22 @@ function seed(db: DatabaseType): void {
     forecast.run('BE', 'net_position', at(h), '2026-06-30 18:00:00', 40, -190, 'chronos-2-V010', 'V010');
     quantile.run('BE', 'net_position', at(h), '2026-06-30 18:00:00', 0.1, -260, 'chronos-2-V010');
     quantile.run('BE', 'net_position', at(h), '2026-06-30 18:00:00', 0.9, -120, 'chronos-2-V010');
+  });
+
+  // GR net position, the same registered run, COLLAPSED TO ZERO — the values
+  // are lifted from the replica (2026-08-06: 168 rows, every median between
+  // 2.3e-11 and 4.6e-7 MW, band p10 -3.5e-6 to p90 0.0038 MW). Not one is
+  // exactly 0.0, so an `= 0` guard misses all of them, and charted they are a
+  // flat line at 0 MW under a hairline band — which reads as an unusually
+  // CONFIDENT forecast. GR is the right country for this: it publishes no
+  // actuals to disagree (silent after 01:00 here, since 2026-07-24 in
+  // production) and pairs no points into any accuracy metric, so the chart is
+  // the only place the number appears at all.
+  const GR_DEGENERATE_P50 = [4.582052497426048e-7, -1.7743546720794257e-7, 2.3065367324437425e-11, -8.861614553268282e-9];
+  HOURS.forEach((h, i) => {
+    forecast.run('GR', 'net_position', at(h), '2026-06-30 18:00:00', 40, GR_DEGENERATE_P50[i], 'chronos-2-V010', 'V010');
+    quantile.run('GR', 'net_position', at(h), '2026-06-30 18:00:00', 0.1, -0.0000034854574550990947, 'chronos-2-V010');
+    quantile.run('GR', 'net_position', at(h), '2026-06-30 18:00:00', 0.9, 0.003754783421754837, 'chronos-2-V010');
   });
 
   // ------------------------------------------------------- tso forecasts

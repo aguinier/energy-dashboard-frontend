@@ -7,6 +7,7 @@ import { useDashboardStore } from '@/store/dashboardStore';
 import { adaptNetPositionSeries } from '@/lib/chartAdapters';
 import { summarizeVintages, capVintages } from '@/lib/netPositionProvenance';
 import { useModelSelection } from '@/hooks/useForecastModels';
+import { describeDegenerateForecast } from './degenerateForecastNote';
 
 /** Countries whose net position is folded into a multi-country bidding zone. */
 const SHARED_ZONE_NOTE: Record<string, string> = {
@@ -61,6 +62,19 @@ export function NetPositionTab() {
   }, [data]);
 
   const zoneNote = data ? SHARED_ZONE_NOTE[data.meta.bidding_zone] : undefined;
+
+  // The server withholds a forecast series that is numerically zero rather
+  // than letting it draw as a flat, confident-looking line at 0 MW (ABL-25,
+  // GR). It must not become a silent gap here: the reason renders in both the
+  // charted and the empty state, and only when the user has not switched the
+  // forecast off themselves.
+  const degenerateNote = useMemo(
+    () =>
+      forecastHidden
+        ? null
+        : describeDegenerateForecast(data?.meta, country?.country_name ?? selectedCountry),
+    [data, forecastHidden, country, selectedCountry],
+  );
 
   // A zone that stopped publishing is a data gap, not a loading state. The
   // date has to come from meta.last_seen rather than the returned points:
@@ -188,6 +202,17 @@ export function NetPositionTab() {
               </div>
             )}
           </>
+        )}
+
+        {/* Outside the branch above on purpose: GR has both problems at once
+            (no actuals in most windows AND a zero forecast), so this has to
+            render beside the "stopped publishing" empty state as well as
+            under a chart that still draws actuals. */}
+        {degenerateNote && (
+          <p className="mt-2 text-micro text-ink-muted">
+            <span className="text-ink-dim">{degenerateNote.headline}</span>{' '}
+            {degenerateNote.detail}
+          </p>
         )}
 
         {/* Only as a footnote under a chart that still has points; the empty

@@ -117,13 +117,58 @@ describe('GET /api/net-position/:countryCode — a zone that stopped publishing'
   });
 
   it('reports no model rather than an empty forecast attributed to one', async () => {
-    // GR has no Chronos run on file. model_name must be null — naming the
-    // registered model beside an empty series would imply it forecast nothing.
-    const { body } = await get(`GR?${WINDOW_QS}`);
+    // PT has no Chronos run on file at all. model_name must be null — naming
+    // the registered model beside an empty series would imply it forecast
+    // nothing, which is a different fact from "it was never asked to".
+    const { body } = await get(`PT?${WINDOW_QS}`);
     const meta = (body.data as { meta: Record<string, unknown> }).meta;
     expect(meta.model_name).toBeNull();
     expect(meta.vintages).toEqual([]);
     expect(meta.has_band).toBe(false);
+    expect(meta.forecast_coverage).toBe('no_forecast');
+    expect(meta.degenerate_forecast).toBeNull();
+  });
+});
+
+describe('GET /api/net-position/:countryCode — a forecast that collapsed to zero', () => {
+  it('withholds GR’s numerically-zero series instead of serving a flat line at 0 MW', async () => {
+    // ABL-25. Charted, GR's forecast is a perfectly flat line at 0 MW under a
+    // hairline p10-p90 band, which reads as an unusually CONFIDENT forecast —
+    // and nothing contradicts it, because GR publishes no actuals and pairs no
+    // points into any accuracy metric.
+    const { status, body } = await get(`GR?${WINDOW_QS}`);
+    expect(status).toBe(200);
+    const data = body.data as { forecast: unknown[]; meta: Record<string, unknown> };
+
+    expect(data.forecast).toEqual([]);
+    expect(data.meta.forecast_coverage).toBe('degenerate_zero');
+    expect(data.meta.degenerate_forecast).toEqual({
+      points: 4,
+      // The band's p90 ceiling — the largest magnitude anywhere in the series.
+      max_abs_mw: 0.003754783421754837,
+    });
+  });
+
+  it('still names the model that produced the withheld rows', async () => {
+    // The opposite of the PT case above: here the model DID run and returned
+    // values, so naming it is the honest half of the answer. `vintages` and
+    // `has_band` empty out with the series — the client captions the chart
+    // from them ("N runs on screen", "shaded band = p10-p90"), so leaving them
+    // populated would move the confident lie into the subtitle.
+    const { body } = await get(`GR?${WINDOW_QS}`);
+    const meta = (body.data as { meta: Record<string, unknown> }).meta;
+    expect(meta.model_name).toBe('chronos-2-V010');
+    expect(meta.vintages).toEqual([]);
+    expect(meta.has_band).toBe(false);
+  });
+
+  it('does not suppress a country whose forecast is real', async () => {
+    // The rule must cost nothing anywhere else. BE's series is served whole.
+    const { body } = await get(`BE?${WINDOW_QS}`);
+    const data = body.data as { forecast: unknown[]; meta: Record<string, unknown> };
+    expect(data.forecast).toHaveLength(4);
+    expect(data.meta.forecast_coverage).toBe('served');
+    expect(data.meta.degenerate_forecast).toBeNull();
   });
 });
 

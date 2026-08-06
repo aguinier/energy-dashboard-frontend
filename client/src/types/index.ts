@@ -419,6 +419,17 @@ export interface NetPositionForecastVintage {
   last_target: string;
 }
 
+/**
+ * Why `forecast` holds what it does.
+ *
+ * `degenerate_zero` is the one that needs explaining: the model DID produce
+ * rows for this window and every one of them is numerically zero, so the
+ * server withheld them (`server/src/services/degenerateForecast.ts`). Drawn,
+ * they are a flat line at 0 MW under a hairline band — which reads as an
+ * unusually *confident* forecast rather than a missing one.
+ */
+export type NetPositionForecastCoverage = 'served' | 'no_forecast' | 'degenerate_zero';
+
 export interface NetPositionResponse {
   actual: NetPositionActualPoint[];
   forecast: NetPositionForecastPoint[];
@@ -431,6 +442,14 @@ export interface NetPositionResponse {
     has_band: boolean;
     /** Newest published hour for this zone, ignoring the query window. */
     last_seen: string | null;
+    /** An empty `forecast` is never self-explaining — this says which empty. */
+    forecast_coverage: NetPositionForecastCoverage;
+    /**
+     * The withheld series, present only when `forecast_coverage` is
+     * `degenerate_zero`. `null` otherwise, including `served` — so a reader
+     * can never mistake an absent measurement for a measured zero.
+     */
+    degenerate_forecast: { points: number; max_abs_mw: number } | null;
   };
 }
 

@@ -38,6 +38,8 @@ describe('adaptNetPositionSeries', () => {
         model_name: 'chronos-2-V010',
         has_band: false,
         last_seen: null,
+        forecast_coverage: 'served',
+        degenerate_forecast: null,
         vintages: [
           {
             generated_at: '2026-07-26T07:06:28.960696',
@@ -83,6 +85,8 @@ describe('adaptNetPositionSeries', () => {
         model_name: 'chronos-2-V010',
         has_band: false,
         last_seen: null,
+        forecast_coverage: 'served',
+        degenerate_forecast: null,
         vintages: [
           {
             generated_at: '2026-07-26T07:06:28.960696',
@@ -112,6 +116,8 @@ describe('adaptNetPositionSeries', () => {
         model_name: null,
         has_band: false,
         last_seen: null,
+        forecast_coverage: 'served',
+        degenerate_forecast: null,
         vintages: [],
       },
     };

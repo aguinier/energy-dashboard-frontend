@@ -264,7 +264,57 @@ Each tab is self-contained: a batched React Query hook (`useLoadChartData`,
   reappearance (`2026-07-23 22:00` → `2026-07-24 21:00`), and the date the tab
   prints is `MAX(timestamp_utc)` (`netPositionService.ts:291`) — so it now
   reads 2026-07-24, not the March date. Measured 2026-08-05; they are the only
-  two countries whose `net_position` stops before 2026-08.
+  two countries whose `net_position` stops before 2026-08. (Every one of GR's
+  24 reappearance hours is an exact `0.0` MW, measured 2026-08-06 — the
+  actuals, unlike the forecast below, are published that way upstream and are
+  not suppressed here.)
+
+  **A forecast series that has collapsed to zero is withheld, not drawn**
+  (ABL-25). GR's stored `chronos-2-V010` net position is numerically zero:
+  measured 2026-08-06, 168 rows with every median between `2.3e-11` and
+  `4.6e-7` MW and the whole p10-p90 band inside `0.0038` MW — and **not one
+  exactly `0.0`**, so an `= 0` guard catches none of them. Charted, that is a
+  flat line at 0 MW under a hairline band, which reads as an unusually
+  *confident* forecast; and nothing contradicts it, because GR publishes no
+  actuals in a recent window and pairs no points into any accuracy metric. So
+  the chart was the only place the number appeared at all.
+
+  `services/degenerateForecast.ts` is the rule, as a pure function with a
+  colocated test: a series is degenerate when the largest `|value|` across
+  every median **and stored quantile** is under `DEGENERATE_FORECAST_MAX_ABS_MW`
+  (1 MW). Three properties matter.
+  - **The maximum over the series, never a single point.** A real net position
+    crosses zero, and genuine rows go as low as 0.0094 MW (ES) — judging
+    point-by-point would delete the interesting part of the chart.
+  - **The threshold is sized from measurement.** The quietest genuine
+    single-day window in the whole table is SI on 2026-07-29 at 16.7 MW, so 1
+    MW sits an order of magnitude below anything real and six orders above
+    GR's largest value. All 19 other countries stay `served` (verified against
+    a local server on the replica, 2026-08-06).
+  - **Including the band makes the rule stricter, on purpose.** A median
+    hugging zero under a ±3 GW p10-p90 is a real statement about a hard
+    window, and stays served.
+
+  `getNetPositionForecast` returns `forecast: []` with
+  `meta.forecast_coverage: 'degenerate_zero'` and
+  `meta.degenerate_forecast: { points, max_abs_mw }` — the vocabulary is
+  deliberately parallel to `MLAccuracyCoverage`. `vintages` and `has_band`
+  empty out with the series (both are documented as describing what is *in*
+  `forecast`, and the client captions the chart from them, so leaving them
+  populated just relocates the false claim into the subtitle). `model_name`
+  stays: naming who produced the unusable rows is the honest half of the
+  answer, and it is what separates this from the no-rows case, where
+  `model_name` is `null`. The tab prints the reason via
+  `dashboard/degenerateForecastNote.ts` (pure, colocated test) rather than
+  drawing nothing — filtering the rows out silently would trade a confidently
+  wrong chart for a mysteriously missing one.
+
+  Known gap, filed separately: with the forecast withheld, GR's chart domain
+  shrinks to its 24 actual hours while the preset button still says "30d", and
+  `AbleLineChart`'s day-marker derivation (`AbleLineChart.tsx:241`) yields a
+  single tick labelled `now` for a series that short — so the axis carries no
+  dates. The card's "last actual 300h ago" and "No data published since 24
+  July 2026" are the only time context.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
   (`horizonBars.ts`, ML D+1/D+2 and TSO D+1/D+7 — never extrapolated), a
@@ -755,22 +805,25 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-06: **341 client tests / 25 files**, **232 server tests /
-17 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-06: **349 client tests / 26 files**, **248 server tests /
+18 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
 `utils/timestamp.test.ts` and one more `forecast.test.ts` case; ABL-23 added
 `comparison/mapFill.test.ts` and touched no server file; ABL-13 added
-`server/src/app.test.ts` and touched no client file.)
+`server/src/app.test.ts` and touched no client file; ABL-25 added
+`services/degenerateForecast.test.ts` and
+`dashboard/degenerateForecastNote.test.ts`, one per side.)
 
 Two conventions, and they are for different layers.
 
 **Pure helpers get a colocated `.test.ts`.** `horizonBars.ts`, `sourceRows.ts`,
 `windowLabel.ts`, `lib/dataScale.ts`, `comparison/accuracyScale.ts`,
 `comparison/leaderboardRows.ts`, `comparison/mapFill.ts`, `store/migrate.ts`,
-`config/forecastModels.ts`,
-`server/src/utils/timestamp.ts`. Logic is extracted into a pure function
+`dashboard/degenerateForecastNote.ts`, `config/forecastModels.ts`,
+`server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`.
+Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query
 *plan* still shows a range seek — the correctness and the performance property
@@ -812,10 +865,14 @@ xgboost-only coverage, `BE` negative day-ahead prices plus all-zero solar
 actuals, `FR` pumped storage and consumption-only fossil going negative **plus
 the two-column hydro shape** (`hydro_run_mw` + `hydro_reservoir_mw`, with the
 02:00 reservoir reading NULL so `NULL + 40` staying NULL is asserted rather than
-assumed — ABL-17), `GR` stopped publishing mid-window, `DE` the ordinary case
-plus a superseded forecast vintage that catches a broken `MAX(generated_at)`
-dedup. Add to that set rather than inventing a seventh country for a shape
-already covered.
+assumed — ABL-17), `GR` stopped publishing mid-window **and carries a
+net-position forecast collapsed to ~1e-7 MW** (the real degenerate series,
+ABL-25 — no row is exactly `0.0`, so an `= 0` guard misses all of them), `DE`
+the ordinary case plus a superseded forecast vintage that catches a broken
+`MAX(generated_at)` dedup. Add to that set rather than inventing a seventh
+country for a shape already covered — ABL-25 did exactly that, giving GR its
+second shape rather than a new country, because "nothing publishes actuals to
+contradict the forecast" is the same country's condition.
 
 One format difference the fixture encodes on purpose: `forecasts.target_timestamp_utc`
 is written with a **`T`** separator (`atT`), matching production, while the

@@ -2,6 +2,7 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { resolveModelName } from '../config/forecastModels.js';
+import { classifyForecastSeries } from './degenerateForecast.js';
 import {
   NetPositionActualPoint,
   NetPositionForecastPoint,
@@ -175,6 +176,8 @@ export function getNetPositionForecast(
     model_name: null,
     vintages: [],
     has_band: false,
+    forecast_coverage: 'no_forecast',
+    degenerate_forecast: null,
   };
 
   if (!modelName) return { points: [], meta: emptyMeta };
@@ -254,11 +257,45 @@ export function getNetPositionForecast(
         )
   ).all(code, modelName, ...rangeArgs(range), code, modelName, ...rangeArgs(range)) as RawForecastRow[];
 
+  // A series that is numerically zero is withheld rather than drawn. Charting
+  // it produces a flat line at 0 MW under a hairline band, which reads as an
+  // unusually CONFIDENT forecast - the opposite of the truth - and nothing on
+  // the tab contradicts it (GR publishes no actuals to disagree, and pairs no
+  // points into any accuracy metric). See degenerateForecast.ts for the rule
+  // and the measurements sizing its threshold.
+  //
+  // `vintages` and `has_band` empty out with it: both are documented as
+  // describing what is present in `forecast`, and the client reads them to
+  // caption the chart ("N runs on screen", "shaded band = p10-p90"). Leaving
+  // them populated beside an empty series is the same class of confident lie
+  // in the subtitle instead of the plot. `model_name` deliberately stays -
+  // naming who produced the unusable rows is the honest half of the answer,
+  // and `forecast_coverage` says the rows were withheld rather than absent.
+  const quality = classifyForecastSeries(rows);
+  if (quality.coverage === 'degenerate_zero') {
+    return {
+      points: [],
+      meta: {
+        bidding_zone: resolveBiddingZone(countryCode),
+        model_name: modelName,
+        vintages: [],
+        has_band: false,
+        forecast_coverage: 'degenerate_zero',
+        degenerate_forecast: {
+          points: quality.points,
+          max_abs_mw: quality.max_abs_mw,
+        },
+      },
+    };
+  }
+
   const meta: ForecastMeta = {
     bidding_zone: resolveBiddingZone(countryCode),
     model_name: modelName,
     vintages: buildVintages(rows),
     has_band: withBand,
+    forecast_coverage: quality.coverage,
+    degenerate_forecast: null,
   };
 
   const points: NetPositionForecastPoint[] = rows.map((r) => ({

@@ -1,3 +1,8 @@
+// The one type here that is owned elsewhere: the rule that decides it lives in
+// the service, next to the measurements that justify its threshold.
+import type { NetPositionForecastCoverage } from '../services/degenerateForecast.js';
+export type { NetPositionForecastCoverage };
+
 // Country types
 export interface Country {
   country_code: string;
@@ -268,6 +273,19 @@ export interface NetPositionResponse {
     has_band: boolean;
     /** Newest published hour for this zone, ignoring the query window. */
     last_seen: string | null;
+    /**
+     * Why `forecast` holds what it does. `degenerate_zero` means the model DID
+     * produce rows and they are all numerically zero, so they were withheld -
+     * see `degenerateForecast.ts`. An empty `forecast` is never self-explaining.
+     */
+    forecast_coverage: NetPositionForecastCoverage;
+    /**
+     * The withheld series, present only when `forecast_coverage` is
+     * `degenerate_zero`, so the client can state the evidence rather than an
+     * unexplained gap. `null` in every other state - including `served`, where
+     * nothing was withheld.
+     */
+    degenerate_forecast: { points: number; max_abs_mw: number } | null;
   };
 }
 
