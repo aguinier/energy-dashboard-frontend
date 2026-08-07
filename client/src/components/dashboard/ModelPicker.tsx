@@ -16,6 +16,14 @@ import { cn } from '@/lib/utils';
  * Selection is stored per forecast type, so a choice does not silently carry
  * across to a type where that model does not exist.
  *
+ * Two states, not one: the "Default" entry *clears* the pin and the rest set
+ * one. That distinction is the whole point — the server honours an explicit
+ * `model=` strictly (forecastModels.ts `resolveModelCandidates`), so a pin on
+ * the production model blanks every country that model has no rows for, and
+ * before ABL-16 every entry here wrote a pin, "Default" included. There was no
+ * UI path back to the unpinned ladder; clearing localStorage was the only
+ * recovery.
+ *
  * Deliberately shows no accuracy numbers. The previous version displayed a
  * "30-day MAPE" column from hardcoded constants (2.4, 3.1, 5.9 …) that were
  * never measured. Real per-model accuracy lives in the Forecast accuracy tab,
@@ -23,9 +31,11 @@ import { cn } from '@/lib/utils';
  */
 export function ModelPicker() {
   const forecastType = useActiveForecastType();
-  const { models, selected, hidden, isLoading } = useModelSelection(forecastType);
+  const { models, selected, hidden, isLoading, requestModelId } = useModelSelection(forecastType);
   const { data: registry } = useForecastModels();
   const setSelectedModel = useDashboardStore((s) => s.setSelectedModel);
+  const clearSelectedModel = useDashboardStore((s) => s.clearSelectedModel);
+  const setForecastHidden = useDashboardStore((s) => s.setForecastHidden);
   // Set by the data hooks (useLoadChartData, usePriceChartData) from the
   // forecast response's `meta.model` — the model that actually served, which
   // can differ from `selected` (the provisional/production label) when the
@@ -53,7 +63,7 @@ export function ModelPicker() {
   return (
     <div ref={ref} className="relative inline-flex items-stretch">
       <button
-        onClick={() => setSelectedModel(forecastType, hidden ? (selected?.id ?? production ?? models[0].id) : null)}
+        onClick={() => setForecastHidden(forecastType, enabled)}
         aria-pressed={enabled}
         className={cn(
           'flex h-8 cursor-pointer items-center gap-1.5 rounded-l-md border border-r-0 px-2.5 text-meta font-sans',
@@ -89,14 +99,23 @@ export function ModelPicker() {
           </div>
 
           {models.map((m) => {
+            const isDefault = m.id === production;
             const isSelected = enabled && selected?.id === m.id;
+            const isPinned = isSelected && requestModelId === m.id;
             return (
               <button
                 key={m.id}
                 role="option"
                 aria-selected={isSelected}
                 onClick={() => {
-                  setSelectedModel(forecastType, m.id);
+                  // The default entry clears the pin rather than writing one.
+                  // Unpinned is the only state that reaches the server's
+                  // fallback ladder, and so the only one that renders for a
+                  // country the production model does not cover.
+                  if (isDefault) clearSelectedModel(forecastType);
+                  else setSelectedModel(forecastType, m.id);
+                  // Picking a model is also how you switch the overlay back on.
+                  setForecastHidden(forecastType, false);
                   setOpen(false);
                 }}
                 className={cn(
@@ -115,9 +134,14 @@ export function ModelPicker() {
                   {m.source === 'tso' ? 'TSO' : 'ML'}
                 </span>
                 <span className="text-body font-medium text-foreground">{m.label}</span>
-                {m.id === production && (
+                {isDefault && (
                   <span className="rounded-sm bg-foreground px-1.5 py-px font-mono-num text-label font-semibold uppercase text-background">
                     Default
+                  </span>
+                )}
+                {isPinned && (
+                  <span className="rounded-sm border border-border px-1.5 py-px font-mono-num text-label font-semibold uppercase text-ink-dim">
+                    Pinned
                   </span>
                 )}
               </button>
@@ -125,8 +149,10 @@ export function ModelPicker() {
           })}
 
           <div className="mt-1 border-t border-input px-2.5 py-2 text-micro text-ink-muted">
-            Coverage differs by country — where the default model has no data for
-            a country, the next registered model is used and the chart says which.
+            Coverage differs by country. <span className="text-foreground">Default</span> lets the
+            server pick — the production model first, then the next registered one that has data,
+            and the chart says which served. Any other choice is pinned to that model alone, and
+            stays empty for a country it does not cover.
           </div>
         </div>
       )}

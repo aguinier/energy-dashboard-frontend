@@ -22,9 +22,10 @@ export interface ActiveModelSelection {
   /** Model to label the picker with. Provisional until the response names one. */
   selected: ForecastModel | null;
   /**
-   * Model id to send as `model=`. `undefined` means the user expressed no
-   * preference — the server then walks its candidate ladder, which is the only
-   * way countries without the production model get a forecast at all.
+   * Model id to send as `model=`, i.e. the user's pin. `undefined` means the
+   * user expressed no preference — the server then walks its candidate ladder,
+   * which is the only way countries without the production model get a
+   * forecast at all.
    */
   requestModelId: string | undefined;
   hidden: boolean;
@@ -32,40 +33,46 @@ export interface ActiveModelSelection {
 }
 
 /**
- * Resolve which model applies to a forecast type, honouring the user's choice
- * and falling back to the type's production model.
+ * Resolve which model applies to a forecast type, honouring the user's pin and
+ * falling back to the type's production model for labelling.
  *
  * A stored id that is no longer registered resolves to production rather than
  * to nothing — otherwise removing a model from the registry would leave anyone
  * who had selected it staring at an empty chart.
+ *
+ * `pinnedId` and `hidden` are separate inputs on purpose: they used to be one
+ * persisted slot (`null` = hidden), so switching the overlay off threw the pin
+ * away and switching it back on had to fabricate one. See ABL-16 and the v7
+ * clause in store/migrate.ts.
  */
 export function resolveSelection(
   registry: ForecastModelRegistry | undefined,
   forecastType: string,
-  selectedId: string | null | undefined,
+  pinnedId: string | null | undefined,
+  hidden: boolean,
 ): Omit<ActiveModelSelection, 'isLoading'> {
   const cfg = registry?.[forecastType];
   const models = cfg?.models ?? [];
-  const hidden = selectedId === null;
 
   if (hidden || !cfg) {
     return { forecastType, models, selected: null, requestModelId: undefined, hidden };
   }
 
-  const explicit = selectedId ? models.find((m) => m.id === selectedId) : undefined;
+  const explicit = pinnedId ? models.find((m) => m.id === pinnedId) : undefined;
   const selected =
     explicit ?? models.find((m) => m.id === cfg.production) ?? models[0] ?? null;
 
-  // Only an id the user actually picked is pinned. A production default is a
-  // preference, not an instruction, and pinning it blanks every country that
-  // has no data for that model.
+  // Only an id the user actually pinned goes on the wire. A production default
+  // is a preference, not an instruction, and pinning it blanks every country
+  // that has no data for that model.
   return { forecastType, models, selected, requestModelId: explicit?.id, hidden };
 }
 
 export function useModelSelection(forecastType: string): ActiveModelSelection {
   const { data: registry, isLoading } = useForecastModels();
-  const selectedId = useDashboardStore((s) => s.selectedModelByType[forecastType]);
-  return { ...resolveSelection(registry, forecastType, selectedId), isLoading };
+  const pinnedId = useDashboardStore((s) => s.selectedModelByType[forecastType]);
+  const hidden = useDashboardStore((s) => s.forecastHiddenByType[forecastType] ?? false);
+  return { ...resolveSelection(registry, forecastType, pinnedId, hidden), isLoading };
 }
 
 /** The forecast type the active country-view tab is about. */

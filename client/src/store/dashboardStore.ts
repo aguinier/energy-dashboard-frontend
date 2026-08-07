@@ -46,10 +46,24 @@ interface DashboardState {
   activeChartTab: string;
   setActiveChartTab: (tab: string) => void;
 
-  // Forecast model chosen per forecast type. null = forecast hidden for that
-  // type. Absent = use the type's production model from the server registry.
-  selectedModelByType: Record<string, string | null>;
-  setSelectedModel: (forecastType: string, modelId: string | null) => void;
+  // Forecast model PINNED per forecast type. Absent = no pin, which is what
+  // lets the server walk its candidate ladder (production model first, then
+  // the other registered ml models) — the only state that renders a forecast
+  // for a country the production model does not cover.
+  //
+  // Hidden lives in `forecastHiddenByType`, not here. The two used to share
+  // this slot (`null` meant hidden), so hiding destroyed the pin and showing
+  // again had to invent one — it re-pinned the production model, blanking
+  // every country that model has no rows for, with no UI way back (ABL-16).
+  selectedModelByType: Record<string, string>;
+  setSelectedModel: (forecastType: string, modelId: string) => void;
+  /** Drop the pin, handing model choice back to the server's candidate ladder. */
+  clearSelectedModel: (forecastType: string) => void;
+
+  // Whether the forecast overlay is switched off, per forecast type.
+  // Absent = shown.
+  forecastHiddenByType: Record<string, boolean>;
+  setForecastHidden: (forecastType: string, hidden: boolean) => void;
 
   // Model that actually served the most recent forecast response, per type.
   // Populated by the data hooks (useLoadChartData, usePriceChartData) from
@@ -220,6 +234,26 @@ export const useDashboardStore = create<DashboardState>()(
         set((state) => ({
           selectedModelByType: { ...state.selectedModelByType, [forecastType]: modelId },
         })),
+      clearSelectedModel: (forecastType) =>
+        set((state) => {
+          if (state.selectedModelByType[forecastType] === undefined) return state;
+          const next = { ...state.selectedModelByType };
+          delete next[forecastType];
+          return { selectedModelByType: next };
+        }),
+
+      forecastHiddenByType: {},
+      setForecastHidden: (forecastType, hidden) =>
+        set((state) => {
+          const current = state.forecastHiddenByType[forecastType] ?? false;
+          if (current === hidden) return state;
+          const next = { ...state.forecastHiddenByType };
+          // Absent rather than `false`, so the persisted blob only ever carries
+          // the types the user actually switched off.
+          if (hidden) next[forecastType] = true;
+          else delete next[forecastType];
+          return { forecastHiddenByType: next };
+        }),
 
       servedModelByType: {},
       setServedModel: (forecastType, modelId) =>
@@ -300,6 +334,7 @@ export const useDashboardStore = create<DashboardState>()(
         mapMetric: state.mapMetric,
         activeChartTab: state.activeChartTab,
         selectedModelByType: state.selectedModelByType,
+        forecastHiddenByType: state.forecastHiddenByType,
         comparisonCountries: state.comparisonCountries,
         sidebarOpen: state.sidebarOpen,
         // Legacy forecast state (kept for backward compatibility)
