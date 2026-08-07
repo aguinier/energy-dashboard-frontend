@@ -7,6 +7,7 @@ import {
 import { useDashboardStore } from '@/store/dashboardStore';
 import { AbleSparkline } from '@/components/charts/AbleSparkline';
 import { cn } from '@/lib/utils';
+import { describeReadingFreshness, parseUtcTimestamp } from '@/lib/readingFreshness';
 import { getWindowLabel } from './windowLabel';
 
 // Top 4-stat strip on the country page. Each cell shows a big number, unit,
@@ -17,7 +18,12 @@ type StatItem = {
   label: string;
   value: string;
   unit: string;
-  /** Set when the value aggregates the selected window rather than being instantaneous. */
+  /**
+   * What the number is qualified by, rendered beside the label: the window it
+   * aggregates ("7d avg") for the aggregate tiles, or how stale the reading is
+   * ("as of 6h ago") for the instantaneous one. Never decorative — a tile
+   * whose value cannot stand unqualified must carry it.
+   */
   qualifier?: string;
   delta?: string;
   good?: boolean;
@@ -32,11 +38,15 @@ function lastN(values: Array<number | null | undefined>, n: number): number[] {
 
 // The price window now extends into tomorrow (published auction), but the
 // stat tile's spark is a *recent trend* — keep it to points at or before now.
+//
+// Parsing goes through `parseUtcTimestamp` because the previous inline version
+// only appended the 'Z' when the timestamp used a space separator, so the
+// 'T'-separated rows the database also holds were read as *local* time — off
+// by the user's UTC offset, which east of Greenwich silently dropped the
+// newest hour or two of the price spark.
 function isPast(ts: string | undefined): boolean {
-  if (!ts) return true;
-  const iso = ts.includes('T') ? ts : ts.replace(' ', 'T') + 'Z';
-  const t = new Date(iso).getTime();
-  return !Number.isFinite(t) || t <= Date.now();
+  const t = parseUtcTimestamp(ts);
+  return t == null || t <= Date.now();
 }
 
 export function AbleStatRow() {
@@ -67,6 +77,20 @@ export function AbleStatRow() {
   // Peak demand sparkline = same load series (peak comes from the same data).
   const peakSpark = loadSpark;
 
+  // "Current load" is the one instantaneous number in this row — its siblings
+  // are aggregates over the selected window, so they go `—` on their own when
+  // that window holds no rows. This one comes from an unbounded query (the
+  // latest measurement we hold, whenever that was — see dashboardService.ts for
+  // why it is not windowed), so nothing about the value alone says whether it
+  // describes now. `overview.dataTimestamp` is that row's own timestamp; it
+  // decides whether the number is shown bare, captioned with its age, or
+  // withheld outright. Before this, GB rendered a 2021 reading as 37.27 GW
+  // under the label "CURRENT LOAD" (ABL-58).
+  const loadFreshness =
+    overview?.currentLoad != null
+      ? describeReadingFreshness(overview.dataTimestamp)
+      : null;
+
   const items: StatItem[] = [
     {
       label: 'Day-ahead price',
@@ -83,12 +107,18 @@ export function AbleStatRow() {
     {
       label: 'Current load',
       value:
-        overview?.currentLoad != null
+        overview?.currentLoad != null && loadFreshness?.usable
           ? (overview.currentLoad / 1000).toFixed(2)
           : '—',
       unit: 'GW',
+      qualifier: loadFreshness?.qualifier ?? undefined,
+      // Gated on the same freshness check as the value: a "vs 24h ago" delta
+      // beside a withheld number would put the incident straight back on
+      // screen. (`loadChange24h` is not populated by /dashboard/overview today,
+      // so this renders nothing either way — the gate is here so wiring it up
+      // later cannot reintroduce the bug.)
       delta:
-        overview?.loadChange24h != null
+        overview?.loadChange24h != null && loadFreshness?.usable
           ? `${overview.loadChange24h >= 0 ? '+' : ''}${overview.loadChange24h.toFixed(2)}%`
           : undefined,
       // Load moving up or down carries no valence — leave it neutral ink.
