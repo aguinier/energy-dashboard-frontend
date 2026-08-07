@@ -34,12 +34,11 @@ export const HOURLY_PRESETS = new Set(['24h', 'today', 'next24h', 'next1d']);
  * Set just above a single day so the four HOURLY_PRESETS entries — whose own
  * nominal window is ~24h — read by hour when no forecast overlay is active.
  *
- * This happens to equal the 36h floor `getPriceWindowEnd` (useDashboardData.ts)
- * applies to the Price tab's fetch window, but the two are unrelated: that
- * floor exists because day-ahead auctions publish through the next day, this
- * one exists to admit a plain ~24h chart. The match is a coincidence — flagged
- * explicitly here, as a named constant, because a bare `36` in both places
- * previously made the "coupling" look intentional when it wasn't.
+ * This used to be flagged as a coincidental twin of a 36h floor on the Price
+ * tab's fetch window. That floor is gone: `getPriceWindowEnd`
+ * (lib/priceWindow.ts) now reaches the end of tomorrow's Brussels market day,
+ * which is what it always meant. Nothing is coupled to this 36 any more — it
+ * exists only to admit a plain ~24h chart.
  */
 export const SHORT_SPAN_HOURS = 36;
 
@@ -57,7 +56,10 @@ export const SHORT_SPAN_HOURS = 36;
  *                                 whole point of week-ahead is to reach that far,
  *                                 even though today's data happens not to
  *                                 stretch that far out
- *   - Price (day-ahead auction): window end -> now+36h (`getPriceWindowEnd`)
+ *   - Price (day-ahead auction): window end -> end of tomorrow, Brussels
+ *                                 (`getPriceWindowEnd`, lib/priceWindow.ts) —
+ *                                 at most ~48h out, when loaded just after
+ *                                 local midnight
  *   - Net position:               window end -> now+3d (by design)
  *
  * 216h (9 days) covers the structural worst case — a 24h window's own ~1 day

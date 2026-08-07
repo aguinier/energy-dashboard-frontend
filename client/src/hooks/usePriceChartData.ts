@@ -13,8 +13,8 @@ import {
   getDateRangeForPreset,
   getGranularityForPreset,
   getMLForecastDateRange,
-  getPriceWindowEnd,
 } from './useDashboardData';
+import { getPriceWindowEnd } from '@/lib/priceWindow';
 import type {
   PriceDataPoint,
   ForecastDataPoint,
