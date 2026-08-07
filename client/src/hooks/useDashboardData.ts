@@ -15,6 +15,7 @@ import {
 import { useDashboardStore } from '@/store/dashboardStore';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { getTodayBrussels, getNextDayBrussels } from '@/lib/timezone';
+import { getPriceWindowEnd } from '@/lib/priceWindow';
 import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType } from '@/types';
 
 // ============================================================================
@@ -233,17 +234,6 @@ export function useLoadData() {
     queryFn: () => fetchLoadData({ country: selectedCountry, start: start.toISOString(), end: end.toISOString(), granularity }),
     staleTime: REFRESH_INTERVALS.dashboard,
   });
-}
-
-/**
- * Day-ahead auctions publish the whole next day's prices ~12:45 CET, so the
- * price window always extends past the preset's end. Every caller that shares
- * the ['prices', …] query key MUST use this — the key doesn't encode the
- * window, so two hooks with different windows silently poison each other's
- * cache (that bug hid tomorrow's prices even after the chart fix).
- */
-export function getPriceWindowEnd(end: Date): Date {
-  return new Date(Math.max(end.getTime(), Date.now() + 36 * 60 * 60 * 1000));
 }
 
 export function usePriceData() {

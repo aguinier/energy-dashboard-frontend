@@ -313,6 +313,37 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   magnitude. Do not extend `measuredLoadClause` to it without sizing that first.
 - **`PriceTab`** — same shape for day-ahead price (ml forecast only; price has
   no TSO forecast in the registry).
+
+  **This is the one tab whose actuals are legitimately dated in the future.**
+  The day-ahead auction publishes the *whole* of the next market day at ~12:45
+  Brussels, so `energy_price` holds rows past now by design. Every preset
+  except the forward-looking ones ends at or before now, so without a floor the
+  tab would never ask for tomorrow at all — measured against a local server on
+  a probe database, 2026-08-07: the `7d` preset's own window returns **0** of
+  tomorrow's 96 quarter-hour rows, and the floored window returns all 96.
+  `lib/priceWindow.ts`'s `getPriceWindowEnd` is that floor and **every caller
+  sharing the `['prices', …]` query key must use it** — the key does not encode
+  the window, so two hooks with different windows poison each other's cache
+  (`useDashboardData.ts`'s `usePriceData`, `usePriceChartData.ts`).
+
+  The floor is *the end of tomorrow's Brussels market day*, not an hour count.
+  It was `now + 36h`, which was sufficient only by coincidence: the gap from
+  the earliest plausible publication to the last quarter-hour of the next
+  market day is 35h15m on an ordinary day and exactly **36h00m** on the
+  25-hour clocks-back day (2026: publication 10:45 UTC on 24 Oct, last row
+  22:45 UTC on 25 Oct), so an auction published early on that one day would
+  have dropped the day's final row. `lib/priceWindow.test.ts` pins the 23-,
+  24- and 25-hour days. `lib/chartTicks.ts`'s `SHORT_SPAN_HOURS` is still 36
+  and is now unrelated to anything — its comment used to flag the two as a
+  coincidence worth watching, and there is no longer a second 36 to watch.
+
+  **The ingest side already fetches D+1 and always has** — this is worth
+  knowing before re-diagnosing a "tomorrow is missing" report as a window bug.
+  `../energy-data-gathering`'s `config.ENTSOE_API_CONFIG['price']` has carried
+  `is_dayahead: True` since its initial commit, `scripts/update.py`
+  auto-enables `include_dayahead` from that flag, and prod's request URL on
+  2026-08-06 was literally `documentType=A44&…&periodEnd=202608080000` — the
+  end of D+1 — on all four passes. See ABL-54.
 - **`GenerationTab`** — `AbleStackedMix` (the full mix, stacked) plus an
   `AbleDonut` and `SourceTable` showing window-average share of *generation*.
   **All three marks now read `energy_generation` through one grouping** (ABL-44).
@@ -970,8 +1001,8 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-06: **389 client tests / 28 files**, **301 server tests /
-21 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-07: **394 client tests / 29 files**, **308 server tests /
+22 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
@@ -985,7 +1016,9 @@ all four of those plus `routes/netPosition.test.ts`, then a second pass added
 load rule and touched no client file; ABL-44 added `routes/generation.test.ts`
 plus `getGenerationSeries` cases in `services/generationService.test.ts`
 server-side, and `lib/divergingStack.test.ts` +
-`dashboard/generationSeries.test.ts` client-side.)
+`dashboard/generationSeries.test.ts` client-side; ABL-54 added
+`routes/prices.test.ts` server-side and `lib/priceWindow.test.ts` client-side,
+one per side of the day-ahead window.)
 
 Two conventions, and they are for different layers.
 
@@ -996,7 +1029,7 @@ Two conventions, and they are for different layers.
 `server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
 (which now classifies both the forecast and the actuals series),
 `server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
-`dashboard/generationSeries.ts`.
+`dashboard/generationSeries.ts`, `lib/priceWindow.ts`.
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query
@@ -1005,8 +1038,9 @@ are both easy to break and neither is visible by reading.
 
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
-`tsoForecast`, `crossCountryComparison`, `netPosition`, `load` and `generation`:
-a real request in, the real `ApiResponse<T>` envelope out. Two shared pieces:
+`tsoForecast`, `crossCountryComparison`, `netPosition`, `load`, `generation`
+and `prices`: a real request in, the real `ApiResponse<T>` envelope out. Two
+shared pieces:
 
 - `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its
   `CREATE TABLE` statements are copied verbatim from `energy_dashboard.db`
@@ -1062,6 +1096,15 @@ actuals tables use a space (`at`). That is not cosmetic — `normalizeTimestamp`
 converts query bounds to the space form, and `'T'` > `' '` as a string, so a
 range predicate on `forecasts` silently excludes the window's end date. See
 ABL-21; do not "tidy" the fixture into one format, or the bug becomes untestable.
+
+One thing the fixture deliberately **cannot** express: "later than now". Every
+row in it is dated 2026-07-01/02, which is in the past for any run after that
+date, so a shape that is only wrong when a timestamp is in the *future* needs
+rows stamped from `Date.now()`. `routes/prices.test.ts` is the only test that
+adds any, and it adds them to its own copy of the fixture rather than to
+`fixtureDb.ts` — a fixed constant would go stale, and a relative one in the
+shared builder would silently move every other file's window. Day-ahead prices
+are the only actuals where this arises.
 
 ## Common Development Tasks
 
