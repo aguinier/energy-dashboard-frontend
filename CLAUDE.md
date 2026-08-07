@@ -72,7 +72,7 @@ energy-dashboard-frontend/
 │       │   │                                   # Pure helpers (each has a .test.ts)
 │       │   ├── map/                  # EuropeMap.tsx (choropleth), MapMetricSelector.tsx,
 │       │   │                         #   mapGeometry.ts, NoDataHatch.tsx (the shared no-data mark)
-│       │   ├── layout/               # AbleHeader.tsx
+│       │   ├── layout/               # AbleHeader.tsx, freshnessPill.ts (pure, .test.ts)
 │       │   └── ui/                   # shadcn/radix primitives (button, card, tabs, select, ...)
 │       ├── hooks/
 │       │   ├── useDashboardData.ts       # Bulk of the React Query hooks
@@ -113,6 +113,9 @@ energy-dashboard-frontend/
         │   ├── netPosition.ts, netPositionIngest.ts  # Read + write for the Chronos net-position pipeline
         │   ├── dataFreshness.ts, countries.ts, weather.ts
         ├── services/                  # One service module per route group
+        │   ├── freshness.ts           # Pure: is a stream live / stale / never held
+        │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
+        │   └── degenerateForecast.ts  # Pure: collapsed-to-zero net position
         ├── config/
         │   ├── database.ts            # SQLite connection (ENERGY_DB_PATH)
         │   ├── writeDatabase.ts       # Separate writable handle, opened lazily —
@@ -294,8 +297,13 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     number nobody has justified. That grey zone is deliberately still served.
 
   `measuredLoadClause()` is applied at every `energy_load` read site —
-  `loadService.ts` (5) and `dashboardService.ts` (4: current load, peak demand,
-  the map choropleth, the timeseries daily average). `loadActualGuard()` covers
+  `loadService.ts` (5), `dashboardService.ts` (4: current load, peak demand,
+  the map choropleth, the timeseries daily average) and
+  `dataFreshnessService.ts` (1). That last one was the hole, closed by ABL-60:
+  the freshness endpoint dated the *pipeline's health* from a raw
+  `MAX(timestamp_utc)`, so a placeholder could certify the ingest as current.
+  Measured on the replica 2026-08-07, SI's raw MAX was `2026-08-07 00:15` with
+  `load_mw = 0` against a guarded MAX of `00:00`. `loadActualGuard()` covers
   the accuracy joins, which are generic over forecast type and so must apply it
   **only** to `load`: a `0.0` is ordinary for solar overnight, for still wind,
   and for a zero-clearing price, and a blanket `> 0` there would delete real
@@ -815,6 +823,83 @@ The "Status" column is now "Standing", carrying an exact `#rank / n` rather
 than an adjective. Unmeasurable countries are unranked, not last, and are
 excluded from `n`.
 
+### 7. Data freshness — is what we are drawing actually current?
+
+`/api/data-freshness/:cc` answers per stream, and **the verdict is the server's,
+not the caller's** (ABL-60). It used to return five bare timestamps; the one
+caller never invented a rule from them, so the header pulsed a green "live" dot
+beside GB's five-year-old load and stayed green right through the 2026-08-06
+ENTSO-E outage — 484 HTTP 503s, 0 of 30 countries stored, and a dashboard
+serenely drawing yesterday. That is this repo's usual defect wearing a different
+hat: not a wrong number in a chart, but a wrong claim *about* a chart.
+
+Each of `load`, `price`, `generation`, `tsoLoadForecast`,
+`tsoGenerationForecast` now returns `{ latest, ageHours, status }` with `status`
+one of `live` / `stale` / `none`. `none` is deliberately not a health verdict —
+a stream we have never held is not an outage, and an alarm no ingest fix could
+clear is furniture.
+
+**Two rules, because the streams are not the same kind of thing**
+(`services/freshness.ts`, pure, colocated test):
+
+- **Measured actuals** (`energy_load`, `energy_generation`) are judged on age.
+  `MEASURED_STALE_AFTER_HOURS` is **18**, sized from the ingest schedule plus
+  measurement: full passes run 00:30 / 06:30 / 13:30 / 18:30 UTC
+  (`../energy-data-gathering/docker/Dockerfile:22`), so the longest scheduled
+  gap is 7h, and measured against prod 2026-08-07 07:10 UTC — minutes after a
+  healthy 06:30 pass — 31 of 34 countries sat 0.93-3.18h behind while BG sat
+  6.18h and AL/ME ~9.2-9.4h. The slowest healthy country therefore reaches
+  ~16.4h legitimately. It is not a tuned edge: every healthy country was under
+  9.5h and the next value up was MK at 34.2h, so **any threshold from 9.5h to
+  34h selects the same set**.
+- **Day-ahead publications** (`energy_price`, both TSO forecast tables) are
+  judged on **coverage**, never age. A healthy day-ahead price is dated up to
+  ~46h in the *future*, so the age rule would read it as impossibly fresh
+  forever and never notice a missing tomorrow — which is exactly how ABL-51 got
+  found by a board member instead of by us. The rule: before
+  `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` (**14**, the first hour by which the 13:30
+  pass has finished, so "missing" means *we* are missing it rather than nobody
+  having published yet) the newest row must reach today's Brussels market day;
+  after it, tomorrow's.
+
+  The bound is the **start** of the required Brussels day, not its end, and that
+  is what makes one Brussels-framed test correct for every bidding zone from WET
+  to EET: a zone that published the day in full has a newest row ~20h past that
+  day's local start, far more than the ≤3h spread between European market
+  timezones. Testing the day's *end* would mark BG (UTC+3) stale while complete.
+
+**Known limit, stated rather than papered over.** AL's ordinary 9.4h overlaps a
+fast publisher's age after one missed pass (FR would reach ~15.4h), so no
+fleet-wide threshold separates "chronically late" from "missed one pass". This
+catches a *sustained* outage, not every dropped pass. Doing better needs a
+per-country baseline the database cannot supply: `publication_timestamp_utc` is
+rewritten on every re-fetch, so it dates the last pass that touched a row, not
+the pass that first stored it. That is an ingest-side fix — see ABL-60's
+remaining scope.
+
+**The header pill** renders it through `layout/freshnessPill.ts` (pure,
+colocated test). Three things worth knowing before changing it:
+
+- **The pulse animation *is* the liveness claim**, so `stale` and `none` get a
+  still dot rather than a differently-coloured pulse. A pulsing amber still
+  reads as "a running pipeline, in a mood".
+- **The word carries the state, not the colour** — "stale, 1 day ago" /
+  "tomorrow missing". Colour is `dirty` (terracotta) rather than `medium`
+  (amber) on contrast: measured against the light tokens `medium` is 2.55:1 on
+  `--background`, failing both the 4.5:1 text bar and the 3:1 non-text bar,
+  while `dirty` is 6.97:1 (5.26:1 dark).
+- **Only `load`, `generation` and `price` drive the tone.** The two TSO forecast
+  streams back an opt-in overlay, and including them would put an uncalibrated
+  alarm on screen — measured 2026-08-07, BG's `tsoLoadForecast` reached only
+  `2026-08-07 20:00`, so BG would go amber every afternoon whether or not its
+  TSO publishes a D+1 forecast at all.
+
+The pill's age now comes from the server's `ageHours`, not from re-parsing
+`latest` in the browser. `new Date('2026-08-07 05:45:00')` is parsed as **local**
+time by V8, so on the ~90% of `energy_load` rows that use a space separator the
+header understated the age by the viewer's UTC offset — two hours in Brussels,
+always in the reassuring direction.
+
 ## Generation data
 
 Two tables, both written from **one** A75 fetch per country per window
@@ -1001,8 +1086,8 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-07: **394 client tests / 29 files**, **308 server tests /
-22 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-07: **404 client tests / 30 files**, **337 server tests /
+24 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
@@ -1018,7 +1103,9 @@ plus `getGenerationSeries` cases in `services/generationService.test.ts`
 server-side, and `lib/divergingStack.test.ts` +
 `dashboard/generationSeries.test.ts` client-side; ABL-54 added
 `routes/prices.test.ts` server-side and `lib/priceWindow.test.ts` client-side,
-one per side of the day-ahead window.)
+one per side of the day-ahead window; ABL-60 added
+`services/freshness.test.ts` + `routes/dataFreshness.test.ts` server-side and
+`layout/freshnessPill.test.ts` client-side.)
 
 Two conventions, and they are for different layers.
 
@@ -1029,7 +1116,8 @@ Two conventions, and they are for different layers.
 `server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
 (which now classifies both the forecast and the actuals series),
 `server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
-`dashboard/generationSeries.ts`, `lib/priceWindow.ts`.
+`dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
+`server/src/services/freshness.ts`, `layout/freshnessPill.ts`.
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query
@@ -1038,9 +1126,9 @@ are both easy to break and neither is visible by reading.
 
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
-`tsoForecast`, `crossCountryComparison`, `netPosition`, `load`, `generation`
-and `prices`: a real request in, the real `ApiResponse<T>` envelope out. Two
-shared pieces:
+`tsoForecast`, `crossCountryComparison`, `netPosition`, `load`, `generation`,
+`prices` and `dataFreshness`: a real request in, the real `ApiResponse<T>`
+envelope out. Two shared pieces:
 
 - `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its
   `CREATE TABLE` statements are copied verbatim from `energy_dashboard.db`
@@ -1097,14 +1185,22 @@ converts query bounds to the space form, and `'T'` > `' '` as a string, so a
 range predicate on `forecasts` silently excludes the window's end date. See
 ABL-21; do not "tidy" the fixture into one format, or the bug becomes untestable.
 
-One thing the fixture deliberately **cannot** express: "later than now". Every
-row in it is dated 2026-07-01/02, which is in the past for any run after that
-date, so a shape that is only wrong when a timestamp is in the *future* needs
-rows stamped from `Date.now()`. `routes/prices.test.ts` is the only test that
-adds any, and it adds them to its own copy of the fixture rather than to
-`fixtureDb.ts` — a fixed constant would go stale, and a relative one in the
-shared builder would silently move every other file's window. Day-ahead prices
-are the only actuals where this arises.
+One thing the fixture deliberately **cannot** express: anything measured
+against the real clock. Every row in it is dated 2026-07-01/02, which is in the
+past for any run after that date, so a shape that is only wrong when a timestamp
+is in the *future* — or one whose whole subject is age — needs rows stamped from
+`Date.now()`. `routes/prices.test.ts` (tomorrow's day-ahead prices) and
+`routes/dataFreshness.test.ts` (a live stream and a 20-hour-old one) are the
+only tests that add any, and both add them to their own copy of the fixture
+rather than to `fixtureDb.ts` — a fixed constant would go stale, and a relative
+one in the shared builder would silently move every other file's window.
+
+The flip side is useful: because the shared rows are permanently older than
+`MEASURED_STALE_AFTER_HOURS`, "stale" is the default in `dataFreshness.test.ts`
+and every live case has to be created on purpose. Assertions there are also
+written to hold at **every hour of the day** — the day-ahead coverage rule
+changes what it requires at 14:00 UTC, and a test that flipped verdict at
+lunchtime would be worse than no test.
 
 ## Common Development Tasks
 
@@ -1158,12 +1254,23 @@ type TimePreset =
   | 'today' | 'thisWeek'
   | 'next1d' | 'next24h' | 'next48h' | 'next7d';
 
+// Per stream, since ABL-60 — not five bare timestamps. `ageHours` is signed and
+// server-computed; negative is normal for a day-ahead stream. See "Data
+// freshness" above for the two rules behind `status`.
+type FreshnessStatus = 'live' | 'stale' | 'none';
+
+interface FreshnessStream {
+  latest: string | null;
+  ageHours: number | null;
+  status: FreshnessStatus;
+}
+
 interface DataFreshness {
-  load: string | null;
-  price: string | null;
-  generation: string | null;
-  tsoLoadForecast: string | null;
-  tsoGenerationForecast: string | null;
+  load: FreshnessStream;
+  price: FreshnessStream;
+  generation: FreshnessStream;
+  tsoLoadForecast: FreshnessStream;
+  tsoGenerationForecast: FreshnessStream;
 }
 ```
 
@@ -1252,6 +1359,13 @@ interface TSOForecastAccuracyMetrics {
 - If acceptance is pointed at prod (`client/.env.local`'s `API_PROXY_TARGET`),
   a server-side fix won't show up until prod is redeployed — verify against a
   local server first
+- **The workstation replica can be hours behind prod even with a fresh mtime.**
+  Measured 2026-08-07 07:10 UTC: the replica's newest `energy_load` row was
+  `00:15` (≈7h old) while prod's was `05:45` (≈1.4h). Anything about freshness,
+  staleness or "is this table current" must be settled against prod
+  (`http://192.168.86.36:3001/api/...`, read-only) — the replica will make a
+  healthy pipeline look broken. It is still the right place to measure *shapes*
+  (row counts, per-country distributions, table-vs-table comparisons)
 
 ## Common Issues
 
@@ -1308,9 +1422,27 @@ interface TSOForecastAccuracyMetrics {
 - Bump `PERSIST_VERSION` and add a `migratePersisted()` clause if you changed
   the shape of anything in `partialize`
 
-**Data freshness not showing:**
+**The header pill says "stale" (or "tomorrow missing"):**
+- That is the signal working, not a UI bug. Read `/api/data-freshness/:cc` —
+  each stream carries `latest`, `ageHours` and `status`, so it names which one
+  is behind and by how much.
+- `stale` on `load`/`generation` means the newest *measurement* is over 18h old,
+  which is past the longest scheduled gap plus the slowest TSO's own lag: at
+  least one full ingest pass stored nothing for that country. Settle it on prod
+  (`/app/logs/pipeline.log`), not the workstation replica — the replica can be
+  hours behind prod even with a fresh mtime.
+- `stale` on `price` means the day-ahead result does not reach the market day it
+  should. After 14:00 UTC that is tomorrow. This is ABL-51's signature.
+- Some zones are permanently stale and always will be: GB's load stops
+  2021-06-14 and UA's 2022-02-25. That is the correct reading, not a defect to
+  suppress.
+- See "Data freshness" above before changing a threshold — both are sized from
+  measurements recorded there.
+
+**Data freshness returning nothing:**
 - Verify `/api/data-freshness/:countryCode` endpoint is responding
-- Check that database has data for selected country
+- Check that database has data for selected country — a stream with no rows at
+  all reports `status: 'none'`, which is deliberately not `stale`
 
 **A query that filters/joins on `date(timestamp_utc)` or `strftime(...)` is slow:**
 - SQLite cannot use an index through a function of the indexed column, so a

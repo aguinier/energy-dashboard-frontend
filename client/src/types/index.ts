@@ -257,13 +257,47 @@ export interface ApiResponse<T> {
   };
 }
 
-// Data freshness for latest data timestamps
+// Data freshness — per stream, is what we are drawing actually current?
+//
+// ABL-60. These used to be five bare timestamps, which left the verdict to the
+// caller, and the caller never made one: the header pulsed a green "live" dot
+// beside GB's five-year-old load and said nothing at all through the
+// 2026-08-06 ENTSO-E outage. The status now comes from the server, next to the
+// ingest schedule and the measurements that size it (`services/freshness.ts`).
+
+export type FreshnessStatus =
+  /** New enough that no scheduled ingest pass can have been missed. */
+  | 'live'
+  /** Provably behind: at least one scheduled pass stored nothing for it. */
+  | 'stale'
+  /** No rows at all. Not a health verdict — we have never held this stream. */
+  | 'none';
+
+export interface FreshnessStream {
+  /** Newest *usable* stored timestamp, verbatim from the database. */
+  latest: string | null;
+  /**
+   * `now - latest`, in hours, signed, computed server-side. **Negative is
+   * normal for a day-ahead stream** — tomorrow's auction result is dated into
+   * the future by design.
+   *
+   * Prefer this over re-parsing `latest` in the browser. The same column holds
+   * both `2026-08-07T05:45:00` and `2026-08-07 05:45:00` (CLAUDE.md,
+   * "Timestamp storage: two separators in one column") and `new Date` reads the
+   * space form as **local** time, so the header's age was understated by the
+   * viewer's UTC offset — two hours, in Brussels, on the ~90% of `energy_load`
+   * rows that use a space.
+   */
+  ageHours: number | null;
+  status: FreshnessStatus;
+}
+
 export interface DataFreshness {
-  load: string | null;
-  price: string | null;
-  generation: string | null;
-  tsoLoadForecast: string | null;
-  tsoGenerationForecast: string | null;
+  load: FreshnessStream;
+  price: FreshnessStream;
+  generation: FreshnessStream;
+  tsoLoadForecast: FreshnessStream;
+  tsoGenerationForecast: FreshnessStream;
 }
 
 // ============================================================================
