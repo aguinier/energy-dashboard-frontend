@@ -422,11 +422,50 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   **this entry used to give the wrong date for both**: it said their continuous
   series ends `2026-03-14 22:00`. Re-measured 2026-08-06, it ends
   **`2025-09-30 21:00`** — the last hour of the CEST market day 2025-09-30.
-  Everything after that is scraps, four isolated market days that a backfill or
-  a passing cron window happened to catch (2026-02-14→16, 02-26, 03-01→02,
-  03-14, 07-24). Both zones stop in exact lockstep at the same hour, out of 22;
-  they are still the only two whose `net_position` stops before 2026-08. The
-  root cause is upstream of this repo and is tracked on **ABL-35**.
+  Everything after that is scraps, a handful of isolated market days
+  (2026-02-14→16, 02-26, 03-01→02, 03-14, 07-24). Both zones stop in exact
+  lockstep at the same hour, out of 22; they are still the only two whose
+  `net_position` stops before 2026-08.
+
+  **Those scraps are not "a backfill or a passing cron window happening to
+  catch a day", which is what this entry used to claim — most of GR's are rows
+  we manufactured** (ABL-38 root-caused it, ABL-55 fixed the cause). ENTSO-E
+  occasionally emits a sparse A25 document: a `Period` declaring 22-24 hourly
+  positions that carries **one** `<Point>`. entsoe-py 0.8.0 forward-fills that
+  point across the whole declared period, and the ingest stored the expansion.
+  When the single point is `quantity=0`, a full day of measured-looking `0.0`
+  MW lands in `net_position`. Raw XML, fetched 2026-08-07: GR's document for
+  `2026-07-23T22:00Z` declares `PT60M` over 24 positions and carries one Point,
+  `position 1, quantity 0`.
+
+  **The two zones are not symmetric, and this matters when reading the tab.**
+  Measured on the replica 2026-08-07:
+
+  - **GR — 192 of 192 post-break rows are exactly `0.0`**, every one
+    fabricated, across 13 UTC-day buckets. GR has published no real net
+    position since 2025-09-30. Its own `crossborder_flows` show a median net
+    *export* of 1,142 MW over those same hours.
+  - **IE — only 2026-03-14 is fabricated** (23 rows, plus 1 spill row on
+    03-13 = 24). Its other post-break days carry genuine values, up to 738.8
+    MW, so IE's newest *usable* day is 2026-07-24, not 2025-09-30.
+
+  The ingest guard is `../energy-data-gathering/src/published_points.py`
+  (`drop_unpublished_zeros_series`, wired at `entsoe_client.py:1894`), shared
+  with the load path rather than reimplemented — this was the same defect's
+  second occurrence, after ABL-50. It refuses a row only when it is **both**
+  forward-filled **and** exactly `0.0`. Do not tighten that to "store only
+  published Points": measured 2026-08-07, healthy A25 documents are routinely
+  sparse under `curveType=A03` (PT 2026-02-18 carries 7 Points for 47 declared
+  positions, ES 2026-02-08 carries 51 for 112) because an interconnector held
+  at a flat 500/1500 MW is encoded as one Point plus a hold. The strict rule
+  would delete over half of PT's and ES's genuine rows.
+
+  **That fix is not deployed**, and like ABL-50's it is stacked behind the
+  pending `energy-data-gathering` main deploy decision. It also only stops
+  *new* fabrications: the **216** already-stored rows (GR 192, IE 24) are still
+  in the table and their deletion is a separate CEO decision, not yet taken. So
+  the read-side guards below remain the only thing keeping those rows off a
+  chart — do not remove them when the ingest fix ships.
 
   The date the tab prints is **not** `MAX(timestamp_utc)` any more — see
   `getLastSeen`, which takes the newest *usable* day. That matters because GR's
