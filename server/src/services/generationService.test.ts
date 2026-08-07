@@ -576,8 +576,8 @@ describe('getGenerationSeries query plan', () => {
 /**
  * Opportunistic check against the read-only replica used for development on
  * this workstation. Skipped when the replica or the energy_generation table
- * is absent, so this suite never depends on either existing (the backfill
- * this table depends on can still be in flight - see the A75 plan, Task 4).
+ * is absent, so this suite never depends on either existing - CI and any
+ * checkout without a local replica simply skip it.
  */
 const REPLICA_PATH = 'C:/Code/able/data/energy_dashboard.db';
 const replicaAvailable = fs.existsSync(REPLICA_PATH);
@@ -613,9 +613,9 @@ describe.skipIf(!replicaHasGenerationTable())('getGenerationMix against the repl
       const elapsedMs = performance.now() - t0;
 
       expect(elapsedMs).toBeLessThan(2000);
-      // Recent history may still be mid-backfill for some countries; only
-      // assert shape, not presence, so this suite does not flake on backfill
-      // progress.
+      // Assert shape, not presence: whichever replica this runs against
+      // decides whether FR has rows in the last 24h, and that is not this
+      // test's subject (it is checking the index and the latency).
       expect(mix === null || typeof mix === 'object').toBe(true);
     } finally {
       db.close();
@@ -641,8 +641,9 @@ describe.skipIf(!replicaHasGenerationTable())('getRenewableShare against the rep
       const elapsedMs = performance.now() - t0;
 
       expect(elapsedMs).toBeLessThan(2000);
-      // Recent history may still be mid-backfill for some countries, or its
-      // positive total may be degenerate; only assert shape, not presence.
+      // Assert shape, not presence: whichever replica this runs against
+      // decides whether FR has rows in the last 24h, and its positive total
+      // may be degenerate either way.
       expect(pct === null || (typeof pct === 'number' && pct >= 0 && pct <= 100)).toBe(true);
     } finally {
       db.close();
