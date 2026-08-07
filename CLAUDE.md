@@ -123,6 +123,8 @@ energy-dashboard-frontend/
         │   └── forecastModels.ts      # The model registry — see below
         ├── middleware/                # cache.ts, errorHandler.ts, writeAuth.ts
         ├── utils/                     # timestamp.ts (normalizeTimestamp)
+        ├── docs/                      # claudeMdCitations.ts — checks this file's
+        │                              #   own `file:line` citations (see Testing)
         └── types/
 ```
 
@@ -407,7 +409,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `dashboard/generationSeries.test.ts` pins the ordering.
 
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
-  (`CountryDashboardView.tsx:56`, applied at `:115`) limits it to the tabs
+  (`CountryDashboardView.tsx:56`, applied at `:116`) limits it to the tabs
   whose chart actually reads a selection (`price`, `load`, `net-position`). It
   used to render and do nothing, while `useRenewableChartData` fired five
   per-type ML forecast queries plus a TSO one that no component consumed: six
@@ -578,7 +580,7 @@ type TimePreset =
   | 'next1d' | 'next24h' | 'next48h' | 'next7d';  // Forecast
 ```
 
-`getDateRangeForPreset()` (`useDashboardData.ts:29`) turns a preset +
+`getDateRangeForPreset()` (`useDashboardData.ts:47`) turns a preset +
 `timeOffset` into concrete start/end dates.
 
 **Shifted windows.** `timeOffset` is real as of ABL-12 — the arrows write it,
@@ -606,13 +608,13 @@ axis would disagree with itself.
 Adding a preset means touching six places. All six now fail loudly:
 
 - Keyed `Record<TimePreset, …>`, so the missing key is named directly:
-  `PRESET_SHIFT_HOURS` (`lib/constants.ts:17`), `WINDOW_LABEL`
+  `PRESET_SHIFT_HOURS` (`lib/constants.ts:20`), `WINDOW_LABEL`
   (`dashboard/windowLabel.ts:23`), and `ANCHOR_FOR_PRESET`
   (`store/migrate.ts:21`), whose keys `VALID_TIME_PRESETS` derives from.
 - A `const unhandled: never = preset` in the `default` branch, so the new value
   is reported as not assignable to `never`: `getDateRangeForPreset`
-  (`useDashboardData.ts:113`) and `getGranularityForPreset`
-  (`useDashboardData.ts:155`).
+  (`useDashboardData.ts:121`) and `getGranularityForPreset`
+  (`useDashboardData.ts:162`).
 - The sixth — giving the preset a **control** — cannot be typed: a preset with
   no button is unreachable, not ill-typed, which is how four of them sat in the
   union until ABL-12. It is a **test** failure instead:
@@ -655,9 +657,9 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `/dashboard/*` endpoints forced it. Neither is true any more: nothing in
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
-`server/src/types/index.ts:187`), `useDashboardOverview` sends an explicit
-`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:157`,
-and `useMapData` likewise at `:194`), and `migratePersisted` deletes a stored
+`server/src/types/index.ts:219`), `useDashboardOverview` sends an explicit
+`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:175`,
+and `useMapData` likewise at `:212`), and `migratePersisted` deletes a stored
 `timeRange` outright (`store/migrate.ts:102`). `timePreset` is the single field
 describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
 field for `ComparisonView`, is unrelated and does still exist.)
@@ -666,7 +668,7 @@ Nor was there ever a *backend* blocker forcing it to stay. The
 `/dashboard/overview|map|initial` endpoints take an explicit `start`/`end`
 window and let it **win** over the legacy enum whenever both are present
 (`server/src/routes/dashboard.ts:49`, `:76`, `:138`; `timeRange` is consulted
-only as the fallback, via `getTimeRangeDates` in `dashboardService.ts:6`, and
+only as the fallback, via `getTimeRangeDates` in `dashboardService.ts:7`, and
 each site carries a comment explaining the backward compatibility). That
 passthrough predates ABL-4: the blocker this file described — "the client can't
 drop `timeRange` without a backend change first" — had already been removed
@@ -713,7 +715,7 @@ check which group it is in:
   (`useLoadChartData.ts:107`, `:153`).
 - **Written, and read only by dead code.** `showForecast`. `setTimePreset`
   still sets it `true` for future presets (`dashboardStore.ts:150`) and
-  `useLatestForecast` gates its query on it (`useDashboardData.ts:276`, `:284`)
+  `useLatestForecast` gates its query on it (`useDashboardData.ts:303`, `:312`)
   — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
   nothing, so it has no on-screen effect today.
 - **No reader at all.** `showTSOForecast`, `tsoForecastType`,
@@ -1086,8 +1088,8 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-07: **404 client tests / 30 files**, **337 server tests /
-24 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-07: **404 client tests / 30 files**, **382 server tests /
+25 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
@@ -1105,7 +1107,8 @@ server-side, and `lib/divergingStack.test.ts` +
 `routes/prices.test.ts` server-side and `lib/priceWindow.test.ts` client-side,
 one per side of the day-ahead window; ABL-60 added
 `services/freshness.test.ts` + `routes/dataFreshness.test.ts` server-side and
-`layout/freshnessPill.test.ts` client-side.)
+`layout/freshnessPill.test.ts` client-side; ABL-15 added
+`docs/claudeMdCitations.test.ts` server-side and touched no client file.)
 
 Two conventions, and they are for different layers.
 
@@ -1201,6 +1204,54 @@ and every live case has to be created on purpose. Assertions there are also
 written to hold at **every hour of the day** — the day-ahead coverage rule
 changes what it requires at 14:00 UTC, and a test that flipped verdict at
 lunchtime would be worse than no test.
+
+### This file's own citations are tested
+
+The ~60 `file:line` citations below are checked mechanically by
+`server/src/docs/claudeMdCitations.test.ts`, so `cd server && npx vitest run`
+fails on a stale one. They rot silently otherwise: an unrelated commit inserts
+twenty lines, the cited line still exists, nothing errors, and the citation now
+points at a blank line or the wrong function. ABL-3 verified every citation by
+hand and a merge the same hour re-broke thirteen of them — hand verification does
+not survive concurrent work.
+
+Two rules, both chosen by measuring them against this document (ABL-15):
+
+- **The cited line must exist and hold something.** Not past the end of the
+  file, not blank, not comment-only.
+- **The symbol must be where the citation says.** When the prose names a symbol
+  just before the citation, and that symbol is declared at the top level of the
+  cited file, the cited line has to mention it or fall inside its declaration.
+
+The second rule is the one that earns its keep: of the eight stale citations
+this check found on arrival, the first rule caught three and the second caught
+seven. It is deliberately narrow — skipped for bare `:NNN` continuations, which
+idiomatically point at a *use* site rather than at the declaration
+(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:56` and
+applied at `:116`), and skipped when the named symbol is not a top-level
+declaration (`ENERGY_DB_PATH` is only ever read off `process.env`, so a citation
+naming it is not judged). Both exclusions were needed to reach zero false
+positives across the whole file. A check that cries wolf gets disabled.
+
+Notes for when it fails:
+
+- A citation may point at a **comment on purpose**, where the prose quotes the
+  comment as a comment. Add it to `COMMENT_CITATION_ALLOWLIST`. Entries are keyed
+  by file and by an excerpt of the comment, not by line, so they survive the
+  comment moving; an entry that matches nothing is itself a failure, so the
+  allowlist cannot quietly accumulate dead weight.
+- Citations into the sibling `../energy-data-gathering` module are checked for
+  **presence only** — its line numbers are not ours to keep true. They resolve
+  against the primary checkout, so they work from a git worktree, and are skipped
+  entirely where that module is not checked out.
+- The working tree is the source of truth, so editing this file and running the
+  suite tells you straight away. Set `CLAUDE_MD_CITATIONS_REF=HEAD` to check a
+  committed snapshot instead — worth doing in the primary checkout, where another
+  run's half-finished edit to a cited file shifts lines under you.
+
+What it does **not** catch: a citation that lands on plausible but unrelated
+code, where the prose names no symbol. Line numbers stay in the doc because they
+are what make it fast to use; this check is the maintenance cost that buys them.
 
 ## Common Development Tasks
 
@@ -1392,7 +1443,7 @@ interface TSOForecastAccuracyMetrics {
   model at all — check `forecastModels.ts` before assuming a bug
 - Note the picker does not render on the Generation or Forecast-accuracy tabs
   at all (`TABS_WITH_MODEL_PICKER`, `CountryDashboardView.tsx:56`, applied at
-  `:115`), so there is no "picker that does nothing" to hit there
+  `:116`), so there is no "picker that does nothing" to hit there
 - Check the API response has data for the selected country
 - Verify database tables have data: `energy_load_forecast`, `energy_generation_forecast`
 
@@ -1410,7 +1461,7 @@ interface TSOForecastAccuracyMetrics {
 **Time navigation not working:**
 - Check `timePreset` and `timeAnchor` in store
 - Verify date range calculation in `getDateRangeForPreset()`
-  (`useDashboardData.ts:29`) — there is no `useComputedDateRange()`, despite
+  (`useDashboardData.ts:47`) — there is no `useComputedDateRange()`, despite
   what this file claimed until ABL-4
 - A preset with no `case` there is a compile error since ABL-12 (`never` guard
   in the `default` branch), so this is caught by `tsc -b` rather than by
