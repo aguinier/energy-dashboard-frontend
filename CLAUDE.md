@@ -460,12 +460,15 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   at a flat 500/1500 MW is encoded as one Point plus a hold. The strict rule
   would delete over half of PT's and ES's genuine rows.
 
-  **That fix is not deployed**, and like ABL-50's it is stacked behind the
-  pending `energy-data-gathering` main deploy decision. It also only stops
-  *new* fabrications: the **216** already-stored rows (GR 192, IE 24) are still
-  in the table and their deletion is a separate CEO decision, not yet taken. So
-  the read-side guards below remain the only thing keeping those rows off a
-  chart — do not remove them when the ingest fix ships.
+  **Deploy status: merged to the workstation's local `energy-data-gathering`
+  main (`1dc6e99`, merge `bb61d08`), prod state unverified from here.** ABL-63
+  deployed the *dashboard-frontend* container, not this module, so do not read
+  it as having shipped the ingest fix; confirm prod's SHA before assuming
+  either way. Whatever its deploy state, it only stops *new* fabrications: the
+  **216** already-stored rows (GR 192, IE 24) are still in the table, and
+  deleting them is a separate CEO decision (**ABL-67**, blocked on the board),
+  not yet taken. So the read-side guards below remain the only thing keeping
+  those rows off a chart — do not remove them when the ingest fix ships.
 
   The date the tab prints is **not** `MAX(timestamp_utc)` any more — see
   `getLastSeen`, which takes the newest *usable* day. That matters because GR's
