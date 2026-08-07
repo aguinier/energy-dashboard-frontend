@@ -1,64 +1,29 @@
 import { Router } from 'express';
-import db from '../config/database.js';
+import { getDataFreshness } from '../services/dataFreshnessService.js';
+import { AppError } from '../middleware/errorHandler.js';
 
 const router = Router();
 
 /**
  * GET /data-freshness/:countryCode
- * Returns the latest timestamp for each data type for a given country
+ *
+ * Per stream: the newest usable timestamp we hold, its signed age in hours, and
+ * whether that is `live`, `stale` or `none`.
+ *
+ * It used to return the five bare timestamps and nothing else, which left every
+ * caller to invent its own idea of "too old" — and the only caller did not
+ * invent one at all, so the header pulsed green beside a five-year-old
+ * timestamp for GB. The verdict belongs here, next to the schedule and the
+ * measurements that justify it (`services/freshness.ts`).
  */
 router.get('/:countryCode', (req, res) => {
-  try {
-    const { countryCode } = req.params;
+  const { countryCode } = req.params;
 
-    // Query latest timestamp from each relevant table
-    const latestLoad = db
-      .prepare(
-        `SELECT MAX(timestamp_utc) as latest FROM energy_load WHERE country_code = ?`
-      )
-      .get(countryCode) as { latest: string | null } | undefined;
-
-    const latestPrice = db
-      .prepare(
-        `SELECT MAX(timestamp_utc) as latest FROM energy_price WHERE country_code = ?`
-      )
-      .get(countryCode) as { latest: string | null } | undefined;
-
-    const latestGeneration = db
-      .prepare(
-        `SELECT MAX(timestamp_utc) as latest FROM energy_renewable WHERE country_code = ?`
-      )
-      .get(countryCode) as { latest: string | null } | undefined;
-
-    const latestTSOLoadForecast = db
-      .prepare(
-        `SELECT MAX(target_timestamp_utc) as latest FROM energy_load_forecast WHERE country_code = ?`
-      )
-      .get(countryCode) as { latest: string | null } | undefined;
-
-    const latestTSOGenerationForecast = db
-      .prepare(
-        `SELECT MAX(target_timestamp_utc) as latest FROM energy_generation_forecast WHERE country_code = ?`
-      )
-      .get(countryCode) as { latest: string | null } | undefined;
-
-    res.json({
-      success: true,
-      data: {
-        load: latestLoad?.latest || null,
-        price: latestPrice?.latest || null,
-        generation: latestGeneration?.latest || null,
-        tsoLoadForecast: latestTSOLoadForecast?.latest || null,
-        tsoGenerationForecast: latestTSOGenerationForecast?.latest || null,
-      },
-    });
-  } catch (error) {
-    console.error('Error fetching data freshness:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to fetch data freshness',
-    });
+  if (!countryCode) {
+    throw new AppError('Country code is required', 400, 'MISSING_COUNTRY');
   }
+
+  res.json({ success: true, data: getDataFreshness(countryCode) });
 });
 
 export default router;
