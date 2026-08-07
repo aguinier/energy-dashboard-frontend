@@ -329,7 +329,12 @@ Three things to know before touching this:
   the sole gap (672 rows, 2026-05-26 → 2026-06-23, nothing since), and it is
   an *upstream publication* gap rather than an unfinished backfill —
   `energy_renewable` holds exactly the same 672 rows — so AL renders as "no
-  data" in every window the UI can reach.
+  data" in every window the UI can reach. **It will never fill:** Albania
+  publishes no A75 document at all, and the API answers `No matching data
+  found for AGGREGATED_GENERATION_PER_TYPE_R3` for every window including
+  today (probed on prod with the pipeline's own client, 2026-08-06 and
+  2026-08-07). Those 672 June rows are the anomaly, not the gap. Do not file
+  a backfill for it.
   What *is* routinely absent is a **production type a given country never
   reports**: that is `NULL`, per column, and must stay NULL rather than become
   0. Measured, `nuclear_mw` is reported by 14 of 34 countries and `marine_mw`
@@ -351,6 +356,26 @@ Three things to know before touching this:
   NULL for this reason. If you need "was this published as day-ahead or
   observed after the fact", derive it from the target timestamp relative to
   fetch time, or from `forecasts.horizon_hours` — not from this column.
+- **Uniform freshness across zones.** Every actuals table is a mirror of what
+  each TSO publishes *when it publishes it*, so "country X is N hours behind
+  country Y" is normally upstream cadence, not a broken ingest. The cron
+  (`30 0,6,13,18` in the `energy-data-gathering` container) refetches a rolling
+  **7-day** window every run and upserts everything it gets, so any hole inside
+  that window self-heals as soon as the TSO fills it — and a hole that persists
+  across several runs is a hole upstream. Measured 2026-08-07 05:43 UTC, prod
+  DB vs. a live probe with the pipeline's own client: MK `energy_load` newest
+  `2026-08-05 21:00` in both, MK `energy_generation` newest `2026-08-05 21:00`
+  in both, AL `energy_load` newest `2026-08-06 21:45` in both — identical
+  timestamp for timestamp, including MK's two interior gaps (25h and 49h). The
+  small Balkan zones are chronically late and holey: MK `energy_load` has rows
+  on 30 of the 46 UTC dates from 2026-06-23 to 2026-08-07, including a 7-day
+  hole 07-07 → 07-13, against 45 of 45 for DE. Two zones are dead outright —
+  GB stops at `2021-06-14` and UA at `2022-02-25`. **Before filing a
+  "table X is stale for country Y" bug, probe upstream**, and judge freshness
+  by `MAX(timestamp_utc)` on prod, never by `data_ingestion_log`: that table
+  records an `INSERT OR REPLACE` rowcount, so rewriting rows that already
+  existed logs as inserts and a healthy ingest looks identical to a five-day
+  upstream stall.
 - **Forecast horizons beyond ~D+2.** `forecasts.horizon_hours` runs roughly
   2-64h depending on model (catboost tops out at 63h, xgboost at 64h) — there
   is no stored forecast for D+3 and beyond. `ForecastTab`'s error-by-horizon
