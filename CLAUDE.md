@@ -1025,10 +1025,23 @@ complete in 120 s during this measurement.
   above. A `+02:00` row is displayed two hours from where it belongs. This is
   the sibling module's ingest, not ours; do not "fix" it here and do not
   backfill it. Escalated under ABL-21.
-- **Nothing, for generation.** This entry used to say nuclear and fossil were
-  unavailable. They are not: `energy_generation` holds the complete ENTSO-E
-  A75 document — nuclear, every fossil type, waste, storage and the renewables
-  — backfilled to 2021-01-01 across 34 countries. See "Generation data" below.
+- **Nothing, for generation — except Albania.** This entry used to say nuclear
+  and fossil were unavailable. They are not: `energy_generation` holds the
+  complete ENTSO-E A75 document — nuclear, all seven fossil sub-types (gas,
+  hard coal, brown coal, oil, oil shale, peat, coal-derived gas), waste,
+  pumped storage and battery storage, ENTSO-E's own unclassified "Other", and
+  the renewables — 21 `*_mw` columns. Measured 2026-08-04 against the replica:
+  all 34 countries present, 33 of them spanning 2021-01-01 → now. **AL** is
+  the sole gap (672 rows, 2026-05-26 → 2026-06-23, nothing since), and it is
+  an *upstream publication* gap rather than an unfinished backfill —
+  `energy_renewable` holds exactly the same 672 rows — so AL renders as "no
+  data" in every window the UI can reach.
+  What *is* routinely absent is a **production type a given country never
+  reports**: that is `NULL`, per column, and must stay NULL rather than become
+  0. Measured, `nuclear_mw` is reported by 14 of 34 countries and `marine_mw`
+  by 2, against 33 for `wind_onshore_mw` — a country showing `—` for Nuclear
+  is normal, not a bug. See "Generation data" below for the NULL/0 and sign
+  rules, and `dashboard/generationSeries.ts` for how the columns reach the UI.
 - **A real publication time.** `publication_timestamp_utc` exists on eight
   tables and **does not mean what its name says**. It is filled from the ENTSO-E
   response's `createdDateTime`, but ENTSO-E builds the document *on request* and

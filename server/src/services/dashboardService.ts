@@ -88,7 +88,8 @@ export function getDashboardOverview(
   // question - renewable ÷ load, not renewable ÷ generation) and could print
   // a different number than the donut on the same page for the same country.
   // Null - not 0, not a fallback to that old load-based figure - when this
-  // country has no energy_generation rows yet (still mid-backfill) or the
+  // country has no energy_generation rows in the window (a window predating
+  // its ingest, or a country ENTSO-E does not currently publish) or the
   // window's total positive generation is zero/negative.
   const renewablePct = getRenewableShare(upperCode, rawStart, rawEnd, db);
 
@@ -227,8 +228,11 @@ function getMapPriceData(range: TimestampRange): MapDataPoint[] {
  * used to be its own energy_renewable ÷ energy_load computation - a
  * different table pair and a different question.
  *
- * A country with no energy_generation rows in the window (still mid-backfill
- * for 15 of 34 as of the A75 rollout) simply has no group here - HAVING
+ * A country with no energy_generation rows in the window simply has no group
+ * here. The A75 backfill has since finished - all 34 countries carry rows,
+ * 33 of them back to 2021-01-01 - so the remaining case is a country ENTSO-E
+ * stopped publishing: measured 2026-08-04, AL is the only one (nothing after
+ * 2026-06-23), and it drops out of every window the UI can reach. HAVING
  * drops a country whose total positive generation is zero/negative too, for
  * the same reason NULLIF makes it NULL in getRenewableShare: a share of
  * nothing is undefined, not 0%. Either way the map already renders an absent
