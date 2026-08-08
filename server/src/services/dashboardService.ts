@@ -1,6 +1,13 @@
 import db from '../config/database.js';
 import { DashboardOverview, MapDataPoint, MetricType, TimeRange } from '../types/index.js';
-import { normalizeTimestamp, timestampRange, rangeClause, rangeArgs, type TimestampRange } from '../utils/timestamp.js';
+import {
+  normalizeTimestamp,
+  timestampRange,
+  rangeClause,
+  rangeArgs,
+  toIsoUtc,
+  type TimestampRange,
+} from '../utils/timestamp.js';
 import { getRenewableShare, RENEWABLE_MW_SUM, TOTAL_POSITIVE_MW_SUM } from './generationService.js';
 import { measuredLoadClause } from './loadQuality.js';
 
@@ -46,7 +53,24 @@ export function getDashboardOverview(
   const { start: rawStart, end: rawEnd } = range ?? getTimeRangeDates(timeRange);
   const bounds = timestampRange(rawStart, rawEnd);
 
-  // Get current load
+  // Latest measured load, deliberately *not* bounded to [start, end] the way
+  // its price/peak/renewable siblings below are.
+  //
+  // Bounding it looks like the obvious fix for the stale-tile incident
+  // (ABL-58: GB's freshest row is 2021-06-14, five years old, and the tile
+  // printed 37.27 GW under the label "CURRENT LOAD"). It is not: `TimePicker`
+  // exposes the forward presets (`next24h`/`next7d`), and
+  // `getDateRangeForPreset` starts those windows at now, so a windowed query
+  // returns nothing for *every* country the moment the user looks forward -
+  // trading one country's wrong number for all 34 countries' missing one.
+  //
+  // It is still filtered by `measuredLoadClause()` (ABL-35), so "the latest
+  // measurement we hold" excludes the impossible exact-0.0 placeholder rows.
+  //
+  // So this stays "the latest measurement we hold", and `dataTimestamp` below
+  // carries its age so the client can disclose or withhold it
+  // (client/src/lib/readingFreshness.ts). The number and its age travel
+  // together; neither is useful alone.
   const loadStmt = db.prepare(`
     SELECT
       load_mw as current_load,
@@ -113,7 +137,11 @@ export function getDashboardOverview(
     renewablePercentage: renewablePct,
     peakDemand: peakResult?.peak_demand ?? null,
     priceChange24h: priceChangeResult?.price_change ?? undefined,
-    dataTimestamp: loadResult?.timestamp,
+    // Timestamps `currentLoad` specifically (it is that row's own
+    // `timestamp_utc`), not the response as a whole. Emitted as an
+    // unambiguous ISO-8601 UTC instant - the raw column is UTC but does not
+    // say so, and comes in two shapes; see toIsoUtc.
+    dataTimestamp: toIsoUtc(loadResult?.timestamp),
   };
 }
 

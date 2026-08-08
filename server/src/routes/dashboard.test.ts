@@ -36,7 +36,10 @@ describe('GET /api/dashboard/overview — envelope and window', () => {
       avgPrice: 65,          // AVG(50, 60, 70, 80)
       peakDemand: 1300,      // MAX(1000, 1100, 1200, 1300)
       renewablePercentage: 30, // 300 renewable of 1000 positive MW per row
-      dataTimestamp: '2026-07-01 03:00:00',
+      // Emitted as an unambiguous ISO-8601 UTC instant, not the raw column
+      // text: the client dates `currentLoad` from this, and the bare stored
+      // form parses as *local* time in a browser (ABL-58, `toIsoUtc`).
+      dataTimestamp: '2026-07-01T03:00:00Z',
     });
   });
 
@@ -150,7 +153,7 @@ describe('GET /api/dashboard/overview — a zone that stopped publishing', () =>
     expect(body.data).toMatchObject({
       currentLoad: 310,
       peakDemand: 310,
-      dataTimestamp: '2026-07-01 01:00:00',
+      dataTimestamp: '2026-07-01T01:00:00Z',
     });
   });
 

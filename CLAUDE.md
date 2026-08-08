@@ -239,6 +239,57 @@ and the D+1/D+7 button are gone — `LoadTab`/`PriceTab`/`NetPositionTab` derive
 booleans remain in the store as legacy persisted fields, but they are not
 uniformly dead — see State management below for which are still read.
 
+### 2b. Staleness disclosure in the header stat row
+
+`AbleStatRow`'s four tiles are not the same kind of number, and that governs
+how each handles missing/old data. Three are **aggregates over the selected
+window** (day-ahead price, renewable share, peak demand): their queries are
+bounded, so a window with no rows yields `null` and the tile renders `—` on its
+own. "Current load" is the one **instantaneous** tile, and its query in
+`getDashboardOverview` is deliberately **not** window-bounded — `TimePicker`
+exposes the forward presets (`next24h`/`next7d`, and the `Tomorrow`/`+7d` quick
+buttons), and `getDateRangeForPreset` starts those windows at now, so bounding
+it would blank the tile for all 34 countries the moment the user looks forward.
+Verified: under `next7d`, DE still reads `40.76 GW` while its three windowed
+siblings correctly read `—`. (It *is* filtered by `measuredLoadClause()`, the
+ABL-35 impossible-zero guard — "the latest measurement we hold" means the
+latest one that is not a placeholder.)
+
+Because the value is unbounded in time, **the number alone says nothing about
+whether it describes now** — which is how GB rendered a 2021-06-14 reading as
+`CURRENT LOAD 37.27 GW` for five years (ABL-58). So the age travels with it:
+`DashboardOverview.dataTimestamp` is that row's own `timestamp_utc`, and
+`client/src/lib/readingFreshness.ts` decides between three outcomes —
+
+| age | outcome |
+|---|---|
+| `< 2h` | show bare (normal ENTSO-E publication lag) |
+| `2h – 48h` | show with an `as of 6h ago` caveat beside the label |
+| `> 48h`, or no parseable timestamp | **withhold** the number, label `last reading 5y ago` |
+
+The 2h line is the same one `trailingGap.ts` and `chartSummary.ts` already draw,
+so the page doesn't define "stale" three ways. The 48h line is two diurnal
+cycles: below it a caveat is honest (the healthy fleet runs 6-8h behind, MK 33h),
+above it no caveat rescues the number, because the user reads the figure first.
+
+Two related traps this fixed: `timestamp_utc` is UTC by name but the stored text
+does not say so *and comes in two shapes* — measured 2026-08-07, `energy_load`
+holds 2,485,282 space-separated rows and 279,880 `'T'`-separated ones, and every
+GB/UA row is the `'T'` form, which a browser parses as **local** time. The
+server now stamps the `Z` (`toIsoUtc`, `server/src/utils/timestamp.ts`) and the
+client parser accepts both, because acceptance is routinely proxied at a
+not-yet-redeployed prod (`API_PROXY_TARGET`). And an absent/unparseable
+timestamp **withholds** rather than assuming freshness — the failure being fixed
+is a number presented as current on no evidence.
+
+**This is not the same signal as the header pill** (section 7). The pill reports
+the *pipeline's* health per stream from `/api/data-freshness/:cc`, with its own
+threshold (`MEASURED_STALE_AFTER_HOURS`, 18h) sized from the ingest schedule.
+This rule governs one *rendered reading*, and is stricter (48h, and it withholds
+rather than annotates) because a stat tile leads with the figure. Two read
+paths, two thresholds, on purpose — a stale pill still leaves a 6h-old number
+worth showing, and a five-year-old number is not rescued by a pill beside it.
+
 ### 3. Country dashboard tabs
 
 Each tab is self-contained: a React Query hook (`useLoadChartData`,
