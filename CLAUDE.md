@@ -58,6 +58,7 @@ energy-dashboard-frontend/
 │       │   │   │   NetPositionTab.tsx, ForecastTab.tsx  # One file per tab
 │       │   │   ├── AbleCard.tsx          # Card shell all five tabs wrap their charts in
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
+│       │   │   ├── ForecastGapNotice.tsx # "<model> has no forecast here" + clear-the-pin button
 │       │   │   ├── TimePicker.tsx        # categorised presets + window nav
 │       │   │   ├── AbleStatRow.tsx       # Top 4-stat strip (price/load/renewable share/peak)
 │       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
@@ -94,7 +95,7 @@ energy-dashboard-frontend/
 │           ├── constants.ts, comparisonConstants.ts  # TAB_FORECAST_TYPE, MAP_METRICS, etc.
 │           ├── chartAdapters.ts, chartTicks.ts, chartSummary.ts, colors.ts,
 │           │   dataScale.ts, divergingScale.ts, divergingStack.ts, servedModel.ts,
-│           │   trailingGap.ts, timezone.ts,
+│           │   forecastGap.ts, trailingGap.ts, timezone.ts,
 │           │   queryRetry.ts, netPositionProvenance.ts, formatters.ts,
 │           │   providerRegistry.ts, utils.ts
 │
@@ -189,17 +190,30 @@ from the picker's own selection when the ladder fell back.
 on 2026-07-26. That comment is now stale for `price`; the behaviour it
 justifies — ordered rather than absolute preference — is unaffected.)
 
-**A pin cannot be cleared from the UI.** Every dropdown entry calls
-`setSelectedModel(forecastType, m.id)` (`ModelPicker.tsx:99`), including the
-one badged "Default", and the on/off button re-pins `selected?.id` when it
-switches the forecast back on (`ModelPicker.tsx:56`). Once the user has touched
-the picker for a type, `selectedModelByType[type]` holds a concrete id
-permanently, `requestModelId` is set, and the server honours an explicit
-request strictly — "if you asked for xgboost and it has nothing, you get
-nothing, not a silent substitution" (`forecastModels.ts:177`, implemented at
-`:183-185`). Only the untouched initial state (`selectedModelByType: {}`,
-`dashboardStore.ts:202`) or clearing localStorage returns a type to the
-candidate ladder.
+**A pin is clearable, and "pinned" is not "shown" (ABL-16).** The server still
+honours an explicit request strictly — "if you asked for xgboost and it has
+nothing, you get nothing, not a silent substitution" (`forecastModels.ts:177`).
+That strictness is correct; what was wrong was that the client could only ever
+*add* a pin. Two things changed, both client-side:
+
+- The dropdown's **"Default"** entry calls `clearSelectedModel(forecastType)`
+  instead of `setSelectedModel(…, m.id)`; the other entries still pin. Absent
+  from `selectedModelByType` is the only state that reaches the candidate
+  ladder, so it has to be reachable by a click.
+- **Hidden moved out of `selectedModelByType` into its own
+  `forecastHiddenByType`.** They shared one slot (`null` meant hidden), so
+  switching the overlay off destroyed the pin and switching it back on had to
+  fabricate one — it re-pinned the production model, pinning catboost for users
+  who never chose it. The on/off button now writes only
+  `setForecastHidden(forecastType, …)`, and a pin survives an off/on cycle
+  untouched.
+
+`resolveSelection(registry, forecastType, pinnedId, hidden)` takes the two as
+separate arguments for the same reason. The v7 migration splits an old blob and
+**drops every stored pin**: under the old picker every entry wrote one, so a
+stored pin cannot be told apart from an artefact of the bug, and unpinned is
+the state that always renders something. That is also what frees users already
+trapped.
 
 **Accuracy by model.** The accuracy endpoints also accept `model`, but resolve
 it through `resolveAccuracyModel` rather than `resolveModel`/`resolveModelCandidates`
@@ -682,7 +696,7 @@ so it cannot drift from the union.
 
 Zustand store (`dashboardStore.ts`) with `persist` to localStorage
 (`energy-dashboard-storage`). **The persisted shape is versioned:**
-`PERSIST_VERSION` in `store/migrate.ts` (currently `6`, `migrate.ts:3`), bumped
+`PERSIST_VERSION` in `store/migrate.ts` (currently `7`, `migrate.ts:3`), bumped
 with a matching clause in `migratePersisted()` whenever a persisted field's
 shape or meaning changes. `migratePersisted` must never throw: `state` is an
 arbitrary, possibly years-old localStorage blob. Skipping this step leaves
@@ -694,8 +708,10 @@ It is **not** a per-version switch. `migrate.ts:51` short-circuits only on
 older blob, so each clause must be safe to apply to a blob that never had the
 field. The clauses today coerce an unknown `currentView` / `activeChartTab` /
 `timePreset` back to a valid value (`migrate.ts:130` for the last), remap a
-stored `comparisonMetric: 'mape'` to `'wape'` (`:88`), and **delete** three
-dead keys: `layers` (`:82`), `timeRange` (`:102`), `analyticsConfig` (`:114`).
+stored `comparisonMetric: 'mape'` to `'wape'` (`:88`), **delete** three dead
+keys — `layers` (`:82`), `timeRange` (`:102`), `analyticsConfig` (`:114`) —
+and split `selectedModelByType`'s pin/hidden conflation into
+`forecastHiddenByType`, dropping every stored pin (`:137-163`, ABL-16).
 Note `layers` is deleted, not folded into `showForecast`/`showTSOForecast` as
 an earlier version did — that folding unconditionally overwrote `showForecast`
 with `false` on every migration, clobbering a value the current code had
@@ -740,7 +756,8 @@ timePreset: TimePreset;
 timeAnchor: TimeAnchor;
 mapMetric: MetricType;
 activeChartTab: string;              // price|load|renewables|net-position|analytics
-selectedModelByType: Record<string, string | null>;  // per forecast-type model choice; null = hidden
+selectedModelByType: Record<string, string>;         // per forecast-type PIN; absent = server ladder
+forecastHiddenByType: Record<string, boolean>;       // overlay switched off, per type; absent = shown
 comparisonCountries: string[];
 sidebarOpen: boolean;
 showForecast: boolean;               // legacy — see below
@@ -1440,13 +1457,18 @@ interface TSOForecastAccuracyMetrics {
 **A country's load/price forecast is blank:**
 - Check whether a specific model is pinned in `ModelPicker` — catboost and
   xgboost coverage barely overlaps (see Forecast model selection), so a pinned
-  model with no data for that country renders nothing.
-- **Selecting the type's "Default" entry does not clear the pin — it creates
-  one.** Every dropdown entry calls `setSelectedModel` with a concrete id
-  (`ModelPicker.tsx:99`), and an explicit request is honoured strictly
-  (`forecastModels.ts:183-185`). There is no UI path back to the unpinned
-  candidate ladder; clear `selectedModelByType` out of the
-  `energy-dashboard-storage` localStorage key instead.
+  model with no data for that country renders nothing. The pinned row carries a
+  **Pinned** badge in the dropdown.
+- The chart now says so itself rather than just going blank: a footnote under
+  the line chart reads "<model> has no forecast for <country> in this window."
+  with a **Use the best available model** button that drops the pin
+  (`lib/forecastGap.ts`, `dashboard/ForecastGapNotice.tsx`, wired in `LoadTab`
+  and `PriceTab`). Unpinned and still empty reads "No forecast published for
+  <country> in this window." and offers no button — the ladder already tried
+  every registered model.
+- Selecting the type's **"Default"** entry clears the pin (ABL-16). It used to
+  *create* one, which is what made this state unrecoverable without clearing
+  localStorage.
 - Confirm the model is actually registered in `server/src/config/forecastModels.ts`
 
 **TSO forecasts not showing:**

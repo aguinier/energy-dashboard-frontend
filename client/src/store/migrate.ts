@@ -1,6 +1,6 @@
 import type { TimePreset, TimeAnchor } from '@/types';
 
-export const PERSIST_VERSION = 6;
+export const PERSIST_VERSION = 7;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
@@ -133,6 +133,34 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
   // `timePreset` is guaranteed to be in the union by the check above, so this
   // lookup always hits; the `?? 'past'` guards the cast, not a real gap.
   next.timeAnchor = ANCHOR_FOR_PRESET[next.timePreset as TimePreset] ?? 'past';
+
+  // v7 (ABL-16) — `selectedModelByType` encoded two separate things in one
+  // slot: a pinned model id, and `null` for "forecast hidden for this type".
+  // Hiding therefore destroyed the pin, so ModelPicker's on-switch had to
+  // invent one to restore, and it re-pinned the type's production model. The
+  // "Default" dropdown entry wrote a pin too. Either path could pin catboost
+  // for a user who never chose it — and the server honours an explicit
+  // `model=` strictly (forecastModels.ts `resolveModelCandidates`:
+  // `return explicit ? [explicit] : []`), so the chart then went blank on
+  // every country catboost has no rows for, permanently and across reloads.
+  // Hidden now has its own map, `forecastHiddenByType`.
+  //
+  // Pins are dropped rather than carried across, deliberately. Under the old
+  // picker *every* entry wrote one, so a stored pin is at least as likely to
+  // be an artefact of that bug as a deliberate choice, and nothing in the blob
+  // distinguishes them. Unpinned is the state that always renders something —
+  // the server walks its candidate ladder — and re-pinning is one click. This
+  // is also what frees users already trapped, who otherwise had to clear
+  // localStorage by hand to get their chart back.
+  const storedModels = next.selectedModelByType;
+  const hiddenByType: Record<string, boolean> = {};
+  if (storedModels && typeof storedModels === 'object' && !Array.isArray(storedModels)) {
+    for (const [forecastType, value] of Object.entries(storedModels as Record<string, unknown>)) {
+      if (value === null) hiddenByType[forecastType] = true;
+    }
+  }
+  next.selectedModelByType = {};
+  next.forecastHiddenByType = hiddenByType;
 
   return next;
 }

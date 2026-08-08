@@ -112,6 +112,43 @@ describe('migratePersisted', () => {
     expect(migratePersisted({ timePreset: '30d', timeAnchor: 'future' }, 0).timeAnchor).toBe('past');
   });
 
+  // v7 — `selectedModelByType` used to mean two things at once: a pinned model
+  // id, or `null` for "forecast hidden". See migrate.ts and ABL-16.
+  describe('splits the pinned model from the hidden flag (v7)', () => {
+    it('moves a null entry to forecastHiddenByType', () => {
+      const out = migratePersisted({ selectedModelByType: { load: null } }, 6);
+      expect(out.forecastHiddenByType).toEqual({ load: true });
+      expect(out.selectedModelByType).toEqual({});
+    });
+
+    // Every dropdown entry wrote a pin under the old picker, "Default" and the
+    // on-switch included, so a stored pin cannot be told apart from an
+    // artefact of the bug. Dropping them is what frees users already trapped.
+    it('drops stored pins so the server ladder applies again', () => {
+      const out = migratePersisted(
+        { selectedModelByType: { price: 'catboost', load: 'tso-d7' } },
+        6,
+      );
+      expect(out.selectedModelByType).toEqual({});
+      expect(out.forecastHiddenByType).toEqual({});
+    });
+
+    it('keeps hidden types while dropping pins in the same blob', () => {
+      const out = migratePersisted(
+        { selectedModelByType: { price: 'catboost', load: null, net_position: null } },
+        6,
+      );
+      expect(out.selectedModelByType).toEqual({});
+      expect(out.forecastHiddenByType).toEqual({ load: true, net_position: true });
+    });
+
+    it('initialises both maps when the blob predates model selection entirely', () => {
+      const out = migratePersisted({ timePreset: '7d' }, 0);
+      expect(out.selectedModelByType).toEqual({});
+      expect(out.forecastHiddenByType).toEqual({});
+    });
+  });
+
   it('is a no-op at the current version', () => {
     const s = { currentView: 'map' as const };
     expect(migratePersisted(s, PERSIST_VERSION)).toEqual(s);
@@ -156,6 +193,10 @@ describe('migratePersisted', () => {
       ['null timeAnchor', { timePreset: '7d', timeAnchor: null }],
       ['completely empty object', {}],
       ['unrelated junk fields only', { foo: 'bar', baz: [1, 2, 3] }],
+      ['selectedModelByType as a string', { selectedModelByType: 'catboost' }],
+      ['selectedModelByType as null', { selectedModelByType: null }],
+      ['selectedModelByType as an array', { selectedModelByType: ['catboost'] }],
+      ['selectedModelByType holding numbers', { selectedModelByType: { load: 7 } }],
     ];
 
     it.each(garbageInputs)('%s', (_label, input) => {
