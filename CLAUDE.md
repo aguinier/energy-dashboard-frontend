@@ -1249,8 +1249,8 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-07: **404 client tests / 30 files**, **382 server tests /
-25 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-08: **436 client tests / 32 files**, **406 server tests /
+26 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
@@ -1269,7 +1269,35 @@ server-side, and `lib/divergingStack.test.ts` +
 one per side of the day-ahead window; ABL-60 added
 `services/freshness.test.ts` + `routes/dataFreshness.test.ts` server-side and
 `layout/freshnessPill.test.ts` client-side; ABL-15 added
-`docs/claudeMdCitations.test.ts` server-side and touched no client file.)
+`docs/claudeMdCitations.test.ts` server-side and touched no client file; ABL-76
+merged five branches that had been closed but never merged, which is where
+`lib/readingFreshness.test.ts` + `lib/forecastGap.test.ts` client-side and
+`docs/claudeMdCitations.test.ts` + `utils/timestamp.test.ts`'s `toIsoUtc` cases
+server-side actually arrived, and added `release/unmergedWork.test.ts`.)
+
+### Before you mark an issue `done`
+
+```bash
+cd server && npm run check:unmerged
+```
+
+**A commit on a branch is not shipping.** ABL-76 found five issues marked `done`
+whose branch was created, committed, and never merged — three of them absent
+from `main` *and* `origin/main`, including ABL-58, a live confidently-wrong-
+number defect that sat in prod for a week because prod is built from `main`.
+Branch existence and issue status had both been read as proof of shipping, and
+neither is.
+
+The check joins `git merge-base --is-ancestor <tip> main` to the board's issue
+status and fails only on `done` + unmerged (`release/unmergedWork.ts`, pure,
+colocated test). In-flight, blocked and in-review branches are listed but never
+failed — the whole point is a check nobody wants to disable. It needs
+`PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` / `PAPERCLIP_COMPANY_ID`; without them
+it lists unmerged branches and exits 0 rather than guessing.
+
+It is deliberately **not** in the vitest suite: a test that failed whenever an
+unmerged branch existed would be red on every working branch every day. Run it
+at the moment you close an issue, which is the moment the defect is created.
 
 Two conventions, and they are for different layers.
 
@@ -1281,7 +1309,9 @@ Two conventions, and they are for different layers.
 (which now classifies both the forecast and the actuals series),
 `server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
-`server/src/services/freshness.ts`, `layout/freshnessPill.ts`.
+`server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
+`lib/readingFreshness.ts`, `lib/forecastGap.ts`,
+`server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`.
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query
