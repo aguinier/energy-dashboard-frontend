@@ -10,7 +10,7 @@ const DEFAULT_ML_HORIZONS = [1, 2];
 interface DashboardState {
   // App view navigation
   currentView: AppView;
-  goToCountry: (countryCode: string) => void;
+  goToCountry: (countryCode: string, tab?: string) => void;
   goToMap: () => void;
 
   // Selected country
@@ -124,10 +124,10 @@ export const useDashboardStore = create<DashboardState>()(
     (set) => ({
       // App view navigation
       currentView: 'map',
-      goToCountry: (countryCode) => set({
+      goToCountry: (countryCode, tab = 'load') => set({
         currentView: 'country',
         selectedCountry: countryCode,
-        activeChartTab: 'load', // Reset to default tab when entering country view
+        activeChartTab: tab,
       }),
       goToMap: () => set({ currentView: 'map' }),
 

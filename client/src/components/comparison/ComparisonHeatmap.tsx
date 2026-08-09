@@ -99,7 +99,7 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
             <tr
               key={country}
               className="border-b last:border-0 hover:bg-muted/30 cursor-pointer transition-colors"
-              onClick={() => goToCountry(country)}
+              onClick={() => goToCountry(country, 'analytics')}
             >
               <td className="sticky left-0 z-10 bg-card px-4 py-2 font-mono text-xs font-medium">
                 {country}

@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useCrossCountryMetrics } from '@/hooks/useDashboardData';
 import { ComparisonFilterBar } from '@/components/comparison/ComparisonFilterBar';
+import { summarizePortfolio } from '@/components/comparison/portfolioSummary';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Grid3X3, Map, Trophy } from 'lucide-react';
 
@@ -25,7 +26,7 @@ function TabSkeleton() {
 }
 
 export default function ComparisonView() {
-  const { goToMap } = useDashboardStore();
+  const { goToMap, comparisonMetric, comparisonTimeRange } = useDashboardStore();
   const { data, isLoading, isError } = useCrossCountryMetrics();
   const [activeTab, setActiveTab] = useState('heatmap');
 
@@ -40,12 +41,16 @@ export default function ComparisonView() {
             ← Map
           </button>
           <span className="text-meta text-ink-faint">/</span>
-          <span className="text-meta text-ink-dim">Cross-country comparison</span>
+          <span className="text-meta text-ink-dim">Forecast quality</span>
         </div>
 
         <h1 className="m-0 mb-6 text-display font-medium">
-          Cross-country comparison
+          Forecast quality
         </h1>
+
+        <p className="-mt-4 mb-6 max-w-2xl text-body text-ink-dim">
+          Measured forecast performance across the portfolio. Choose a country to inspect its detail.
+        </p>
 
         <div className="space-y-4">
           <ComparisonFilterBar />
@@ -68,11 +73,13 @@ export default function ComparisonView() {
           )}
 
           {data && !isLoading && (
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <>
+              <PortfolioSummary data={data} metric={comparisonMetric} timeRange={comparisonTimeRange} />
+              <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList>
                 <TabsTrigger value="heatmap" className="gap-1.5">
                   <Grid3X3 className="h-3.5 w-3.5" />
-                  Heatmap
+                  Portfolio
                 </TabsTrigger>
                 <TabsTrigger value="map" className="gap-1.5">
                   <Map className="h-3.5 w-3.5" />
@@ -80,7 +87,7 @@ export default function ComparisonView() {
                 </TabsTrigger>
                 <TabsTrigger value="leaderboard" className="gap-1.5">
                   <Trophy className="h-3.5 w-3.5" />
-                  Leaderboard
+                  Country ranking
                 </TabsTrigger>
               </TabsList>
 
@@ -101,10 +108,40 @@ export default function ComparisonView() {
                   <ComparisonLeaderboard data={data} />
                 </Suspense>
               </TabsContent>
-            </Tabs>
+              </Tabs>
+            </>
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+function PortfolioSummary({ data, metric, timeRange }: {
+  data: Parameters<typeof summarizePortfolio>[0];
+  metric: Parameters<typeof summarizePortfolio>[1];
+  timeRange: '7d' | '30d' | '90d';
+}) {
+  const summary = summarizePortfolio(data, metric);
+  const metricLabel = metric.toUpperCase();
+  const facts = [
+    { label: 'Countries measured', value: summary.countries },
+    { label: 'Forecast types measured', value: summary.forecastTypes },
+    { label: `${metricLabel} series measured`, value: summary.measuredSeries },
+    { label: 'Paired observations returned', value: summary.pairedObservations.toLocaleString() },
+  ];
+
+  return (
+    <section className="grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card sm:grid-cols-4" aria-label="Portfolio coverage">
+      {facts.map((fact, index) => (
+        <div key={fact.label} className={`px-4 py-3 ${index % 2 === 0 ? 'border-r border-border' : ''} ${index < 2 ? 'border-b border-border sm:border-b-0' : ''} ${index < 3 ? 'sm:border-r sm:border-border' : ''}`}>
+          <p className="font-mono-num text-label uppercase text-ink-muted">{fact.label}</p>
+          <p className="mt-1 font-mono-num text-title font-medium text-foreground">{fact.value}</p>
+        </div>
+      ))}
+      <p className="col-span-2 border-t border-border px-4 py-2 text-micro text-ink-muted sm:col-span-4">
+        Coverage for {metricLabel} over the last {timeRange}. Series without a measurable {metricLabel} are excluded; this is not an averaged portfolio error.
+      </p>
+    </section>
   );
 }
