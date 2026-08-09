@@ -67,12 +67,6 @@ export const FORECAST_MODELS: Record<string, ForecastTypeConfig> = {
         source: 'ml',
         modelName: 'chronos-2-V010',
       },
-      {
-        id: 'xgboost-V014',
-        label: 'XGBoost · V014',
-        source: 'ml',
-        modelName: 'xgboost-V014',
-      },
     ],
   },
 };

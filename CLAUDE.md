@@ -111,7 +111,7 @@ energy-dashboard-frontend/
         │   ├── tsoForecast.ts         # /tso-forecast/* (ENTSO-E official forecasts)
         │   ├── forecastComparison.ts  # /forecast-comparison/:cc, /summary, /best, /rolling, /ml-accuracy
         │   ├── crossCountryComparison.ts  # /cross-country/metrics, /metrics/:forecastType
-        │   ├── netPosition.ts, netPositionIngest.ts  # Read + write for registered net-position models
+        │   ├── netPosition.ts, netPositionIngest.ts  # Read + write for the Chronos net-position pipeline
         │   ├── dataFreshness.ts, countries.ts, weather.ts
         ├── services/                  # One service module per route group
         │   ├── freshness.ts           # Pure: is a stream live / stale / never held
@@ -166,7 +166,7 @@ Three top-level views, switched via `currentView` in the store (`map` | `country
 ### 2. Forecast model selection
 
 `server/src/config/forecastModels.ts` is the registry: which models (`catboost`,
-`xgboost`, TSO day-ahead/week-ahead, the registered net-position models, ...) may
+`xgboost`, TSO day-ahead/week-ahead, the net-position Chronos run, ...) may
 serve which forecast type, and which one is `production` for that type. **A
 model must be listed there to be served at all.**
 

@@ -21,10 +21,10 @@ describe('forecast model registry', () => {
     }
   });
 
-  it('offers the production Chronos run and the V014 shadow model for net position', () => {
+  it('serves net position from the V010 Chronos run only', () => {
     const cfg = getTypeConfig('net_position');
     expect(cfg?.production).toBe('chronos-2-V010');
-    expect(cfg?.models.map((m) => m.id)).toEqual(['chronos-2-V010', 'xgboost-V014']);
+    expect(cfg?.models.map((m) => m.id)).toEqual(['chronos-2-V010']);
   });
 
   it('excludes models that stopped writing months ago', () => {
@@ -61,10 +61,6 @@ describe('resolveModel', () => {
 
   it('cannot be used to smuggle in an unregistered model', () => {
     expect(resolveModelName('net_position', 'chronos-2-V011')).toBe('chronos-2-V010');
-  });
-
-  it('resolves the registered V014 shadow model exactly', () => {
-    expect(resolveModelName('net_position', 'xgboost-V014')).toBe('xgboost-V014');
   });
 
   it('returns no model name for a TSO-sourced selection', () => {

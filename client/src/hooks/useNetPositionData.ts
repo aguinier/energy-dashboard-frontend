@@ -3,7 +3,6 @@ import { useDashboardStore } from '@/store/dashboardStore';
 import { fetchNetPosition } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { getDateRangeForPreset } from './useDashboardData';
-import { useModelSelection } from './useForecastModels';
 import type { NetPositionResponse } from '@/types';
 
 /**
@@ -21,7 +20,6 @@ export function useNetPositionData(): {
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
-  const { requestModelId } = useModelSelection('net_position');
 
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
   const extendedEnd = new Date(
@@ -29,13 +27,12 @@ export function useNetPositionData(): {
   );
 
   const query = useQuery({
-    queryKey: ['net-position', selectedCountry, timePreset, timeOffset, requestModelId],
+    queryKey: ['net-position', selectedCountry, timePreset, timeOffset],
     queryFn: () =>
       fetchNetPosition({
         country: selectedCountry,
         start: start.toISOString(),
         end: extendedEnd.toISOString(),
-        model: requestModelId,
       }),
     staleTime: REFRESH_INTERVALS.dashboard,
   });
