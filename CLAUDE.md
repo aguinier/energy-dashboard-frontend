@@ -547,6 +547,26 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   not yet taken. So the read-side guards below remain the only thing keeping
   those rows off a chart — do not remove them when the ingest fix ships.
 
+  **Those read-side guards are verified live on prod**, measured 2026-08-08
+  against `http://192.168.86.36:3001` (read-only) rather than inferred from
+  the ABL-63 deploy. `/api/net-position/GR` over a window containing a
+  fabricated day returns `actual: []` with `data.meta.actual_coverage:
+  'degenerate_zero'` and `degenerate_actual: { points: 24, max_abs_mw: 0 }` —
+  for 2026-03-14 and 2026-07-24 alike — and `last_seen` reads
+  `2025-09-30T21:00:00`, the corrected newest-*usable* day rather than the
+  naive `MAX(timestamp_utc)` of 2026-07-24. So the 216 rows are contained on
+  screen today: ABL-67 and ABL-71 are about the stored rows and about future
+  writes, not about a wrong number on a live chart. Re-measure rather than
+  assume, because the two halves ship from different containers — the read
+  guard is this module's (`getNetPositionActualSeries`,
+  `netPositionService.ts:107`), the ingest guard is the sibling's.
+
+  Note prod holds **no** GR `net_position` row at all in 2026-08-01..09, so
+  nothing new has been fabricated this month. That is *not* evidence the
+  ingest guard shipped: the fabrications are episodic (13 day-buckets in five
+  months), so a quiet fortnight is what the undeployed state looks like too.
+  The container grep is the only thing that settles it.
+
   The date the tab prints is **not** `MAX(timestamp_utc)` any more — see
   `getLastSeen`, which takes the newest *usable* day. That matters because GR's
   series does not stop, it degenerates: see the actuals rule below.
