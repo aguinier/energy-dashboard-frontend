@@ -518,7 +518,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
 
   The ingest guard is `../energy-data-gathering/src/published_points.py`
   (`drop_unpublished_zeros_series`, wired at
-  `../energy-data-gathering/src/entsoe_client.py:1941`), shared
+  `../energy-data-gathering/src/entsoe_client.py:1961`), shared
   with the load path rather than reimplemented — this was the same defect's
   second occurrence, after ABL-50. It refuses a row only when it is **both**
   forward-filled **and** exactly `0.0`. Do not tighten that to "store only
@@ -535,7 +535,8 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   06:54Z** and has been up 7 days, so *every* ingest fix merged since is
   missing from prod — `12c5a6b` (ABL-50 load guard), `1dc6e99` (this one),
   `6299e98` (ABL-54 day-ahead price window), `4e99322` and `941d258`
-  (crossborder). Tracked on **ABL-71**. Do not read ABL-63 as having shipped
+  (crossborder), and `276c266` (ABL-86, the credential redaction, merged
+  2026-08-09). Tracked on **ABL-71**. Do not read ABL-63 as having shipped
   any of them: it deployed the *dashboard-frontend* container, so the ABL-55
   merge being an ancestor of this module's local main says nothing about prod.
   Note this cuts both ways for ABL-54 — its **client** half is live and its
@@ -1059,7 +1060,7 @@ always in the reassuring direction.
 Two tables, both written from **one** A75 fetch per country per window
 (`../energy-data-gathering/src/fetch_renewable.py` →
 `ENTSOEClient.query_generation_and_renewable_with_metadata`,
-`../energy-data-gathering/src/entsoe_client.py:1187`). Never add a second
+`../energy-data-gathering/src/entsoe_client.py:1339`). Never add a second
 request to fill one of them.
 
 - **`energy_generation`** — the whole document. 21 `*_mw` columns, one per
@@ -1757,12 +1758,27 @@ interface TSOForecastAccuracyMetrics {
   which is past the longest scheduled gap plus the slowest TSO's own lag: at
   least one full ingest pass stored nothing for that country. Settle it on prod
   (`/app/logs/pipeline.log`), not the workstation replica — the replica can be
-  hours behind prod even with a fresh mtime.
+  hours behind prod even with a fresh mtime. **Do not paste a raw excerpt of
+  those logs anywhere** — see the warning below.
 - `stale` on `price` means the day-ahead result does not reach the market day it
   should. After 14:00 UTC that is tomorrow. This is ABL-51's signature.
 - Some zones are permanently stale and always will be: GB's load stops
   2021-06-14 and UA's 2022-02-25. That is the correct reading, not a defect to
   suppress.
+- **The prod ingest logs contain a live credential in cleartext — redact
+  before quoting one** (ABL-86). entsoe-py puts the ENTSO-E API key in every
+  request URL as `securityToken=`, `requests` builds an `HTTPError`'s message
+  out of the full URL, and the ingest logged that message verbatim. So every
+  failed-request line in `/app/logs/pipeline.log` (~215 MB) and
+  `/app/logs/cron_update.log` (~70 MB) carries the key — including the AL
+  `400`/`503` lines this doc points you at above. This is the *only* diagnostic
+  in this repo's workflow that leaks a secret, and it leaks it into exactly the
+  places excerpts get pasted: an issue comment, a document, a chat message.
+  The ingest-side fix is merged (`../energy-data-gathering/src/log_redaction.py`
+  — new lines read `securityToken=<redacted>` with the rest of the URL intact),
+  but it is **not deployed** and it does **not** rewrite what is already
+  written. Scrubbing the existing files and rotating the key are with the
+  Board. Until both land, treat every line of those two files as secret-bearing.
 - See "Data freshness" above before changing a threshold — both are sized from
   measurements recorded there.
 
