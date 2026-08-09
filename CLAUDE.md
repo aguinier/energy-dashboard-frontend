@@ -990,7 +990,7 @@ clear is furniture.
   day's local start, far more than the ≤3h spread between European market
   timezones. Testing the day's *end* would mark BG (UTC+3) stale while complete.
 
-**Known limit, stated rather than papered over.** AL's ordinary 9.4h overlaps a
+**Known limit, stated rather than papered over.** AL's 9.4h overlaps a
 fast publisher's age after one missed pass (FR would reach ~15.4h), so no
 fleet-wide threshold separates "chronically late" from "missed one pass". This
 catches a *sustained* outage, not every dropped pass. Doing better needs a
@@ -998,6 +998,18 @@ per-country baseline the database cannot supply: `publication_timestamp_utc` is
 rewritten on every re-fetch, so it dates the last pass that touched a row, not
 the pass that first stored it. That is an ingest-side fix — see ABL-60's
 remaining scope.
+
+**That 9.4h is a snapshot, not AL's character** (ABL-84). The 2026-08-07
+measurement above happened to catch AL mid-publication; AL does not run
+steadily 9.4h behind. It publishes in bursts and goes dark in between, so its
+age sawtooths from ~1h to *days*. Whole-history gaps over 6h in AL
+`energy_load`, measured on prod 2026-08-09: **2024-12-31 → 2025-12-17 (8,401h)**,
+2025-12-18 → 2025-12-29 (265h), 2025-12-30 → 2026-02-16 (1,147h),
+2026-06-28 → 2026-07-08 (232h), thirteen single-day 24.2h gaps across 2022-23,
+and the open one since 2026-08-06 21:45. Read against that record, an AL
+`stale` verdict is the *expected* state a good fraction of the time, and is
+still the correct verdict — do not retune the threshold to silence it. The
+number to distrust is the 9.4h, not the pill.
 
 **The header pill** renders it through `layout/freshnessPill.ts` (pure,
 colocated test). Three things worth knowing before changing it:
@@ -1169,6 +1181,35 @@ complete in 120 s during this measurement.
   by 2, against 33 for `wind_onshore_mw` — a country showing `—` for Nuclear
   is normal, not a bug. See "Generation data" below for the NULL/0 and sign
   rules, and `dashboard/generationSeries.ts` for how the columns reach the UI.
+- **AL load, whenever Albania feels like it — and never at 15 minutes**
+  (ABL-84). Separate from the A75 gap above, and a *different* shape: AL's
+  `energy_load` is not dead, it is **intermittent**. It stopped at
+  `2026-08-06 21:45` and prod read 55.9h stale on 2026-08-09. That is upstream,
+  measured rather than inferred: asking ENTSO-E for A65/`processType=A16` with
+  `periodEnd` at 2026-08-09 23:00 returns a document whose only `Period` ends
+  **`2026-08-06T22:00Z`** — nothing newer exists to fetch. The control that
+  rules out our end is the *same* document type one process type over:
+  A65/`A01` (day-ahead load forecast) over that same window returns points
+  through `2026-08-09T22:00Z`, so the token, the `10YAL-KESH-----5` domain and
+  the endpoint are all fine. The ingest is likewise fine — its passes keep
+  succeeding (2026-08-08 18:30 retrieved 492 rows) and the count only falls
+  because the 7-day window slides. **The sporadic `400`/`503` lines against AL
+  in `cron_update.log` are transient and are not the cause**: passes on either
+  side of them succeeded and `MAX(timestamp_utc)` never moved. Do not
+  re-diagnose this from the error lines alone.
+  The second half matters more for anything reading AL at sub-hourly
+  resolution: **AL publishes hourly values inside a `PT15M` declaration.** Its
+  `Point`s sit at positions 1, 5, 9, … (spacing 4), and entsoe-py forward-fills
+  them, so 24 published values become 96 stored rows. Verified on prod
+  2026-08-09 — AL's 2026-08-05 holds 96 rows in exactly 24 distinct-value runs,
+  run-length histogram `{4: 24}`. So **75% of AL's `energy_load` rows are
+  forward-filled**, and its newest row's timestamp overstates the reading's
+  recency by up to 45 minutes. This is not the ABL-50/ABL-55 fabrication —
+  the underlying hourly values are genuinely published and non-zero, and
+  `drop_unpublished_zeros_series` correctly leaves them alone — but do not
+  present AL as a 15-minute measured series. Window averages are unbiased (each
+  hour carries four equal rows); a 15-minute chart of AL is a staircase by
+  construction, not a data artefact to smooth out.
 - **A real publication time.** `publication_timestamp_utc` exists on eight
   tables and **does not mean what its name says**. It is filled from the ENTSO-E
   response's `createdDateTime`, but ENTSO-E builds the document *on request* and
@@ -1230,7 +1271,26 @@ complete in 120 s during this measurement.
   upstream stall. (ABL-60 turned the "is this stream current" half of this into
   a served verdict — see "Data freshness" above. That answers *whether* a stream
   is behind; this bullet is why a given zone being behind is usually not a bug
-  to file. AL's ordinary ~9.4h lag is exactly why the threshold there is 18h.)
+  to file. AL's 9.4h reading on 2026-08-07 is one reason the threshold is 18h —
+  but see "Data freshness" above: that figure is a snapshot of a bursty
+  publisher, not a steady lag.)
+- **A hole older than 7 days, for the zones that publish late.** The
+  self-healing described above has a hard edge: the cron refetches a rolling
+  **7-day** window, so an upstream outage *longer than 7 days* is never
+  re-requested once it slides out — even if the TSO publishes it later.
+  Measured 2026-08-09 by probing ENTSO-E with the pipeline's own client for
+  windows prod has **zero** rows in: AL 2026-06-29 → 07-08 now returns **169
+  points**, AL 2026-01-05 → 01-20 returns **358**, and CY 2026-05-21 → 06-18
+  returns **1,344**. That data is sitting upstream and we will never ask for it
+  again. Contrast MK (313h and 193h gaps → **0 points**) and MD (1,056h gap →
+  **0 points**), which genuinely were never published — so this is late
+  publication by specific zones, not a fleet-wide ingest defect. Fleet
+  inventory of >6h `energy_load` gaps over the trailing 90 days: MK 1,161h,
+  MD 1,056h, CY 689h, AL 232h, BA 56h, ME 24h, SE 24h — **3,242h** total, of
+  which the AL and CY portions are recoverable and the MK/MD portions are not.
+  Widening the window or adding a catch-up pass is an **ingest-side** change in
+  the sibling module, so it is proposed rather than done here — filed as
+  ABL-85. Do not interpolate across these holes to make a chart look continuous.
 - **Forecast horizons beyond ~D+2.** `forecasts.horizon_hours` runs roughly
   2-64h depending on model — there is no stored forecast for D+3 and beyond.
   Re-measured 2026-08-05: catboost 2-63h, xgboost 2-64h, chronos-2-V010 40-64h
