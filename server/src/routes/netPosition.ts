@@ -6,8 +6,8 @@ const router = Router();
 /**
  * GET /net-position/:countryCode?start=&end=
  *
- * Day-ahead net position (MW, positive = exporter) together with the latest
- * model forecast vintage. Returned as one payload because it is visually one
+ * Day-ahead net position (MW, positive = exporter) together with a registered
+ * model's latest forecast vintage. Returned as one payload because it is visually one
  * chart - splitting it would give the client two loading states for one
  * picture.
  *
@@ -17,7 +17,7 @@ const router = Router();
 router.get('/:countryCode', (req, res) => {
   try {
     const { countryCode } = req.params;
-    const { start, end } = req.query as { start?: string; end?: string };
+    const { start, end, model } = req.query as { start?: string; end?: string; model?: string };
 
     if (!start || !end) {
       res.status(400).json({
@@ -27,7 +27,7 @@ router.get('/:countryCode', (req, res) => {
       return;
     }
 
-    const data = getNetPosition(countryCode, start, end);
+    const data = getNetPosition(countryCode, start, end, undefined, model);
 
     res.json({
       success: true,

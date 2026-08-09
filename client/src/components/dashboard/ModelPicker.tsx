@@ -9,7 +9,8 @@ import { cn } from '@/lib/utils';
  *
  * Renders the models registered for whichever tab is active, so the choices
  * always match the data on screen: price has no TSO forecast, net position has
- * only the Chronos run, load has both ml models plus TSO D+1/D+7. It used to be
+ * its production Chronos run plus the V014 shadow model, load has both ml models
+ * plus TSO D+1/D+7. It used to be
  * a hardcoded ml-vs-TSO toggle rendered on every tab, which meant it appeared
  * to control charts it never touched — net position ignored it entirely.
  *

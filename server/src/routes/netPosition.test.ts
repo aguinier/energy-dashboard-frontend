@@ -78,6 +78,16 @@ describe('GET /api/net-position/:countryCode', () => {
     expect(data.meta.bidding_zone).toBe('DE_LU');
     expect(data.actual.map((a) => a.net_position_mw)).toEqual([100, 150, 200, 250]);
   });
+
+  it('honours a registered net-position model selection strictly', async () => {
+    // The fixture has Chronos V010 but no V014 rows. A forwarded V014 pin must
+    // therefore be empty, not silently render V010 under the requested label.
+    const { status, body } = await get(`BE?${WINDOW_QS}&model=xgboost-V014`);
+    expect(status).toBe(200);
+    const data = body.data as { forecast: unknown[]; meta: Record<string, unknown> };
+    expect(data.forecast).toEqual([]);
+    expect(data.meta.model_name).toBeNull();
+  });
 });
 
 describe('GET /api/net-position/:countryCode — a zone that stopped publishing', () => {

@@ -443,6 +443,8 @@ export async function fetchNetPosition(params: {
   country: string;
   start: string;
   end: string;
+  /** Registered net-position model id; absent lets the server use production. */
+  model?: string;
 }): Promise<NetPositionResponse> {
   const { country, ...query } = params;
   const endpoint = `/net-position/${country}`;
