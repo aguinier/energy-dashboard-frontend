@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useCrossCountryMetrics } from '@/hooks/useDashboardData';
 import { ComparisonFilterBar } from '@/components/comparison/ComparisonFilterBar';
+import { ForecastPortfolio } from '@/components/comparison/ForecastPortfolio';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Grid3X3, Map, Trophy } from 'lucide-react';
 
@@ -40,16 +41,18 @@ export default function ComparisonView() {
             ← Map
           </button>
           <span className="text-meta text-ink-faint">/</span>
-          <span className="text-meta text-ink-dim">Cross-country comparison</span>
+          <span className="text-meta text-ink-dim">Forecast quality</span>
         </div>
 
         <h1 className="m-0 mb-6 text-display font-medium">
-          Cross-country comparison
+          Forecast quality
         </h1>
 
-        <div className="space-y-4">
-          <ComparisonFilterBar />
+        <p className="-mt-3 mb-6 max-w-3xl text-sm text-ink-dim">
+          Review forecast-versus-actual quality across the portfolio, then select a country in the detail views to drill in.
+        </p>
 
+        <div className="space-y-4">
           {isLoading && (
             <div className="flex h-64 items-center justify-center">
               <div className="flex flex-col items-center gap-4">
@@ -68,21 +71,24 @@ export default function ComparisonView() {
           )}
 
           {data && !isLoading && (
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList>
-                <TabsTrigger value="heatmap" className="gap-1.5">
-                  <Grid3X3 className="h-3.5 w-3.5" />
-                  Heatmap
-                </TabsTrigger>
-                <TabsTrigger value="map" className="gap-1.5">
-                  <Map className="h-3.5 w-3.5" />
-                  Map
-                </TabsTrigger>
-                <TabsTrigger value="leaderboard" className="gap-1.5">
-                  <Trophy className="h-3.5 w-3.5" />
-                  Leaderboard
-                </TabsTrigger>
-              </TabsList>
+            <>
+              <ForecastPortfolio data={data} />
+              <ComparisonFilterBar />
+              <Tabs value={activeTab} onValueChange={setActiveTab}>
+                <TabsList>
+                  <TabsTrigger value="heatmap" className="gap-1.5">
+                    <Grid3X3 className="h-3.5 w-3.5" />
+                    Heatmap
+                  </TabsTrigger>
+                  <TabsTrigger value="map" className="gap-1.5">
+                    <Map className="h-3.5 w-3.5" />
+                    Map
+                  </TabsTrigger>
+                  <TabsTrigger value="leaderboard" className="gap-1.5">
+                    <Trophy className="h-3.5 w-3.5" />
+                    Leaderboard
+                  </TabsTrigger>
+                </TabsList>
 
               <TabsContent value="heatmap">
                 <Suspense fallback={<TabSkeleton />}>
@@ -101,7 +107,8 @@ export default function ComparisonView() {
                   <ComparisonLeaderboard data={data} />
                 </Suspense>
               </TabsContent>
-            </Tabs>
+              </Tabs>
+            </>
           )}
         </div>
       </div>

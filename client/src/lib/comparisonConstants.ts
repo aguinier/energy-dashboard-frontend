@@ -8,6 +8,9 @@ export const FORECAST_TYPE_CONFIG: Record<string, { label: string; shortLabel: s
   wind_offshore: { label: 'Wind Offshore',  shortLabel: 'W.Off', unit: 'MW' },
   hydro_total:   { label: 'Hydro Total',    shortLabel: 'Hydro', unit: 'MW' },
   biomass:       { label: 'Biomass',        shortLabel: 'Bio',   unit: 'MW' },
+  // Net position has a country-level forecast view, but the cross-country
+  // accuracy endpoint does not currently return paired metrics for it.
+  net_position:  { label: 'Net position',   shortLabel: 'Net pos.', unit: 'MW' },
 };
 
 // Canonical ordering
@@ -15,6 +18,11 @@ export const FORECAST_TYPE_ORDER = [
   'load', 'price', 'renewable', 'solar',
   'wind_onshore', 'wind_offshore', 'hydro_total', 'biomass',
 ] as const;
+
+// The portfolio also names forecast types supported elsewhere in the product.
+// Keeping net position out of FORECAST_TYPE_ORDER is deliberate: that order
+// drives the cross-country controls, whose API has no net-position metrics.
+export const PORTFOLIO_FORECAST_TYPE_ORDER = [...FORECAST_TYPE_ORDER, 'net_position'] as const;
 
 export function sortForecastTypes(types: string[]): string[] {
   return [...types].sort((a, b) => {

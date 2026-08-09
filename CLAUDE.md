@@ -43,7 +43,7 @@ energy-dashboard-frontend/
 │       ├── views/                    # Top-level routed views
 │       │   ├── MapView.tsx               # Landing page — Europe choropleth
 │       │   ├── CountryDashboardView.tsx  # Per-country tabs (price/load/generation/net position/forecast accuracy)
-│       │   └── ComparisonView.tsx        # Cross-country accuracy heatmap/map/leaderboard
+│       │   └── ComparisonView.tsx        # Forecast-quality portfolio plus cross-country heatmap/map/leaderboard
 │       ├── components/
 │       │   ├── charts/               # Recharts-based primitives, shared across tabs
 │       │   │   ├── AbleLineChart.tsx     # Line + forecast overlay (load, price, net position)
@@ -161,7 +161,7 @@ it at `http://localhost:3001`) and run the local server against
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
 - **`CountryDashboardView`** — five tabs per country: Price, Load, Generation, Net position, Forecast accuracy.
-- **`ComparisonView`** — cross-country accuracy heatmap / map / leaderboard, filtered by forecast type and metric.
+- **`ComparisonView`** — forecast-quality portfolio (all supported variables, including truthful unavailable states), plus cross-country heatmap / map / leaderboard filtered by forecast type and metric (`client/src/components/comparison/ForecastPortfolio.tsx`).
 
 ### 2. Forecast model selection
 
