@@ -313,6 +313,60 @@ Each tab is self-contained: a React Query hook (`useLoadChartData`,
 adapter — `chartAdapters.ts` for the line charts, `dashboard/generationSeries.ts`
 for the stacked mix — which feeds an `Able*` chart primitive.
 
+**A stored forecast for a past hour is drawn, not truncated at `now`**
+(ABL-92). `AbleLineChart` used to start the dashed forecast path at the now
+marker unless the caller passed `overlay`, and `LoadTab`/`PriceTab`/
+`NetPositionTab` all pass nothing. Measured against the replica 2026-08-09,
+FR/`load` over a 7d window is served **204** forecast points of which **168 are
+past-dated**, so 82% of the series was discarded at draw time. With FR's actuals
+running 11.7h behind, that left a band carrying *neither* series — the forecast
+resumed at 44.5 GW where the actual had ended near 36.5 GW and the two never
+touched, so forecast-vs-realized could not be read off the chart at all.
+
+Nothing upstream was at fault, which is worth knowing before re-diagnosing this
+class of report as a window or query bug: the hook already requests window-start
+→ max(window-end, now+48h) (`getMLForecastDateRange`,
+`useDashboardData.ts:319`), `queryForecasts` (`forecastService.ts:40`) has no
+future-only bound, and `buildSeriesGrid` (`chartAdapters.ts:33`) bins a
+past-dated point like any other. It was dropped at the last step, when the path
+was built.
+
+Two properties now hold, and `components/charts/AbleLineChart.test.tsx` pins
+both by rendering the real SVG and reading the path geometry back:
+
+- **Both series draw wherever they hold a value, and neither is truncated at
+  now** (`AbleLineChart.tsx:233`). Overlapping the actuals *is* the feature —
+  it is the only place on the dashboard where a forecast can be read against
+  what happened. `overlay` survives but now means only "suppress the now
+  marker" (future shading, rule, pill, trailing-gap label) for a chart that is
+  entirely historical; it no longer decides which forecast points exist.
+- **A gap the series never filled stays a gap.** The path builder drops empty
+  slots and joins the rest into one stroke, which would draw a skipped model run
+  as a smooth dashed line across hours nothing was published for.
+  `lib/seriesSegments.ts`'s `drawableRuns` (`seriesSegments.ts:47`) breaks the
+  stroke wherever two consecutive present points sit further apart than **1.5x
+  the series' own median spacing**. The step is measured rather than assumed
+  because the grid is always hourly while the data is not: `30d` fetches
+  **daily** granularity (`getGranularityForPreset`, `useDashboardData.ts:155`),
+  so 23 of every 24 slots are legitimately empty and a "break on any empty slot"
+  rule would render that window as ~30 disconnected dots. The 1.5x is tolerance
+  for a DST-length day (23 or 25 slots, where no sample is missing at all), not
+  a judgement about how large a hole may be bridged — a genuinely missing sample
+  is >= 2x the step and breaks under any factor below 2.
+
+Measured on the replica 2026-08-09, `load` forecast coverage over 30 days is
+hole-free for **all 24** countries that have any, so the segmentation changes
+nothing on today's data. It is what keeps a future missed run from being drawn
+as a forecast that was never made.
+
+The forecast and the actuals are on the same clock, and that was checked rather
+than assumed — both endpoints return the same `T`-separated, offset-free form,
+so V8 parses both as local and neither is shifted relative to the other.
+Cross-correlating FR/`load` over the 7d window (2026-08-09, local server on the
+replica), r peaks at **lag 0** (0.795) and MAE is minimised there (2,439 MW,
+5.67% MAPE), falling off symmetrically to r=0.73 at ±1h. The visible divergence
+between the two lines is xgboost's real error, not a misalignment.
+
 - **`LoadTab`** — `AbleLineChart` (actual + one dashed forecast series, ml or
   TSO per the picker) and an `AblePriceHeatmap` of load by hour x day.
 
@@ -657,7 +711,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   Known gap, filed separately: with both series withheld, GR's card is now
   entirely an empty state — which is correct, but it means the preset button
   says "30d" beside a card with no axis at all. `AbleLineChart`'s day-marker
-  derivation (`AbleLineChart.tsx:241`) was the reason the pre-ABL-35 24-hour
+  derivation (`AbleLineChart.tsx:271`) was the reason the pre-ABL-35 24-hour
   version carried no dates either.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
@@ -1330,7 +1384,7 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-08: **436 client tests / 32 files**, **406 server tests /
+Green as of 2026-08-09: **453 client tests / 34 files**, **406 server tests /
 26 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
@@ -1354,7 +1408,9 @@ one per side of the day-ahead window; ABL-60 added
 merged five branches that had been closed but never merged, which is where
 `lib/readingFreshness.test.ts` + `lib/forecastGap.test.ts` client-side and
 `docs/claudeMdCitations.test.ts` + `utils/timestamp.test.ts`'s `toIsoUtc` cases
-server-side actually arrived, and added `release/unmergedWork.test.ts`.)
+server-side actually arrived, and added `release/unmergedWork.test.ts`; ABL-92
+added `lib/seriesSegments.test.ts` and `components/charts/AbleLineChart.test.tsx`
+client-side and touched no server file.)
 
 ### Before you mark an issue `done`
 
@@ -1391,7 +1447,7 @@ Two conventions, and they are for different layers.
 `server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
-`lib/readingFreshness.ts`, `lib/forecastGap.ts`,
+`lib/readingFreshness.ts`, `lib/forecastGap.ts`, `lib/seriesSegments.ts`,
 `server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`.
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
@@ -1801,6 +1857,19 @@ interface TSOForecastAccuracyMetrics {
 - This is why window predicates go through `rangeClause`/`rangeArgs` rather
   than wrapping the column in `REPLACE`: see "Timestamp storage: two separators
   in one column".
+
+**The forecast line only starts at the `now` marker:**
+- Fixed under ABL-92 — if you see it again, the regression is in the path
+  builder, not upstream. Check `AbleLineChart.tsx:233` (`forecastPath`) before
+  the hook or the query: the server serves past-dated targets, and measured on
+  2026-08-09 FR/`load` over 7d is 204 points of which 168 are past-dated.
+- The tell that it is this and not missing data: the gap runs from the last
+  actual to `now` exactly, and the forecast resumes at a value that does not
+  join the actual. `components/charts/AbleLineChart.test.tsx` asserts the
+  rendered path starts at the chart's left edge rather than at the now marker.
+- Do not "fix" it by extending the actual line to now or by back-casting the
+  forecast. The gap between the last actual and now is real; `trailingGapLabel`
+  is what names it.
 
 **A series is short by exactly one day, at the end of the window:**
 - Almost certainly a hand-rolled timestamp bound instead of
