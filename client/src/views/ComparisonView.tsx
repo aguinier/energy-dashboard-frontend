@@ -2,7 +2,7 @@ import { lazy, Suspense, useState } from 'react';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useCrossCountryMetrics } from '@/hooks/useDashboardData';
 import { ComparisonFilterBar } from '@/components/comparison/ComparisonFilterBar';
-import { summarizePortfolio } from '@/components/comparison/portfolioSummary';
+import { buildPortfolioRows } from '@/components/comparison/portfolioSummary';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Grid3X3, Map, Trophy } from 'lucide-react';
 
@@ -26,7 +26,7 @@ function TabSkeleton() {
 }
 
 export default function ComparisonView() {
-  const { goToMap, comparisonMetric, comparisonTimeRange } = useDashboardStore();
+  const { goToMap } = useDashboardStore();
   const { data, isLoading, isError } = useCrossCountryMetrics();
   const [activeTab, setActiveTab] = useState('heatmap');
 
@@ -74,7 +74,7 @@ export default function ComparisonView() {
 
           {data && !isLoading && (
             <>
-              <PortfolioSummary data={data} metric={comparisonMetric} timeRange={comparisonTimeRange} />
+              <PortfolioSummary data={data} />
               <Tabs value={activeTab} onValueChange={setActiveTab}>
               <TabsList>
                 <TabsTrigger value="heatmap" className="gap-1.5">
@@ -117,31 +117,38 @@ export default function ComparisonView() {
   );
 }
 
-function PortfolioSummary({ data, metric, timeRange }: {
-  data: Parameters<typeof summarizePortfolio>[0];
-  metric: Parameters<typeof summarizePortfolio>[1];
-  timeRange: '7d' | '30d' | '90d';
-}) {
-  const summary = summarizePortfolio(data, metric);
-  const metricLabel = metric.toUpperCase();
-  const facts = [
-    { label: 'Countries measured', value: summary.countries },
-    { label: 'Forecast types measured', value: summary.forecastTypes },
-    { label: `${metricLabel} series measured`, value: summary.measuredSeries },
-    { label: 'Paired observations returned', value: summary.pairedObservations.toLocaleString() },
-  ];
+function PortfolioSummary({ data }: { data: Parameters<typeof buildPortfolioRows>[0] }) {
+  const rows = buildPortfolioRows(data);
 
   return (
-    <section className="grid grid-cols-2 overflow-hidden rounded-xl border border-border bg-card sm:grid-cols-4" aria-label="Portfolio coverage">
-      {facts.map((fact, index) => (
-        <div key={fact.label} className={`px-4 py-3 ${index % 2 === 0 ? 'border-r border-border' : ''} ${index < 2 ? 'border-b border-border sm:border-b-0' : ''} ${index < 3 ? 'sm:border-r sm:border-border' : ''}`}>
-          <p className="font-mono-num text-label uppercase text-ink-muted">{fact.label}</p>
-          <p className="mt-1 font-mono-num text-title font-medium text-foreground">{fact.value}</p>
-        </div>
-      ))}
-      <p className="col-span-2 border-t border-border px-4 py-2 text-micro text-ink-muted sm:col-span-4">
-        Coverage for {metricLabel} over the last {timeRange}. Series without a measurable {metricLabel} are excluded; this is not an averaged portfolio error.
+    <section className="rounded-xl border border-border bg-card p-4" aria-label="Forecast performance by variable">
+      <h2 className="m-0 text-body font-medium text-foreground">Forecast performance by variable</h2>
+      <p className="mt-1 text-micro text-ink-muted">
+        WAPE compares stored forecasts with actuals. Ranges are across countries for one variable; they are not a cross-variable score.
       </p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {rows.map((row) => (
+          <div key={row.type} className="rounded-lg border border-border bg-background px-3 py-2.5">
+            <p className="m-0 text-meta font-medium text-foreground">{row.label}</p>
+            {row.coverage === 'measured' ? (
+              <>
+                <p className="mt-1 font-mono-num text-title text-foreground">{row.minWape!.toFixed(1)}–{row.maxWape!.toFixed(1)}%</p>
+                <p className="text-micro text-ink-muted">WAPE across {row.measuredCountries} {row.measuredCountries === 1 ? 'country' : 'countries'}</p>
+              </>
+            ) : row.coverage === 'unmeasurable' ? (
+              <>
+                <p className="mt-1 text-meta font-medium text-ink-dim">WAPE not measurable</p>
+                <p className="mt-1 text-micro text-ink-muted">{row.pairedCountries} paired {row.pairedCountries === 1 ? 'country has' : 'countries have'} zero total actuals.</p>
+              </>
+            ) : (
+              <>
+                <p className="mt-1 text-meta font-medium text-ink-dim">No cross-country measure</p>
+                <p className="mt-1 text-micro text-ink-muted">No paired forecast-versus-actual measure is returned for this variable.</p>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
