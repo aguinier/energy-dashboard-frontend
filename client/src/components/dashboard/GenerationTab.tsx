@@ -10,7 +10,8 @@ import {
   GENERATION_GROUP_COLORS,
   GENERATION_GROUP_LABELS,
 } from './generationSeries';
-import { useGenerationMix, useGenerationSeries } from '@/hooks/useDashboardData';
+import { getDateRangeForPreset, useGenerationMix, useGenerationSeries } from '@/hooks/useDashboardData';
+import { useDashboardStore } from '@/store/dashboardStore';
 
 // Which arcs AbleDonut colors green - cosmetic only. The printed "% RENEWABLE"
 // figure comes from the server (mix.renewable_percentage, see below), not
@@ -31,10 +32,16 @@ export function GenerationTab() {
   // nuclear or fossil band at all.
   const { data: seriesData, isLoading, isError } = useGenerationSeries();
   const { data: mix, isLoading: mixLoading, isError: mixError } = useGenerationMix();
+  const timePreset = useDashboardStore((s) => s.timePreset);
+  const timeOffset = useDashboardStore((s) => s.timeOffset);
+  const todayWindow = useMemo(
+    () => (timePreset === 'today' ? getDateRangeForPreset(timePreset, timeOffset) : undefined),
+    [timePreset, timeOffset],
+  );
 
   const { points, groups, nowIndex, negativeGroups } = useMemo(
-    () => buildGenerationMixSeries(seriesData),
-    [seriesData],
+    () => buildGenerationMixSeries(seriesData, new Date(), todayWindow),
+    [seriesData, todayWindow],
   );
   const negativeNote = describeNegativeGroups(negativeGroups);
 

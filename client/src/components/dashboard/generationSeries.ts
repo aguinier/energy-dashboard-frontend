@@ -146,11 +146,18 @@ const EMPTY_SERIES: GenerationMixSeries = {
 export function buildGenerationMixSeries(
   data: GenerationSeriesPoint[] | undefined,
   now: Date = new Date(),
+  /**
+   * Bounds the rendered hourly canvas independently of the API response. This
+   * matters for Today: generation data stops at the latest measured hour, but
+   * the graph must still represent the full Brussels market day (00:00-23:00)
+   * rather than ending wherever the last measurement happened to arrive.
+   */
+  window?: { start: Date; end: Date },
 ): GenerationMixSeries {
   if (!data || data.length === 0) return EMPTY_SERIES;
 
   const nowMs = now.getTime();
-  const points: GenerationMixPoint[] = data
+  const sourcePoints: GenerationMixPoint[] = data
     .filter((d) => d.timestamp)
     .map((d) => {
       const values = {} as Record<GenerationGroupKey, number | null>;
@@ -164,7 +171,33 @@ export function buildGenerationMixSeries(
       return { ts: d.timestamp, future: new Date(d.timestamp).getTime() > nowMs, values };
     });
 
-  if (points.length === 0) return EMPTY_SERIES;
+  if (sourcePoints.length === 0) return EMPTY_SERIES;
+
+  // The endpoint normally returns only measurements that exist. For a Today
+  // graph, lay those measurements into an explicit hourly grid so missing
+  // future rows do not shorten the x-axis and any accidentally over-fetched
+  // row cannot extend it into tomorrow.
+  const points: GenerationMixPoint[] = window
+    ? (() => {
+        const HOUR_MS = 60 * 60 * 1000;
+        const hour = (date: Date) => Math.floor(date.getTime() / HOUR_MS) * HOUR_MS;
+        const start = hour(window.start);
+        const end = hour(window.end);
+        const byHour = new Map(sourcePoints.map((p) => [hour(new Date(p.ts)), p]));
+        const emptyValues = () => Object.fromEntries(
+          GENERATION_GROUP_ORDER.map((key) => [key, null]),
+        ) as Record<GenerationGroupKey, number | null>;
+        const grid: GenerationMixPoint[] = [];
+        for (let time = start; time <= end; time += HOUR_MS) {
+          grid.push(byHour.get(time) ?? {
+            ts: new Date(time).toISOString(),
+            future: time > nowMs,
+            values: emptyValues(),
+          });
+        }
+        return grid;
+      })()
+    : sourcePoints;
 
   const groups = GENERATION_GROUP_ORDER.filter((key) =>
     points.some((p) => p.values[key] != null),

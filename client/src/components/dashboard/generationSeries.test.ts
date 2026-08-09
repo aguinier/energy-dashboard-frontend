@@ -146,6 +146,28 @@ describe('buildGenerationMixSeries', () => {
     expect(series.nowIndex).toBe(1);
   });
 
+  it('renders every hourly bucket in a Today window without admitting tomorrow', () => {
+    const series = buildGenerationMixSeries(
+      [
+        point('2026-07-01T00:00:00Z', { solar: 10 }),
+        point('2026-07-01T12:00:00Z', { solar: 20 }),
+        point('2026-07-02T00:00:00Z', { solar: 99 }),
+      ],
+      new Date('2026-07-01T12:30:00Z'),
+      {
+        start: new Date('2026-07-01T00:00:00Z'),
+        end: new Date('2026-07-01T23:59:59.999Z'),
+      },
+    );
+
+    expect(series.points).toHaveLength(24);
+    expect(series.points[0].ts).toBe('2026-07-01T00:00:00Z');
+    expect(series.points[23].ts).toBe('2026-07-01T23:00:00.000Z');
+    expect(series.points[12].values.solar).toBe(20);
+    expect(series.points[13].values.solar).toBeNull();
+    expect(series.points.some((p) => p.values.solar === 99)).toBe(false);
+  });
+
   it('is empty for no data', () => {
     expect(buildGenerationMixSeries(undefined, NOW).points).toEqual([]);
     expect(buildGenerationMixSeries([], NOW).groups).toEqual([]);
