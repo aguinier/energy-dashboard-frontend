@@ -294,8 +294,8 @@ does not say so *and comes in two shapes* — measured 2026-08-07, `energy_load`
 holds 2,485,282 space-separated rows and 279,880 `'T'`-separated ones, and every
 GB/UA row is the `'T'` form, which a browser parses as **local** time. The
 server now stamps the `Z` (`toIsoUtc`, `server/src/utils/timestamp.ts`) and the
-client parser accepts both, because acceptance is routinely proxied at a
-not-yet-redeployed prod (`API_PROXY_TARGET`). And an absent/unparseable
+client parser accepts both, because acceptance routinely proxies a built image
+that may predate the working-tree server change (`API_PROXY_TARGET`). And an absent/unparseable
 timestamp **withholds** rather than assuming freshness — the failure being fixed
 is a number presented as current on no evidence.
 
@@ -1784,16 +1784,14 @@ interface TSOForecastAccuracyMetrics {
   An unmatched `/api` route from our Express app is a JSON
   `{ success, error, code }` envelope with no `Server` header; that response
   contract is pinned in `server/src/app.test.ts:117`.
-- Diagnose it in order: run `curl -sI http://localhost:3001/api/health` and read
-  `Server` and `Content-Type`; run `docker ps` to confirm
-  `energy-dashboard-frontend` is up and see which port it publishes; then
-  compare `localhost:3001` with
-  `http://192.168.86.237:3001/api/countries`. If the LAN address returns JSON
-  while loopback returns HTML, a listener bound specifically to
-  `127.0.0.1:3001` is winning over the container's wildcard `0.0.0.0:3001`
-  bind: on Windows, a specific-address bind takes precedence over a wildcard
-  bind for traffic to that address.
+- Diagnose the listener collision with the port-owner and Docker checks in
+  [`../WORKFLOWS.md`](../WORKFLOWS.md), **API proxy on CAT**. On CAT, an
+  unrelated service owns loopback `localhost:3001` even while the dashboard
+  container publishes the same port on its LAN address; the specific loopback
+  bind wins for loopback traffic.
 - This is an environment problem, not a repo problem. Do not "fix" it by
-  changing the default proxy target in `client/vite.config.ts`. After editing
-  this file, `cd server && npx vitest run` checks its `file:line` citations via
-  `docs/claudeMdCitations.test.ts`.
+  changing the default proxy target in `client/vite.config.ts`. Keep the
+  environment-specific acceptance target in the gitignored `.env.local` as
+  documented in `WORKFLOWS.md`; use its separate `PORT=3002` procedure for a
+  working-tree server. After editing this file, `cd server && npx vitest run`
+  checks its `file:line` citations via `docs/claudeMdCitations.test.ts`.
