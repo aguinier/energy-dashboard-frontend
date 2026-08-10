@@ -39,9 +39,16 @@ export function buildSeriesGrid<TActual extends { timestamp?: string; date?: str
   forecastAltValue?: (p: TSOLoadForecastDataPoint) => number | null;
   forecastAltMin?: (p: TSOLoadForecastDataPoint) => number | null;
   forecastAltMax?: (p: TSOLoadForecastDataPoint) => number | null;
+  /**
+   * Bounds the rendered hourly grid, independently of any deliberately wider
+   * fetch. For example, price requests include tomorrow's published auction
+   * rows, but a selected "Today" chart must still finish at today's 23:00
+   * bucket rather than stretching its x-axis into tomorrow.
+   */
+  window?: { start: Date; end: Date };
   now?: Date;
 }): { series: AbleSeriesPoint[]; nowIndex: number } {
-  const { actual = [], actualValue, forecast = [], forecastAlt = [], forecastAltValue, forecastAltMin, forecastAltMax } = opts;
+  const { actual = [], actualValue, forecast = [], forecastAlt = [], forecastAltValue, forecastAltMin, forecastAltMax, window } = opts;
   const now = opts.now ?? new Date();
 
   // Find time range
@@ -57,8 +64,8 @@ export function buildSeriesGrid<TActual extends { timestamp?: string; date?: str
     if (p.timestamp) allTs.push(hourKey(p.timestamp));
   }
   if (allTs.length === 0) return { series: [], nowIndex: 0 };
-  const tStart = Math.min(...allTs);
-  const tEnd = Math.max(...allTs);
+  const tStart = window ? hourKey(window.start.toISOString()) : Math.min(...allTs);
+  const tEnd = window ? hourKey(window.end.toISOString()) : Math.max(...allTs);
   const points: AbleSeriesPoint[] = [];
   for (let t = tStart; t <= tEnd; t += HOUR_MS) {
     points.push({ ts: new Date(t).toISOString(), future: t > now.getTime(), value: null, forecast: null });
@@ -110,11 +117,13 @@ export function buildSeriesGrid<TActual extends { timestamp?: string; date?: str
 export function adaptPriceSeries(
   priceData: PriceDataPoint[] | undefined,
   forecast: ForecastDataPoint[] | undefined,
+  window?: { start: Date; end: Date },
 ): { series: AbleSeriesPoint[]; nowIndex: number } {
   return buildSeriesGrid<PriceDataPoint>({
     actual: priceData,
     actualValue: (p) => p.price,
     forecast,
+    window,
   });
 }
 
@@ -123,6 +132,7 @@ export function adaptLoadSeries(opts: {
   loadData: LoadDataPoint[] | undefined;
   mlForecast?: ForecastDataPoint[];
   tsoForecast?: TSOLoadForecastDataPoint[];
+  window?: { start: Date; end: Date };
 }): { series: AbleSeriesPoint[]; nowIndex: number } {
   return buildSeriesGrid<LoadDataPoint>({
     actual: opts.loadData,
@@ -132,6 +142,7 @@ export function adaptLoadSeries(opts: {
     forecastAltValue: (p) => p.forecast_value_mw,
     forecastAltMin: (p) => p.forecast_min_mw,
     forecastAltMax: (p) => p.forecast_max_mw,
+    window: opts.window,
   });
 }
 

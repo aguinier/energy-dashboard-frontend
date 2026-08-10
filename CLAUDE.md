@@ -43,7 +43,7 @@ energy-dashboard-frontend/
 │       ├── views/                    # Top-level routed views
 │       │   ├── MapView.tsx               # Landing page — Europe choropleth
 │       │   ├── CountryDashboardView.tsx  # Per-country tabs plus forecast-quality drill-down
-│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: variable cards, matrix, type-local ranking/map, evidence disclosure
+│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: variable cards, type-local ranking/map, evidence disclosure, matrix
 │       ├── components/
 │       │   ├── charts/               # Recharts-based primitives, shared across tabs
 │       │   │   ├── AbleLineChart.tsx     # Line + forecast overlay (load, price, net position)
@@ -161,7 +161,7 @@ it at `http://localhost:3001`) and run the local server against
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
 - **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:121`).
-- **`ComparisonView`** — the Forecast quality portfolio home: variable-level WAPE cards and a full-width country × forecast-type matrix lead into a type-local country ranking/map and disclosed error evidence (`client/src/views/ComparisonView.tsx:27`).
+- **`ComparisonView`** — the Forecast quality portfolio home: variable-level WAPE cards (`ForecastPortfolio`) lead the page, then a type-local ranking/map for the default `load` type, then disclosed error evidence, then the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:27`).
 
 ### 2. Forecast model selection
 

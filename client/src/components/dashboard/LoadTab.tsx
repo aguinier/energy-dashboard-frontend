@@ -10,6 +10,7 @@ import { useModelSelection } from '@/hooks/useForecastModels';
 import { adaptLoadSeries, buildHeatmapCells } from '@/lib/chartAdapters';
 import { describeForecastGap } from '@/lib/forecastGap';
 import { formatGwAxis } from '@/lib/chartTicks';
+import { getDateRangeForPreset } from '@/hooks/useDashboardData';
 
 export function LoadTab() {
   const {
@@ -26,6 +27,13 @@ export function LoadTab() {
   const country = countries?.find((c) => c.country_code === selectedCountry);
   const countryLabel = country?.country_name ?? selectedCountry;
   const timePreset = useDashboardStore((s) => s.timePreset);
+  const timeOffset = useDashboardStore((s) => s.timeOffset);
+  // The data hooks may fetch forecast rows beyond today. Keep the chart's
+  // canvas to the actual market day when that is the selected window.
+  const todayWindow = useMemo(
+    () => (timePreset === 'today' ? getDateRangeForPreset(timePreset, timeOffset) : undefined),
+    [timePreset, timeOffset],
+  );
 
   // The picker is the single source of truth for the overlay, matching
   // PriceTab and NetPositionTab. The `layers` slice it used to read is dead
@@ -68,8 +76,9 @@ export function LoadTab() {
         loadData,
         mlForecast: useMl ? forecastData : undefined,
         tsoForecast: useTso ? tsoForecastData : undefined,
+        window: todayWindow,
       }),
-    [loadData, forecastData, tsoForecastData, useMl, useTso],
+    [loadData, forecastData, tsoForecastData, useMl, useTso, todayWindow],
   );
 
   const heatmapCells = useMemo(

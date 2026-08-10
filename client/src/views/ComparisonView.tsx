@@ -25,10 +25,10 @@ export default function ComparisonView() {
       {isError && <div className="flex h-64 items-center justify-center"><p className="text-sm text-ink-dim">Failed to load comparison data. The backend API may not be available yet.</p></div>}
       {data && !isLoading && <>
         <ForecastPortfolio data={data} />
-        <section aria-labelledby="matrix-heading"><h2 id="matrix-heading" className="sr-only">Country by forecast type matrix</h2><Suspense fallback={<SectionSkeleton />}><ComparisonHeatmap data={data} /></Suspense></section>
-        <CountryRanking data={data} />
         {comparisonForecastType !== 'all' && <Suspense fallback={<SectionSkeleton />}><ComparisonMap data={data} /></Suspense>}
+        <CountryRanking data={data} />
         <details className="rounded-lg border bg-card px-4 py-3"><summary className="cursor-pointer text-sm font-medium">Evidence and error measures</summary><div className="mt-3">{comparisonForecastType === 'all' ? <p className="text-sm text-ink-dim">Choose a forecast type above to inspect MAE, RMSE, bias, and data-point evidence.</p> : <Suspense fallback={<SectionSkeleton />}><ComparisonLeaderboard data={data} /></Suspense>}</div></details>
+        <section aria-labelledby="matrix-heading"><h2 id="matrix-heading" className="sr-only">Country by forecast type matrix</h2><Suspense fallback={<SectionSkeleton />}><ComparisonHeatmap data={data} /></Suspense></section>
       </>}
     </div>
   </div></div>;
