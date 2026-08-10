@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { adaptNetPositionSeries } from './chartAdapters';
+import { adaptNetPositionSeries, buildSeriesGrid } from './chartAdapters';
 import type { NetPositionResponse } from '@/types';
 
 const NOW = new Date('2026-07-28T10:00:00Z');
@@ -24,6 +24,31 @@ function forecastPoint(
     horizon_hours,
   };
 }
+
+describe('buildSeriesGrid', () => {
+  it('keeps a selected Brussels market day through its final hour, without plotting preloaded tomorrow rows', () => {
+    const { series } = buildSeriesGrid({
+      actual: [
+        { timestamp: '2026-08-04T22:00:00.000Z', price: 100 }, // 00:00 CEST
+        { timestamp: '2026-08-05T21:00:00.000Z', price: 110 }, // 23:00 CEST
+        { timestamp: '2026-08-05T22:00:00.000Z', price: 120 }, // tomorrow
+      ],
+      actualValue: (point) => point.price,
+      forecast: [],
+      window: {
+        start: new Date('2026-08-04T22:00:00.000Z'),
+        end: new Date('2026-08-05T21:59:59.999Z'),
+      },
+      now: NOW,
+    });
+
+    expect(series).toHaveLength(24);
+    expect(series[0].ts).toBe('2026-08-04T22:00:00.000Z');
+    expect(series.at(-1)?.ts).toBe('2026-08-05T21:00:00.000Z');
+    expect(series.at(-1)?.value).toBe(110);
+    expect(series.some((point) => point.value === 120)).toBe(false);
+  });
+});
 
 describe('adaptNetPositionSeries', () => {
   it('tags each forecast point with the day label of the vintage that produced it', () => {

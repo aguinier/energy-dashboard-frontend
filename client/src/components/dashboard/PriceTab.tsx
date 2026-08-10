@@ -9,6 +9,7 @@ import { useModelSelection } from '@/hooks/useForecastModels';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { adaptPriceSeries, buildHeatmapCells } from '@/lib/chartAdapters';
 import { describeForecastGap } from '@/lib/forecastGap';
+import { getDateRangeForPreset } from '@/hooks/useDashboardData';
 
 export function PriceTab() {
   const { priceData, forecastData, isLoading, isLoadingForecast, isError } = usePriceChartData();
@@ -17,10 +18,17 @@ export function PriceTab() {
   const country = countries?.find((c) => c.country_code === selectedCountry);
   const countryLabel = country?.country_name ?? selectedCountry;
   const timePreset = useDashboardStore((s) => s.timePreset);
+  const timeOffset = useDashboardStore((s) => s.timeOffset);
+  // Price fetches intentionally include tomorrow's day-ahead auction rows;
+  // selecting Today must not let those rows expand today's graph.
+  const todayWindow = useMemo(
+    () => (timePreset === 'today' ? getDateRangeForPreset(timePreset, timeOffset) : undefined),
+    [timePreset, timeOffset],
+  );
   const { selected, hidden, requestModelId } = useModelSelection('price');
   const { series, nowIndex } = useMemo(
-    () => adaptPriceSeries(priceData, forecastData),
-    [priceData, forecastData],
+    () => adaptPriceSeries(priceData, forecastData, todayWindow),
+    [priceData, forecastData, todayWindow],
   );
   const hasForecast = useMemo(() => series.some((p) => p.forecast != null), [series]);
 
