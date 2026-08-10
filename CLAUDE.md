@@ -43,7 +43,7 @@ energy-dashboard-frontend/
 │       ├── views/                    # Top-level routed views
 │       │   ├── MapView.tsx               # Landing page — Europe choropleth
 │       │   ├── CountryDashboardView.tsx  # Per-country tabs plus forecast-quality drill-down
-│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: variable cards, type-local ranking/map, evidence disclosure, matrix
+│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: type-local ranking/map, evidence disclosure, matrix
 │       ├── components/
 │       │   ├── charts/               # Recharts-based primitives, shared across tabs
 │       │   │   ├── AbleLineChart.tsx     # Line + forecast overlay (load, price, net position)
@@ -162,7 +162,7 @@ duplicating it here.
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
 - **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:121`).
-- **`ComparisonView`** — the Forecast quality portfolio home: variable-level WAPE cards (`ForecastPortfolio`) lead the page, then a type-local ranking/map for the default `load` type, then disclosed error evidence, then the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:27`).
+- **`ComparisonView`** — the Forecast quality portfolio home: a type-local ranking/map for the default `load` type leads the page, then disclosed error evidence, then the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:29`). (The portfolio used to lead with a "Forecast performance by variable" card grid, `ForecastPortfolio`/`portfolioRows.ts` — removed under ABL-166 at the CEO's request; the rest of the page, its nav entry, and the per-country `ForecastTab` were untouched.)
 
 ### 2. Forecast model selection
 
@@ -1273,9 +1273,14 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-10: **452 client tests / 37 files**, **410 server tests /
+Green as of 2026-08-11: **449 client tests / 36 files**, **411 server tests /
 26 files**, clean typecheck. Fewer passing than that means something broke.
-(ABL-156 merged ABL-146's generation-mix x-axis fix and ABL-151's fourth
+(ABL-166 removed `ForecastPortfolio` and its `portfolioRows.ts` helper — the
+"Forecast performance by variable" card grid the CEO asked to drop from the
+Forecast quality portfolio page, leaving the rest of that page, its nav entry,
+and the per-country `ForecastTab` in place — which is where the client figure
+dropped by 3 tests and 1 file, from 452/37.
+ABL-156 merged ABL-146's generation-mix x-axis fix and ABL-151's fourth
 freshness verdict — both landed done but stranded on branches misleadingly
 named for other issues (ABL-101 and ABL-149, respectively, whose own fixes had
 already shipped separately) — which is where the client figure picked up 3
@@ -1285,7 +1290,10 @@ server figure here is the pre-merge author's own verification, not a rerun in
 this checkout: a pre-existing `better-sqlite3` native-module ABI mismatch
 blocked `cd server && npx vitest run` in this shared workstation checkout at
 merge time, confirmed identical on unmodified `main` before either merge, so
-it predates and is unrelated to both changes.
+it predates and is unrelated to both changes. The 411 above is measured fresh
+in this checkout, not inherited: merging the ABL-101 and ABL-149 branches
+themselves on top of ABL-156's cherry-picked fixes (`3c48561`, `0116d60`)
+added one more server case beyond the 410 ABL-156 reported.
 ABL-153 reconciled `main` and `origin/main` after an 11-vs-6-commit
 divergence and landed ABL-150's cross-country-metrics fix on top, which is
 where the client figure picked up `ForecastPortfolio`/`portfolioRows.test.ts`
