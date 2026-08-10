@@ -42,8 +42,8 @@ energy-dashboard-frontend/
 │   └── src/
 │       ├── views/                    # Top-level routed views
 │       │   ├── MapView.tsx               # Landing page — Europe choropleth
-│       │   ├── CountryDashboardView.tsx  # Per-country tabs (price/load/generation/net position/forecast accuracy)
-│       │   └── ComparisonView.tsx        # Cross-country accuracy heatmap/map/leaderboard
+│       │   ├── CountryDashboardView.tsx  # Per-country tabs plus forecast-quality drill-down
+│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: matrix, type-local ranking/map, evidence disclosure
 │       ├── components/
 │       │   ├── charts/               # Recharts-based primitives, shared across tabs
 │       │   │   ├── AbleLineChart.tsx     # Line + forecast overlay (load, price, net position)
@@ -56,7 +56,7 @@ energy-dashboard-frontend/
 │       │   ├── dashboard/            # Country-view composition
 │       │   │   ├── PriceTab.tsx, LoadTab.tsx, GenerationTab.tsx,
 │       │   │   │   NetPositionTab.tsx, ForecastTab.tsx  # One file per tab
-│       │   │   ├── AbleCard.tsx          # Card shell all five tabs wrap their charts in
+│       │   │   ├── AbleCard.tsx          # Card shell dashboard chart compositions wrap their charts in
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
 │       │   │   ├── ForecastGapNotice.tsx # "<model> has no forecast here" + clear-the-pin button
 │       │   │   ├── TimePicker.tsx        # categorised presets + window nav
@@ -160,8 +160,8 @@ it at `http://localhost:3001`) and run the local server against
 
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
-- **`CountryDashboardView`** — five tabs per country: Price, Load, Generation, Net position, Forecast accuracy.
-- **`ComparisonView`** — cross-country accuracy heatmap / map / leaderboard, filtered by forecast type and metric.
+- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:121`).
+- **`ComparisonView`** — the Forecast quality portfolio home: its full-width country × forecast-type matrix comes first; choosing one type reveals its type-local country ranking and map, while detailed error evidence stays disclosed (`client/src/views/ComparisonView.tsx:26`).
 
 ### 2. Forecast model selection
 

@@ -23,7 +23,7 @@ export function AbleHeader() {
 
   const navItems: { key: 'map' | 'compare'; label: string; onClick: () => void }[] = [
     { key: 'map', label: 'Map', onClick: goToMap },
-    { key: 'compare', label: 'Compare', onClick: goToComparison },
+    { key: 'compare', label: 'Forecast quality', onClick: goToComparison },
   ];
 
   const isActive = (k: string) =>

@@ -56,7 +56,7 @@ const LOCAL_ZONE_LABEL = (() => {
 const TABS_WITH_MODEL_PICKER = new Set(['price', 'load', 'net-position']);
 
 export function CountryDashboardView() {
-  const { selectedCountry, activeChartTab, setActiveChartTab } = useDashboardStore();
+  const { selectedCountry, activeChartTab, setActiveChartTab, goToComparison } = useDashboardStore();
   const { data: countries } = useCountries();
 
   const country = countries?.find((c) => c.country_code === selectedCountry);
@@ -108,13 +108,24 @@ export function CountryDashboardView() {
               <TabsTrigger value="load">Load</TabsTrigger>
               <TabsTrigger value="renewables">Generation</TabsTrigger>
               <TabsTrigger value="net-position">Net position</TabsTrigger>
-              <TabsTrigger value="analytics">Forecast accuracy</TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="flex-1" />
           <TimePicker />
           {TABS_WITH_MODEL_PICKER.has(activeChartTab) && <ModelPicker />}
         </div>
+
+        {activeChartTab === 'analytics' && (
+          <div className="mb-3.5 flex items-center justify-between rounded-lg border border-border bg-card px-3 py-2">
+            <div>
+              <p className="text-meta font-medium text-foreground">Forecast quality detail</p>
+              <p className="text-micro text-ink-muted">Measured performance for {country?.country_name ?? selectedCountry}</p>
+            </div>
+            <button onClick={goToComparison} className="cursor-pointer rounded-md border border-border bg-background px-2.5 py-1 text-meta text-ink-dim hover:text-foreground">
+              ← Forecast quality
+            </button>
+          </div>
+        )}
 
         <Tabs value={activeChartTab} onValueChange={setActiveChartTab}>
           <TabsContent value="price">

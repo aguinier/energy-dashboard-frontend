@@ -374,7 +374,7 @@ export function useForecastComparisonSummary() {
  * Uses comparison-specific state (independent from global dashboard time)
  */
 export function useCrossCountryMetrics() {
-  const { comparisonForecastType, comparisonTimeRange } = useDashboardStore();
+  const { comparisonTimeRange } = useDashboardStore();
 
   const end = new Date();
   const daysMap: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90 };
@@ -382,9 +382,8 @@ export function useCrossCountryMetrics() {
   const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
 
   return useQuery({
-    queryKey: ['cross-country', 'metrics', comparisonForecastType, comparisonTimeRange],
+    queryKey: ['cross-country', 'metrics', comparisonTimeRange],
     queryFn: () => fetchCrossCountryMetrics({
-      forecastType: comparisonForecastType === 'all' ? undefined : comparisonForecastType,
       start: start.toISOString(),
       end: end.toISOString(),
     }),
