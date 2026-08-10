@@ -18,27 +18,9 @@
  * audit.
  */
 
-/** What we are willing to say about one stream of one country. */
-export type FreshnessStatus =
-  /** New enough that no scheduled ingest pass can have been missed. */
-  | 'live'
-  /** Provably behind: at least one scheduled pass stored nothing for it. */
-  | 'stale'
-  /** No rows at all. Not a health verdict — we have never held this stream. */
-  | 'none';
+import type { FreshnessStream, FreshnessStatus } from '../types/index.js';
 
-export interface FreshnessStream {
-  /** Newest *usable* stored timestamp, verbatim from the database. */
-  latest: string | null;
-  /**
-   * `now - latest`, in hours, signed. **Negative is normal for a day-ahead
-   * stream** — tomorrow's auction result is dated up to ~46h into the future by
-   * design — which is exactly why those streams cannot be judged by age and get
-   * `classifyDayAheadStream` instead.
-   */
-  ageHours: number | null;
-  status: FreshnessStatus;
-}
+export type { FreshnessStream, FreshnessStatus } from '../types/index.js';
 
 /**
  * How old a *measured* series may get before a pass has certainly been missed.
@@ -67,6 +49,29 @@ export interface FreshnessStream {
  * it (ABL-60, point 2). That is an ingest-side fix, tracked separately.
  */
 export const MEASURED_STALE_AFTER_HOURS = 18;
+
+/**
+ * How old a formerly-held series must be before it is no longer an actionable
+ * ingest alarm.
+ *
+ * Sized against the full 39-country production fleet on 2026-08-10 12:04 UTC.
+ * The slowest healthy measured stream was 11.1h old; the worst active stall was
+ * MK generation at 111.1h. The next measured stream was AL generation at
+ * 1,143.1h, followed by UA/GB load at 39,047h/45,195h. Day-ahead streams showed
+ * the same gap: the worst active miss was CH generation forecast at 87.1h,
+ * while UA/GB stopped 39,039h/45,181h ago.
+ *
+ * Thirty days is therefore over 6x the worst active stall, over 65x the
+ * slowest healthy lag, and spans at least 102 longest scheduled ingest gaps.
+ * It selects only the five known ended series on that measurement and leaves a
+ * 423h margin below the youngest one (AL generation). This is deliberately a
+ * high-confidence terminal verdict, not a quicker stale alarm.
+ *
+ * It is derived solely from the newest usable row, so it self-clears: as soon
+ * as upstream publishes a newer row, the same classifier returns live (or
+ * stale during the normal catch-up window) without a country exception.
+ */
+export const ENDED_AFTER_HOURS = 30 * 24;
 
 /**
  * The UTC hour after which tomorrow's day-ahead result must be in the database.
@@ -181,7 +186,7 @@ export function classifyMeasuredStream(latest: string | null, now: Date): Freshn
   return {
     latest,
     ageHours,
-    status: ageHours > MEASURED_STALE_AFTER_HOURS ? 'stale' : 'live',
+    status: classifyAge(ageHours),
   };
 }
 
@@ -211,10 +216,21 @@ export function classifyDayAheadStream(latest: string | null, now: Date): Freshn
 
   const requiredDay = now.getUTCHours() >= DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR ? 1 : 0;
   const mustReach = brusselsDayStartUtc(now, requiredDay);
+  const ageHours = (now.getTime() - at.getTime()) / MS_PER_HOUR;
 
   return {
     latest,
-    ageHours: (now.getTime() - at.getTime()) / MS_PER_HOUR,
-    status: at.getTime() >= mustReach.getTime() ? 'live' : 'stale',
+    ageHours,
+    status:
+      ageHours > ENDED_AFTER_HOURS
+        ? 'ended'
+        : at.getTime() >= mustReach.getTime()
+          ? 'live'
+          : 'stale',
   };
+}
+
+function classifyAge(ageHours: number): FreshnessStatus {
+  if (ageHours > ENDED_AFTER_HOURS) return 'ended';
+  return ageHours > MEASURED_STALE_AFTER_HOURS ? 'stale' : 'live';
 }

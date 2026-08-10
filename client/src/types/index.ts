@@ -265,6 +265,8 @@ export type FreshnessStatus =
   | 'live'
   /** Provably behind: at least one scheduled pass stored nothing for it. */
   | 'stale'
+  /** Formerly held, but upstream has published nothing across many passes. */
+  | 'ended'
   /** No rows at all. Not a health verdict — we have never held this stream. */
   | 'none';
 

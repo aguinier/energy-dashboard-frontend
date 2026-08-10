@@ -1,6 +1,6 @@
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useDataFreshness } from '@/hooks/useDashboardData';
-import { describeFreshness, type FreshnessTone } from './freshnessPill';
+import { describeFreshness, freshnessPulses, type FreshnessTone } from './freshnessPill';
 
 // Single top bar used on every view — replaces the older MapHeader / CountryHeader pair.
 // Mirrors the structure of the able prototype: triangle logo, "able energy" wordmark,
@@ -127,7 +127,7 @@ function Logo() {
  * red-on-green, the one pair a colour blind viewer cannot separate.
  */
 function Pulse({ tone }: { tone: FreshnessTone }) {
-  if (tone === 'live') {
+  if (freshnessPulses(tone)) {
     return (
       <span className="relative inline-flex w-2 h-2" aria-hidden="true">
         <span
