@@ -421,7 +421,15 @@ function pivotMetrics(
 }
 
 /**
- * Fetch cross-country forecast accuracy metrics for all countries
+ * Fetch cross-country forecast accuracy metrics for all countries.
+ *
+ * Drives ComparisonView's portfolio, fetched unconditionally on every visit.
+ * The 90d comparisonTimeRange is a known-slow cold query (ABL-150 moved it off
+ * Express's event loop, but did not make it fast) — measured against
+ * acceptance 2026-08-10, cold 90d latency reached 24.00s, well past the 15s
+ * global default. ComparisonView already renders a skeleton for the whole
+ * `isLoading` span, so a longer bound here is a longer skeleton, not a new
+ * failure mode (ABL-155).
  */
 export async function fetchCrossCountryMetrics(params?: {
   forecastType?: string;
@@ -430,7 +438,7 @@ export async function fetchCrossCountryMetrics(params?: {
 }): Promise<CrossCountryMetrics> {
   const { data } = await api.get<ApiResponse<Record<string, Record<string, CrossCountryMetricsEntry>>>>(
     '/cross-country/metrics',
-    { params }
+    { params, timeout: LONG_RANGE_TIMEOUT_MS }
   );
   return pivotMetrics(unwrap(data, '/cross-country/metrics'));
 }
