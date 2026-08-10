@@ -147,12 +147,40 @@ container instead, and the built bundle (`npm start`) does not read `server/.env
 **`client/.env.local`'s `API_PROXY_TARGET`** controls where the Vite dev
 server proxies `/api` (`client/vite.config.ts`) — copy `client/.env.example`
 to override it. Unset, it proxies to `http://localhost:3001` (your local
-server). The acceptance/workstation environment instead points it at prod
-(`http://192.168.86.36:3001`) so the client runs without a local database —
-**which means server-side changes are invisible there until prod is
-redeployed.** To exercise a server change, unset `API_PROXY_TARGET` (or point
-it at `http://localhost:3001`) and run the local server against
-`ENERGY_DB_PATH`.
+server). **Acceptance always uses the workstation's daily production replica:**
+leave `API_PROXY_TARGET` unset (or set it to `http://localhost:3001`) and run
+the local server with `ENERGY_DB_PATH=C:/Code/able/data/energy_dashboard.db`.
+Do not point an acceptance environment at production; that bypasses the replica
+and makes local server changes invisible. A direct request to production can be
+useful as an explicitly labelled read-only diagnostic, but it is not acceptance.
+See the approved acceptance design in
+[`../energy-data-gathering/docs/superpowers/specs/2026-07-23-acceptance-env-and-net-position-design.md`](../energy-data-gathering/docs/superpowers/specs/2026-07-23-acceptance-env-and-net-position-design.md)
+and the workstation runbook in [`../WORKFLOWS.md`](../WORKFLOWS.md).
+
+## Deployment
+
+Merging to `main` does **not** deploy: this repository has no CI/CD deployment
+step. Production is the Debian host **QuietlyConfident** (`192.168.86.36`),
+reachable with `ssh clavain@192.168.86.36` and serving the dashboard on port
+`3001`. Its checkout is
+`/home/clavain/energy-dashboard/repos/energy-dashboard-frontend`.
+
+After the reviewed commit is pushed to GitHub, deploy from that host:
+
+```bash
+cd /home/clavain/energy-dashboard/repos/energy-dashboard-frontend
+git pull
+cd docker
+docker compose build
+docker compose up -d --force-recreate
+```
+
+Do not commit code on production. The client and server are built into one image,
+so this deploy updates them together. Do not infer deployed state from git
+ancestry or an issue marked done: ABL-120 found merged work still undeployed.
+Inspect the running container and the served bundle instead. The fuller runbook
+is [`../WORKFLOWS.md`](../WORKFLOWS.md), which is intentionally outside this
+repository.
 
 ## Key Features
 
@@ -1598,9 +1626,10 @@ interface TSOForecastAccuracyMetrics {
   (`config/database.ts:15`) and again if the write handle opens
   (`config/writeDatabase.ts:29`). It does **not** log queries — there is no
   per-query logging to check
-- If acceptance is pointed at prod (`client/.env.local`'s `API_PROXY_TARGET`),
-  a server-side fix won't show up until prod is redeployed — verify against a
-  local server first
+- Acceptance must use the workstation replica through the local API. If a
+  one-off diagnostic points `client/.env.local`'s `API_PROXY_TARGET` at prod,
+  a server-side fix will not show up until prod is redeployed; label that check
+  as production, then restore the local target before acceptance
 - **The workstation replica can be hours behind prod even with a fresh mtime.**
   Measured 2026-08-07 07:10 UTC: the replica's newest `energy_load` row was
   `00:15` (≈7h old) while prod's was `05:45` (≈1.4h). Anything about freshness,
