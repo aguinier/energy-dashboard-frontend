@@ -14,8 +14,6 @@ export function ApiCta() {
     price: 'prices',
     renewables: 'renewables',
     generation: 'renewables',
-    analytics: 'forecasts/load',
-    forecast: 'forecasts/load',
   };
   const resource = tabToResource[activeChartTab] ?? activeChartTab;
 

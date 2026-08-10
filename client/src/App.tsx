@@ -9,7 +9,6 @@ import { shouldRetryQuery } from '@/lib/queryRetry';
 
 const MapView = lazy(() => import('@/views/MapView').then(m => ({ default: m.MapView })));
 const CountryDashboardView = lazy(() => import('@/views/CountryDashboardView').then(m => ({ default: m.CountryDashboardView })));
-const ComparisonView = lazy(() => import('@/views/ComparisonView'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -44,14 +43,6 @@ function AppRouter() {
     return (
       <Suspense fallback={<ViewSkeleton />}>
         <CountryDashboardView />
-      </Suspense>
-    );
-  }
-
-  if (currentView === 'comparison') {
-    return (
-      <Suspense fallback={<ViewSkeleton />}>
-        <ComparisonView />
       </Suspense>
     );
   }
