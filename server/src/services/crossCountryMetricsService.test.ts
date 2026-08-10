@@ -1,12 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { buildFixtureDb, WINDOW } from '../test/fixtureDb.js';
+import { rangeArgs, timestampRange } from '../utils/timestamp.js';
 
-// The module under test imports the shared database connection, which opens
-// a real SQLite file at import time (same pattern as renewableService.test.ts
-// and netPositionService.test.ts). `wape` is a pure function and never
-// touches `db`, so the default export just needs to not exist.
-vi.mock('../config/database.js', () => ({ default: null }));
+const fixtureDb = buildFixtureDb();
+vi.mock('../config/database.js', () => ({ default: fixtureDb }));
+vi.mock('./readQueryWorker.js', () => ({ runReadQueryInWorker: vi.fn() }));
 
-const { wape } = await import('./crossCountryMetricsService.js');
+const { crossCountryMetricsSql, VALID_FORECAST_TYPES, wape } = await import('./crossCountryMetricsService.js');
 
 describe('wape', () => {
   it('is zero for a perfect forecast', () => {
@@ -14,13 +14,12 @@ describe('wape', () => {
   });
 
   it('does not explode on a near-zero actual', () => {
-    const v = wape([{ actual: 0.01, forecast: 5 }, { actual: 100, forecast: 100 }]);
-    expect(v).toBeLessThan(20);
+    const value = wape([{ actual: 0.01, forecast: 5 }, { actual: 100, forecast: 100 }]);
+    expect(value).toBeLessThan(20);
   });
 
   it('does not let negative actuals cancel error', () => {
-    const v = wape([{ actual: -50, forecast: 0 }, { actual: 50, forecast: 0 }]);
-    expect(v).toBe(100);
+    expect(wape([{ actual: -50, forecast: 0 }, { actual: 50, forecast: 0 }])).toBe(100);
   });
 
   it('returns null when the summed magnitude is zero', () => {
@@ -29,5 +28,31 @@ describe('wape', () => {
 
   it('returns null for an empty series', () => {
     expect(wape([])).toBeNull();
+  });
+});
+
+describe('cross-country metrics query plan', () => {
+  it('materializes latest forecast vintages in one forecast-table pass', () => {
+    fixtureDb.exec(`
+      CREATE INDEX idx_forecasts_lookup
+        ON forecasts(country_code, forecast_type, target_timestamp_utc);
+      CREATE INDEX idx_load_country_time
+        ON energy_load(country_code, timestamp_utc);
+      CREATE INDEX idx_price_country_time
+        ON energy_price(country_code, timestamp_utc);
+      CREATE INDEX idx_renewable_country_time
+        ON energy_renewable(country_code, timestamp_utc);
+    `);
+
+    const detail = fixtureDb
+      .prepare(`EXPLAIN QUERY PLAN ${crossCountryMetricsSql(VALID_FORECAST_TYPES)}`)
+      .all(...rangeArgs(timestampRange(WINDOW.start, WINDOW.end)))
+      .map((row) => (row as { detail: string }).detail);
+
+    const forecastPasses = detail.filter((line) => /^(?:SCAN|SEARCH) forecasts USING (?:COVERING )?INDEX/.test(line));
+    expect(forecastPasses, detail.join('\n')).toHaveLength(1);
+    expect(detail.some((line) => line.includes('CORRELATED SCALAR SUBQUERY'))).toBe(false);
+    expect(detail).toContain('MATERIALIZE latest_keys');
+    expect(detail).toContain('MATERIALIZE latest_forecasts');
   });
 });

@@ -4,6 +4,9 @@ import { buildFixtureDb, WINDOW_QS } from '../test/fixtureDb.js';
 const fixtureDb = buildFixtureDb();
 vi.mock('../config/database.js', () => ({ default: fixtureDb }));
 vi.mock('../config/writeDatabase.js', async () => (await import('../test/noWriteDb.js')).forbidWriteDb());
+vi.mock('../services/readQueryWorker.js', () => ({
+  runReadQueryInWorker: async (sql: string, params: unknown[]) => fixtureDb.prepare(sql).all(...params),
+}));
 
 const { startTestApi, clearResponseCache } = await import('../test/apiHarness.js');
 

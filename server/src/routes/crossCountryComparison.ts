@@ -24,7 +24,7 @@ interface MetricsQuery {
 router.get(
   '/metrics',
   cacheMiddleware(TTL.LONG),
-  (req: Request<Record<string, never>, unknown, unknown, MetricsQuery>, res) => {
+  async (req: Request<Record<string, never>, unknown, unknown, MetricsQuery>, res, next) => {
     const { start, end } = req.query;
 
     // Default to last 30 days
@@ -32,7 +32,13 @@ router.get(
     const endDate = end || now.toISOString();
     const startDate = start || new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
-    const data = crossCountryMetricsService.getCrossCountryMetricsAll(startDate, endDate);
+    let data: Awaited<ReturnType<typeof crossCountryMetricsService.getCrossCountryMetricsAllAsync>>;
+    try {
+      data = await crossCountryMetricsService.getCrossCountryMetricsAllAsync(startDate, endDate);
+    } catch (error) {
+      next(error);
+      return;
+    }
 
     // Collect metadata
     const countriesSet = new Set<string>();

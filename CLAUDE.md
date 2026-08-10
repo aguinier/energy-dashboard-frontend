@@ -1115,7 +1115,7 @@ rows matched of 860. Filed as its own ticket; current default windows
 
 **They are not all the same shape, and grepping for one misses the others:**
 
-- `crossCountryMetricsService.ts:125`, `mlForecastService.ts:200` and `:247`
+- `crossCountryMetricsService.ts:122`, `mlForecastService.ts:200` and `:247`
   normalise **only the forecast side**:
   `REPLACE(f.target_timestamp_utc, 'T', ' ') = a.<timestampCol>`.
 - `tsoForecastService.ts:293` has **no normalisation at all** —

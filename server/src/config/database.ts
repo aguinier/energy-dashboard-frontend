@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Use ENERGY_DB_PATH env var if set, otherwise resolve relative to compiled output
-const dbPath = process.env.ENERGY_DB_PATH
+export const dbPath = process.env.ENERGY_DB_PATH
   || '/data/energy_dashboard.db';
 
 // Create a single database connection (readonly for safety)
