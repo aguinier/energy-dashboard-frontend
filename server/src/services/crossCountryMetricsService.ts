@@ -2,6 +2,7 @@ import db from '../config/database.js';
 import { ForecastType } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { loadActualGuard } from './loadQuality.js';
+import { runReadQueryInWorker } from './readQueryWorker.js';
 
 /**
  * Cross-Country Forecast Metrics Service
@@ -12,7 +13,7 @@ import { loadActualGuard } from './loadQuality.js';
  */
 
 // Valid forecast types
-const VALID_FORECAST_TYPES: ForecastType[] = [
+export const VALID_FORECAST_TYPES: ForecastType[] = [
   'load', 'price', 'renewable', 'solar',
   'wind_onshore', 'wind_offshore', 'hydro_total', 'biomass'
 ];
@@ -38,6 +39,16 @@ export interface CountryMetrics {
 }
 
 export type CrossCountryMetricsResult = Record<string, CountryMetrics>;
+
+interface MetricsRow {
+  forecast_type: ForecastType;
+  country_code: string;
+  mae: number | null;
+  wape: number | null;
+  rmse: number | null;
+  bias: number | null;
+  data_points: number;
+}
 
 // A private `normalizeTimestamp` used to shadow the shared one here, keeping
 // the 'T' separator "for the forecasts table". That shadow is why this endpoint
@@ -81,67 +92,83 @@ export function getCrossCountryMetrics(
     return {};
   }
 
-  const mapping = ACTUAL_DATA_MAPPING[forecastType];
-  if (!mapping) {
-    return {};
-  }
-
   const range = timestampRange(start, end);
+  const rows = db.prepare(crossCountryMetricsSql([forecastType]))
+    .all(...rangeArgs(range)) as MetricsRow[];
+  return rowsToResult(rows)[forecastType] ?? {};
+}
 
-  // Handle special case for hydro_total which is a computed column
+function metricSelect(forecastType: ForecastType): string {
+  const mapping = ACTUAL_DATA_MAPPING[forecastType];
   const actualColumn = forecastType === 'hydro_total'
     ? '(a.hydro_run_mw + a.hydro_reservoir_mw)'
     : `a.${mapping.column}`;
 
-  const stmt = db.prepare(`
-    WITH latest_forecasts AS (
-      SELECT
-        f1.country_code,
-        f1.target_timestamp_utc,
-        f1.forecast_value
-      FROM forecasts f1
-      WHERE f1.forecast_type = ?
-        AND ${rangeClause('f1.target_timestamp_utc')}
-        AND f1.generated_at = (
-          SELECT MAX(f2.generated_at)
-          FROM forecasts f2
-          WHERE f2.country_code = f1.country_code
-            AND f2.forecast_type = f1.forecast_type
-            AND f2.target_timestamp_utc = f1.target_timestamp_utc
-        )
-    )
+  return `
     SELECT
+      '${forecastType}' AS forecast_type,
       f.country_code,
-      ROUND(AVG(ABS(${actualColumn} - f.forecast_value)), 2) as mae,
+      ROUND(AVG(ABS(${actualColumn} - f.forecast_value)), 2) AS mae,
       CASE WHEN SUM(ABS(${actualColumn})) > 0
         THEN ROUND(100.0 * SUM(ABS(${actualColumn} - f.forecast_value)) / SUM(ABS(${actualColumn})), 2)
         ELSE NULL
-      END as wape,
-      ROUND(SQRT(AVG((${actualColumn} - f.forecast_value) * (${actualColumn} - f.forecast_value))), 2) as rmse,
-      ROUND(AVG(${actualColumn} - f.forecast_value), 2) as bias,
-      COUNT(*) as data_points
+      END AS wape,
+      ROUND(SQRT(AVG((${actualColumn} - f.forecast_value) * (${actualColumn} - f.forecast_value))), 2) AS rmse,
+      ROUND(AVG(${actualColumn} - f.forecast_value), 2) AS bias,
+      COUNT(*) AS data_points
     FROM latest_forecasts f
     INNER JOIN ${mapping.table} a
       ON a.country_code = f.country_code
       AND REPLACE(f.target_timestamp_utc, 'T', ' ') = a.${mapping.timestampCol}
-    WHERE ${actualColumn} IS NOT NULL
+    WHERE f.forecast_type = '${forecastType}'
+      AND ${actualColumn} IS NOT NULL
       ${loadActualGuard(forecastType, actualColumn)}
-    GROUP BY f.country_code
-    ORDER BY f.country_code
-  `);
+    GROUP BY f.country_code`;
+}
 
-  const rows = stmt.all(forecastType, ...rangeArgs(range)) as Array<{
-    country_code: string;
-    mae: number | null;
-    wape: number | null;
-    rmse: number | null;
-    bias: number | null;
-    data_points: number;
-  }>;
+/**
+ * One forecast-table pass for every requested type.
+ *
+ * The second join deliberately retains every row tied at the newest
+ * generated_at. The old correlated MAX query did the same, including distinct
+ * horizons/models sharing that timestamp, so collapsing this to one row would
+ * silently change the metrics.
+ */
+export function crossCountryMetricsSql(forecastTypes: ForecastType[]): string {
+  const typeList = forecastTypes.map((type) => `'${type}'`).join(', ');
+  return `
+    WITH latest_keys AS MATERIALIZED (
+      SELECT
+        country_code,
+        forecast_type,
+        target_timestamp_utc,
+        MAX(generated_at) AS generated_at
+      FROM forecasts
+      WHERE forecast_type IN (${typeList})
+        AND ${rangeClause('target_timestamp_utc')}
+      GROUP BY country_code, forecast_type, target_timestamp_utc
+    ),
+    latest_forecasts AS MATERIALIZED (
+      SELECT
+        f.country_code,
+        f.forecast_type,
+        f.target_timestamp_utc,
+        f.forecast_value
+      FROM latest_keys k
+      INNER JOIN forecasts f
+        ON f.country_code = k.country_code
+        AND f.forecast_type = k.forecast_type
+        AND f.target_timestamp_utc = k.target_timestamp_utc
+        AND f.generated_at = k.generated_at
+    )
+    ${forecastTypes.map(metricSelect).join('\n    UNION ALL\n')}`;
+}
 
-  const result: CrossCountryMetricsResult = {};
+function rowsToResult(rows: MetricsRow[]): Record<string, CrossCountryMetricsResult> {
+  const result: Record<string, CrossCountryMetricsResult> = {};
   for (const row of rows) {
-    result[row.country_code] = {
+    const byCountry = result[row.forecast_type] ??= {};
+    byCountry[row.country_code] = {
       mae: row.mae ?? 0,
       wape: row.wape,
       rmse: row.rmse ?? 0,
@@ -149,7 +176,6 @@ export function getCrossCountryMetrics(
       dataPoints: row.data_points,
     };
   }
-
   return result;
 }
 
@@ -160,15 +186,21 @@ export function getCrossCountryMetricsAll(
   start: string,
   end: string
 ): Record<string, CrossCountryMetricsResult> {
-  const result: Record<string, CrossCountryMetricsResult> = {};
+  const range = timestampRange(start, end);
+  const rows = db.prepare(crossCountryMetricsSql(VALID_FORECAST_TYPES))
+    .all(...rangeArgs(range)) as MetricsRow[];
+  return rowsToResult(rows);
+}
 
-  for (const forecastType of VALID_FORECAST_TYPES) {
-    const metrics = getCrossCountryMetrics(forecastType, start, end);
-    // Only include types that have data
-    if (Object.keys(metrics).length > 0) {
-      result[forecastType] = metrics;
-    }
-  }
-
-  return result;
+/** Run the cold all-types read away from Express's event-loop thread. */
+export async function getCrossCountryMetricsAllAsync(
+  start: string,
+  end: string
+): Promise<Record<string, CrossCountryMetricsResult>> {
+  const range = timestampRange(start, end);
+  const rows = await runReadQueryInWorker<MetricsRow>(
+    crossCountryMetricsSql(VALID_FORECAST_TYPES),
+    rangeArgs(range)
+  );
+  return rowsToResult(rows);
 }
