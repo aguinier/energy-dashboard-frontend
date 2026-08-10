@@ -636,7 +636,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   Known gap, filed separately: with both series withheld, GR's card is now
   entirely an empty state — which is correct, but it means the preset button
   says "30d" beside a card with no axis at all. `AbleLineChart`'s day-marker
-  derivation (`AbleLineChart.tsx:241`) was the reason the pre-ABL-35 24-hour
+  derivation (`AbleLineChart.tsx:270`) was the reason the pre-ABL-35 24-hour
   version carried no dates either.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
@@ -1249,9 +1249,14 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-08: **436 client tests / 32 files**, **406 server tests /
+Green as of 2026-08-10: **468 client tests / 37 files**, **407 server tests /
 26 files**, clean typecheck. Fewer passing than that means something broke.
-(The server figure moved from 189 / 13 in ABL-17, which added
+(ABL-153 reconciled `main` and `origin/main` after an 11-vs-6-commit
+divergence and landed ABL-150's cross-country-metrics fix on top, which is
+where the client figure picked up `ForecastPortfolio`/`portfolioRows.test.ts`
+and the v8 `comparisonForecastType` migration cases, and the server figure
+picked up `crossCountryMetricsService.test.ts`'s query-plan case. The server
+figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
 `utils/timestamp.test.ts` and one more `forecast.test.ts` case; ABL-23 added
