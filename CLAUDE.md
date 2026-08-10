@@ -1270,9 +1270,20 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-10: **468 client tests / 37 files**, **407 server tests /
+Green as of 2026-08-10: **452 client tests / 37 files**, **410 server tests /
 26 files**, clean typecheck. Fewer passing than that means something broke.
-(ABL-153 reconciled `main` and `origin/main` after an 11-vs-6-commit
+(ABL-156 merged ABL-146's generation-mix x-axis fix and ABL-151's fourth
+freshness verdict — both landed done but stranded on branches misleadingly
+named for other issues (ABL-101 and ABL-149, respectively, whose own fixes had
+already shipped separately) — which is where the client figure picked up 3
+more `chartTicks.test.ts` cases and the server figure picked up
+`freshness.test.ts`/`dataFreshness.test.ts` cases for the `ended` verdict. The
+server figure here is the pre-merge author's own verification, not a rerun in
+this checkout: a pre-existing `better-sqlite3` native-module ABI mismatch
+blocked `cd server && npx vitest run` in this shared workstation checkout at
+merge time, confirmed identical on unmodified `main` before either merge, so
+it predates and is unrelated to both changes.
+ABL-153 reconciled `main` and `origin/main` after an 11-vs-6-commit
 divergence and landed ABL-150's cross-country-metrics fix on top, which is
 where the client figure picked up `ForecastPortfolio`/`portfolioRows.test.ts`
 and the v8 `comparisonForecastType` migration cases, and the server figure
