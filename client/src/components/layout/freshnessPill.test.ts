@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { describeFreshness } from './freshnessPill';
+import { describeFreshness, freshnessPulses } from './freshnessPill';
 import type { DataFreshness, FreshnessStream } from '@/types';
 
 const NOW = new Date('2026-08-07T07:10:00Z');
@@ -13,6 +13,11 @@ const stale = (ageHours: number): FreshnessStream => ({
   latest: '2026-08-05 21:00:00',
   ageHours,
   status: 'stale',
+});
+const ended = (ageHours: number): FreshnessStream => ({
+  latest: '2026-06-23 21:00:00',
+  ageHours,
+  status: 'ended',
 });
 const none: FreshnessStream = { latest: null, ageHours: null, status: 'none' };
 
@@ -53,17 +58,20 @@ describe('describeFreshness', () => {
     expect(pill.title).toContain('generation has not updated for 1 day');
   });
 
-  it('goes stale on a zone that left the data years ago', () => {
-    // GB stops at 2021-06-14. The old pill pulsed green beside "5 years ago" —
-    // the text was right and the mark contradicted it.
+  it('shows a neutral ended state for a zone whose upstream series stopped', () => {
+    // GB stops at 2021-06-14. This is distinct from both a live stream and an
+    // actionable ingest alarm, and the wording names upstream as the cause.
     const fiveYears = 45118;
     const pill = describeFreshness(
-      healthy({ load: stale(fiveYears), generation: none, price: none }),
+      healthy({ load: ended(fiveYears), generation: none, price: none }),
       NOW,
     );
 
-    expect(pill.tone).toBe('stale');
-    expect(pill.label).toBe('ENTSO-E · stale, 5 years ago');
+    expect(pill.tone).toBe('ended');
+    expect(pill.label).toBe('ENTSO-E · series ended');
+    expect(pill.title).toContain('load stopped publishing upstream');
+    expect(pill.title).toContain('not an ingest alarm');
+    expect(freshnessPulses(pill.tone)).toBe(false);
   });
 
   it('catches ABL-51: prices fine yesterday, tomorrow never arrived', () => {
@@ -92,14 +100,15 @@ describe('describeFreshness', () => {
     expect(pill.title).toContain('the day-ahead price does not cover tomorrow');
   });
 
-  it('reports one stale stream even when the others are fine', () => {
+  it('reports one ended stream even when the others are fine', () => {
     // AL, measured on prod 2026-08-07: load 9.4h (late but complete) and
     // generation 1,066h — 44 days. A pill driven by load alone would call that
     // healthy.
-    const pill = describeFreshness(healthy({ generation: stale(1066) }), NOW);
+    const pill = describeFreshness(healthy({ generation: ended(1066) }), NOW);
 
-    expect(pill.tone).toBe('stale');
-    expect(pill.title).toContain('generation has not updated for 1 month');
+    expect(pill.tone).toBe('ended');
+    expect(pill.title).toContain('generation stopped publishing upstream');
+    expect(freshnessPulses(pill.tone)).toBe(false);
   });
 
   it('prints the age of the freshest measured stream, never a future-dated one', () => {
@@ -135,5 +144,12 @@ describe('describeFreshness', () => {
     expect(pill.tone).toBe('none');
     expect(pill.label).toBe('ENTSO-E');
     expect(pill.title).toBe('Checking how current the ENTSO-E data is');
+  });
+
+  it('pulses only for a live verdict', () => {
+    expect(freshnessPulses('live')).toBe(true);
+    expect(freshnessPulses('stale')).toBe(false);
+    expect(freshnessPulses('ended')).toBe(false);
+    expect(freshnessPulses('none')).toBe(false);
   });
 });

@@ -958,9 +958,10 @@ hat: not a wrong number in a chart, but a wrong claim *about* a chart.
 
 Each of `load`, `price`, `generation`, `tsoLoadForecast`,
 `tsoGenerationForecast` now returns `{ latest, ageHours, status }` with `status`
-one of `live` / `stale` / `none`. `none` is deliberately not a health verdict —
-a stream we have never held is not an outage, and an alarm no ingest fix could
-clear is furniture.
+one of `live` / `stale` / `ended` / `none`. `none` is deliberately not a health
+verdict — a stream we have never held is not an outage. `ended` is the matching
+non-alarm verdict for a stream we held but whose upstream series stopped; an
+alarm no ingest fix could clear is furniture.
 
 **Two rules, because the streams are not the same kind of thing**
 (`services/freshness.ts`, pure, colocated test):
@@ -991,6 +992,24 @@ clear is furniture.
   day's local start, far more than the ≤3h spread between European market
   timezones. Testing the day's *end* would mark BG (UTC+3) stale while complete.
 
+- **Ended upstream** applies to either kind once its newest usable row is over
+  `ENDED_AFTER_HOURS` (**30 days**) old (`services/freshness.ts:74`). This is a
+  terminal, non-alarm verdict, sized against all 39 production countries on
+  2026-08-10 12:04 UTC: the slowest healthy measured stream was 11.1h, the
+  worst active stall was MK generation at 111.1h, and the next value was AL
+  generation at 1,143.1h; day-ahead streams had the same gap (CH generation
+  forecast 87.1h, then UA/GB at 39,039h/45,181h). Thirty days is over 6x the
+  worst active stall and spans at least 102 longest scheduled ingest gaps. It
+  selected only AL generation plus GB/UA load and generation forecasts.
+  There is no country ignore-list: a newer row immediately re-enters the normal
+  live/stale rule (`classifyMeasuredStream`, `services/freshness.ts:181`;
+  `classifyDayAheadStream`, `services/freshness.ts:213`).
+
+  This is still an inference from absence, not proof of upstream causality. A
+  single-stream ingest defect left untouched for 30 days has the same stored
+  shape. The long delay is what makes the operational verdict useful without
+  silently swallowing the active stalls visible in the measured fleet.
+
 **Known limit, stated rather than papered over.** AL's ordinary 9.4h overlaps a
 fast publisher's age after one missed pass (FR would reach ~15.4h), so no
 fleet-wide threshold separates "chronically late" from "missed one pass". This
@@ -1003,8 +1022,9 @@ remaining scope.
 **The header pill** renders it through `layout/freshnessPill.ts` (pure,
 colocated test). Three things worth knowing before changing it:
 
-- **The pulse animation *is* the liveness claim**, so `stale` and `none` get a
-  still dot rather than a differently-coloured pulse. A pulsing amber still
+- **The pulse animation *is* the liveness claim**, so `stale`, `ended` and
+  `none` get a still dot rather than a differently-coloured pulse
+  (`freshnessPulses`, `layout/freshnessPill.ts:28`). A pulsing amber still
   reads as "a running pipeline, in a mood".
 - **The word carries the state, not the colour** — "stale, 1 day ago" /
   "tomorrow missing". Colour is `dirty` (terracotta) rather than `medium`
@@ -1504,8 +1524,8 @@ type TimePreset =
 
 // Per stream, since ABL-60 — not five bare timestamps. `ageHours` is signed and
 // server-computed; negative is normal for a day-ahead stream. See "Data
-// freshness" above for the two rules behind `status`.
-type FreshnessStatus = 'live' | 'stale' | 'none';
+// freshness" above for the rules behind `status`.
+type FreshnessStatus = 'live' | 'stale' | 'ended' | 'none';
 
 interface FreshnessStream {
   latest: string | null;
@@ -1689,10 +1709,11 @@ interface TSOForecastAccuracyMetrics {
   hours behind prod even with a fresh mtime.
 - `stale` on `price` means the day-ahead result does not reach the market day it
   should. After 14:00 UTC that is tomorrow. This is ABL-51's signature.
-- Some zones are permanently stale and always will be: GB's load stops
-  2021-06-14 and UA's 2022-02-25. That is the correct reading, not a defect to
-  suppress.
-- See "Data freshness" above before changing a threshold — both are sized from
+- `ended` is not an alarm: the stream was held before but its newest usable row
+  is over 30 days old. On the 2026-08-10 fleet this names GB/UA load and
+  generation forecasts, plus AL generation. It is derived from age and
+  self-clears when a newer row lands; do not replace it with a country list.
+- See "Data freshness" above before changing a threshold — all are sized from
   measurements recorded there.
 
 **Data freshness returning nothing:**

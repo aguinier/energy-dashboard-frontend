@@ -8,7 +8,7 @@ const router = Router();
  * GET /data-freshness/:countryCode
  *
  * Per stream: the newest usable timestamp we hold, its signed age in hours, and
- * whether that is `live`, `stale` or `none`.
+ * whether that is `live`, `stale`, `ended` or `none`.
  *
  * It used to return the five bare timestamps and nothing else, which left every
  * caller to invent its own idea of "too old" — and the only caller did not

@@ -32,12 +32,10 @@ type Freshness = {
  * under a green "live" pulse. This endpoint is the only thing that could have
  * said otherwise, and it returned five bare timestamps with no verdict.
  *
- * The fixture's own rows sit at a fixed 2026-07-01/02, which is permanently
- * more than `MEASURED_STALE_AFTER_HOURS` in the past for any run after
- * 2026-07-02 — useful, because it makes "stale" the default here and lets each
- * live case be created deliberately. The now-relative rows below are the only
- * ones in this file that move, and they exist because age against a real clock
- * is precisely what is under test.
+ * The fixture's own rows sit at a fixed 2026-07-01/02, permanently beyond the
+ * stale threshold and eventually beyond the ended threshold too. Every verdict
+ * asserted here is therefore created with a now-relative row on purpose; a
+ * fixed timestamp would silently change state as the suite aged.
  */
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -79,10 +77,15 @@ beforeAll(() => {
   load.run('BE', hoursAgo(20), 8_800);
   generation.run('BE', hoursAgo(20), 1_200);
 
-  // PT keeps an ancient price row and nothing newer, so its day-ahead coverage
-  // fails both the before-cutoff and after-cutoff test. This is ABL-51's shape
-  // frozen in time.
-  price.run('PT', at(0), 61);
+  // PT has a recent-enough row that still fails day-ahead coverage. Keeping it
+  // below the ended threshold makes this an intentional stale case rather than
+  // relying on the shared fixture's fixed July timestamps.
+  price.run('PT', hoursAgo(48), 61);
+
+  // LU deliberately gets one generation row older than the ended threshold.
+  // The shared fixture dates are old too, but age-sensitive states must be
+  // created on purpose so this test does not change verdict as the clock moves.
+  generation.run('LU', hoursAgo(31 * 24), 200);
 });
 
 describe('GET /api/data-freshness/:cc — the pipeline states its own health', () => {
@@ -108,6 +111,14 @@ describe('GET /api/data-freshness/:cc — the pipeline states its own health', (
     // can act on — 20 hours and 5 years are both stale and mean different
     // things (GB's load stops in 2021).
     expect(data.load.ageHours).toBeGreaterThan(19);
+  });
+
+  it('reports a formerly-held stream that stopped upstream as ended', async () => {
+    const { body } = await get('LU');
+    const data = body.data as Freshness;
+
+    expect(data.generation.status).toBe('ended');
+    expect(data.generation.ageHours).toBeGreaterThan(30 * 24);
   });
 
   it('does not date the pipeline from an impossible zero', async () => {
