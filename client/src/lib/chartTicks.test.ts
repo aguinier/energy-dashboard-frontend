@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { timeTicks, SHORT_SPAN_HOURS, MEDIUM_SPAN_HOURS } from './chartTicks';
+import { chartTimeTicks, timeTicks, SHORT_SPAN_HOURS, MEDIUM_SPAN_HOURS } from './chartTicks';
 
 const hourly = (n: number, from = '2026-07-26T00:00:00Z') =>
   Array.from({ length: n }, (_, i) =>
@@ -85,5 +85,37 @@ describe('timeTicks', () => {
   it('keeps every tick index inside the series', () => {
     const ts = hourly(24);
     expect(timeTicks(ts, '24h').every((t) => t.index >= 0 && t.index < ts.length)).toBe(true);
+  });
+});
+
+describe('chartTimeTicks', () => {
+  it('labels Today by hour across the full-day canvas', () => {
+    const timestamps = hourly(24, '2026-07-26T00:45:00Z');
+    const ticks = chartTimeTicks(timestamps, 'today', 12);
+
+    expect(ticks.length).toBeGreaterThanOrEqual(4);
+    expect(ticks.every((tick) => HOUR_RE.test(tick.label))).toBe(true);
+    expect(ticks.every((tick) => tick.label.endsWith(':00'))).toBe(true);
+  });
+
+  it('labels a 7d hourly series with day markers and keeps now', () => {
+    const timestamps = hourly(24 * 7 + 1);
+    const ticks = chartTimeTicks(timestamps, '7d', timestamps.length - 1);
+
+    expect(ticks.length).toBeGreaterThanOrEqual(7);
+    expect(ticks.some((tick) => tick.label === 'now')).toBe(true);
+    expect(ticks.filter((tick) => tick.label !== 'now').every((tick) => !tick.label.includes(':'))).toBe(true);
+  });
+
+  it('selects useful date ticks from a daily 30d series', () => {
+    const timestamps = Array.from({ length: 30 }, (_, i) =>
+      new Date(Date.UTC(2026, 6, i + 1)).toISOString(),
+    );
+    const ticks = chartTimeTicks(timestamps, '30d', timestamps.length - 1);
+
+    expect(ticks.length).toBeGreaterThanOrEqual(7);
+    expect(ticks.length).toBeLessThanOrEqual(10);
+    expect(ticks.some((tick) => tick.label === 'now')).toBe(true);
+    expect(ticks.filter((tick) => tick.label !== 'now').every((tick) => !tick.label.includes(':'))).toBe(true);
   });
 });
