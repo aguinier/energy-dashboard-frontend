@@ -1,6 +1,6 @@
 import type { TimePreset, TimeAnchor } from '@/types';
 
-export const PERSIST_VERSION = 7;
+export const PERSIST_VERSION = 8;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
@@ -152,15 +152,25 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
   // the server walks its candidate ladder — and re-pinning is one click. This
   // is also what frees users already trapped, who otherwise had to clear
   // localStorage by hand to get their chart back.
-  const storedModels = next.selectedModelByType;
-  const hiddenByType: Record<string, boolean> = {};
-  if (storedModels && typeof storedModels === 'object' && !Array.isArray(storedModels)) {
-    for (const [forecastType, value] of Object.entries(storedModels as Record<string, unknown>)) {
-      if (value === null) hiddenByType[forecastType] = true;
+  if (fromVersion < 7) {
+    const storedModels = next.selectedModelByType;
+    const hiddenByType: Record<string, boolean> = {};
+    if (storedModels && typeof storedModels === 'object' && !Array.isArray(storedModels)) {
+      for (const [forecastType, value] of Object.entries(storedModels as Record<string, unknown>)) {
+        if (value === null) hiddenByType[forecastType] = true;
+      }
     }
+    next.selectedModelByType = {};
+    next.forecastHiddenByType = hiddenByType;
   }
-  next.selectedModelByType = {};
-  next.forecastHiddenByType = hiddenByType;
+
+  // v8 (ABL-127) — the portfolio home's persisted default was `all`, which
+  // deliberately has no cross-type chart or ranking. Start on load instead:
+  // it is a single measurable type with complete coverage, while `all` remains
+  // an explicit matrix-only choice in the filter.
+  if (fromVersion < 8 && next.comparisonForecastType === 'all') {
+    next.comparisonForecastType = 'load';
+  }
 
   return next;
 }

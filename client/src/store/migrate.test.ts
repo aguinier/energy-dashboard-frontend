@@ -149,6 +149,22 @@ describe('migratePersisted', () => {
     });
   });
 
+  describe('portfolio home default (v8)', () => {
+    it('moves the legacy all-types landing state to load', () => {
+      expect(migratePersisted({ comparisonForecastType: 'all' }, 7).comparisonForecastType).toBe('load');
+    });
+
+    it('preserves an already selected forecast type', () => {
+      expect(migratePersisted({ comparisonForecastType: 'price' }, 7).comparisonForecastType).toBe('price');
+    });
+
+    it('does not re-run the v7 model migration for a v7 persisted blob', () => {
+      const out = migratePersisted({ selectedModelByType: { load: 'tso-d7' }, forecastHiddenByType: { price: true } }, 7);
+      expect(out.selectedModelByType).toEqual({ load: 'tso-d7' });
+      expect(out.forecastHiddenByType).toEqual({ price: true });
+    });
+  });
+
   it('is a no-op at the current version', () => {
     const s = { currentView: 'map' as const };
     expect(migratePersisted(s, PERSIST_VERSION)).toEqual(s);
