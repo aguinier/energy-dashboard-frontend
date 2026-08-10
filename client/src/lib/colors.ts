@@ -104,11 +104,11 @@ export function getRenewableChartColors() {
 //    separate, and `EuropeMap` had already settled the house scale away from
 //    it (see `lib/dataScale.ts`).
 //
-// The replacement is `components/comparison/accuracyScale.ts` — normalise
-// within one forecast type's own observed spread, colour on the shared
-// teal -> amber -> terracotta ramp. Nothing in the data supports an absolute
-// grade, so nothing renders one. If a calibrated target ever exists, it is a
-// stated business number, not a constant to reinvent here.
+// Their replacement (`components/comparison/accuracyScale.ts`, ranking within
+// one forecast type's own observed spread on the shared teal -> amber ->
+// terracotta ramp) is gone too, along with the rest of the cross-country
+// comparison page it coloured — ABL-158 removed the Forecast quality view
+// entirely. Nothing here renders a WAPE colour any more.
 
 /**
  * Append an alpha channel to a hex color string.

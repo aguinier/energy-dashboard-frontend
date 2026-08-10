@@ -9,8 +9,6 @@ import {
   fetchGenerationSeries,
   fetchLatestForecast,
   fetchDataFreshness,
-  fetchForecastComparisonSummary,
-  fetchCrossCountryMetrics,
 } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { REFRESH_INTERVALS } from '@/lib/constants';
@@ -340,53 +338,5 @@ export function useDataFreshness() {
     queryFn: () => fetchDataFreshness(selectedCountry),
     staleTime: 60000, // 1 minute - data freshness doesn't change very often
     refetchInterval: 60000, // Refetch every minute
-  });
-}
-
-// ============================================================================
-// Forecast Comparison Hooks (Analytics)
-// ============================================================================
-
-/**
- * Fetch forecast comparison summary for all types
- */
-export function useForecastComparisonSummary() {
-  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-
-  return useQuery({
-    queryKey: ['forecast-comparison', 'summary', selectedCountry, timePreset, timeOffset],
-    queryFn: () => fetchForecastComparisonSummary({
-      countryCode: selectedCountry,
-      start: start.toISOString(),
-      end: end.toISOString(),
-    }),
-    staleTime: REFRESH_INTERVALS.map,
-  });
-}
-
-// ============================================================================
-// Cross-Country Comparison Hooks
-// ============================================================================
-
-/**
- * Fetch cross-country forecast accuracy metrics
- * Uses comparison-specific state (independent from global dashboard time)
- */
-export function useCrossCountryMetrics() {
-  const { comparisonTimeRange } = useDashboardStore();
-
-  const end = new Date();
-  const daysMap: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90 };
-  const days = daysMap[comparisonTimeRange] || 30;
-  const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
-
-  return useQuery({
-    queryKey: ['cross-country', 'metrics', comparisonTimeRange],
-    queryFn: () => fetchCrossCountryMetrics({
-      start: start.toISOString(),
-      end: end.toISOString(),
-    }),
-    staleTime: REFRESH_INTERVALS.map, // 10 minutes
   });
 }

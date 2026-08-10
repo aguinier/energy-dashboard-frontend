@@ -4,30 +4,25 @@ import { describeFreshness, freshnessPulses, type FreshnessTone } from './freshn
 
 // Single top bar used on every view — replaces the older MapHeader / CountryHeader pair.
 // Mirrors the structure of the able prototype: triangle logo, "able energy" wordmark,
-// view nav, live ENTSO-E pulse, API docs CTA.
+// live ENTSO-E pulse, API docs CTA.
 // Every control here does something real — no decorative dead buttons.
 //
-// The nav holds *views* only. It used to also carry "Docs" and "API": "Docs"
-// opened the same README as the "API docs →" button two elements to its right
-// (one destination, two controls, styled as if they were different things),
-// and "API" opened the raw /api/health JSON — a liveness probe, not a
-// destination for an analyst. Both are gone; the button is the single door to
-// the docs, and the real per-tab endpoint is still surfaced by ApiCta at the
-// foot of the country page, where it has context.
+// There is no view nav any more (ABL-158 removed the Forecast quality page,
+// which was the only other top-level view): the logo already returns to the
+// map, so a second "Map" button next to it would be the same one-destination,
+// two-controls redundancy this file already avoided for "Docs" vs. "API docs
+// →". It used to also carry "Docs" and "API": "Docs" opened the same README as
+// the "API docs →" button two elements to its right, and "API" opened the raw
+// /api/health JSON — a liveness probe, not a destination for an analyst. Both
+// are gone; the button is the single door to the docs, and the real per-tab
+// endpoint is still surfaced by ApiCta at the foot of the country page, where
+// it has context.
 
 const REPO_URL = 'https://github.com/aguinier/energy-dashboard-frontend';
 
 export function AbleHeader() {
-  const { currentView, goToMap, goToComparison } = useDashboardStore();
+  const { goToMap } = useDashboardStore();
   const { data: freshness } = useDataFreshness();
-
-  const navItems: { key: 'map' | 'compare'; label: string; onClick: () => void }[] = [
-    { key: 'map', label: 'Map', onClick: goToMap },
-    { key: 'compare', label: 'Forecast quality', onClick: goToComparison },
-  ];
-
-  const isActive = (k: string) =>
-    k === 'map' ? currentView === 'map' || currentView === 'country' : currentView === 'comparison';
 
   // The pill states whether the data is current, rather than asserting that it
   // is. Which streams count, how the age is chosen and how staleness is worded
@@ -55,27 +50,6 @@ export function AbleHeader() {
           energy
         </span>
       </button>
-
-      <nav className="flex gap-0.5">
-        {navItems.map(({ key, label, onClick }) => {
-          const active = isActive(key);
-          return (
-            <button
-              key={key}
-              onClick={onClick}
-              aria-current={active ? 'page' : undefined}
-              className={
-                'h-7 cursor-pointer rounded-md border-none px-2.5 text-meta font-sans transition-colors ' +
-                (active
-                  ? 'bg-secondary font-medium text-foreground'
-                  : 'bg-transparent font-normal text-ink-dim hover:text-foreground')
-              }
-            >
-              {label}
-            </button>
-          );
-        })}
-      </nav>
 
       <div className="flex-1" />
 

@@ -44,7 +44,8 @@ export interface AbleLineChartProps {
   /**
    * When true, drops the now marker: the future shading, the "now" rule and
    * pill, and the trailing-gap label. For a chart that is entirely historical
-   * (ForecastTab's forecast-vs-actual overlay) those marks describe nothing.
+   * (a forecast-vs-actual overlay with no forward-looking region) those marks
+   * describe nothing.
    *
    * It does NOT decide where the forecast line starts — both series always draw
    * wherever they hold a value. It used to do both, which is how the Load,

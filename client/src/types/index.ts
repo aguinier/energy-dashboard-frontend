@@ -126,7 +126,7 @@ export interface MapDataPoint {
 }
 
 // App view navigation
-export type AppView = 'map' | 'country' | 'comparison';
+export type AppView = 'map' | 'country';
 
 // New time navigation types
 export type TimeAnchor = 'past' | 'now' | 'future';
@@ -307,109 +307,6 @@ export interface DataFreshness {
 // kept — it's still used by useLoadChartData.ts and the analytics config.
 
 export type TSOHorizon = 'day_ahead' | 'week_ahead';
-
-// ============================================================================
-// Forecast Comparison Types
-// ============================================================================
-
-/**
- * Accuracy metrics for a single forecast source/horizon
- */
-export interface AccuracyMetrics {
-  mae: number;      // Mean Absolute Error (MW or EUR/MWh)
-  mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
-  rmse: number;     // Root Mean Square Error
-  bias: number;     // Mean Error (positive = over-forecast)
-  dataPoints: number;
-}
-
-/**
- * TSO provider metrics (day-ahead and week-ahead horizons)
- */
-export interface TSOProviderMetrics {
-  dayAhead?: AccuracyMetrics;
-  weekAhead?: AccuracyMetrics;
-}
-
-/**
- * ML provider metrics (D+1 and D+2 horizons)
- */
-export interface MLProviderMetrics {
-  d1?: AccuracyMetrics;  // D+1 (0-30 hours ahead)
-  d2?: AccuracyMetrics;  // D+2 (24-54 hours ahead)
-}
-
-/**
- * Unified comparison response from API
- */
-export interface ForecastComparisonResponse {
-  tso: TSOProviderMetrics;
-  ml: MLProviderMetrics;
-  meta: {
-    forecastType: string;
-    countryCode: string;
-    timeRange: { start: string; end: string };
-    dataAvailability: {
-      tso: { dayAhead: boolean; weekAhead: boolean };
-      ml: { d1: boolean; d2: boolean };
-    };
-  };
-}
-
-/**
- * Summary comparison response (all forecast types)
- */
-export interface ForecastComparisonSummary {
-  [forecastType: string]: ForecastComparisonResponse;
-}
-
-/**
- * Why an ML accuracy window produced the metrics it did. Mirrors the server's
- * `MLAccuracyCoverage` (`server/src/services/mlForecastService.ts:59`).
- *
- * `no_model_coverage` is a NORMAL answer, not an error: catboost and xgboost
- * cover disjoint country sets, so for any one country roughly half the
- * registered models legitimately have nothing. It exists so that case is
- * distinguishable from a measurement — a model that does not serve a country
- * must never render as a flawless 0% error.
- */
-export type MLAccuracyCoverage = 'served' | 'no_model_coverage' | 'no_paired_actuals';
-
-/** Per-model ML accuracy metrics. Every null means "not measurable", never zero. */
-export interface MLForecastAccuracyMetrics {
-  mae: number | null;
-  mape: number | null;   // null when no point in the window had a positive actual
-  rmse: number | null;
-  bias: number | null;
-  dataPoints: number;
-  /** Count of points MAPE was computed over; <= dataPoints. */
-  mapeSamples: number;
-}
-
-/**
- * `/forecast-comparison/:cc/ml-accuracy`, minus the hourly point array the
- * callers of this type do not read.
- */
-export interface MLForecastAccuracyResult {
-  metrics: MLForecastAccuracyMetrics;
-  coverage: MLAccuracyCoverage;
-  /** Which model was pinned. `null` means unpinned — NOT "the production model". */
-  model: string | null;
-}
-
-// ============================================================================
-// Cross-Country Comparison Types
-// ============================================================================
-
-export interface CrossCountryMetricsEntry {
-  mae: number;
-  wape: number | null;
-  rmse: number;
-  bias: number;
-  dataPoints: number;
-}
-
-export type CrossCountryMetrics = Record<string, Record<string, CrossCountryMetricsEntry>>;
 
 // ============================================================================
 // Forecast Provider Registry Types

@@ -42,20 +42,18 @@ energy-dashboard-frontend/
 │   └── src/
 │       ├── views/                    # Top-level routed views
 │       │   ├── MapView.tsx               # Landing page — Europe choropleth
-│       │   ├── CountryDashboardView.tsx  # Per-country tabs plus forecast-quality drill-down
-│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: variable cards, type-local ranking/map, evidence disclosure, matrix
+│       │   └── CountryDashboardView.tsx  # Per-country tabs (price/load/generation/net position)
 │       ├── components/
 │       │   ├── charts/               # Recharts-based primitives, shared across tabs
 │       │   │   ├── AbleLineChart.tsx     # Line + forecast overlay (load, price, net position)
 │       │   │   ├── AbleStackedMix.tsx    # Diverging stacked area — generation mix
 │       │   │   ├── AbleDonut.tsx         # Generation-mix share donut
 │       │   │   ├── AblePriceHeatmap.tsx  # Hour x day heatmap (load, price)
-│       │   │   ├── AbleAccuracyBars.tsx  # Measured-error-by-horizon bars
 │       │   │   ├── AbleSparkline.tsx     # Stat-tile sparklines
 │       │   │   └── ChartWrapper.tsx      # Card wrapper used by the map view
 │       │   ├── dashboard/            # Country-view composition
 │       │   │   ├── PriceTab.tsx, LoadTab.tsx, GenerationTab.tsx,
-│       │   │   │   NetPositionTab.tsx, ForecastTab.tsx  # One file per tab
+│       │   │   │   NetPositionTab.tsx  # One file per tab
 │       │   │   ├── AbleCard.tsx          # Card shell dashboard chart compositions wrap their charts in
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
 │       │   │   ├── ForecastGapNotice.tsx # "<model> has no forecast here" + clear-the-pin button
@@ -63,14 +61,9 @@ energy-dashboard-frontend/
 │       │   │   ├── AbleStatRow.tsx       # Top 4-stat strip (price/load/renewable share/peak)
 │       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
 │       │   │   ├── ForecastMetadataBadge.tsx  # ORPHANED — no importer (see State management)
-│       │   │   ├── ModelComparisonPanel.tsx    # "Compare forecast models" table (ForecastTab)
 │       │   │   ├── generationSeries.ts   # The nine A75 families: grouping, palette,
 │       │   │   │                         #   stack order, series builder (GenerationTab)
-│       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts, modelComparison.ts
-│       │   │                                   # Pure helpers (each has a .test.ts)
-│       │   ├── comparison/           # ComparisonView's heatmap/map/leaderboard/filter bar
-│       │   │   └── accuracyScale.ts, leaderboardRows.ts, mapFill.ts
-│       │   │                                   # Pure helpers (each has a .test.ts)
+│       │   │   └── sourceRows.ts, windowLabel.ts  # Pure helpers (each has a .test.ts)
 │       │   ├── map/                  # EuropeMap.tsx (choropleth), MapMetricSelector.tsx,
 │       │   │                         #   mapGeometry.ts, NoDataHatch.tsx (the shared no-data mark)
 │       │   ├── layout/               # AbleHeader.tsx, freshnessPill.ts (pure, .test.ts)
@@ -80,7 +73,6 @@ energy-dashboard-frontend/
 │       │   ├── useLoadChartData.ts, usePriceChartData.ts,
 │       │   │   useNetPositionData.ts     # Per-tab batched-query hooks
 │       │   ├── useForecastModels.ts      # Registry query + model-selection resolution
-│       │   ├── useModelComparison.ts     # Per-model accuracy, one query per registered model
 │       │   └── useCountries.ts, usePrefetch.ts, useAnimatedValue.ts
 │       ├── services/
 │       │   ├── api.ts                    # Axios API functions
@@ -92,7 +84,7 @@ energy-dashboard-frontend/
 │       ├── types/
 │       │   └── index.ts                  # TypeScript interfaces
 │       └── lib/
-│           ├── constants.ts, comparisonConstants.ts  # TAB_FORECAST_TYPE, MAP_METRICS, etc.
+│           ├── constants.ts              # TAB_FORECAST_TYPE, MAP_METRICS, etc.
 │           ├── chartAdapters.ts, chartTicks.ts, chartSummary.ts, colors.ts,
 │           │   dataScale.ts, divergingScale.ts, divergingStack.ts, servedModel.ts,
 │           │   forecastGap.ts, trailingGap.ts, timezone.ts,
@@ -159,10 +151,20 @@ duplicating it here.
 
 ### 1. Views
 
-Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
+Two top-level views, switched via `currentView` in the store (`map` | `country`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
-- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:121`).
-- **`ComparisonView`** — the Forecast quality portfolio home: variable-level WAPE cards (`ForecastPortfolio`) lead the page, then a type-local ranking/map for the default `load` type, then disclosed error evidence, then the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:27`).
+- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position.
+
+There used to be a third view, `ComparisonView` — a Forecast quality
+portfolio (variable-level WAPE cards, a type-local ranking/map, disclosed
+error evidence, and a country × forecast-type matrix), reachable from a
+header nav entry and from a per-country "Forecast quality detail" drill-down
+tab. **ABL-158 removed it entirely** — page, nav entry, drill-down tab, and
+every component/hook/store field that served only it — because it was not
+supposed to ship. `currentView` can now only be `map` or `country`
+(`client/src/types/index.ts:129`), so a persisted `comparison` (dropped by
+the v9 migration clause, `client/src/store/migrate.ts:175-178`) falls back to
+the map like any other unmigrated blob rather than rendering anything.
 
 ### 2. Forecast model selection
 
@@ -475,7 +477,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `dashboard/generationSeries.test.ts` pins the ordering.
 
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
-  (`CountryDashboardView.tsx:56`, applied at `:116`) limits it to the tabs
+  (`CountryDashboardView.tsx:52`, applied at `:112`) limits it to the tabs
   whose chart actually reads a selection (`price`, `load`, `net-position`). It
   used to render and do nothing, while `useRenewableChartData` fired five
   per-type ML forecast queries plus a TSO one that no component consumed: six
@@ -639,46 +641,23 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   says "30d" beside a card with no axis at all. `AbleLineChart`'s day-marker
   derivation (`AbleLineChart.tsx:270`) was the reason the pre-ABL-35 24-hour
   version carried no dates either.
-- **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
-  samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
-  (`horizonBars.ts`, ML D+1/D+2 and TSO D+1/D+7 — never extrapolated), a
-  forecast-vs-actual overlay chart, and the **"Compare forecast models"** panel
-  (`ModelComparisonPanel.tsx` + `useModelComparison.ts`, ABL-6). That panel is
-  no longer a placeholder, and the sentence it used to print — "the accuracy
-  endpoints do not accept a model parameter" — is gone; it had been false since
-  ABL-5.
+- **`ForecastTab`** ("Forecast accuracy") — **removed under ABL-158.** It was
+  a 4-stat strip (MAE/MAPE/RMSE/samples) from `/tso-forecast/metrics`,
+  measured-only error-by-horizon bars, a forecast-vs-actual overlay chart, and
+  a **"Compare forecast models"** panel (ABL-6), reachable only through the
+  `analytics` chart tab — itself only reachable from the (also removed)
+  Forecast quality portfolio's per-country drill-down. `CountryDashboardView`'s
+  `TabsList` now has exactly four triggers (price, load, renewables,
+  net-position), matching `TABS_WITH_MODEL_PICKER`
+  (`CountryDashboardView.tsx:52`); `ForecastTab.tsx`, `ModelComparisonPanel.tsx`,
+  `useModelComparison.ts`, `horizonBars.ts`, `modelComparison.ts`, and the
+  `AbleAccuracyBars.tsx` chart primitive they alone used are all deleted.
 
-  The panel lists **every** model the registry declares for this tab's forecast
-  type (`TAB_FORECAST_TYPE.analytics` → `load`), one row each, and measures each
-  by name: ml models via `/forecast-comparison/:cc/ml-accuracy` pinned to
-  `horizon=1`, tso models via `/tso-forecast/accuracy/load/:cc`. The ml horizon
-  pin is load-bearing — unpinned, that endpoint blends every stored horizon
-  (2-63h), so a model whose runs skew short would beat one whose runs skew long
-  for reasons that are not about the model. Adding a model to
-  `forecastModels.ts` adds a row with no client change.
-
-  It is a table, not bars, and that is a correctness choice: a bar chart has no
-  honest mark for "this model does not serve this country", and with disjoint
-  catboost/xgboost coverage that is the common case, not an edge case. Measured
-  against a local server on 2026-08-05 over a 7d window: FR reads catboost
-  `no_model_coverage` / xgboost MAPE 6.62, DE is the mirror (catboost 9.25,
-  xgboost none). A row with zero paired points renders a sentence — "No data —
-  this model does not forecast DE." — and **no metric cell of any kind**, so it
-  cannot read as a flawless 0%. The mapping is a pure helper
-  (`modelComparison.ts`, with `.test.ts`), and the panel's rendered HTML is
-  asserted too (`ModelComparisonPanel.test.tsx`, `renderToString` — no DOM
-  needed, so it runs in the default node environment).
-
-  Two limits worth knowing. The TSO accuracy route reports no `coverage`
-  classification, so an empty TSO window stays "no forecast/actual pairs in this
-  window" rather than claiming that TSO does not publish for the country. And a
-  tso model registered for a type this client has no accuracy route for
-  (solar/wind live on `/tso-forecast/accuracy/generation/:cc`, which nothing
-  here calls) still gets a row, saying it was not measured — wire that route
-  into `useModelComparison.ts`'s `isMeasurable` if you need it.
-
-  Nothing is persisted for this panel, so no `PERSIST_VERSION` bump was needed:
-  it compares every registered model rather than a user-chosen subset.
+  This was a client-only removal: the server endpoints that fed it
+  (`/tso-forecast/metrics`, `/forecast-comparison/:cc/ml-accuracy`,
+  `/tso-forecast/accuracy/load/:cc`) are untouched, so per-model accuracy is
+  still computable directly over the API even though nothing in the UI
+  renders it any more.
 
 ### 4. Time navigation
 
@@ -731,8 +710,8 @@ Adding a preset means touching six places. All six now fail loudly:
   (`store/migrate.ts:21`), whose keys `VALID_TIME_PRESETS` derives from.
 - A `const unhandled: never = preset` in the `default` branch, so the new value
   is reported as not assignable to `never`: `getDateRangeForPreset`
-  (`useDashboardData.ts:121`) and `getGranularityForPreset`
-  (`useDashboardData.ts:162`).
+  (`useDashboardData.ts:119`) and `getGranularityForPreset`
+  (`useDashboardData.ts:160`).
 - The sixth — giving the preset a **control** — cannot be typed: a preset with
   no button is unreachable, not ill-typed, which is how four of them sat in the
   union until ABL-12. It is a **test** failure instead:
@@ -751,7 +730,7 @@ so it cannot drift from the union.
 
 Zustand store (`dashboardStore.ts`) with `persist` to localStorage
 (`energy-dashboard-storage`). **The persisted shape is versioned:**
-`PERSIST_VERSION` in `store/migrate.ts` (currently `7`, `migrate.ts:3`), bumped
+`PERSIST_VERSION` in `store/migrate.ts` (currently `9`, `migrate.ts:3`), bumped
 with a matching clause in `migratePersisted()` whenever a persisted field's
 shape or meaning changes. `migratePersisted` must never throw: `state` is an
 arbitrary, possibly years-old localStorage blob. Skipping this step leaves
@@ -762,11 +741,13 @@ It is **not** a per-version switch. `migrate.ts:51` short-circuits only on
 `fromVersion >= PERSIST_VERSION`; below that, *every* clause runs for *any*
 older blob, so each clause must be safe to apply to a blob that never had the
 field. The clauses today coerce an unknown `currentView` / `activeChartTab` /
-`timePreset` back to a valid value (`migrate.ts:130` for the last), remap a
-stored `comparisonMetric: 'mape'` to `'wape'` (`:88`), **delete** three dead
-keys — `layers` (`:82`), `timeRange` (`:102`), `analyticsConfig` (`:114`) —
-and split `selectedModelByType`'s pin/hidden conflation into
-`forecastHiddenByType`, dropping every stored pin (`:155-163`, ABL-16).
+`timePreset` back to a valid value (`migrate.ts:123` for the last), **delete**
+three dead keys — `layers` (`:82`), `timeRange` (`:94`), `analyticsConfig`
+(`:106`) — split `selectedModelByType`'s pin/hidden conflation into
+`forecastHiddenByType`, dropping every stored pin (`:147-157`, ABL-16), and
+(v9, ABL-158) drop four more keys that existed only for the removed Forecast
+quality page — `comparisonCountries`/`comparisonMetric`/
+`comparisonForecastType`/`comparisonTimeRange` (`:175-178`, see "Views" above).
 Note `layers` is deleted, not folded into `showForecast`/`showTSOForecast` as
 an earlier version did — that folding unconditionally overwrote `showForecast`
 with `false` on every migration, clobbering a value the current code had
@@ -778,11 +759,12 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
 `server/src/types/index.ts:219`), `useDashboardOverview` sends an explicit
-`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:175`,
-and `useMapData` likewise at `:212`), and `migratePersisted` deletes a stored
-`timeRange` outright (`store/migrate.ts:102`). `timePreset` is the single field
+`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:173`,
+and `useMapData` likewise at `:210`), and `migratePersisted` deletes a stored
+`timeRange` outright (`store/migrate.ts:94`). `timePreset` is the single field
 describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
-field for `ComparisonView`, is unrelated and does still exist.)
+field that used to exist for `ComparisonView`, is gone too — ABL-158 dropped it
+along with the rest of that page's state.)
 
 Nor was there ever a *backend* blocker forcing it to stay. The
 `/dashboard/overview|map|initial` endpoints take an explicit `start`/`end`
@@ -795,25 +777,24 @@ drop `timeRange` without a backend change first" — had already been removed
 when it was written.
 
 Note `timePreset` is validated on migration against `VALID_TIME_PRESETS`
-(`store/migrate.ts:33`, checked at `:130`) and `timeAnchor` is re-derived from
-it (`:135`), because the two persist separately and only `setTimePreset` keeps
+(`store/migrate.ts:33`, checked at `:122`) and `timeAnchor` is re-derived from
+it (`:127`), because the two persist separately and only `setTimePreset` keeps
 them in step. `VALID_TIME_PRESETS` is no longer a hand-maintained literal — it
 is `Object.keys(ANCHOR_FOR_PRESET)`, and `ANCHOR_FOR_PRESET` is keyed
 `Record<TimePreset, TimeAnchor>`, so it cannot drift from the union.
 
 ```typescript
-// The COMPLETE persisted set — `partialize`, dashboardStore.ts:279-302.
+// The COMPLETE persisted set — `partialize`, dashboardStore.ts:286-305.
 // Anything absent here (timeOffset, isLive, servedModelByType, …) is
 // session-only and resets on reload.
-currentView: AppView;                                // 'map' | 'country' | 'comparison'
+currentView: AppView;                                // 'map' | 'country'
 selectedCountry: string;
 timePreset: TimePreset;
 timeAnchor: TimeAnchor;
 mapMetric: MetricType;
-activeChartTab: string;              // price|load|renewables|net-position|analytics
+activeChartTab: string;              // price|load|renewables|net-position
 selectedModelByType: Record<string, string>;         // per forecast-type PIN; absent = server ladder
 forecastHiddenByType: Record<string, boolean>;       // overlay switched off, per type; absent = shown
-comparisonCountries: string[];
 sidebarOpen: boolean;
 showForecast: boolean;               // legacy — see below
 showComparisonMode: boolean;
@@ -822,9 +803,6 @@ tsoForecastType: TSOForecastType;
 showTSOComparisonMode: boolean;
 visibleRenewableTypes: string[];
 selectedMLHorizons: number[];
-comparisonMetric: 'wape' | 'mae' | 'rmse';
-comparisonForecastType: string;
-comparisonTimeRange: '7d' | '30d' | '90d';
 ```
 
 The legacy forecast fields are **not uniformly dead**. Before deleting one,
@@ -835,12 +813,12 @@ check which group it is in:
   `selectedMLHorizons` drives the multi-horizon fetch
   (`useLoadChartData.ts:107`, `:153`).
 - **Written, and read only by dead code.** `showForecast`. `setTimePreset`
-  still sets it `true` for future presets (`dashboardStore.ts:150`) and
-  `useLatestForecast` gates its query on it (`useDashboardData.ts:303`, `:312`)
+  still sets it `true` for future presets (`dashboardStore.ts:147`) and
+  `useLatestForecast` gates its query on it (`useDashboardData.ts:301`, `:310`)
   — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
   nothing, so it has no on-screen effect today.
 - **No reader at all.** `showTSOForecast`, `tsoForecastType`,
-  `visibleRenewableTypes`, `sidebarOpen`, `comparisonCountries`.
+  `visibleRenewableTypes`, `sidebarOpen`.
 
 Careful with the name `showForecast`: `useLoadChartData`/`usePriceChartData`
 declare *local* consts of that name derived from the picker
@@ -852,99 +830,43 @@ necessarily a store read.
 is deliberately **not** persisted — it describes the last network response,
 not a preference.
 
-### 6. Cross-country comparison metrics
+### 6. Cross-country comparison metrics (removed, ABL-158)
 
-`ComparisonView` and `/api/cross-country/metrics` use **WAPE**
-(`100 * sum|actual - forecast| / sum|actual|`, `crossCountryMetricsService.ts`),
-not MAPE, for the cross-country heatmap/leaderboard. Plain MAPE divides each
-point by its own (signed) actual, so negative day-ahead prices cancelled error
-instead of adding to it, and one near-zero actual could dominate the whole
-mean — measured BE solar MAPE was 148458% before the fix. WAPE returns `null`
-(not `0`) when the window's actuals sum to zero, so a country never renders as
-a flawless "0% error."
+The cross-country ranking/heatmap/leaderboard UI that consumed
+`/api/cross-country/metrics` — `ComparisonView` and everything under the
+former `client/src/components/comparison/` (`accuracyScale.ts`, `mapFill.ts`,
+`leaderboardRows.ts`, `portfolioRows.ts`, `portfolioSummary.ts`,
+`portfolioHome.ts`, `ForecastPortfolio.tsx`, `ComparisonHeatmap.tsx`,
+`ComparisonMap.tsx`, `ComparisonLeaderboard.tsx`, `CountryRanking.tsx`,
+`ComparisonFilterBar.tsx`) plus `lib/comparisonConstants.ts` — was deleted
+along with the rest of the Forecast quality page (see "Views" above). Nothing
+in the client calls `/api/cross-country/metrics` any more.
 
-Per-country TSO/ML accuracy (`ForecastTab`, `/tso-forecast/metrics`,
-`/forecast-comparison/*`) still reports **MAPE**, but only over points with a
-positive actual (`mapeSamples` in the response, always <= `dataPoints`) and
-returns `null` rather than `0` when no point qualified — e.g. solar overnight,
-where every actual is legitimately zero.
+This was a UI-only removal: `server/src/services/crossCountryMetricsService.ts`
+and the `/cross-country/metrics` route are untouched, so the numbers are still
+computed and still reachable directly over the API. The one fact worth keeping
+from what used to live here: that service reports **WAPE**
+(`100 * sum|actual - forecast| / sum|actual|`), not MAPE, because plain MAPE
+divides each point by its own signed actual — negative day-ahead prices
+cancelled error instead of adding to it, and one near-zero actual could
+dominate the whole mean (measured BE solar MAPE was 148458% before that fix,
+ABL-19). It returns `null`, not `0`, when the window's actuals sum to zero, so
+a country never scores a flawless "0% error." If a cross-country view is ever
+rebuilt on this endpoint, the colour-ranking rules ABL-19/ABL-23 established —
+rank within one forecast type on the shared teal → amber → terracotta ramp,
+never an absolute grade against a fixed cutoff (`METRIC_THRESHOLDS` tried that
+and stamped 21 of 24 load cells and 23 of 24 price cells the identical red);
+"not measured" as a hatch texture, never a paler fill — are worth reading from
+git history before reinventing them.
 
-**Colouring a WAPE is a ranking, never a grade** (ABL-19). All three tabs
-colour through `components/comparison/accuracyScale.ts`: `wapeScale()` collects
-one forecast type's measured values, `wapeColor()` places a country at its
-**rank** within them on the shared teal → amber → terracotta ramp
-(`lib/dataScale.ts`, the same three stops `EuropeMap` uses).
-
-Three properties are load-bearing:
-
-- **Per forecast type, never across types.** A 7% load WAPE and a 90% wind WAPE
-  are not the same amount of wrong. The heatmap builds one scale per column
-  (`ComparisonHeatmap.tsx`), the map one per selected type, the leaderboard one
-  per table.
-- **Rank, not magnitude.** Value-normalising into min..max was tried first and
-  fails on this data: measured 2026-08-05, 21 of the 24 load WAPEs sit in
-  2.1-8.3% and then NL is 30.4%, so a magnitude scale pins those 21 into the
-  first fifth of the ramp as one indistinguishable teal. Every caller prints the
-  WAPE next to the colour, because colour distance no longer means error
-  distance.
-- **Fewer than `MIN_COUNTRIES_FOR_SCALE` (3) measured countries gets no colour
-  at all.** With two values the colour only restates which number is bigger
-  while implying a spread nobody measured. Live example: the `hydro_total`,
-  `wind_offshore` and `biomass` heatmap columns hold BE and FR only.
-
-**"Not measured" is a hatch, never a paler fill** (ABL-23). WAPE is `null`
-whenever the window's actuals sum to zero, and most of the ~51 shapes in
-`europe.topojson` carry no entry at all — on the default 30-day window, measured
-2026-08-05, `load` and `price` cover 24 countries, `renewable`/`solar`/
-`wind_onshore` 4, and `wind_offshore`/`hydro_total`/`biomass` 2. So "we did not
-measure this" is the *majority* state of that map, not an edge case.
-
-Both choropleths render it with the same diagonal hatch, defined once in
-`components/map/NoDataHatch.tsx` (`NoDataHatchPattern` for the map,
-`NoDataSwatch` for the legend key, both keyed on a `useId()`-derived pattern id
-so two mounted maps cannot collide). It has to be a *texture*: every fill on a
-data scale is a solid colour, so a paler solid colour is the same kind of mark
-only quieter, and reads as "scored somewhere unremarkable". `ComparisonMap` drew
-exactly that — flat `--muted` at 0.5 opacity — until ABL-23.
-
-`comparison/mapFill.ts` is the decision, as a pure function, because
-`<Geographies geography={url}>` fetches its topojson and so renders no country
-shapes under `renderToString`. Three states: `ranked` (a measured WAPE on the
-ramp), `flat` (measured but unrankable — MAE/RMSE are magnitudes, not scores,
-and a sub-`MIN_COUNTRIES_FOR_SCALE` WAPE set has no ordering), `none` (the
-hatch). `usesFlatFill` keeps the legend's flat key on screen exactly when a flat
-fill is drawn. Note the map's legend now renders for every metric, not only
-WAPE — it is the only thing naming which forecast type is being coloured.
-
-The predecessors are gone, and the reason is the failure mode this repo keeps
-hitting. `METRIC_THRESHOLDS`, `getMetricColor` and `getMetricColorHSL` (in
-`lib/colors.ts`) and `getStatusLabel` (in `lib/comparisonConstants.ts`) graded a
-WAPE against fixed cutoffs — load 3%/5%, price 12%/18% — that nothing had ever
-calibrated and the data does not reach. On the default 30-day window that made
-21 of 24 load cells and 23 of 24 price cells the identical red, and stamped
-every one of the 24 countries "Needs Improvement" from 9.9% to 76.8%. Both
-files keep a comment where the code was. Green-vs-red was the second problem:
-it is the one pair a red-green colour blind viewer cannot separate, and
-`EuropeMap` had already moved the house scale off it.
-
-**The leaderboard needs a single forecast type; "All" renders a prompt, not a
-table.** It used to build each row by averaging every metric over whatever
-types that country had, which produced two wrong numbers at once. `mae` for
-`load` is megawatts and `mae` for `price` is EUR/MWh, so the MAE column added
-euros to megawatts. And coverage is not uniform — measured 2026-08-05, 20 of 24
-countries had exactly {load, price}, DE/AT had 5 types, FR/BE had 8 — so IT's
-9.9% "average WAPE" was load and price while BE's 76.8% also carried
-wind_onshore (191%) and wind_offshore (156%). The table sorted on that by
-default, ranking IT far above BE for forecasts IT is not measured on; per type,
-BE actually forecasts load better than IT (5.6% vs 8.1%). No composite is
-recoverable without a weighting the data does not define, so
-`buildLeaderboardRows` takes a concrete type and returns `[]` for `'all'`
-(`components/comparison/leaderboardRows.ts`), and the view offers type buttons
-instead. The heatmap is the cross-type view; it never averages.
-
-The "Status" column is now "Standing", carrying an exact `#rank / n` rather
-than an adjective. Unmeasurable countries are unranked, not last, and are
-excluded from `n`.
+Per-country TSO/ML accuracy (`/tso-forecast/metrics`, `/forecast-comparison/*`)
+is unrelated to this removal and still reports **MAPE**, but only over points
+with a positive actual (`mapeSamples` in the response, always <= `dataPoints`)
+and returns `null` rather than `0` when no point qualified — e.g. solar
+overnight, where every actual is legitimately zero. The client-side panel that
+used to display this by model name (`ModelComparisonPanel`, "Compare forecast
+models") was part of the per-country Forecast quality drill-down and was
+removed in the same change — see "Country dashboard tabs" above.
 
 ### 7. Data freshness — is what we are drawing actually current?
 
@@ -1257,11 +1179,11 @@ complete in 120 s during this measurement.
   Re-measured 2026-08-05: catboost 2-63h, xgboost 2-64h, chronos-2-V010 40-64h
   (the three registered ml models); the unregistered/stale ones sit inside that
   envelope too (chronos-bolt-small 1-60h, lightgbm 4-54h, tso_raw and
-  tso_corrected 24-46h). `ForecastTab`'s error-by-horizon
-  bars only ever render measured `ML D+1` (0-30h), `ML D+2` (24-54h), `TSO
-  D+1`, and `TSO D+7`; a previous version multiplied the measured D+1 error by
-  fixed factors to fabricate D+3/D+5/D+7 bars, which is why they were removed
-  rather than kept.
+  tso_corrected 24-46h). The now-removed `ForecastTab`'s error-by-horizon bars
+  only ever rendered measured `ML D+1` (0-30h), `ML D+2` (24-54h), `TSO D+1`,
+  and `TSO D+7`; an earlier version multiplied the measured D+1 error by fixed
+  factors to fabricate D+3/D+5/D+7 bars, which is why they were removed rather
+  than kept, well before ABL-158 removed the tab itself.
 
 ## Testing
 
@@ -1270,9 +1192,22 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-10: **452 client tests / 37 files**, **410 server tests /
+Green as of 2026-08-10: **380 client tests / 28 files**, **411 server tests /
 26 files**, clean typecheck. Fewer passing than that means something broke.
-(ABL-156 merged ABL-146's generation-mix x-axis fix and ABL-151's fourth
+(ABL-158 removed the Forecast quality page — `ComparisonView`, everything
+under `components/comparison/`, `ForecastTab`, `ModelComparisonPanel`,
+`horizonBars`, `modelComparison`, `useModelComparison` — taking 9 client test
+files and 92 client tests with it (452 → 380 tests, 37 → 28 files); it added
+one server test to `docs/claudeMdCitations.test.ts` and a handful of
+`migrate.test.ts` cases in place of the ones it deleted, netting the server
+figure from 410 to 411. It touched no other server file, so the server
+baseline is otherwise unchanged. Separately, as of this measurement `cd client
+&& npx vitest run` shows 20 failures — `storage.setItem is not a function` in
+zustand's persist middleware — on this workstation's Node 25.6.1, which ships
+a built-in `localStorage` that conflicts with the test setup; confirmed
+identical on unmodified `main`, so it predates and is unrelated to ABL-158.
+The 380/28 figure above is what a clean environment shows.
+ABL-156 merged ABL-146's generation-mix x-axis fix and ABL-151's fourth
 freshness verdict — both landed done but stranded on branches misleadingly
 named for other issues (ABL-101 and ABL-149, respectively, whose own fixes had
 already shipped separately) — which is where the client figure picked up 3
@@ -1310,7 +1245,13 @@ one per side of the day-ahead window; ABL-60 added
 merged five branches that had been closed but never merged, which is where
 `lib/readingFreshness.test.ts` + `lib/forecastGap.test.ts` client-side and
 `docs/claudeMdCitations.test.ts` + `utils/timestamp.test.ts`'s `toIsoUtc` cases
-server-side actually arrived, and added `release/unmergedWork.test.ts`.)
+server-side actually arrived, and added `release/unmergedWork.test.ts`. ABL-158
+deleted `comparison/accuracyScale.test.ts`, `leaderboardRows.test.ts`,
+`mapFill.test.ts`, `portfolioHome.test.ts`, `portfolioRows.test.ts`,
+`portfolioSummary.test.ts`, `dashboard/ModelComparisonPanel.test.tsx`,
+`horizonBars.test.ts` and `modelComparison.test.ts` — the ABL-153/ABL-150
+history above still describes when those files arrived, not their absence
+today — and added `migrate.test.ts` cases for the v9 clause in their place.)
 
 ### Before you mark an issue `done`
 
@@ -1338,9 +1279,8 @@ at the moment you close an issue, which is the moment the defect is created.
 
 Two conventions, and they are for different layers.
 
-**Pure helpers get a colocated `.test.ts`.** `horizonBars.ts`, `sourceRows.ts`,
-`windowLabel.ts`, `lib/dataScale.ts`, `comparison/accuracyScale.ts`,
-`comparison/leaderboardRows.ts`, `comparison/mapFill.ts`, `store/migrate.ts`,
+**Pure helpers get a colocated `.test.ts`.** `sourceRows.ts`,
+`windowLabel.ts`, `lib/dataScale.ts`, `store/migrate.ts`,
 `dashboard/degenerateForecastNote.ts`, `config/forecastModels.ts`,
 `server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
 (which now classifies both the forecast and the actuals series),
@@ -1455,8 +1395,8 @@ The second rule is the one that earns its keep: of the eight stale citations
 this check found on arrival, the first rule caught three and the second caught
 seven. It is deliberately narrow — skipped for bare `:NNN` continuations, which
 idiomatically point at a *use* site rather than at the declaration
-(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:56` and
-applied at `:116`), and skipped when the named symbol is not a top-level
+(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:52` and
+applied at `:112`), and skipped when the named symbol is not a top-level
 declaration (`ENERGY_DB_PATH` is only ever read off `process.env`, so a citation
 naming it is not judged). Both exclusions were needed to reach zero false
 positives across the whole file. A check that cries wolf gets disabled.
@@ -1677,9 +1617,9 @@ interface TSOForecastAccuracyMetrics {
   both D+1 and D+7 registered; `solar`/`wind_onshore`/`wind_offshore` have D+1
   only; `price`/`renewable`/`biomass`/`hydro_total`/`net_position` have no TSO
   model at all — check `forecastModels.ts` before assuming a bug
-- Note the picker does not render on the Generation or Forecast-accuracy tabs
-  at all (`TABS_WITH_MODEL_PICKER`, `CountryDashboardView.tsx:56`, applied at
-  `:116`), so there is no "picker that does nothing" to hit there
+- Note the picker does not render on the Generation tab at all
+  (`TABS_WITH_MODEL_PICKER`, `CountryDashboardView.tsx:52`, applied at `:112`),
+  so there is no "picker that does nothing" to hit there
 - Check the API response has data for the selected country
 - Verify database tables have data: `energy_load_forecast`, `energy_generation_forecast`
 

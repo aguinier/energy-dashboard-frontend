@@ -30,9 +30,9 @@ const COUNTRY_NAME_MAP: Record<string, string> = {
 // Load is a magnitude → single-hue teal ramp, light → dark.
 // Price / renewable share carry real polarity (cheap/expensive, clean/dirty)
 // → diverging clean (green) → medium (amber) → dirty (terracotta).
-// The three diverging stops moved to lib/dataScale.ts when ComparisonView
-// adopted the same ramp — one definition, so the two views cannot disagree
-// about which colour a given position on the scale is.
+// The three diverging stops live in lib/dataScale.ts, shared rather than a
+// private copy here, so any other colour-coded metric cannot disagree with
+// this map about which colour a given position on the scale is.
 const CLEAN = SCALE_CLEAN;
 const MEDIUM = SCALE_MEDIUM;
 const DIRTY = SCALE_DIRTY;

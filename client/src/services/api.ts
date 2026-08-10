@@ -23,12 +23,6 @@ import type {
   TSOForecastAccuracyDataPoint,
   TSOForecastAccuracyMetrics,
   DataFreshness,
-  MLAccuracyCoverage,
-  MLForecastAccuracyMetrics,
-  MLForecastAccuracyResult,
-  ForecastComparisonSummary,
-  CrossCountryMetrics,
-  CrossCountryMetricsEntry,
   NetPositionResponse,
   ForecastModelRegistry,
 } from '@/types';
@@ -289,27 +283,6 @@ export async function fetchTSOLoadForecastAccuracy(params: {
   return { data: unwrap(data, endpoint), metrics: data.metrics };
 }
 
-export async function fetchTSOForecastMetrics(params: {
-  countryCode: string;
-  start?: string;
-  end?: string;
-}): Promise<{
-  load: TSOForecastAccuracyMetrics;
-  solar: TSOForecastAccuracyMetrics;
-  wind_onshore: TSOForecastAccuracyMetrics;
-  wind_offshore: TSOForecastAccuracyMetrics;
-}> {
-  const { countryCode, ...queryParams } = params;
-  const endpoint = `/tso-forecast/metrics/${countryCode}`;
-  const { data } = await api.get<ApiResponse<{
-    load: TSOForecastAccuracyMetrics;
-    solar: TSOForecastAccuracyMetrics;
-    wind_onshore: TSOForecastAccuracyMetrics;
-    wind_offshore: TSOForecastAccuracyMetrics;
-  }>>(endpoint, { params: queryParams });
-  return unwrap(data, endpoint);
-}
-
 // Data Freshness
 export async function fetchDataFreshness(countryCode: string): Promise<DataFreshness> {
   const endpoint = `/data-freshness/${countryCode}`;
@@ -332,115 +305,6 @@ export async function fetchInitialCountryData(params: {
     loadData: LoadDataPoint[];
   }>>('/dashboard/initial', { params });
   return unwrap(data, '/dashboard/initial');
-}
-
-// ============================================================================
-// Forecast Comparison API (TSO vs ML Analytics)
-// ============================================================================
-
-/**
- * Fetch forecast comparison summary for all types
- */
-export async function fetchForecastComparisonSummary(params: {
-  countryCode: string;
-  start?: string;
-  end?: string;
-}): Promise<ForecastComparisonSummary> {
-  const { countryCode, ...queryParams } = params;
-  const endpoint = `/forecast-comparison/${countryCode}/summary`;
-  const { data } = await api.get<ApiResponse<ForecastComparisonSummary>>(
-    endpoint,
-    { params: queryParams }
-  );
-  return unwrap(data, endpoint);
-}
-
-/**
- * Accuracy of one named ML model, for one country/type/horizon window.
- *
- * The endpoint also returns the hourly forecast-vs-actual points; this function
- * drops them. Callers here want the aggregate, and a per-model comparison
- * fetches once per registered model.
- *
- * `model` is resolved strictly server-side (`resolveAccuracyModel`): an
- * unregistered id is a 400, never a silent substitution of the production
- * model. Omitting `model` leaves the query unpinned — the latest run per target
- * timestamp whichever model produced it — and `coverage`/`model` describe that,
- * so do not omit it when you intend to attribute the numbers to a model.
- */
-export async function fetchMLForecastAccuracy(params: {
-  countryCode: string;
-  forecastType: string;
-  start?: string;
-  end?: string;
-  horizon?: MLHorizon;
-  model?: string;
-}): Promise<MLForecastAccuracyResult> {
-  const { countryCode, ...queryParams } = params;
-  const endpoint = `/forecast-comparison/${countryCode}/ml-accuracy`;
-  const { data } = await api.get<{
-    success: boolean;
-    data: unknown[];
-    metrics: MLForecastAccuracyMetrics;
-    meta: { coverage: MLAccuracyCoverage; model: string | null };
-  }>(endpoint, { params: queryParams });
-
-  // `unwrap` is called for its envelope guard, not its return value: an HTML
-  // error page (which this API still serves for 4xx whenever client/dist
-  // exists) would otherwise arrive as `metrics: undefined` and render as a row
-  // of dashes — "not measurable" — when the truth is "the request failed".
-  unwrap(data, endpoint);
-  if (data.metrics == null || data.meta?.coverage == null) {
-    throw new Error(
-      `Malformed response from ${endpoint}: expected { metrics, meta.coverage }`,
-    );
-  }
-
-  return { metrics: data.metrics, coverage: data.meta.coverage, model: data.meta.model ?? null };
-}
-
-// ============================================================================
-// Cross-Country Comparison API
-// ============================================================================
-
-/**
- * Pivot API response from { forecastType: { country: metrics } }
- * to { country: { forecastType: metrics } } which the UI components expect.
- */
-function pivotMetrics(
-  raw: Record<string, Record<string, CrossCountryMetricsEntry>>,
-): CrossCountryMetrics {
-  const result: CrossCountryMetrics = {};
-  for (const [type, countries] of Object.entries(raw)) {
-    for (const [country, metrics] of Object.entries(countries)) {
-      if (!result[country]) result[country] = {};
-      result[country][type] = metrics;
-    }
-  }
-  return result;
-}
-
-/**
- * Fetch cross-country forecast accuracy metrics for all countries.
- *
- * Drives ComparisonView's portfolio, fetched unconditionally on every visit.
- * The 90d comparisonTimeRange is a known-slow cold query (ABL-150 moved it off
- * Express's event loop, but did not make it fast) — measured against
- * acceptance 2026-08-10, cold 90d latency reached 24.00s, well past the 15s
- * global default. ComparisonView already renders a skeleton for the whole
- * `isLoading` span, so a longer bound here is a longer skeleton, not a new
- * failure mode (ABL-155).
- */
-export async function fetchCrossCountryMetrics(params?: {
-  forecastType?: string;
-  start?: string;
-  end?: string;
-}): Promise<CrossCountryMetrics> {
-  const { data } = await api.get<ApiResponse<Record<string, Record<string, CrossCountryMetricsEntry>>>>(
-    '/cross-country/metrics',
-    { params, timeout: LONG_RANGE_TIMEOUT_MS }
-  );
-  return pivotMetrics(unwrap(data, '/cross-country/metrics'));
 }
 
 /**
