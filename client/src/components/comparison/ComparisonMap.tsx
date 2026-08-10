@@ -57,7 +57,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
   }, []);
 
   const handleClick = useCallback((code: string) => {
-    if (data[code]) goToCountry(code);
+    if (data[code]) goToCountry(code, 'analytics');
   }, [data, goToCountry]);
 
   // The scale is this forecast type's own observed spread across countries —

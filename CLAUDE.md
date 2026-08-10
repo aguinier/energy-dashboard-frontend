@@ -42,8 +42,8 @@ energy-dashboard-frontend/
 │   └── src/
 │       ├── views/                    # Top-level routed views
 │       │   ├── MapView.tsx               # Landing page — Europe choropleth
-│       │   ├── CountryDashboardView.tsx  # Per-country tabs (price/load/generation/net position/forecast accuracy)
-│       │   └── ComparisonView.tsx        # Forecast-quality portfolio plus cross-country heatmap/map/leaderboard
+│       │   ├── CountryDashboardView.tsx  # Per-country tabs plus forecast-quality drill-down
+│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: variable cards, matrix, type-local ranking/map, evidence disclosure
 │       ├── components/
 │       │   ├── charts/               # Recharts-based primitives, shared across tabs
 │       │   │   ├── AbleLineChart.tsx     # Line + forecast overlay (load, price, net position)
@@ -56,7 +56,7 @@ energy-dashboard-frontend/
 │       │   ├── dashboard/            # Country-view composition
 │       │   │   ├── PriceTab.tsx, LoadTab.tsx, GenerationTab.tsx,
 │       │   │   │   NetPositionTab.tsx, ForecastTab.tsx  # One file per tab
-│       │   │   ├── AbleCard.tsx          # Card shell all five tabs wrap their charts in
+│       │   │   ├── AbleCard.tsx          # Card shell dashboard chart compositions wrap their charts in
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
 │       │   │   ├── ForecastGapNotice.tsx # "<model> has no forecast here" + clear-the-pin button
 │       │   │   ├── TimePicker.tsx        # categorised presets + window nav
@@ -160,8 +160,8 @@ it at `http://localhost:3001`) and run the local server against
 
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
-- **`CountryDashboardView`** — five tabs per country: Price, Load, Generation, Net position, Forecast accuracy.
-- **`ComparisonView`** — forecast-quality portfolio (all supported variables, including truthful unavailable states), plus cross-country heatmap / map / leaderboard filtered by forecast type and metric (`client/src/components/comparison/ForecastPortfolio.tsx`).
+- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:121`).
+- **`ComparisonView`** — the Forecast quality portfolio home: variable-level WAPE cards and a full-width country × forecast-type matrix lead into a type-local country ranking/map and disclosed error evidence (`client/src/views/ComparisonView.tsx:27`).
 
 ### 2. Forecast model selection
 
@@ -312,60 +312,6 @@ Each tab is self-contained: a React Query hook (`useLoadChartData`,
 `usePriceChartData`, `useNetPositionData`, `useGenerationSeries`) feeds an
 adapter — `chartAdapters.ts` for the line charts, `dashboard/generationSeries.ts`
 for the stacked mix — which feeds an `Able*` chart primitive.
-
-**A stored forecast for a past hour is drawn, not truncated at `now`**
-(ABL-92). `AbleLineChart` used to start the dashed forecast path at the now
-marker unless the caller passed `overlay`, and `LoadTab`/`PriceTab`/
-`NetPositionTab` all pass nothing. Measured against the replica 2026-08-09,
-FR/`load` over a 7d window is served **204** forecast points of which **168 are
-past-dated**, so 82% of the series was discarded at draw time. With FR's actuals
-running 11.7h behind, that left a band carrying *neither* series — the forecast
-resumed at 44.5 GW where the actual had ended near 36.5 GW and the two never
-touched, so forecast-vs-realized could not be read off the chart at all.
-
-Nothing upstream was at fault, which is worth knowing before re-diagnosing this
-class of report as a window or query bug: the hook already requests window-start
-→ max(window-end, now+48h) (`getMLForecastDateRange`,
-`useDashboardData.ts:319`), `queryForecasts` (`forecastService.ts:40`) has no
-future-only bound, and `buildSeriesGrid` (`chartAdapters.ts:33`) bins a
-past-dated point like any other. It was dropped at the last step, when the path
-was built.
-
-Two properties now hold, and `components/charts/AbleLineChart.test.tsx` pins
-both by rendering the real SVG and reading the path geometry back:
-
-- **Both series draw wherever they hold a value, and neither is truncated at
-  now** (`AbleLineChart.tsx:233`). Overlapping the actuals *is* the feature —
-  it is the only place on the dashboard where a forecast can be read against
-  what happened. `overlay` survives but now means only "suppress the now
-  marker" (future shading, rule, pill, trailing-gap label) for a chart that is
-  entirely historical; it no longer decides which forecast points exist.
-- **A gap the series never filled stays a gap.** The path builder drops empty
-  slots and joins the rest into one stroke, which would draw a skipped model run
-  as a smooth dashed line across hours nothing was published for.
-  `lib/seriesSegments.ts`'s `drawableRuns` (`seriesSegments.ts:47`) breaks the
-  stroke wherever two consecutive present points sit further apart than **1.5x
-  the series' own median spacing**. The step is measured rather than assumed
-  because the grid is always hourly while the data is not: `30d` fetches
-  **daily** granularity (`getGranularityForPreset`, `useDashboardData.ts:155`),
-  so 23 of every 24 slots are legitimately empty and a "break on any empty slot"
-  rule would render that window as ~30 disconnected dots. The 1.5x is tolerance
-  for a DST-length day (23 or 25 slots, where no sample is missing at all), not
-  a judgement about how large a hole may be bridged — a genuinely missing sample
-  is >= 2x the step and breaks under any factor below 2.
-
-Measured on the replica 2026-08-09, `load` forecast coverage over 30 days is
-hole-free for **all 24** countries that have any, so the segmentation changes
-nothing on today's data. It is what keeps a future missed run from being drawn
-as a forecast that was never made.
-
-The forecast and the actuals are on the same clock, and that was checked rather
-than assumed — both endpoints return the same `T`-separated, offset-free form,
-so V8 parses both as local and neither is shifted relative to the other.
-Cross-correlating FR/`load` over the 7d window (2026-08-09, local server on the
-replica), r peaks at **lag 0** (0.795) and MAE is minimised there (2,439 MW,
-5.67% MAPE), falling off symmetrically to r=0.73 at ±1h. The visible divergence
-between the two lines is xgboost's real error, not a misalignment.
 
 - **`LoadTab`** — `AbleLineChart` (actual + one dashed forecast series, ml or
   TSO per the picker) and an `AblePriceHeatmap` of load by hour x day.
@@ -572,7 +518,7 @@ between the two lines is xgboost's real error, not a misalignment.
 
   The ingest guard is `../energy-data-gathering/src/published_points.py`
   (`drop_unpublished_zeros_series`, wired at
-  `../energy-data-gathering/src/entsoe_client.py:1961`), shared
+  `../energy-data-gathering/src/entsoe_client.py:1941`), shared
   with the load path rather than reimplemented — this was the same defect's
   second occurrence, after ABL-50. It refuses a row only when it is **both**
   forward-filled **and** exactly `0.0`. Do not tighten that to "store only
@@ -589,8 +535,7 @@ between the two lines is xgboost's real error, not a misalignment.
   06:54Z** and has been up 7 days, so *every* ingest fix merged since is
   missing from prod — `12c5a6b` (ABL-50 load guard), `1dc6e99` (this one),
   `6299e98` (ABL-54 day-ahead price window), `4e99322` and `941d258`
-  (crossborder), and `276c266` (ABL-86, the credential redaction, merged
-  2026-08-09). Tracked on **ABL-71**. Do not read ABL-63 as having shipped
+  (crossborder). Tracked on **ABL-71**. Do not read ABL-63 as having shipped
   any of them: it deployed the *dashboard-frontend* container, so the ABL-55
   merge being an ancestor of this module's local main says nothing about prod.
   Note this cuts both ways for ABL-54 — its **client** half is live and its
@@ -601,26 +546,6 @@ between the two lines is xgboost's real error, not a misalignment.
   deleting them is a separate CEO decision (**ABL-67**, blocked on the board),
   not yet taken. So the read-side guards below remain the only thing keeping
   those rows off a chart — do not remove them when the ingest fix ships.
-
-  **Those read-side guards are verified live on prod**, measured 2026-08-08
-  against `http://192.168.86.36:3001` (read-only) rather than inferred from
-  the ABL-63 deploy. `/api/net-position/GR` over a window containing a
-  fabricated day returns `actual: []` with `data.meta.actual_coverage:
-  'degenerate_zero'` and `degenerate_actual: { points: 24, max_abs_mw: 0 }` —
-  for 2026-03-14 and 2026-07-24 alike — and `last_seen` reads
-  `2025-09-30T21:00:00`, the corrected newest-*usable* day rather than the
-  naive `MAX(timestamp_utc)` of 2026-07-24. So the 216 rows are contained on
-  screen today: ABL-67 and ABL-71 are about the stored rows and about future
-  writes, not about a wrong number on a live chart. Re-measure rather than
-  assume, because the two halves ship from different containers — the read
-  guard is this module's (`getNetPositionActualSeries`,
-  `netPositionService.ts:107`), the ingest guard is the sibling's.
-
-  Note prod holds **no** GR `net_position` row at all in 2026-08-01..09, so
-  nothing new has been fabricated this month. That is *not* evidence the
-  ingest guard shipped: the fabrications are episodic (13 day-buckets in five
-  months), so a quiet fortnight is what the undeployed state looks like too.
-  The container grep is the only thing that settles it.
 
   The date the tab prints is **not** `MAX(timestamp_utc)` any more — see
   `getLastSeen`, which takes the newest *usable* day. That matters because GR's
@@ -711,7 +636,7 @@ between the two lines is xgboost's real error, not a misalignment.
   Known gap, filed separately: with both series withheld, GR's card is now
   entirely an empty state — which is correct, but it means the preset button
   says "30d" beside a card with no axis at all. `AbleLineChart`'s day-marker
-  derivation (`AbleLineChart.tsx:271`) was the reason the pre-ABL-35 24-hour
+  derivation (`AbleLineChart.tsx:241`) was the reason the pre-ABL-35 24-hour
   version carried no dates either.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
@@ -1065,7 +990,7 @@ clear is furniture.
   day's local start, far more than the ≤3h spread between European market
   timezones. Testing the day's *end* would mark BG (UTC+3) stale while complete.
 
-**Known limit, stated rather than papered over.** AL's 9.4h overlaps a
+**Known limit, stated rather than papered over.** AL's ordinary 9.4h overlaps a
 fast publisher's age after one missed pass (FR would reach ~15.4h), so no
 fleet-wide threshold separates "chronically late" from "missed one pass". This
 catches a *sustained* outage, not every dropped pass. Doing better needs a
@@ -1073,18 +998,6 @@ per-country baseline the database cannot supply: `publication_timestamp_utc` is
 rewritten on every re-fetch, so it dates the last pass that touched a row, not
 the pass that first stored it. That is an ingest-side fix — see ABL-60's
 remaining scope.
-
-**That 9.4h is a snapshot, not AL's character** (ABL-84). The 2026-08-07
-measurement above happened to catch AL mid-publication; AL does not run
-steadily 9.4h behind. It publishes in bursts and goes dark in between, so its
-age sawtooths from ~1h to *days*. Whole-history gaps over 6h in AL
-`energy_load`, measured on prod 2026-08-09: **2024-12-31 → 2025-12-17 (8,401h)**,
-2025-12-18 → 2025-12-29 (265h), 2025-12-30 → 2026-02-16 (1,147h),
-2026-06-28 → 2026-07-08 (232h), thirteen single-day 24.2h gaps across 2022-23,
-and the open one since 2026-08-06 21:45. Read against that record, an AL
-`stale` verdict is the *expected* state a good fraction of the time, and is
-still the correct verdict — do not retune the threshold to silence it. The
-number to distrust is the 9.4h, not the pill.
 
 **The header pill** renders it through `layout/freshnessPill.ts` (pure,
 colocated test). Three things worth knowing before changing it:
@@ -1114,7 +1027,7 @@ always in the reassuring direction.
 Two tables, both written from **one** A75 fetch per country per window
 (`../energy-data-gathering/src/fetch_renewable.py` →
 `ENTSOEClient.query_generation_and_renewable_with_metadata`,
-`../energy-data-gathering/src/entsoe_client.py:1339`). Never add a second
+`../energy-data-gathering/src/entsoe_client.py:1187`). Never add a second
 request to fill one of them.
 
 - **`energy_generation`** — the whole document. 21 `*_mw` columns, one per
@@ -1256,35 +1169,6 @@ complete in 120 s during this measurement.
   by 2, against 33 for `wind_onshore_mw` — a country showing `—` for Nuclear
   is normal, not a bug. See "Generation data" below for the NULL/0 and sign
   rules, and `dashboard/generationSeries.ts` for how the columns reach the UI.
-- **AL load, whenever Albania feels like it — and never at 15 minutes**
-  (ABL-84). Separate from the A75 gap above, and a *different* shape: AL's
-  `energy_load` is not dead, it is **intermittent**. It stopped at
-  `2026-08-06 21:45` and prod read 55.9h stale on 2026-08-09. That is upstream,
-  measured rather than inferred: asking ENTSO-E for A65/`processType=A16` with
-  `periodEnd` at 2026-08-09 23:00 returns a document whose only `Period` ends
-  **`2026-08-06T22:00Z`** — nothing newer exists to fetch. The control that
-  rules out our end is the *same* document type one process type over:
-  A65/`A01` (day-ahead load forecast) over that same window returns points
-  through `2026-08-09T22:00Z`, so the token, the `10YAL-KESH-----5` domain and
-  the endpoint are all fine. The ingest is likewise fine — its passes keep
-  succeeding (2026-08-08 18:30 retrieved 492 rows) and the count only falls
-  because the 7-day window slides. **The sporadic `400`/`503` lines against AL
-  in `cron_update.log` are transient and are not the cause**: passes on either
-  side of them succeeded and `MAX(timestamp_utc)` never moved. Do not
-  re-diagnose this from the error lines alone.
-  The second half matters more for anything reading AL at sub-hourly
-  resolution: **AL publishes hourly values inside a `PT15M` declaration.** Its
-  `Point`s sit at positions 1, 5, 9, … (spacing 4), and entsoe-py forward-fills
-  them, so 24 published values become 96 stored rows. Verified on prod
-  2026-08-09 — AL's 2026-08-05 holds 96 rows in exactly 24 distinct-value runs,
-  run-length histogram `{4: 24}`. So **75% of AL's `energy_load` rows are
-  forward-filled**, and its newest row's timestamp overstates the reading's
-  recency by up to 45 minutes. This is not the ABL-50/ABL-55 fabrication —
-  the underlying hourly values are genuinely published and non-zero, and
-  `drop_unpublished_zeros_series` correctly leaves them alone — but do not
-  present AL as a 15-minute measured series. Window averages are unbiased (each
-  hour carries four equal rows); a 15-minute chart of AL is a staircase by
-  construction, not a data artefact to smooth out.
 - **A real publication time.** `publication_timestamp_utc` exists on eight
   tables and **does not mean what its name says**. It is filled from the ENTSO-E
   response's `createdDateTime`, but ENTSO-E builds the document *on request* and
@@ -1346,26 +1230,7 @@ complete in 120 s during this measurement.
   upstream stall. (ABL-60 turned the "is this stream current" half of this into
   a served verdict — see "Data freshness" above. That answers *whether* a stream
   is behind; this bullet is why a given zone being behind is usually not a bug
-  to file. AL's 9.4h reading on 2026-08-07 is one reason the threshold is 18h —
-  but see "Data freshness" above: that figure is a snapshot of a bursty
-  publisher, not a steady lag.)
-- **A hole older than 7 days, for the zones that publish late.** The
-  self-healing described above has a hard edge: the cron refetches a rolling
-  **7-day** window, so an upstream outage *longer than 7 days* is never
-  re-requested once it slides out — even if the TSO publishes it later.
-  Measured 2026-08-09 by probing ENTSO-E with the pipeline's own client for
-  windows prod has **zero** rows in: AL 2026-06-29 → 07-08 now returns **169
-  points**, AL 2026-01-05 → 01-20 returns **358**, and CY 2026-05-21 → 06-18
-  returns **1,344**. That data is sitting upstream and we will never ask for it
-  again. Contrast MK (313h and 193h gaps → **0 points**) and MD (1,056h gap →
-  **0 points**), which genuinely were never published — so this is late
-  publication by specific zones, not a fleet-wide ingest defect. Fleet
-  inventory of >6h `energy_load` gaps over the trailing 90 days: MK 1,161h,
-  MD 1,056h, CY 689h, AL 232h, BA 56h, ME 24h, SE 24h — **3,242h** total, of
-  which the AL and CY portions are recoverable and the MK/MD portions are not.
-  Widening the window or adding a catch-up pass is an **ingest-side** change in
-  the sibling module, so it is proposed rather than done here — filed as
-  ABL-85. Do not interpolate across these holes to make a chart look continuous.
+  to file. AL's ordinary ~9.4h lag is exactly why the threshold there is 18h.)
 - **Forecast horizons beyond ~D+2.** `forecasts.horizon_hours` runs roughly
   2-64h depending on model — there is no stored forecast for D+3 and beyond.
   Re-measured 2026-08-05: catboost 2-63h, xgboost 2-64h, chronos-2-V010 40-64h
@@ -1384,7 +1249,7 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-09: **453 client tests / 34 files**, **406 server tests /
+Green as of 2026-08-08: **436 client tests / 32 files**, **406 server tests /
 26 files**, clean typecheck. Fewer passing than that means something broke.
 (The server figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
@@ -1408,9 +1273,7 @@ one per side of the day-ahead window; ABL-60 added
 merged five branches that had been closed but never merged, which is where
 `lib/readingFreshness.test.ts` + `lib/forecastGap.test.ts` client-side and
 `docs/claudeMdCitations.test.ts` + `utils/timestamp.test.ts`'s `toIsoUtc` cases
-server-side actually arrived, and added `release/unmergedWork.test.ts`; ABL-92
-added `lib/seriesSegments.test.ts` and `components/charts/AbleLineChart.test.tsx`
-client-side and touched no server file.)
+server-side actually arrived, and added `release/unmergedWork.test.ts`.)
 
 ### Before you mark an issue `done`
 
@@ -1447,7 +1310,7 @@ Two conventions, and they are for different layers.
 `server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
-`lib/readingFreshness.ts`, `lib/forecastGap.ts`, `lib/seriesSegments.ts`,
+`lib/readingFreshness.ts`, `lib/forecastGap.ts`,
 `server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`.
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
@@ -1814,27 +1677,12 @@ interface TSOForecastAccuracyMetrics {
   which is past the longest scheduled gap plus the slowest TSO's own lag: at
   least one full ingest pass stored nothing for that country. Settle it on prod
   (`/app/logs/pipeline.log`), not the workstation replica — the replica can be
-  hours behind prod even with a fresh mtime. **Do not paste a raw excerpt of
-  those logs anywhere** — see the warning below.
+  hours behind prod even with a fresh mtime.
 - `stale` on `price` means the day-ahead result does not reach the market day it
   should. After 14:00 UTC that is tomorrow. This is ABL-51's signature.
 - Some zones are permanently stale and always will be: GB's load stops
   2021-06-14 and UA's 2022-02-25. That is the correct reading, not a defect to
   suppress.
-- **The prod ingest logs contain a live credential in cleartext — redact
-  before quoting one** (ABL-86). entsoe-py puts the ENTSO-E API key in every
-  request URL as `securityToken=`, `requests` builds an `HTTPError`'s message
-  out of the full URL, and the ingest logged that message verbatim. So every
-  failed-request line in `/app/logs/pipeline.log` (~215 MB) and
-  `/app/logs/cron_update.log` (~70 MB) carries the key — including the AL
-  `400`/`503` lines this doc points you at above. This is the *only* diagnostic
-  in this repo's workflow that leaks a secret, and it leaks it into exactly the
-  places excerpts get pasted: an issue comment, a document, a chat message.
-  The ingest-side fix is merged (`../energy-data-gathering/src/log_redaction.py`
-  — new lines read `securityToken=<redacted>` with the rest of the URL intact),
-  but it is **not deployed** and it does **not** rewrite what is already
-  written. Scrubbing the existing files and rotating the key are with the
-  Board. Until both land, treat every line of those two files as secret-bearing.
 - See "Data freshness" above before changing a threshold — both are sized from
   measurements recorded there.
 
@@ -1857,19 +1705,6 @@ interface TSOForecastAccuracyMetrics {
 - This is why window predicates go through `rangeClause`/`rangeArgs` rather
   than wrapping the column in `REPLACE`: see "Timestamp storage: two separators
   in one column".
-
-**The forecast line only starts at the `now` marker:**
-- Fixed under ABL-92 — if you see it again, the regression is in the path
-  builder, not upstream. Check `AbleLineChart.tsx:233` (`forecastPath`) before
-  the hook or the query: the server serves past-dated targets, and measured on
-  2026-08-09 FR/`load` over 7d is 204 points of which 168 are past-dated.
-- The tell that it is this and not missing data: the gap runs from the last
-  actual to `now` exactly, and the forecast resumes at a value that does not
-  join the actual. `components/charts/AbleLineChart.test.tsx` asserts the
-  rendered path starts at the chart's left edge rather than at the now marker.
-- Do not "fix" it by extending the actual line to now or by back-casting the
-  forecast. The gap between the last actual and now is real; `trailingGapLabel`
-  is what names it.
 
 **A series is short by exactly one day, at the end of the window:**
 - Almost certainly a hand-rolled timestamp bound instead of

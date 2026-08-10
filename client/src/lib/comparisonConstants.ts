@@ -8,8 +8,6 @@ export const FORECAST_TYPE_CONFIG: Record<string, { label: string; shortLabel: s
   wind_offshore: { label: 'Wind Offshore',  shortLabel: 'W.Off', unit: 'MW' },
   hydro_total:   { label: 'Hydro Total',    shortLabel: 'Hydro', unit: 'MW' },
   biomass:       { label: 'Biomass',        shortLabel: 'Bio',   unit: 'MW' },
-  // Net position has a country-level forecast view, but the cross-country
-  // accuracy endpoint does not currently return paired metrics for it.
   net_position:  { label: 'Net position',   shortLabel: 'Net pos.', unit: 'MW' },
 };
 
