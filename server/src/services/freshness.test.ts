@@ -5,6 +5,7 @@ import {
   classifyMeasuredStream,
   classifyDayAheadStream,
   MEASURED_STALE_AFTER_HOURS,
+  ENDED_AFTER_HOURS,
   DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR,
 } from './freshness.js';
 
@@ -101,11 +102,23 @@ describe('classifyMeasuredStream — age is the whole question', () => {
     expect(mk.ageHours).toBeCloseTo(34.17, 1);
   });
 
-  it('calls a zone that left the data years ago stale, not live', () => {
-    // GB stops at 2021-06-14 and UA at 2022-02-25. The pill used to pulse green
-    // beside "5 years ago" — the text was right and the mark contradicted it.
-    expect(classifyMeasuredStream('2021-06-14T09:00:00', now).status).toBe('stale');
-    expect(classifyMeasuredStream('2022-02-25T13:00:00', now).status).toBe('stale');
+  it('separates an active stall from a series that ended upstream', () => {
+    const measuredAt = new Date('2026-08-10T12:04:00Z');
+
+    // Production measurement: MK generation was the worst active stall at
+    // 111h; AL generation was the youngest permanently ended series at 1,143h.
+    expect(classifyMeasuredStream('2026-08-05 21:00:00', measuredAt).status).toBe('stale');
+    expect(classifyMeasuredStream('2026-06-23 21:00:00', measuredAt).status).toBe('ended');
+    expect(classifyMeasuredStream('2021-06-14T09:00:00', measuredAt).status).toBe('ended');
+    expect(classifyMeasuredStream('2022-02-25T13:00:00', measuredAt).status).toBe('ended');
+  });
+
+  it('self-clears the ended verdict as soon as a newer row lands', () => {
+    const endedAt = new Date(now.getTime() - (ENDED_AFTER_HOURS + 1) * 3_600_000);
+    const liveAt = new Date(now.getTime() - 1 * 3_600_000);
+
+    expect(classifyMeasuredStream(endedAt.toISOString(), now).status).toBe('ended');
+    expect(classifyMeasuredStream(liveAt.toISOString(), now).status).toBe('live');
   });
 
   it('distinguishes "we hold nothing" from "what we hold is old"', () => {
@@ -133,6 +146,11 @@ describe('classifyMeasuredStream — age is the whole question', () => {
     // "tighten" detection, this is the case that should stop them.
     expect(MEASURED_STALE_AFTER_HOURS).toBeGreaterThan(9.5);
     expect(MEASURED_STALE_AFTER_HOURS).toBeLessThan(34);
+  });
+
+  it('sizes ended beyond active stalls and below the youngest ended series', () => {
+    expect(ENDED_AFTER_HOURS).toBeGreaterThan(6 * 111.1);
+    expect(ENDED_AFTER_HOURS).toBeLessThan(1143.1);
   });
 });
 
@@ -173,6 +191,14 @@ describe('classifyDayAheadStream — coverage, not age', () => {
     // Before the cutoff we require today, and this one does not even reach that.
     const morning = new Date('2026-08-07T07:10:00Z');
     expect(classifyDayAheadStream('2026-08-05 21:45:00', morning).status).toBe('stale');
+  });
+
+  it('calls a long-ended day-ahead series ended rather than permanently stale', () => {
+    const now = new Date('2026-08-10T12:04:00Z');
+
+    // GB and UA generation forecasts ended with their other upstream series.
+    expect(classifyDayAheadStream('2021-06-14 23:30:00', now).status).toBe('ended');
+    expect(classifyDayAheadStream('2022-02-25 21:00:00', now).status).toBe('ended');
   });
 
   it('switches its requirement exactly at the cutoff hour', () => {
