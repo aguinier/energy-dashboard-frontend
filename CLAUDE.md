@@ -1735,3 +1735,24 @@ interface TSOForecastAccuracyMetrics {
 - To reproduce this class of bug at all you need `client/dist/index.html` to
   exist — it is gitignored and absent in a fresh checkout, which is why it
   survived. Create one, start the server, and curl an API path.
+
+**Every `/api/...` route returns an HTML 404 from `localhost:3001`:**
+- Read the response headers before debugging routes. If the same HTML 404
+  appears through Vite and directly on `localhost:3001`, with a `Server:` header
+  we never set (observed: `Server: gunicorn`), you are not talking to our server.
+  An unmatched `/api` route from our Express app is a JSON
+  `{ success, error, code }` envelope with no `Server` header; that response
+  contract is pinned in `server/src/app.test.ts:117`.
+- Diagnose it in order: run `curl -sI http://localhost:3001/api/health` and read
+  `Server` and `Content-Type`; run `docker ps` to confirm
+  `energy-dashboard-frontend` is up and see which port it publishes; then
+  compare `localhost:3001` with
+  `http://192.168.86.237:3001/api/countries`. If the LAN address returns JSON
+  while loopback returns HTML, a listener bound specifically to
+  `127.0.0.1:3001` is winning over the container's wildcard `0.0.0.0:3001`
+  bind: on Windows, a specific-address bind takes precedence over a wildcard
+  bind for traffic to that address.
+- This is an environment problem, not a repo problem. Do not "fix" it by
+  changing the default proxy target in `client/vite.config.ts`. After editing
+  this file, `cd server && npx vitest run` checks its `file:line` citations via
+  `docs/claudeMdCitations.test.ts`.
