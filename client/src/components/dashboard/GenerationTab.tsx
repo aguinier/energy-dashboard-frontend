@@ -88,6 +88,7 @@ export function GenerationTab() {
               labels={GENERATION_GROUP_LABELS}
               colors={GENERATION_GROUP_COLORS}
               nowIndex={nowIndex}
+              preset={timePreset}
             />
             {/*
               The legend lists only the groups actually drawn. A country that
