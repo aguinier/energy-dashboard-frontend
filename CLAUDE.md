@@ -147,12 +147,13 @@ container instead, and the built bundle (`npm start`) does not read `server/.env
 **`client/.env.local`'s `API_PROXY_TARGET`** controls where the Vite dev
 server proxies `/api` (`client/vite.config.ts`) — copy `client/.env.example`
 to override it. Unset, it proxies to `http://localhost:3001` (your local
-server). The acceptance/workstation environment instead points it at prod
-(`http://192.168.86.36:3001`) so the client runs without a local database —
-**which means server-side changes are invisible there until prod is
-redeployed.** To exercise a server change, unset `API_PROXY_TARGET` (or point
-it at `http://localhost:3001`) and run the local server against
-`ENERGY_DB_PATH`.
+server). On CAT, the acceptance target is the local dashboard Docker
+container, which reads the CAT replica database. It serves a built image, so
+working-tree server changes are not visible through the ordinary acceptance
+proxy. See [`../WORKFLOWS.md`](../WORKFLOWS.md), **API proxy on CAT**, for the
+authoritative target and the separate local-server procedure used to exercise
+server changes; keep the environment-specific address there rather than
+duplicating it here.
 
 ## Key Features
 
@@ -1603,13 +1604,16 @@ interface TSOForecastAccuracyMetrics {
   (`config/database.ts:15`) and again if the write handle opens
   (`config/writeDatabase.ts:29`). It does **not** log queries — there is no
   per-query logging to check
-- If acceptance is pointed at prod (`client/.env.local`'s `API_PROXY_TARGET`),
-  a server-side fix won't show up until prod is redeployed — verify against a
-  local server first
+- Acceptance proxies the built local CAT Docker image, not the working-tree
+  server, so a working-tree server fix will not show up there. Use the
+  `PORT=3002` + local `ENERGY_DB_PATH` procedure in
+  [`../WORKFLOWS.md`](../WORKFLOWS.md), **API proxy on CAT**, to exercise it
 - **The workstation replica can be hours behind prod even with a fresh mtime.**
   Measured 2026-08-07 07:10 UTC: the replica's newest `energy_load` row was
-  `00:15` (≈7h old) while prod's was `05:45` (≈1.4h). Anything about freshness,
-  staleness or "is this table current" must be settled against prod
+  `00:15` (≈7h old) while prod's was `05:45` (≈1.4h). Acceptance reads this
+  replica, so its data freshness describes CAT, not prod. Anything about
+  prod health, freshness, staleness or "is this table current" must be settled
+  against prod directly
   (`http://192.168.86.36:3001/api/...`, read-only) — the replica will make a
   healthy pipeline look broken. It is still the right place to measure *shapes*
   (row counts, per-country distributions, table-vs-table comparisons)
