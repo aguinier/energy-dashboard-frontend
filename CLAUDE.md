@@ -154,6 +154,31 @@ redeployed.** To exercise a server change, unset `API_PROXY_TARGET` (or point
 it at `http://localhost:3001`) and run the local server against
 `ENERGY_DB_PATH`.
 
+## Deployment
+
+Merging to `main` does **not** deploy: this repository has no CI/CD deployment
+step. Production is the Debian host **QuietlyConfident** (`192.168.86.36`),
+reachable with `ssh clavain@192.168.86.36` and serving the dashboard on port
+`3001`. Its checkout is
+`/home/clavain/energy-dashboard/repos/energy-dashboard-frontend`.
+
+After the reviewed commit is pushed to GitHub, deploy from that host:
+
+```bash
+cd /home/clavain/energy-dashboard/repos/energy-dashboard-frontend
+git pull
+cd docker
+docker compose build
+docker compose up -d --force-recreate
+```
+
+Do not commit code on production. The client and server are built into one image,
+so this deploy updates them together. Do not infer deployed state from git
+ancestry or an issue marked done: ABL-120 found merged work still undeployed.
+Inspect the running container and the served bundle instead. The fuller runbook
+is [`../WORKFLOWS.md`](../WORKFLOWS.md), which is intentionally outside this
+repository.
+
 ## Key Features
 
 ### 1. Views
