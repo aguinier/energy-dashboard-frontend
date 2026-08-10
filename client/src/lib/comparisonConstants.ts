@@ -17,8 +17,9 @@ export const FORECAST_TYPE_ORDER = [
   'wind_onshore', 'wind_offshore', 'hydro_total', 'biomass',
 ] as const;
 
-// Net position is forecasted in the country dashboard, but the existing
-// cross-country accuracy response has no paired net-position metric.
+// The portfolio also names forecast types supported elsewhere in the product.
+// Keeping net position out of FORECAST_TYPE_ORDER is deliberate: that order
+// drives the cross-country controls, whose API has no net-position metrics.
 export const PORTFOLIO_FORECAST_TYPE_ORDER = [...FORECAST_TYPE_ORDER, 'net_position'] as const;
 
 export function sortForecastTypes(types: string[]): string[] {

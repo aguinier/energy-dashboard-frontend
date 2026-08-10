@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { niceTicks, timeTicks, HOURLY_PRESETS, MEDIUM_SPAN_HOURS } from '@/lib/chartTicks';
 import { trailingGapLabel } from '@/lib/trailingGap';
 import { summarizeSeries } from '@/lib/chartSummary';
+import { drawableRuns } from '@/lib/seriesSegments';
 
 // Typed port of the able prototype's <LineChart>. Single-series chart with
 // optional dashed forecast overlay, future-region shading, "now" pill marker
@@ -40,7 +41,15 @@ export interface AbleLineChartProps {
   formatTooltip?: (v: number) => string;
   /** Unit string shown under the tooltip value. */
   unit?: string;
-  /** When true, draws actual + forecast across the full window (no future split). */
+  /**
+   * When true, drops the now marker: the future shading, the "now" rule and
+   * pill, and the trailing-gap label. For a chart that is entirely historical
+   * (ForecastTab's forecast-vs-actual overlay) those marks describe nothing.
+   *
+   * It does NOT decide where the forecast line starts — both series always draw
+   * wherever they hold a value. It used to do both, which is how the Load,
+   * Price and Net position tabs lost every past-dated forecast point (ABL-92).
+   */
   overlay?: boolean;
   /** Disable smoothing (Catmull-Rom). */
   smooth?: boolean;
@@ -184,23 +193,44 @@ export function AbleLineChart({
     return { pts, fpts, yMin, yMax, bandPath, bandUpperPath, bandLowerPath };
   }, [series, padL, ih, iw, padT]);
 
-  // The actual series draws SOLID wherever it has values — including past
-  // "now". Day-ahead auction prices are published for the whole next day, so
-  // future timestamps can carry real (not forecast) data; truncating at now
-  // silently hid tomorrow's coupled prices. Forecasts stay dashed from NOW.
-  const fStart = overlay ? 0 : Math.min(NOW, series.length - 1);
-
-  // Filter out null y-values, keep the line continuous across small gaps.
-  const compact = (slice: Array<[number, number]>) =>
-    slice.filter((p) => Number.isFinite(p[1]));
-  const actualPath = (() => {
-    const c = compact(pts);
-    return smooth ? smoothPath(c) : straightPath(c);
-  })();
-  const forecastPath = (() => {
-    const c = compact(fpts.slice(fStart));
-    return smooth ? smoothPath(c) : straightPath(c);
-  })();
+  // BOTH series draw wherever they hold a value, and neither is truncated at
+  // "now".
+  //
+  // For the actual series that is because day-ahead auction prices are
+  // published for the whole next day, so future timestamps can carry real (not
+  // forecast) data; truncating at now silently hid tomorrow's coupled prices.
+  //
+  // For the forecast it is because a stored forecast for a past hour is the
+  // only thing on this chart that can be compared against what actually
+  // happened. This used to start the dashed line at NOW unless `overlay` was
+  // set (ABL-92): measured against the replica on 2026-08-09, FR/load over a 7d
+  // window returns 204 forecast points of which 168 are past-dated, so 82% of
+  // the served series was discarded at draw time. Because FR's actuals ran ~14h
+  // behind, that left a band with neither series on it and no way to read
+  // forecast against realised at all. `overlay` still suppresses the now marker
+  // and the future shading — it no longer decides which forecast points exist.
+  const drawPath = (points: Array<[number, number]>) => {
+    // Empty slots are dropped, but only a gap the series' own cadence explains
+    // is bridged — a missing sample stays a hole rather than becoming a
+    // straight line through hours nothing was published for. See
+    // lib/seriesSegments.ts.
+    const present: number[] = [];
+    for (let i = 0; i < points.length; i++) {
+      if (Number.isFinite(points[i][1])) present.push(i);
+    }
+    return drawableRuns(present)
+      .map((run) => {
+        const seg = run.map((i) => points[i]);
+        // A lone point has no line to draw; emit a zero-length segment so the
+        // round linecap renders it as a dot instead of dropping it silently.
+        if (seg.length === 1) return `M ${seg[0][0]},${seg[0][1]} L ${seg[0][0]},${seg[0][1]}`;
+        return smooth ? smoothPath(seg) : straightPath(seg);
+      })
+      .filter(Boolean)
+      .join(' ');
+  };
+  const actualPath = drawPath(pts);
+  const forecastPath = drawPath(fpts);
 
   const yTicks = niceTicks(yMin, yMax, 4);
 

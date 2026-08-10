@@ -43,7 +43,7 @@ energy-dashboard-frontend/
 │       ├── views/                    # Top-level routed views
 │       │   ├── MapView.tsx               # Landing page — Europe choropleth
 │       │   ├── CountryDashboardView.tsx  # Per-country tabs plus forecast-quality drill-down
-│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: matrix, type-local ranking/map, evidence disclosure
+│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: variable cards, matrix, type-local ranking/map, evidence disclosure
 │       ├── components/
 │       │   ├── charts/               # Recharts-based primitives, shared across tabs
 │       │   │   ├── AbleLineChart.tsx     # Line + forecast overlay (load, price, net position)
@@ -161,7 +161,7 @@ it at `http://localhost:3001`) and run the local server against
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
 - **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:121`).
-- **`ComparisonView`** — the Forecast quality portfolio home: a type-local ranking/map for the default `load` type leads the page, followed by disclosed error evidence and the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:26`).
+- **`ComparisonView`** — the Forecast quality portfolio home: variable-level WAPE cards lead into a type-local map/ranking for the default `load` type, disclosed error evidence, and the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:27`).
 
 ### 2. Forecast model selection
 
@@ -636,7 +636,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   Known gap, filed separately: with both series withheld, GR's card is now
   entirely an empty state — which is correct, but it means the preset button
   says "30d" beside a card with no axis at all. `AbleLineChart`'s day-marker
-  derivation (`AbleLineChart.tsx:241`) was the reason the pre-ABL-35 24-hour
+  derivation (`AbleLineChart.tsx:270`) was the reason the pre-ABL-35 24-hour
   version carried no dates either.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
