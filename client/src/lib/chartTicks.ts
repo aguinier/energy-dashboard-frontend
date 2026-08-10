@@ -134,3 +134,97 @@ export function timeTicks(
   }
   return out;
 }
+
+export interface ChartTimeTick {
+  index: number;
+  label: string;
+}
+
+/**
+ * X-axis ticks shared by the line and stacked-mix charts.
+ *
+ * Hour-oriented presets use `timeTicks`, including its actual-span guard for
+ * forecast-stretched canvases. Multi-day presets choose one representative
+ * point per local calendar day before thinning. Choosing by timestamp rather
+ * than every 24th array element matters for daily series (30d) and for a DST
+ * day containing 23 or 25 hourly buckets.
+ */
+export function chartTimeTicks(
+  timestamps: string[],
+  preset: string | undefined,
+  nowIndex: number,
+  maxDayTicks = 9,
+): ChartTimeTick[] {
+  if (timestamps.length === 0) return [];
+
+  const safeNow = Math.max(0, Math.min(timestamps.length - 1, nowIndex));
+  const firstMs = new Date(timestamps[0]).getTime();
+  const lastMs = new Date(timestamps[timestamps.length - 1]).getTime();
+  const spanHours =
+    Number.isFinite(firstMs) && Number.isFinite(lastMs)
+      ? Math.abs(lastMs - firstMs) / 3_600_000
+      : Infinity;
+
+  if (
+    preset &&
+    HOURLY_PRESETS.has(preset) &&
+    spanHours > 0 &&
+    spanHours <= MEDIUM_SPAN_HOURS
+  ) {
+    // The generation endpoint's hourly series retains quarter-hour source
+    // timestamps. On the Today canvas those rows occupy one-hour buckets, so
+    // label the bucket boundary (05:00), not the last sample within it (05:45).
+    // This changes presentation only; point timestamps and tooltip evidence
+    // remain untouched.
+    const hourBuckets = timestamps.map((timestamp) => {
+      const time = new Date(timestamp).getTime();
+      return Number.isFinite(time)
+        ? new Date(Math.floor(time / 3_600_000) * 3_600_000).toISOString()
+        : timestamp;
+    });
+    return timeTicks(hourBuckets, preset);
+  }
+
+  const valid = timestamps
+    .map((timestamp, index) => ({ index, date: new Date(timestamp) }))
+    .filter(({ date }) => !Number.isNaN(date.getTime()));
+  if (valid.length === 0) return [];
+
+  const nowDate = new Date(timestamps[safeNow]);
+  const anchorMinutes = Number.isNaN(nowDate.getTime())
+    ? 0
+    : nowDate.getHours() * 60 + nowDate.getMinutes();
+  const dateKey = (date: Date) =>
+    `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+
+  const byDay = new Map<string, { index: number; date: Date; distance: number }>();
+  for (const point of valid) {
+    const distance = Math.abs(point.date.getHours() * 60 + point.date.getMinutes() - anchorMinutes);
+    const key = dateKey(point.date);
+    const current = byDay.get(key);
+    if (!current || distance < current.distance) {
+      byDay.set(key, { ...point, distance });
+    }
+  }
+
+  if (!Number.isNaN(nowDate.getTime())) {
+    byDay.set(dateKey(nowDate), { index: safeNow, date: nowDate, distance: 0 });
+  }
+
+  const dayTicks = [...byDay.values()].sort((a, b) => a.index - b.index);
+  const stride = Math.max(1, Math.ceil(dayTicks.length / Math.max(1, maxDayTicks)));
+  const selected = dayTicks.filter((tick, position) =>
+    tick.index === safeNow || position % stride === 0,
+  );
+  const spanDays = spanHours / 24;
+
+  return selected.map(({ index, date }) => ({
+    index,
+    label:
+      index === safeNow
+        ? 'now'
+        : spanDays > 12
+          ? date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+          : `${date.toLocaleDateString('en-GB', { weekday: 'short' })} ${date.getDate()}`,
+  }));
+}

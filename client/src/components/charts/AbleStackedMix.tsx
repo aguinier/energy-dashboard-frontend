@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { niceTicks, formatGwAxis } from '@/lib/chartTicks';
+import { chartTimeTicks, niceTicks, formatGwAxis } from '@/lib/chartTicks';
 import { divergingStack, stackExtent } from '@/lib/divergingStack';
 
 // Stacked smoothed area for the generation mix by source.
@@ -39,6 +39,8 @@ interface Props {
   width?: number;
   /** Tooltip footer label for the signed sum of the drawn keys. */
   totalLabel?: string;
+  /** Active time preset, used to choose hour vs. day X-axis labels. */
+  preset?: string;
 }
 
 function scale(val: number, dMin: number, dMax: number, rMin: number, rMax: number) {
@@ -73,6 +75,7 @@ export function AbleStackedMix({
   height = 220,
   width = 680,
   totalLabel = 'Net generation',
+  preset,
 }: Props) {
   const [hover, setHover] = useState<number | null>(null);
 
@@ -131,6 +134,7 @@ export function AbleStackedMix({
   }, [series, keys, colors, padL, ih, iw, padT]);
 
   const nowX = padL + (NOW / Math.max(1, series.length - 1)) * iw;
+  const xTicks = chartTimeTicks(series.map((d) => d.ts), preset, NOW);
 
   const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (series.length === 0) return;
@@ -247,6 +251,32 @@ export function AbleStackedMix({
             </text>
           </g>
         )}
+
+        <line
+          x1={padL}
+          x2={padL + iw}
+          y1={padT + ih}
+          y2={padT + ih}
+          stroke="hsl(var(--input))"
+          strokeWidth={1}
+        />
+
+        {xTicks.map((tick) => {
+          const x = padL + (tick.index / Math.max(1, series.length - 1)) * iw;
+          return (
+            <text
+              key={tick.index}
+              x={x}
+              y={height - 8}
+              fill="hsl(var(--ink-muted))"
+              fontSize="10"
+              textAnchor="middle"
+              fontFamily="'JetBrains Mono', monospace"
+            >
+              {tick.label}
+            </text>
+          );
+        })}
 
         {h && (
           <g style={{ pointerEvents: 'none' }}>
