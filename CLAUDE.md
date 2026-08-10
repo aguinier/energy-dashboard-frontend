@@ -186,7 +186,7 @@ repository.
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
 - **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:121`).
-- **`ComparisonView`** — the Forecast quality portfolio home: its full-width country × forecast-type matrix comes first; choosing one type reveals its type-local country ranking and map, while detailed error evidence stays disclosed (`client/src/views/ComparisonView.tsx:26`).
+- **`ComparisonView`** — the Forecast quality portfolio home: a type-local ranking/map for the default `load` type leads the page, followed by disclosed error evidence and the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:26`).
 
 ### 2. Forecast model selection
 

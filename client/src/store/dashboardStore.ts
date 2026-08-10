@@ -315,7 +315,7 @@ export const useDashboardStore = create<DashboardState>()(
       // Cross-Country Comparison
       // ============================================================================
       comparisonMetric: 'wape',
-      comparisonForecastType: 'all',
+      comparisonForecastType: 'load',
       comparisonTimeRange: '30d',
       setComparisonMetric: (m) => set({ comparisonMetric: m }),
       setComparisonForecastType: (t) => set({ comparisonForecastType: t }),
