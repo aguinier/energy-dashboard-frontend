@@ -18,6 +18,9 @@ const LoadTab = lazy(() =>
 const GenerationTab = lazy(() =>
   import('@/components/dashboard/GenerationTab').then((m) => ({ default: m.GenerationTab })),
 );
+const ForecastTab = lazy(() =>
+  import('@/components/dashboard/ForecastTab').then((m) => ({ default: m.ForecastTab })),
+);
 const NetPositionTab = lazy(() =>
   import('@/components/dashboard/NetPositionTab').then((m) => ({ default: m.NetPositionTab })),
 );
@@ -47,12 +50,13 @@ const LOCAL_ZONE_LABEL = (() => {
 })();
 
 // Tabs whose chart actually reads a model selection. `renewables` (Generation)
-// doesn't — it renders actuals only. The picker for a tab outside this set
-// would be a control that does nothing.
+// and `analytics` (Forecast accuracy) don't — GenerationTab renders actuals
+// only, and the accuracy overlay is driven by the Load tab's own selection.
+// The picker for a tab outside this set would be a control that does nothing.
 const TABS_WITH_MODEL_PICKER = new Set(['price', 'load', 'net-position']);
 
 export function CountryDashboardView() {
-  const { selectedCountry, activeChartTab, setActiveChartTab } = useDashboardStore();
+  const { selectedCountry, activeChartTab, setActiveChartTab, goToComparison } = useDashboardStore();
   const { data: countries } = useCountries();
 
   const country = countries?.find((c) => c.country_code === selectedCountry);
@@ -111,6 +115,18 @@ export function CountryDashboardView() {
           {TABS_WITH_MODEL_PICKER.has(activeChartTab) && <ModelPicker />}
         </div>
 
+        {activeChartTab === 'analytics' && (
+          <div className="mb-3.5 flex items-center justify-between rounded-lg border border-border bg-card px-3 py-2">
+            <div>
+              <p className="text-meta font-medium text-foreground">Forecast quality detail</p>
+              <p className="text-micro text-ink-muted">Measured performance for {country?.country_name ?? selectedCountry}</p>
+            </div>
+            <button onClick={goToComparison} className="cursor-pointer rounded-md border border-border bg-background px-2.5 py-1 text-meta text-ink-dim hover:text-foreground">
+              ← Forecast quality
+            </button>
+          </div>
+        )}
+
         <Tabs value={activeChartTab} onValueChange={setActiveChartTab}>
           <TabsContent value="price">
             <Suspense fallback={<TabSkeleton />}>
@@ -130,6 +146,11 @@ export function CountryDashboardView() {
           <TabsContent value="net-position">
             <Suspense fallback={<TabSkeleton />}>
               <NetPositionTab />
+            </Suspense>
+          </TabsContent>
+          <TabsContent value="analytics">
+            <Suspense fallback={<TabSkeleton height={400} />}>
+              <ForecastTab />
             </Suspense>
           </TabsContent>
         </Tabs>

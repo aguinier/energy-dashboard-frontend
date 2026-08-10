@@ -33,6 +33,18 @@ describe('migratePersisted', () => {
     expect(out.showTSOForecast).toBe(false);
   });
 
+  // comparisonMetric 'mape' -> 'wape' — the entire reason PERSIST_VERSION
+  // moved past 1 (WAPE replaced MAPE as a degenerate cross-country metric).
+  it('migrates a persisted mape comparisonMetric to wape', () => {
+    const out = migratePersisted({ comparisonMetric: 'mape' }, 0);
+    expect(out.comparisonMetric).toBe('wape');
+  });
+
+  it('leaves a valid comparisonMetric untouched', () => {
+    const out = migratePersisted({ comparisonMetric: 'rmse' }, 0);
+    expect(out.comparisonMetric).toBe('rmse');
+  });
+
   // `timeRange` (the legacy TimeRange enum hand-synced from `timePreset`) was
   // removed from the store — see dashboardStore.ts/windowLabel.ts. A blob
   // persisted before that change may still carry it; migration must strip it
@@ -137,45 +149,19 @@ describe('migratePersisted', () => {
     });
   });
 
-  it('does not re-run the v7 model migration for a v7 persisted blob', () => {
-    const out = migratePersisted({ selectedModelByType: { load: 'tso-d7' }, forecastHiddenByType: { price: true } }, 7);
-    expect(out.selectedModelByType).toEqual({ load: 'tso-d7' });
-    expect(out.forecastHiddenByType).toEqual({ price: true });
-  });
-
-  // v9 (ABL-158) — the Forecast quality page (ComparisonView) and its
-  // per-country `analytics` drill-down tab are gone.
-  describe('removes the Forecast quality page state (v9)', () => {
-    it('falls back a persisted comparison view to map', () => {
-      expect(migratePersisted({ currentView: 'comparison' }, 0).currentView).toBe('map');
+  describe('portfolio home default (v8)', () => {
+    it('moves the legacy all-types landing state to load', () => {
+      expect(migratePersisted({ comparisonForecastType: 'all' }, 7).comparisonForecastType).toBe('load');
     });
 
-    it('falls back a persisted analytics chart tab to load', () => {
-      expect(migratePersisted({ activeChartTab: 'analytics' }, 0).activeChartTab).toBe('load');
+    it('preserves an already selected forecast type', () => {
+      expect(migratePersisted({ comparisonForecastType: 'price' }, 7).comparisonForecastType).toBe('price');
     });
 
-    it('drops every cross-country-comparison field regardless of its value', () => {
-      const out = migratePersisted(
-        {
-          comparisonCountries: ['DE', 'FR'],
-          comparisonMetric: 'wape',
-          comparisonForecastType: 'all',
-          comparisonTimeRange: '90d',
-        },
-        7,
-      );
-      expect(out.comparisonCountries).toBeUndefined();
-      expect(out.comparisonMetric).toBeUndefined();
-      expect(out.comparisonForecastType).toBeUndefined();
-      expect(out.comparisonTimeRange).toBeUndefined();
-    });
-
-    it('is a no-op when none of those fields are present', () => {
-      const out = migratePersisted({ timePreset: '7d' }, 0);
-      expect(out.comparisonCountries).toBeUndefined();
-      expect(out.comparisonMetric).toBeUndefined();
-      expect(out.comparisonForecastType).toBeUndefined();
-      expect(out.comparisonTimeRange).toBeUndefined();
+    it('does not re-run the v7 model migration for a v7 persisted blob', () => {
+      const out = migratePersisted({ selectedModelByType: { load: 'tso-d7' }, forecastHiddenByType: { price: true } }, 7);
+      expect(out.selectedModelByType).toEqual({ load: 'tso-d7' });
+      expect(out.forecastHiddenByType).toEqual({ price: true });
     });
   });
 
@@ -186,14 +172,15 @@ describe('migratePersisted', () => {
 
   // activeChartTab validation — an invalid persisted value renders a
   // completely blank tab panel (no chart, no message). Real values read off
-  // the TabsTrigger elements in CountryDashboardView.tsx: `renewables` does
-  // NOT match its visible label ("Generation").
+  // the TabsTrigger elements in CountryDashboardView.tsx: `renewables` and
+  // `analytics` do NOT match their visible labels ("Generation" and
+  // "Forecast accuracy").
   it('drops a persisted activeChartTab that no longer exists', () => {
     const out = migratePersisted({ activeChartTab: 'bogus-tab' }, 0);
     expect(out.activeChartTab).toBe('load');
   });
 
-  it.each(['price', 'load', 'renewables', 'net-position'])(
+  it.each(['price', 'load', 'renewables', 'net-position', 'analytics'])(
     'keeps a valid activeChartTab %s',
     (tab) => {
       expect(migratePersisted({ activeChartTab: tab }, 0).activeChartTab).toBe(tab);

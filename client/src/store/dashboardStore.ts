@@ -31,6 +31,12 @@ interface DashboardState {
   mapMetric: MetricType;
   setMapMetric: (metric: MetricType) => void;
 
+  // Countries for comparison
+  comparisonCountries: string[];
+  addComparisonCountry: (country: string) => void;
+  removeComparisonCountry: (country: string) => void;
+  setComparisonCountries: (countries: string[]) => void;
+
   // UI state
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -100,6 +106,17 @@ interface DashboardState {
   selectedMLHorizons: number[];
   toggleMLHorizon: (horizon: number) => void;
   setSelectedMLHorizons: (horizons: number[]) => void;
+
+  // ============================================================================
+  // Cross-Country Comparison
+  // ============================================================================
+  comparisonMetric: 'wape' | 'mae' | 'rmse';
+  comparisonForecastType: string;
+  comparisonTimeRange: '7d' | '30d' | '90d';
+  setComparisonMetric: (m: 'wape' | 'mae' | 'rmse') => void;
+  setComparisonForecastType: (t: string) => void;
+  setComparisonTimeRange: (r: '7d' | '30d' | '90d') => void;
+  goToComparison: () => void;
 }
 
 export const useDashboardStore = create<DashboardState>()(
@@ -187,6 +204,21 @@ export const useDashboardStore = create<DashboardState>()(
       // Map metric
       mapMetric: 'load',
       setMapMetric: (metric) => set({ mapMetric: metric }),
+
+      // Comparison countries
+      comparisonCountries: ['DE', 'FR'],
+      addComparisonCountry: (country) =>
+        set((state) => ({
+          comparisonCountries: state.comparisonCountries.includes(country)
+            ? state.comparisonCountries
+            : [...state.comparisonCountries, country].slice(0, 5), // Max 5
+        })),
+      removeComparisonCountry: (country) =>
+        set((state) => ({
+          comparisonCountries: state.comparisonCountries.filter((c) => c !== country),
+        })),
+      setComparisonCountries: (countries) =>
+        set({ comparisonCountries: countries.slice(0, 5) }),
 
       // UI state
       sidebarOpen: true,
@@ -278,6 +310,17 @@ export const useDashboardStore = create<DashboardState>()(
           return { selectedMLHorizons: [...current, horizon].sort() };
         }),
       setSelectedMLHorizons: (horizons) => set({ selectedMLHorizons: horizons }),
+
+      // ============================================================================
+      // Cross-Country Comparison
+      // ============================================================================
+      comparisonMetric: 'wape',
+      comparisonForecastType: 'load',
+      comparisonTimeRange: '30d',
+      setComparisonMetric: (m) => set({ comparisonMetric: m }),
+      setComparisonForecastType: (t) => set({ comparisonForecastType: t }),
+      setComparisonTimeRange: (r) => set({ comparisonTimeRange: r }),
+      goToComparison: () => set({ currentView: 'comparison' }),
     }),
     {
       name: 'energy-dashboard-storage',
@@ -292,6 +335,7 @@ export const useDashboardStore = create<DashboardState>()(
         activeChartTab: state.activeChartTab,
         selectedModelByType: state.selectedModelByType,
         forecastHiddenByType: state.forecastHiddenByType,
+        comparisonCountries: state.comparisonCountries,
         sidebarOpen: state.sidebarOpen,
         // Legacy forecast state (kept for backward compatibility)
         showForecast: state.showForecast,
@@ -302,6 +346,10 @@ export const useDashboardStore = create<DashboardState>()(
         visibleRenewableTypes: state.visibleRenewableTypes,
         // ML Forecast horizons
         selectedMLHorizons: state.selectedMLHorizons,
+        // Cross-country comparison
+        comparisonMetric: state.comparisonMetric,
+        comparisonForecastType: state.comparisonForecastType,
+        comparisonTimeRange: state.comparisonTimeRange,
       }),
     }
   )

@@ -4,7 +4,8 @@ import { AbleLineChart, type AbleSeriesPoint } from './AbleLineChart';
 
 /**
  * Renders the real chart to SVG. `renderToString` needs no DOM, so this runs in
- * the default node environment with no new dependency.
+ * the default node environment with no new dependency — the same approach as
+ * ModelComparisonPanel.test.tsx.
  *
  * It exists because ABL-92 was invisible everywhere else: the server served the
  * past-dated forecast points, the hook requested them, and the adapter placed

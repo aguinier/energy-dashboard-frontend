@@ -1,8 +1,8 @@
 import type { TimePreset, TimeAnchor } from '@/types';
 
-export const PERSIST_VERSION = 9;
+export const PERSIST_VERSION = 8;
 
-const VALID_VIEWS = new Set(['map', 'country']);
+const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
 // Anchor implied by each preset, mirroring `setTimePreset` (dashboardStore.ts),
 // and — via its keys — the set of values `TimePreset` can still hold.
@@ -34,8 +34,8 @@ const VALID_TIME_PRESETS = new Set<string>(Object.keys(ANCHOR_FOR_PRESET));
 
 // Real tab values, read off the `TabsTrigger` elements in
 // CountryDashboardView.tsx — NOT their visible labels. `renewables` renders
-// as "Generation".
-const VALID_CHART_TABS = new Set(['price', 'load', 'renewables', 'net-position']);
+// as "Generation" and `analytics` renders as "Forecast accuracy".
+const VALID_CHART_TABS = new Set(['price', 'load', 'renewables', 'net-position', 'analytics']);
 
 /**
  * Bring persisted state forward. Without this a shape change left returning
@@ -80,6 +80,14 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
   // The fix is to stop deriving anything from it and just drop the dead key
   // so it stops shallow-merging back into state on every load.
   delete next.layers;
+
+  // MAPE was replaced by WAPE (degenerate metric: divided by the signed
+  // actual, so negative prices cancelled error, and a near-zero actual could
+  // dominate the mean — see crossCountryMetricsService.ts). A persisted
+  // 'mape' selection no longer matches a real option in the toggle group.
+  if (next.comparisonMetric === 'mape') {
+    next.comparisonMetric = 'wape';
+  }
 
   // `timeRange` (the legacy '24h'|'7d'|'30d'|'90d'|'1y' enum, hand-synced
   // from `timePreset` in `setTimePreset`) is gone — `/dashboard/overview` and
@@ -156,26 +164,13 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
     next.forecastHiddenByType = hiddenByType;
   }
 
-  // v9 (ABL-158) — the Forecast quality page (ComparisonView: the portfolio,
-  // heatmap, leaderboard and map) and its per-country drill-down (the
-  // `analytics` chart tab) are gone. A persisted `currentView: 'comparison'`
-  // or `activeChartTab: 'analytics'` is already caught by the VALID_VIEWS /
-  // VALID_CHART_TABS checks above, now that neither set lists them any more —
-  // no separate clause needed to fall back to 'map' / 'load'.
-  //
-  // Every field that existed only for that page is dropped outright, the same
-  // way `layers`/`timeRange`/`analyticsConfig` were above: nothing declares or
-  // reads them once the page is gone, so leaving them in a persisted blob
-  // would just have them keep re-appearing on every shallow merge. This also
-  // retires two earlier clauses that coerced rather than dropped a field now
-  // being removed here: the v8 (ABL-127) `comparisonForecastType: 'all' ->
-  // 'load'` clause, and the original `comparisonMetric: 'mape' -> 'wape'`
-  // clause (the reason `PERSIST_VERSION` first moved past 1) — coercing a
-  // value that is deleted two lines later is no longer meaningful.
-  delete next.comparisonCountries;
-  delete next.comparisonMetric;
-  delete next.comparisonForecastType;
-  delete next.comparisonTimeRange;
+  // v8 (ABL-127) — the portfolio home's persisted default was `all`, which
+  // deliberately has no cross-type chart or ranking. Start on load instead:
+  // it is a single measurable type with complete coverage, while `all` remains
+  // an explicit matrix-only choice in the filter.
+  if (fromVersion < 8 && next.comparisonForecastType === 'all') {
+    next.comparisonForecastType = 'load';
+  }
 
   return next;
 }

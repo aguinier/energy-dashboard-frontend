@@ -8,12 +8,9 @@
  * terracotta, which separates on hue *and* on lightness, so it still reads as
  * an ordered scale in greyscale.
  *
- * These three constants were EuropeMap's private CLEAN/MEDIUM/DIRTY, moved
- * here when the (since-removed, ABL-158) Forecast quality page needed the
- * same ramp — a second private copy is how two views of the same number end
- * up disagreeing about which colour it is. Kept shared rather than folded
- * back into EuropeMap: any future colour-coded metric should reach for this
- * one file, not reinvent it.
+ * These three constants were EuropeMap's private CLEAN/MEDIUM/DIRTY. They live
+ * here now because ComparisonView needs the same ramp, and a second copy is how
+ * two views of the same number end up disagreeing about which colour it is.
  */
 export const SCALE_CLEAN = '#2C8A6B';
 export const SCALE_MEDIUM = '#C99A2A';

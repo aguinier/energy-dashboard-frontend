@@ -58,19 +58,28 @@ export const REFRESH_INTERVALS = {
  * match the data on screen.
  *
  * Keys are tab *ids*, read off the `TabsTrigger` elements in
- * `CountryDashboardView.tsx:103-106` — they do not match the visible labels.
- * `renewables` renders as "Generation".
+ * `CountryDashboardView.tsx:106-110` — they do not match the visible labels.
+ * `renewables` renders as "Generation" and `analytics` renders as "Forecast
+ * accuracy". Both ids are live: `analytics` outlived the analytics dashboard
+ * that `ebdb5ab` removed, because the accuracy tab reuses the id.
  *
- * `renewables` is unread — the Generation tab renders actuals only and gets
- * no picker (`TABS_WITH_MODEL_PICKER`, `CountryDashboardView.tsx:52`). Keep it
- * anyway: adding a forecast overlay there puts it back in that set, and a
- * missing key falls through to `?? 'load'` (`useForecastModels.ts:74`) — the
- * Generation tab would then offer load models for solar data, which is the
- * wrong-number-under-a-plausible-label failure this dashboard exists to avoid.
+ * `analytics` is read: `ForecastTab` calls `useActiveForecastType()` to pick
+ * which type's registered models the "Compare forecast models" panel compares
+ * (`ForecastTab.tsx`, `ModelComparisonPanel.tsx`). It is not read by
+ * `ModelPicker`, which `TABS_WITH_MODEL_PICKER` (`CountryDashboardView.tsx:56`)
+ * still keeps off that tab.
+ *
+ * `renewables` remains unread for the same reason — the Generation tab renders
+ * actuals only and gets no picker. Keep it anyway: adding a forecast overlay
+ * there puts it back in that set, and a missing key falls through to
+ * `?? 'load'` (`useForecastModels.ts:74`) — the Generation tab would then offer
+ * load models for solar data, which is the wrong-number-under-a-plausible-label
+ * failure this dashboard exists to avoid.
  */
 export const TAB_FORECAST_TYPE: Record<string, string> = {
   price: 'price',
   load: 'load',
   renewables: 'solar',
   'net-position': 'net_position',
+  analytics: 'load',
 };
