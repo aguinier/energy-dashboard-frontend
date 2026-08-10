@@ -336,10 +336,11 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   sibling module now refuses a row that is both forward-filled and exactly
   `0.0`, so MK stores 1 row instead of 24 (verified through the real fetch
   path, 2026-08-06).
-  **That fix is not deployed** — it is stacked behind the pending
-  `energy-data-gathering` main deploy decision, so the count on the replica
-  keeps growing until it ships. And it does not make this read-side guard
-  redundant even then: MK's `position 1` **was** genuinely published as `0.0`,
+  **That fix shipped 2026-08-10** (ABL-157 redeployed the `energy-data-gathering`
+  container at 15:34Z; `published_points.py` is present and the guard fired on
+  the 18:30 pass, dropping 191 of 667 LU load rows). The count stops growing.
+  And it does not make this read-side guard redundant: MK's `position 1` **was**
+  genuinely published as `0.0`,
   so it is still stored on purpose, and `measuredLoadClause()` is the only
   thing keeping it off a chart. The two rules are complementary, not
   duplicative — do not remove this one when the ingest fix lands.
@@ -529,18 +530,20 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   at a flat 500/1500 MW is encoded as one Point plus a hold. The strict rule
   would delete over half of PT's and ES's genuine rows.
 
-  **The fix is NOT deployed — verified against prod 2026-08-07, not inferred.**
-  `/app/src/published_points.py` does not exist in the running
-  `energy-data-gathering` container and `/app/src/entsoe_client.py` contains
-  zero references to either guard function. The image was built **2026-07-31
-  06:54Z** and has been up 7 days, so *every* ingest fix merged since is
-  missing from prod — `12c5a6b` (ABL-50 load guard), `1dc6e99` (this one),
-  `6299e98` (ABL-54 day-ahead price window), `4e99322` and `941d258`
-  (crossborder). Tracked on **ABL-71**. Do not read ABL-63 as having shipped
-  any of them: it deployed the *dashboard-frontend* container, so the ABL-55
-  merge being an ancestor of this module's local main says nothing about prod.
-  Note this cuts both ways for ABL-54 — its **client** half is live and its
-  **ingest** half is not.
+  **The fix shipped 2026-08-10 15:34Z** (ABL-157). Verified on prod:
+  `/app/src/published_points.py` is present (12,106 bytes),
+  `grep -c drop_unpublished_zeros_series entsoe_client.py` returns 1, and the
+  guard fired on the 18:30 UTC pass — "PL net position: dropping 29 of 780 value
+  rows that ENTSO-E published no Point for and that forward-filled to exactly 0."
+  All five fixes are live: `12c5a6b` (ABL-50 load guard), `1dc6e99` (this one),
+  `6299e98` (ABL-54 day-ahead price window), `4e99322` + `941d258` (crossborder).
+  **Lesson to carry forward:** ABL-63 deployed the *dashboard-frontend* container
+  and left the ingest container on the old image — a "done" status and a merged
+  ancestor on this module's main said nothing about the ingest side of prod. The
+  same reasoning error would apply to any future fix that has independently
+  shipping halves (like ABL-54, whose client half went live weeks before the
+  ingest half). Always grep the running container; do not infer deploy state from
+  git ancestry or issue status.
 
   Deployed or not, the guard only stops *new* fabrications: the
   **216** already-stored rows (GR 192, IE 24) are still in the table, and
