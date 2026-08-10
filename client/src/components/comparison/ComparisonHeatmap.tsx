@@ -4,6 +4,7 @@ import { withOpacity } from '@/lib/colors';
 import { FORECAST_TYPE_CONFIG, sortForecastTypes } from '@/lib/comparisonConstants';
 import type { CrossCountryMetrics } from '@/types';
 import { wapeColor, wapeScale, type WapeScale } from './accuracyScale';
+import { activatesCountryDetail } from './portfolioHome';
 
 interface ComparisonHeatmapProps {
   data: CrossCountryMetrics;
@@ -98,8 +99,12 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
           {sortedCountries.map((country) => (
             <tr
               key={country}
-              className="border-b last:border-0 hover:bg-muted/30 cursor-pointer transition-colors"
+              role="button"
+              tabIndex={0}
+              aria-label={`Open ${country} forecast quality detail`}
+              className="border-b last:border-0 hover:bg-muted/30 cursor-pointer transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
               onClick={() => goToCountry(country, 'analytics')}
+              onKeyDown={(event) => { if (activatesCountryDetail(event)) { event.preventDefault(); goToCountry(country, 'analytics'); } }}
             >
               <td className="sticky left-0 z-10 bg-card px-4 py-2 font-mono text-xs font-medium">
                 {country}
