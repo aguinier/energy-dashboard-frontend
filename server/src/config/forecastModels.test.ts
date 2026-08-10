@@ -21,10 +21,10 @@ describe('forecast model registry', () => {
     }
   });
 
-  it('serves net position from the V010 Chronos run only', () => {
+  it('offers V010 and V014 for net position while keeping Chronos V010 as the default', () => {
     const cfg = getTypeConfig('net_position');
     expect(cfg?.production).toBe('chronos-2-V010');
-    expect(cfg?.models.map((m) => m.id)).toEqual(['chronos-2-V010']);
+    expect(cfg?.models.map((m) => m.id)).toEqual(['chronos-2-V010', 'xgboost-V014']);
   });
 
   it('excludes models that stopped writing months ago', () => {
@@ -51,6 +51,8 @@ describe('resolveModel', () => {
   it('honours an explicit, listed choice', () => {
     expect(resolveModel('load', 'xgboost')?.id).toBe('xgboost');
     expect(resolveModelName('load', 'xgboost')).toBe('xgboost');
+    expect(resolveModel('net_position', 'xgboost-V014')?.id).toBe('xgboost-V014');
+    expect(resolveModelName('net_position', 'xgboost-V014')).toBe('xgboost-V014');
   });
 
   it('falls back to production for an unlisted id rather than erroring', () => {
