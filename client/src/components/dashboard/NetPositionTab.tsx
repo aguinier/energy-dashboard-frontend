@@ -12,6 +12,7 @@ import { useMultiModelSelection } from '@/hooks/useForecastModels';
 import { describeForecastGap } from '@/lib/forecastGap';
 import { describeDegenerateActual, describeDegenerateForecast } from './degenerateForecastNote';
 import type { NetPositionResponse } from '@/types';
+import { netPositionTabDisclosure } from '@/lib/netPositionScope';
 
 /** Countries whose net position is folded into a multi-country bidding zone. */
 const SHARED_ZONE_NOTE: Record<string, string> = {
@@ -75,6 +76,10 @@ export function NetPositionTab() {
   // — `resolveMultiSelection` already collapses "hidden" to an empty
   // selection, which is why `result.mode` alone doesn't need a third state.
   const { hidden: forecastHidden } = useMultiModelSelection('net_position');
+  const scopeDisclosure = useMemo(
+    () => netPositionTabDisclosure(selectedCountry),
+    [selectedCountry],
+  );
 
   if (result.mode === 'default') {
     return (
@@ -85,6 +90,7 @@ export function NetPositionTab() {
         forecastHidden={forecastHidden}
         countryLabel={countryLabel}
         timePreset={timePreset}
+        scopeDisclosure={scopeDisclosure}
       />
     );
   }
@@ -96,6 +102,7 @@ export function NetPositionTab() {
       isError={result.isError}
       countryLabel={countryLabel}
       timePreset={timePreset}
+      scopeDisclosure={scopeDisclosure}
     />
   );
 }
@@ -114,6 +121,7 @@ function NetPositionDefaultView({
   forecastHidden,
   countryLabel,
   timePreset,
+  scopeDisclosure,
 }: {
   data: NetPositionResponse | undefined;
   isLoading: boolean;
@@ -121,6 +129,7 @@ function NetPositionDefaultView({
   forecastHidden: boolean;
   countryLabel: string;
   timePreset: string;
+  scopeDisclosure: string;
 }) {
   const shown = useMemo(
     () => (forecastHidden && data ? { ...data, forecast: [] } : data),
@@ -206,6 +215,7 @@ function NetPositionDefaultView({
   return (
     <div className="space-y-3.5">
       <AbleCard title="Net position" subtitle={subtitleParts.join(' · ')}>
+        <p className="mb-2.5 text-micro text-ink-muted">{scopeDisclosure}</p>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…
@@ -358,12 +368,14 @@ function NetPositionSelectionView({
   isError,
   countryLabel,
   timePreset,
+  scopeDisclosure,
 }: {
   entries: NetPositionModelQuery[];
   isLoading: boolean;
   isError: boolean;
   countryLabel: string;
   timePreset: string;
+  scopeDisclosure: string;
 }) {
   const seriesInputs: NetPositionModelSeriesInput[] = useMemo(
     () => entries.map((e) => ({ id: e.id, label: e.label, color: e.color, response: e.data })),
@@ -427,6 +439,7 @@ function NetPositionSelectionView({
   return (
     <div className="space-y-3.5">
       <AbleCard title="Net position" subtitle={subtitleParts.join(' · ')}>
+        <p className="mb-2.5 text-micro text-ink-muted">{scopeDisclosure}</p>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…

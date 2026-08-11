@@ -668,7 +668,40 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   zone is named in a footnote rather than silently missing its line — the
   degenerate-forecast case below (`describeDegenerateForecast`) and the
   plain-no-coverage case (`lib/forecastGap.ts`'s `describeForecastGap`) both
-  apply per model now, not once for a single response. Handles
+  apply per model now, not once for a single response.
+
+  **Which "net position" this is now states itself, because a second number
+  with the same name exists and disagrees (ABL-222, researched under
+  ABL-219).** `net_position.net_position_mw` is the zone's net position over
+  every ENTSO-E SDAC implicitly-coupled border — inside the Core CCR
+  flow-based region or not — never the narrower **Core flow-based net
+  position** JAO separately publishes for the 12 Core zones (AT, BE, CZ,
+  DE-LU, FR, HR, HU, NL, PL, RO, SI, SK). Measured 2026-08-09 08:00 UTC:
+  France's two numbers disagree even in **sign** — Core −114.9 MW (importer)
+  vs the figure this tab and the map draw, +1,557.7 MW (exporter); the mean
+  gap over the day is 2,576 MW. **Do not call this "AC vs DC"**: Germany's
+  Core figure already nets in its HVDC links (modelled as virtual hubs inside
+  the flow-based domain), and France's Core figure excludes its *AC* borders
+  with ES and IT, so an AC/DC label would be wrong in both directions — the
+  only correct axis is which borders are in scope. **Do not verify this on
+  Germany**: DE-LU's two figures are identical to four decimal places, so DE
+  proves nothing; FR is the divergent case.
+
+  `lib/netPositionScope.ts` is the pure helper stating the scope, colocated
+  with `netPositionScope.test.ts`. `netPositionTabDisclosure`
+  (`netPositionScope.ts:50`) renders under this card's title
+  (`NetPositionTab.tsx:218`) and appends the Core caveat only for the 12 Core
+  CCR country codes (`isCoreCcrCountry`, `netPositionScope.ts:30`);
+  `NET_POSITION_MAP_DISCLOSURE` (`netPositionScope.ts:42`) renders in the map
+  legend for the same metric (`EuropeMap.tsx:373`), and `MAP_METRICS`'s
+  `net_position.legendLabel` (`lib/constants.ts:41`) states the scope in the
+  legend heading itself. Ingesting the Core series and offering a toggle
+  between the two numbers is a separate, larger change — a new external
+  source (JAO's Core publication tool), a new table, and a prod database
+  write — and is pending a Board decision (ABL-219); this entry only states
+  what is already on screen, and changes no query and no stored value.
+
+  Handles
   a zone going silent upstream as an explicit "stopped publishing on <date>"
   state rather than a loading spinner. GR and IE are the live examples, and
   **this entry used to give the wrong date for both**: it said their continuous

@@ -5,6 +5,7 @@ import { useMapData } from '@/hooks/useDashboardData';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { usePrefetchCountry } from '@/hooks/usePrefetch';
 import { MAP_METRICS } from '@/lib/constants';
+import { NET_POSITION_MAP_DISCLOSURE } from '@/lib/netPositionScope';
 import { divergingT, symmetricBound } from '@/lib/divergingScale';
 import { lerpHex, SCALE_CLEAN, SCALE_DIRTY, SCALE_MEDIUM } from '@/lib/dataScale';
 import { cn } from '@/lib/utils';
@@ -365,6 +366,12 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
               <span>importing</span>
               <span>exporting</span>
             </div>
+            {/* Which "net position" this is — the same claim this repo has
+                shipped wrong before, now stated rather than left implicit
+                (ABL-222). See lib/netPositionScope.ts. */}
+            <p className="mt-1.5 border-t border-input pt-1.5 text-micro text-ink-muted">
+              {NET_POSITION_MAP_DISCLOSURE}
+            </p>
           </>
         ) : (
           <div className="flex justify-between font-mono-num text-micro text-ink-muted">
