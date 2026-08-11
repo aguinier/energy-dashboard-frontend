@@ -10,7 +10,7 @@ import { useDashboardStore } from '@/store/dashboardStore';
 import { useModelSelection } from '@/hooks/useForecastModels';
 import { adaptLoadSeries, buildHeatmapCells } from '@/lib/chartAdapters';
 import { buildMultiForecastSeries } from '@/lib/multiForecastSeries';
-import { describeForecastGap, describeForecastGapsForSelection } from '@/lib/forecastGap';
+import { describeForecastGapsForSelection } from '@/lib/forecastGap';
 import { formatGwAxis } from '@/lib/chartTicks';
 import { getDateRangeForPreset } from '@/hooks/useDashboardData';
 import type { LoadDataPoint, ForecastDataPoint, TSOLoadForecastDataPoint } from '@/types';
@@ -62,9 +62,6 @@ export function LoadTab() {
       forecastData={chartData.forecastData}
       tsoForecastData={chartData.tsoForecastData}
       isLoading={chartData.isLoading}
-      isLoadingForecast={chartData.isLoadingForecast}
-      isLoadingTSOForecast={chartData.isLoadingTSOForecast}
-      isError={chartData.isError}
       countryLabel={countryLabel}
       timePreset={timePreset}
       todayWindow={todayWindow}
@@ -87,9 +84,6 @@ function LoadDefaultView({
   forecastData,
   tsoForecastData,
   isLoading,
-  isLoadingForecast,
-  isLoadingTSOForecast,
-  isError,
   countryLabel,
   timePreset,
   todayWindow,
@@ -98,41 +92,13 @@ function LoadDefaultView({
   forecastData: ForecastDataPoint[] | undefined;
   tsoForecastData: TSOLoadForecastDataPoint[] | undefined;
   isLoading: boolean;
-  isLoadingForecast: boolean;
-  isLoadingTSOForecast: boolean;
-  isError: boolean;
   countryLabel: string;
   timePreset: string;
   todayWindow: TodayWindow;
 }) {
-  const { selected, hidden, requestModelId } = useModelSelection('load');
+  const { selected, hidden } = useModelSelection('load');
   const useMl = !hidden && selected?.source === 'ml';
   const useTso = !hidden && selected?.source === 'tso';
-
-  const gap = useMemo(
-    () =>
-      describeForecastGap({
-        active: useMl || useTso,
-        pinnedLabel: requestModelId ? selected?.label ?? null : null,
-        isLoading: isLoading || (useTso ? isLoadingTSOForecast : isLoadingForecast),
-        isError,
-        pointCount: (useTso ? tsoForecastData?.length : forecastData?.length) ?? 0,
-        countryLabel,
-      }),
-    [
-      useMl,
-      useTso,
-      requestModelId,
-      selected,
-      isLoading,
-      isLoadingForecast,
-      isLoadingTSOForecast,
-      isError,
-      forecastData,
-      tsoForecastData,
-      countryLabel,
-    ],
-  );
 
   const { series, nowIndex } = useMemo(
     () =>
@@ -172,18 +138,15 @@ function LoadDefaultView({
             Loading…
           </div>
         ) : (
-          <>
-            <AbleLineChart
-              series={series}
-              nowIndex={nowIndex}
-              height={300}
-              formatAxis={formatGwAxis}
-              formatTooltip={formatMwOrGw}
-              preset={timePreset}
-              label="Electricity load"
-            />
-            <ForecastGapNotice gap={gap} forecastType="load" />
-          </>
+          <AbleLineChart
+            series={series}
+            nowIndex={nowIndex}
+            height={300}
+            formatAxis={formatGwAxis}
+            formatTooltip={formatMwOrGw}
+            preset={timePreset}
+            label="Electricity load"
+          />
         )}
       </AbleCard>
 
