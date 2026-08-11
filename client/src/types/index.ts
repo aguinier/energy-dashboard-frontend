@@ -401,12 +401,32 @@ export interface MLForecastAccuracyResult {
 // Cross-Country Comparison Types
 // ============================================================================
 
+/**
+ * Skill vs the D-7 seasonal-naive baseline, on the same pair intersection the
+ * WAPE beside it was measured on — never a larger sample. `skillPct` is
+ * `null` (not 0) when `n` is 0 or the baseline itself has no measurable WAPE;
+ * callers must render an explicit insufficient-data state in that case, not a
+ * dash or a coerced 0 (ABL-186).
+ */
+export interface SkillVsSeasonalNaive {
+  n: number;
+  skillPct: number | null;
+  baselineWape: number | null;
+}
+
 export interface CrossCountryMetricsEntry {
   mae: number;
   wape: number | null;
   rmse: number;
   bias: number;
   dataPoints: number;
+  /**
+   * Optional so the many hand-built `CrossCountryMetricsEntry` literals in
+   * existing tests (leaderboardRows.test.ts, portfolioHome.test.ts,
+   * portfolioSummary.test.ts) keep compiling without this field. Treat a
+   * missing value the same as `{ n: 0, skillPct: null, baselineWape: null }`.
+   */
+  skillVsSeasonalNaive?: SkillVsSeasonalNaive;
 }
 
 export type CrossCountryMetrics = Record<string, Record<string, CrossCountryMetricsEntry>>;

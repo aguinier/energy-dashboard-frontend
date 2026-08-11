@@ -564,42 +564,49 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   ingest half). Always grep the running container; do not infer deploy state from
   git ancestry or issue status.
 
-  The ingest guard only stops *new* fabrications from landing — it does not
-  touch what was already stored. **The 216 rows above (GR 192, IE 24) were
-  deleted from `net_position` on 2026-08-11 13:23 UTC** (ABL-181, executed
-  under the Board-approved ABL-67 decision — confirmation
-  `c5398dd4-3b89-4ef6-9389-546d519cf814`, accepted 2026-08-11T08:11:55Z).
-  Verified: GR's row count fell 24,271 → 24,079 and IE's 24,286 → 24,262 —
-  exactly 192 and 24 — and zero all-zero day buckets remain anywhere in the
-  table. ABL-67 is now `done`, but it authorized only these 216 fabricated
-  rows; see the LU note below for what it did **not** authorize.
+  Deployed or not, the guard only stops *new* fabrications. The **216**
+  fabricated rows (GR 192, IE 24) were deleted from prod on 2026-08-11 at
+  13:23:19Z under ABL-181 (ABL-67 approved the write, `request_confirmation`
+  `c5398dd4`, accepted 2026-08-11T08:11:55Z); row counts confirmed:
+  `GR_before=24271 GR_after=24079`, `IE_before=24286 IE_after=24262`, and zero
+  all-zero day buckets remain anywhere in the table. GR's series now ends
+  cleanly at `2025-09-30 21:00`. The read-side guards below are **still
+  load-bearing** — for three distinct reasons that each survive the deletion:
 
-  **The read-side guards are not made redundant by this delete.**
-  `services/degenerateForecast.ts` (both classifiers), `classifyActualSeries`
-  and `getLastSeen`, documented below, stay exactly as they are — they are
-  defence in depth against the next sparse A25 document, which entsoe-py will
-  forward-fill the same way that produced this one. Do not remove or weaken
-  them, and leave the fixture DB's GR shape (a degenerate forecast plus an
-  all-zero actuals day) alone; it is what exercises both.
+  1. `classifyActualSeries` and `classifyForecastSeries` guard against *future*
+     fabrications. The ingest guard prevents new ones; the read-side check is
+     the backstop that catches anything the ingest guard misses, and removing it
+     before ingest is provably correct in production would trade defence-in-depth
+     for a single point of failure.
+  2. MK's `position 1, quantity 0.0` was **genuinely published** by ENTSO-E, so
+     it is still in the table on purpose. `measuredLoadClause()` is the only
+     thing keeping it off a chart — ABL-181 was scoped to the fabricated GR/IE
+     rows and did not touch MK.
+  3. GR's degenerate *forecast* series (`chronos-2-V010`, ~1e-7 MW medians) was
+     never in ABL-181's scope and is still stored. `degenerateForecast.ts` is
+     still load-bearing on live data.
+
+  Do not read the deletion as permission to remove the guards.
 
   **Verified against prod, 2026-08-11, that GR now renders the more correct
-  state this predicts.** With the fabricated actuals gone, GR has no rows at
-  all after 2025-09-30: `/api/net-position/GR` over the default 7d window now
-  returns `actual: []` with `meta.actual_coverage: 'no_actuals'` — no longer
-  `'degenerate_zero'`, because there is nothing left in that range to classify
-  — and `meta.last_seen` unchanged at `2025-09-30T21:00:00`.
-  `describeDegenerateActual` returns `null` for `'no_actuals'`
-  (`degenerateForecastNote.ts:70`), so `NetPositionTab` falls through the
-  withheld-actuals branch to the `lastSeen` branch (`NetPositionTab.tsx:158-173`)
-  and renders "Greece stopped publishing a net position on September 30,
-  2025." The forecast half is untouched by this delete: GR's `chronos-2-V010`
-  forecast is still `degenerate_zero` and still renders its own note beside
-  the empty actuals state.
+  state this predicts, rather than assuming it.** With the fabricated actuals
+  gone, GR has no rows at all after 2025-09-30: `/api/net-position/GR` over
+  the default 7d window now returns `actual: []` with `meta.actual_coverage:
+  'no_actuals'` — no longer `'degenerate_zero'`, because there is nothing left
+  in that range to classify — and `meta.last_seen` unchanged at
+  `2025-09-30T21:00:00`. `describeDegenerateActual` returns `null` for
+  `'no_actuals'` (`degenerateForecastNote.ts:70`), so `NetPositionTab` falls
+  through the withheld-actuals branch to the `lastSeen` branch
+  (`NetPositionTab.tsx:158-173`) and renders "Greece stopped publishing a net
+  position on September 30, 2025." — consistent with reason 3 above, its
+  forecast is untouched by the delete and still renders its own
+  `degenerate_zero` note beside the empty actuals state.
 
-  **IE's classification changed too.** With its 24 fabricated 03-14 rows gone,
-  IE's `2026-03-01..2026-03-30` window returns 47 rows, `actual_coverage:
-  'served'`, max |value| 738.8 MW — a genuinely clean line, not a real one
-  with a fabricated flat day inside it.
+  **IE's classification changed too, confirmed the same way.** As above, IE's
+  March window was already `served` even with the fabricated rows riding
+  along inside it. With them gone, IE's `2026-03-01..2026-03-30` window now
+  returns 47 rows, `actual_coverage: 'served'`, max |value| 738.8 MW — a
+  genuinely clean line, not one with a fabricated flat day inside it.
 
   The date the tab prints is **not** `MAX(timestamp_utc)` any more — see
   `getLastSeen`, which takes the newest *usable* day. That matters because GR's
@@ -944,6 +951,46 @@ Three properties are load-bearing:
   at all.** With two values the colour only restates which number is bigger
   while implying a spread nobody measured. Live example: the `hydro_total`,
   `wind_offshore` and `biomass` heatmap columns hold BE and FR only.
+
+**Skill vs D-7 seasonal-naive, beside every WAPE in `CountryRanking` and the
+leaderboard's "Evidence and error measures" table** (ABL-186). A WAPE with no
+reference point reads as respectable in isolation — the CEO's original probe
+found a load forecast at 9.4% WAPE, invisible as a problem until set beside
+D-7 persistence at 5.9%. `crossCountryMetricsService.ts`'s per-type query
+self-joins the same actuals table a second time, at `target_timestamp_utc`
+minus 7 days, guarded by `loadActualGuard()` on that side too (a placeholder
+`load_mw = 0.0` seven days back must not pose as a real reading, same as on
+the primary actuals join). `skillScore.ts`'s `computeSkillVsSeasonalNaive` is
+the pure aggregation: `n` (pairs with an actual, a model forecast, *and* a D-7
+baseline — never larger than the WAPE's own sample), `skillPct` (`100 * (1 -
+model_wape / baseline_wape)`, `null` rather than 0 when `n` is 0 or the
+baseline's own WAPE is 0/undefined), and `baselineWape` for context.
+
+This mirrors, rather than re-derives, the methodology the board already
+reviewed for the forecast-quality scorecard — `score_against_baseline` and
+`aligned_point_baselines` in the sibling `energy-forecast` repo
+(`../energy-forecast/src/evaluation/scorecard.py:158`,
+`../energy-forecast/src/baselines.py:297`): same D-7
+same-hour baseline definition, same pair-intersection rule. That scorecard is
+a batch Python job reading the replica directly and writing JSON/markdown
+reports to its own `reports/` directory — there is no live API or shared
+artifact channel the Node/TS dashboard can call at request time, so this is a
+faithful reimplementation in a second runtime rather than a call into the
+first, the same relationship this dashboard's own WAPE already has with the
+Python side's WAPE.
+
+`CrossCountryMetricsEntry.skillVsSeasonalNaive` is optional on the client wire
+type only so pre-existing hand-built `CrossCountryMetrics` literals elsewhere
+in the test suite keep compiling without it — a real API response always
+carries it. `components/comparison/SkillCell.tsx` (shared by `CountryRanking`
+and `ComparisonLeaderboard`, colocated `skillBadge.ts` for the pure
+win/loss/insufficient-data classification) renders a loss with colour, a
+down-marker, and explicit screen-reader text — never colour alone, so a reader
+who cannot see colour still gets "worse than the D-7 naive baseline" — and
+renders "insufficient data" as its own state rather than a dash or a coerced
+0%. `ComparisonHeatmap`'s matrix cells and `ComparisonMap`'s hover tooltip
+also show WAPE but toggle between WAPE/MAE/RMSE/bias and have far less room
+per cell; skill is not yet added there.
 
 **"Not measured" is a hatch, never a paler fill** (ABL-23). WAPE is `null`
 whenever the window's actuals sum to zero, and most of the ~51 shapes in
@@ -1341,9 +1388,9 @@ complete in 120 s during this measurement.
   ABL-181 (executed 2026-08-11 13:23 UTC) — rows with no genuine counterpart,
   fabricated outright by a sparse-document forward-fill. LU's rows are the
   opposite shape: real, correctly-fetched measurements that happen to
-  duplicate DE's. Whether to delete a genuine duplicate is a different,
-  still-open database-write policy question, not settled by this fix. This is
-  `net_position`-only:
+  duplicate DE's, and were never in ABL-181's scope. Whether to delete a
+  genuine duplicate is a different, still-open database-write policy
+  question, not settled by this fix. This is `net_position`-only:
   `PRICE_BIDDING_ZONES` carries the identical `DE`/`LU` → `DE_LU` mapping
   (`../energy-data-gathering/src/entsoe_client.py:2017-2022`) and must **not**
   get the same treatment — a price is intensive, not additive, so LU
@@ -1391,6 +1438,51 @@ complete in 120 s during this measurement.
   D+1`, and `TSO D+7`; a previous version multiplied the measured D+1 error by
   fixed factors to fabricate D+3/D+5/D+7 bars, which is why they were removed
   rather than kept.
+- **As-issued forecast vintages — added under ABL-184, server-only, and only
+  once deployed.** Until now none of the above existed for forecasts either:
+  `forecasts` and the two TSO tables are replace-on-refresh, so a corrected
+  re-run destroys the value it replaces before anything reads it
+  (`ingestNetPositionForecast`'s delete-then-reinsert in
+  `netPositionIngestService.ts` is the in-repo example; the TSO tables'
+  unique constraint carries no run/issue-time dimension at all, so *any*
+  refresh overwrites — ABL-134).
+  `server/src/services/forecastVintageArchiveService.ts` now records every
+  distinct (source, forecast_type, country, target, model, run, value) tuple
+  it sees, the first time it sees it, into a new append-only
+  `forecast_vintage_archive` table alongside the existing ones — never
+  replacing, never deleting.
+
+  **The migration, exactly:** `ensureForecastVintageArchiveTable`
+  (`forecastVintageArchiveService.ts:116`) issues only `CREATE TABLE IF NOT
+  EXISTS` plus two `CREATE INDEX IF NOT EXISTS` statements. No existing
+  table, column or row is read for writing, altered, or dropped, and there is
+  no separate migration script — the table is created lazily by the first
+  capture, not by a deploy-time step. No client change, no registry change,
+  no reader touched.
+
+  **It captures nothing until this server is deployed and running with a
+  write connection.** Landing this branch on `main` changes no running
+  process; `forecast_vintage_archive` does not exist in production until
+  code built from it is deployed. Once it is, capture is automatic and
+  gated exactly like `POST /api/weather/snapshot` already is — on
+  `HELIO_WRITE_TOKEN` being set (`shouldScheduleForecastVintageArchive`,
+  `forecastVintageArchiveScheduler.ts:50`), started from `index.ts` at
+  server boot. If that variable is unset in production for some other
+  reason, deploying this code still captures nothing until it is set.
+
+  **Runs in a worker thread, never on Express's request-handling thread.**
+  Measured against a full copy of the production-scale replica (2026-08-11):
+  one capture pass over `forecasts` (2.1M rows), `energy_load_forecast`
+  (2.4M) and `energy_generation_forecast` (3.0M) takes **~147s**, and even a
+  fully idempotent no-op rescan of unchanged data takes **~23s**.
+  better-sqlite3 is synchronous, so running that inside the process serving
+  dashboard API requests would freeze every other response for the
+  duration — the same class of problem `services/readQueryWorker.ts` already
+  exists to avoid for a single expensive read. `startForecastVintageArchiveScheduler`
+  (`forecastVintageArchiveScheduler.ts:104`) instead runs it on a 15-minute
+  timer inside `workers/captureForecastVintagesWorker.ts`, on its own
+  connection, with an in-flight guard so a slow pass is skipped rather than
+  overlapped by the next tick.
 
 ## Testing
 

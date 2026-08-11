@@ -7,7 +7,10 @@ import { buildLeaderboardRows, wapeRanks } from './leaderboardRows';
 // FR and BE carry all eight types. That asymmetry is the whole point.
 const DATA: CrossCountryMetrics = {
   IT: {
-    load: { mae: 2185.5, wape: 8.11, rmse: 2802.1, bias: -120.4, dataPoints: 701 },
+    load: {
+      mae: 2185.5, wape: 8.11, rmse: 2802.1, bias: -120.4, dataPoints: 701,
+      skillVsSeasonalNaive: { n: 690, skillPct: -12.5, baselineWape: 7.21 },
+    },
     price: { mae: 12.4, wape: 11.71, rmse: 17.9, bias: 1.2, dataPoints: 700 },
   },
   BE: {
@@ -69,6 +72,15 @@ describe('buildLeaderboardRows', () => {
     const row = buildLeaderboardRows(DATA, 'price').find((r) => r.country === 'XX')!;
     expect(row.wape).toBeNull();
     expect(row.mae).toBe(4.1);
+  });
+
+  it('carries skill vs seasonal-naive through unchanged, on its own field', () => {
+    const it = buildLeaderboardRows(DATA, 'load').find((r) => r.country === 'IT')!;
+    expect(it.skill).toEqual({ n: 690, skillPct: -12.5, baselineWape: 7.21 });
+    // BE has no skillVsSeasonalNaive in this fixture at all — a stale response
+    // predating ABL-186 — and that must read as absent, not as 0 or a crash.
+    const be = buildLeaderboardRows(DATA, 'load').find((r) => r.country === 'BE')!;
+    expect(be.skill).toBeUndefined();
   });
 });
 

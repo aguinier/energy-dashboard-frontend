@@ -27,12 +27,16 @@ describe('GET /api/cross-country/metrics/:forecastType', () => {
     expect(status).toBe(200);
     expect(body.success).toBe(true);
     const data = body.data as Record<string, Record<string, Record<string, unknown>>>;
+    // Neither country has a D-7 actual anywhere in this fixture (it only seeds
+    // WINDOW and NEXT_DAY), so skill is insufficient data for both — see
+    // crossCountryMetricsService.test.ts for the seeded, computed-skill cases.
+    const noSkill = { n: 0, skillPct: null, baselineWape: null };
     // AT: forecast 60 MW under actual at each of four hours.
     // WAPE = 100 * 240 / 2520.
-    expect(data.load.AT).toEqual({ mae: 60, wape: 9.52, rmse: 60, bias: 60, dataPoints: 4 });
+    expect(data.load.AT).toEqual({ mae: 60, wape: 9.52, rmse: 60, bias: 60, dataPoints: 4, skillVsSeasonalNaive: noSkill });
     // DE: four D+1 points at 100 MW error plus four D+2 points at 200 MW.
     // WAPE = 100 * 1200 / 9200.
-    expect(data.load.DE).toEqual({ mae: 150, wape: 13.04, rmse: 158.11, bias: 150, dataPoints: 8 });
+    expect(data.load.DE).toEqual({ mae: 150, wape: 13.04, rmse: 158.11, bias: 150, dataPoints: 8, skillVsSeasonalNaive: noSkill });
     expect(body.meta).toMatchObject({
       countriesWithData: ['AT', 'DE'],
       forecastTypes: ['load'],
