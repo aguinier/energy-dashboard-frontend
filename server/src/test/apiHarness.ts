@@ -37,6 +37,8 @@ export interface JsonResponse {
 export interface TestApi {
   /** GET a path relative to `/api`, e.g. `dashboard/overview?country=DE`. */
   get(path: string): Promise<JsonResponse>;
+  /** POST a JSON body to a path relative to `/api`, with optional extra headers. */
+  post(path: string, body: unknown, headers?: Record<string, string>): Promise<JsonResponse>;
   close(): Promise<void>;
 }
 
@@ -58,6 +60,14 @@ export async function startTestApi(): Promise<TestApi> {
   return {
     async get(path: string) {
       const res = await fetch(`${base}/${path}`);
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    },
+    async post(path: string, body: unknown, headers: Record<string, string> = {}) {
+      const res = await fetch(`${base}/${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
       return { status: res.status, body: (await res.json()) as Record<string, unknown> };
     },
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),

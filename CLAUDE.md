@@ -204,7 +204,7 @@ model must be listed there to be served at all.**
 `useForecastModels.ts`'s `resolveSelection` — `requestModelId` is set from an
 id the user actually chose and from nothing else, `useForecastModels.ts:62`).
 Leaving it off lets the server walk its candidate ladder
-(`resolveModelCandidates`, `forecastModels.ts:186-195`): production model
+(`resolveModelCandidates`, `forecastModels.ts:211-220`): production model
 first, then the other registered ml models, returning the first with rows for
 that country.
 
@@ -223,7 +223,7 @@ justifies — ordered rather than absolute preference — is unaffected.)
 
 **A pin is clearable, and "pinned" is not "shown" (ABL-16).** The server still
 honours an explicit request strictly — "if you asked for xgboost and it has
-nothing, you get nothing, not a silent substitution" (`forecastModels.ts:195`).
+nothing, you get nothing, not a silent substitution" (`forecastModels.ts:220`).
 That strictness is correct; what was wrong was that the client could only ever
 *add* a pin. Two things changed, both client-side:
 
@@ -654,7 +654,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   plus one or more selected registered forecasts. `NetPositionModelPicker`
   (ABL-203) is a **multi-select** box, not a dropdown: Chronos-2 V010 (the
   production default) plus three labelled shadow candidates — Baseline V012,
-  XGBoost V014, Chronos-2 V016 (`forecastModels.ts:61-89`) — can be checked
+  XGBoost V014, Chronos-2 V016 (`forecastModels.ts:86-114`) — can be checked
   together, each drawn as its own coloured, labelled dashed line over one
   shared actuals series (`dashboard/netPositionModelColors.ts` for the
   palette, `lib/chartAdapters.ts`'s `adaptNetPositionMultiSeries` for the
@@ -809,7 +809,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `2025-09-30T21:00:00`. `describeDegenerateActual` returns `null` for
   `'no_actuals'` (`degenerateForecastNote.ts:70`), so `NetPositionTab` falls
   through the withheld-actuals branch to the `lastSeen` branch
-  (`NetPositionTab.tsx:158-173`) and renders "Greece stopped publishing a net
+  (`NetPositionTab.tsx:251-265`) and renders "Greece stopped publishing a net
   position on September 30, 2025." — consistent with reason 3 above, its
   forecast is untouched by the delete and still renders its own
   `degenerate_zero` note beside the empty actuals state.
