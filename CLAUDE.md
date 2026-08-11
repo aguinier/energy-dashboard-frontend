@@ -1342,6 +1342,51 @@ complete in 120 s during this measurement.
   D+1`, and `TSO D+7`; a previous version multiplied the measured D+1 error by
   fixed factors to fabricate D+3/D+5/D+7 bars, which is why they were removed
   rather than kept.
+- **As-issued forecast vintages — added under ABL-184, server-only, and only
+  once deployed.** Until now none of the above existed for forecasts either:
+  `forecasts` and the two TSO tables are replace-on-refresh, so a corrected
+  re-run destroys the value it replaces before anything reads it
+  (`ingestNetPositionForecast`'s delete-then-reinsert in
+  `netPositionIngestService.ts` is the in-repo example; the TSO tables'
+  unique constraint carries no run/issue-time dimension at all, so *any*
+  refresh overwrites — ABL-134).
+  `server/src/services/forecastVintageArchiveService.ts` now records every
+  distinct (source, forecast_type, country, target, model, run, value) tuple
+  it sees, the first time it sees it, into a new append-only
+  `forecast_vintage_archive` table alongside the existing ones — never
+  replacing, never deleting.
+
+  **The migration, exactly:** `ensureForecastVintageArchiveTable`
+  (`forecastVintageArchiveService.ts:116`) issues only `CREATE TABLE IF NOT
+  EXISTS` plus two `CREATE INDEX IF NOT EXISTS` statements. No existing
+  table, column or row is read for writing, altered, or dropped, and there is
+  no separate migration script — the table is created lazily by the first
+  capture, not by a deploy-time step. No client change, no registry change,
+  no reader touched.
+
+  **It captures nothing until this server is deployed and running with a
+  write connection.** Landing this branch on `main` changes no running
+  process; `forecast_vintage_archive` does not exist in production until
+  code built from it is deployed. Once it is, capture is automatic and
+  gated exactly like `POST /api/weather/snapshot` already is — on
+  `HELIO_WRITE_TOKEN` being set (`shouldScheduleForecastVintageArchive`,
+  `forecastVintageArchiveScheduler.ts:50`), started from `index.ts` at
+  server boot. If that variable is unset in production for some other
+  reason, deploying this code still captures nothing until it is set.
+
+  **Runs in a worker thread, never on Express's request-handling thread.**
+  Measured against a full copy of the production-scale replica (2026-08-11):
+  one capture pass over `forecasts` (2.1M rows), `energy_load_forecast`
+  (2.4M) and `energy_generation_forecast` (3.0M) takes **~147s**, and even a
+  fully idempotent no-op rescan of unchanged data takes **~23s**.
+  better-sqlite3 is synchronous, so running that inside the process serving
+  dashboard API requests would freeze every other response for the
+  duration — the same class of problem `services/readQueryWorker.ts` already
+  exists to avoid for a single expensive read. `startForecastVintageArchiveScheduler`
+  (`forecastVintageArchiveScheduler.ts:104`) instead runs it on a 15-minute
+  timer inside `workers/captureForecastVintagesWorker.ts`, on its own
+  connection, with an in-flight guard so a slow pass is skipped rather than
+  overlapped by the next tick.
 
 ## Testing
 
