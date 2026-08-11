@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { getHealthProvenance } from '../lib/healthProvenance.js';
 import countriesRouter from './countries.js';
 import loadRouter from './load.js';
 import pricesRouter from './prices.js';
@@ -34,13 +35,18 @@ router.use('/forecast-comparison', forecastComparisonRouter);
 router.use('/cross-country', crossCountryComparisonRouter);
 router.use('/weather', weatherRouter);
 
-// Health check endpoint
+// Health check endpoint — includes provenance fields so an acceptance check can
+// prove it reached the container rather than a stray dev process on the same port.
+// `runtime` is 'container' only when NODE_ENV=production (set in the Dockerfile ENV),
+// `commit` is the SHA baked in at image build via COMMIT_SHA build-arg, and
+// `db_path` is ENERGY_DB_PATH (/data/… inside the container, a local path on dev).
 router.get('/health', (_req, res) => {
   res.json({
     success: true,
     data: {
       status: 'healthy',
       timestamp: new Date().toISOString(),
+      ...getHealthProvenance(),
     },
   });
 });
