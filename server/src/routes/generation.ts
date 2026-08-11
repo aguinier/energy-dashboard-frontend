@@ -66,4 +66,32 @@ router.get('/series', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknown
   });
 });
 
+// GET /api/generation/wind - onshore/offshore wind actuals over time, kept
+// separate rather than summed into /series' combined "wind" family - the
+// wind forecast tab (ABL-235) plots and compares each type independently
+// against its own registered forecast models, which a combined figure cannot
+// support.
+router.get('/wind', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknown, unknown, GenerationQuery>, res) => {
+  const { country, start, end, granularity = 'hourly' } = req.query;
+
+  if (!country) {
+    throw new AppError('Country code is required', 400, 'MISSING_COUNTRY');
+  }
+
+  const endDate = end || new Date().toISOString();
+  const startDate = start || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const data = generationService.getWindGenerationSeries(country, startDate, endDate, granularity);
+
+  res.json({
+    success: true,
+    data,
+    meta: {
+      count: data.length,
+      timeRange: { start: startDate, end: endDate },
+      granularity,
+    },
+  });
+});
+
 export default router;

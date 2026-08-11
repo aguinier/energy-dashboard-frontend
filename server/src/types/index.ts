@@ -157,6 +157,20 @@ export interface GenerationSeriesPoint {
   other: number | null;
 }
 
+/**
+ * Onshore/offshore wind actuals over time, kept separate rather than summed
+ * into GenerationSeriesPoint's combined `wind` family (ABL-235) - the wind
+ * forecast tab plots and compares each type independently against its own
+ * forecast, which a combined figure cannot support. Same NULL-vs-0 rule as
+ * every other `energy_generation` reader: null means this country did not
+ * report that type in this bucket, never a fabricated zero.
+ */
+export interface WindGenerationSeriesPoint {
+  timestamp: string;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+}
+
 // Dashboard types
 export interface DashboardOverview {
   currentLoad: number | null;
