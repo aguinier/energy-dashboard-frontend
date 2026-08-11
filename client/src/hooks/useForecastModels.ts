@@ -70,9 +70,62 @@ export function resolveSelection(
 
 export function useModelSelection(forecastType: string): ActiveModelSelection {
   const { data: registry, isLoading } = useForecastModels();
-  const pinnedId = useDashboardStore((s) => s.selectedModelByType[forecastType]);
+  // Single-select callers (Load, Price, ForecastTab) only ever write a
+  // one-element selection (`setSelectedModel`) — see dashboardStore.ts. This
+  // reads just its first (only) entry, so `resolveSelection` above is
+  // unchanged from before the store moved to an array shape.
+  const pinnedId = useDashboardStore((s) => s.selectedModelsByType[forecastType]?.[0]);
   const hidden = useDashboardStore((s) => s.forecastHiddenByType[forecastType] ?? false);
   return { ...resolveSelection(registry, forecastType, pinnedId, hidden), isLoading };
+}
+
+export interface ActiveModelsSelection {
+  forecastType: string;
+  models: ForecastModel[];
+  /**
+   * Registered ids the user has checked, in no particular order. Empty means
+   * "Default" — nothing pinned, so no `model=` goes on the wire and the
+   * server's own candidate ladder picks. An id that was pinned but has since
+   * been removed from the registry is dropped rather than sent, the same
+   * leniency `resolveSelection` gives a single pin.
+   */
+  selectedIds: string[];
+  hidden: boolean;
+}
+
+/**
+ * Multi-select counterpart of `resolveSelection`, for net position's picker
+ * (ABL-203). Every other forecast type still only ever gets a single pin —
+ * this exists because comparing several of net position's shadow-candidate
+ * models at once is the actual point of that tab's picker.
+ */
+export function resolveMultiSelection(
+  registry: ForecastModelRegistry | undefined,
+  forecastType: string,
+  pinnedIds: string[] | undefined,
+  hidden: boolean,
+): ActiveModelsSelection {
+  const cfg = registry?.[forecastType];
+  const models = cfg?.models ?? [];
+
+  if (hidden || !cfg) {
+    return { forecastType, models, selectedIds: [], hidden };
+  }
+
+  const validIds = new Set(models.map((m) => m.id));
+  // De-dup and drop ids no longer registered, so removing a model from the
+  // registry empties that part of the selection instead of sending an id the
+  // server has never heard of.
+  const selectedIds = [...new Set((pinnedIds ?? []).filter((id) => validIds.has(id)))];
+
+  return { forecastType, models, selectedIds, hidden };
+}
+
+export function useMultiModelSelection(forecastType: string): ActiveModelsSelection & { isLoading: boolean } {
+  const { data: registry, isLoading } = useForecastModels();
+  const pinnedIds = useDashboardStore((s) => s.selectedModelsByType[forecastType]);
+  const hidden = useDashboardStore((s) => s.forecastHiddenByType[forecastType] ?? false);
+  return { ...resolveMultiSelection(registry, forecastType, pinnedIds, hidden), isLoading };
 }
 
 /** The forecast type the active country-view tab is about. */

@@ -14,7 +14,7 @@ import type { DataFreshness, FreshnessStream } from '@/types';
  * exactly rather than eyeballing.
  */
 
-export type FreshnessTone = 'live' | 'stale' | 'none';
+export type FreshnessTone = 'live' | 'stale' | 'ended' | 'none';
 
 export interface FreshnessPill {
   tone: FreshnessTone;
@@ -22,6 +22,11 @@ export interface FreshnessPill {
   label: string;
   /** Full sentence, for `title` and screen readers. */
   title: string;
+}
+
+/** The animation is a liveness claim; no other verdict earns it. */
+export function freshnessPulses(tone: FreshnessTone): boolean {
+  return tone === 'live';
 }
 
 /**
@@ -55,11 +60,13 @@ export function describeFreshness(
 
   const streams = TONE_STREAMS.map((key) => ({ key, stream: freshness[key] }));
   const stale = streams.filter(({ stream }) => stream.status === 'stale');
+  const ended = streams.filter(({ stream }) => stream.status === 'ended');
   const anyLive = streams.some(({ stream }) => stream.status === 'live');
 
   // "Nothing held" must not outrank "something is broken", and it must not
   // suppress a stream that is fine either.
-  const tone: FreshnessTone = stale.length > 0 ? 'stale' : anyLive ? 'live' : 'none';
+  const tone: FreshnessTone =
+    stale.length > 0 ? 'stale' : ended.length > 0 ? 'ended' : anyLive ? 'live' : 'none';
 
   const measuredAge = freshestMeasuredAge(freshness);
   const age = measuredAge === null ? null : humanise(measuredAge, now);
@@ -82,6 +89,14 @@ export function describeFreshness(
     };
   }
 
+  if (tone === 'ended') {
+    return {
+      tone,
+      label: 'ENTSO-E · series ended',
+      title: `${ended.map(({ key }) => `${key} stopped publishing upstream`).join('; ')}. This is not an ingest alarm.`,
+    };
+  }
+
   // Stale. The word carries the state, not the colour: green-vs-amber is the
   // one distinction a colour blind viewer may not get, and this repo has
   // already moved its map scale off a red/green ramp for that reason.
@@ -95,7 +110,10 @@ export function describeFreshness(
         : measuredStale
           ? 'ENTSO-E · stale'
           : 'ENTSO-E · tomorrow missing',
-    title: `${stale.map(({ key, stream }) => explain(key, stream, now)).join('; ')}. Charts may be missing recent data.`,
+    title: `${[
+      ...stale.map(({ key, stream }) => explain(key, stream, now)),
+      ...ended.map(({ key }) => `${key} stopped publishing upstream`),
+    ].join('; ')}. Charts may be missing recent data.`,
   };
 }
 

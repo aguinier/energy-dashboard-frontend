@@ -43,7 +43,7 @@ energy-dashboard-frontend/
 │       ├── views/                    # Top-level routed views
 │       │   ├── MapView.tsx               # Landing page — Europe choropleth
 │       │   ├── CountryDashboardView.tsx  # Per-country tabs plus forecast-quality drill-down
-│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: variable cards, matrix, type-local ranking/map, evidence disclosure
+│       │   └── ComparisonView.tsx        # Forecast-quality portfolio: type-local ranking/map, evidence disclosure, matrix
 │       ├── components/
 │       │   ├── charts/               # Recharts-based primitives, shared across tabs
 │       │   │   ├── AbleLineChart.tsx     # Line + forecast overlay (load, price, net position)
@@ -147,15 +147,13 @@ container instead, and the built bundle (`npm start`) does not read `server/.env
 **`client/.env.local`'s `API_PROXY_TARGET`** controls where the Vite dev
 server proxies `/api` (`client/vite.config.ts`) — copy `client/.env.example`
 to override it. Unset, it proxies to `http://localhost:3001` (your local
-server). **Acceptance always uses the workstation's daily production replica:**
-leave `API_PROXY_TARGET` unset (or set it to `http://localhost:3001`) and run
-the local server with `ENERGY_DB_PATH=C:/Code/able/data/energy_dashboard.db`.
-Do not point an acceptance environment at production; that bypasses the replica
-and makes local server changes invisible. A direct request to production can be
-useful as an explicitly labelled read-only diagnostic, but it is not acceptance.
-See the approved acceptance design in
-[`../energy-data-gathering/docs/superpowers/specs/2026-07-23-acceptance-env-and-net-position-design.md`](../energy-data-gathering/docs/superpowers/specs/2026-07-23-acceptance-env-and-net-position-design.md)
-and the workstation runbook in [`../WORKFLOWS.md`](../WORKFLOWS.md).
+server). On CAT, the acceptance target is the local dashboard Docker
+container, which reads the CAT replica database. It serves a built image, so
+working-tree server changes are not visible through the ordinary acceptance
+proxy. See [`../WORKFLOWS.md`](../WORKFLOWS.md), **API proxy on CAT**, for the
+authoritative target and the separate local-server procedure used to exercise
+server changes; keep the environment-specific address there rather than
+duplicating it here.
 
 ## Deployment
 
@@ -188,8 +186,8 @@ repository.
 
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
-- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:121`).
-- **`ComparisonView`** — the Forecast quality portfolio home: variable-level WAPE cards lead into a type-local map/ranking for the default `load` type, disclosed error evidence, and the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:27`).
+- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:122`).
+- **`ComparisonView`** — the Forecast quality portfolio home: a type-local ranking/map for the default `load` type leads the page, then disclosed error evidence, then the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:29`). (The portfolio used to lead with a "Forecast performance by variable" card grid, `ForecastPortfolio`/`portfolioRows.ts` — removed under ABL-166 at the CEO's request; the rest of the page, its nav entry, and the per-country `ForecastTab` were untouched.)
 
 ### 2. Forecast model selection
 
@@ -203,7 +201,7 @@ model must be listed there to be served at all.**
 `useForecastModels.ts`'s `resolveSelection` — `requestModelId` is set from an
 id the user actually chose and from nothing else, `useForecastModels.ts:62`).
 Leaving it off lets the server walk its candidate ladder
-(`resolveModelCandidates`, `forecastModels.ts:180-190`): production model
+(`resolveModelCandidates`, `forecastModels.ts:186-195`): production model
 first, then the other registered ml models, returning the first with rows for
 that country.
 
@@ -216,13 +214,13 @@ This matters because catboost and xgboost barely overlap. Measured against
 model the response's `meta.model` reports actually served, which can differ
 from the picker's own selection when the ladder fell back.
 
-(`forecastModels.ts:168` still asserts the sets are fully disjoint, as measured
+(`forecastModels.ts:174` still asserts the sets are fully disjoint, as measured
 on 2026-07-26. That comment is now stale for `price`; the behaviour it
 justifies — ordered rather than absolute preference — is unaffected.)
 
 **A pin is clearable, and "pinned" is not "shown" (ABL-16).** The server still
 honours an explicit request strictly — "if you asked for xgboost and it has
-nothing, you get nothing, not a silent substitution" (`forecastModels.ts:177`).
+nothing, you get nothing, not a silent substitution" (`forecastModels.ts:195`).
 That strictness is correct; what was wrong was that the client could only ever
 *add* a pin. Two things changed, both client-side:
 
@@ -244,6 +242,12 @@ separate arguments for the same reason. The v7 migration splits an old blob and
 stored pin cannot be told apart from an artefact of the bug, and unpinned is
 the state that always renders something. That is also what frees users already
 trapped.
+
+(`selectedModelByType` above is this section's name for it at ABL-16 — the
+field net position's multi-select picker later needed to hold several ids in
+was renamed `selectedModelsByType`, an array per type, at ABL-203/v9. See
+"ModelPicker" below and State management for the current shape; nothing about
+the ABL-16 fix itself changed.)
 
 **Accuracy by model.** The accuracy endpoints also accept `model`, but resolve
 it through `resolveAccuracyModel` rather than `resolveModel`/`resolveModelCandidates`
@@ -274,14 +278,43 @@ normal answer. `meta.coverage` on `/ml-accuracy` distinguishes `served` /
 does not serve it reads as *no coverage* and never as a flawless 0% error.
 
 `ModelPicker` renders once per active tab (`TAB_FORECAST_TYPE` maps tab ->
-forecast type) and stores the choice per type in `selectedModelByType`, so a
-choice on one tab never leaks into a type where that model doesn't exist. The
-older `showForecast` / `showTSOForecast` / `tsoForecastType` boolean toggles
-and the D+1/D+7 button are gone — `LoadTab`/`PriceTab`/`NetPositionTab` derive
-`useMl` / `useTso` / `tsoHorizon` straight from the picker's selected model
-(`selected.source`, `selected.tsoHorizon`, `useLoadChartData.ts:89-91`). Those
-booleans remain in the store as legacy persisted fields, but they are not
-uniformly dead — see State management below for which are still read.
+forecast type) and stores the choice per type in `selectedModelsByType`
+(`Record<string, string[]>`, ABL-203/v9 — was `selectedModelByType`, one
+string per type, before net position's picker needed to hold several at
+once), so a choice on one tab never leaks into a type where that model
+doesn't exist.
+
+**`ModelPicker` is multi-select on every tab it renders on, as of ABL-204.**
+It started single-select (one pin, `setSelectedModel`/`clearSelectedModel`
+writing/clearing a one-element list) and was rewritten to a checkbox popover
+matching net position's shipped baseline (`NetPositionModelPicker`, ABL-203),
+reading/writing the selection through `toggleSelectedModel` directly rather
+than through the one-element-list helpers. Those two setters still exist and
+still write/clear a one-element list — `ForecastTab`'s own read of
+`useLoadChartData()` and a returning user's pre-ABL-204 single pin both rely
+on that shape — but `ModelPicker` itself no longer calls them. `Load` and
+`Price` and `net_position` are consequently three independent multi-select
+pickers over the same store shape, not one shared component:
+`ModelPicker.tsx` renders for `price`/`load` (`TABS_WITH_MODEL_PICKER`),
+`NetPositionModelPicker.tsx` for `net_position`. They were deliberately left
+as two files rather than unified into one generic component — see this
+section's "Load and Price" entry below for why.
+
+Each tab's data hook reduces the picker's selection to one of two shapes,
+mirroring net position's `mode: 'default' | 'selection'` split
+(`useNetPositionData`): with nothing checked, `LoadTab`/`PriceTab` derive
+`useMl` / `useTso` / `tsoHorizon` straight from the unpinned candidate the
+server's ladder would try first — always ml, since `load` and `price` both
+register an ml model as production (`selected.source`, `selected.tsoHorizon`,
+`useLoadChartData.ts:112-114`). With one or more models checked, the hook
+instead returns a `modelSelection: LoadModelQuery[]` (or `PriceModelQuery[]`)
+array, one entry per checked model, and the tab renders through
+`lib/multiForecastSeries.ts` instead of the single-series adapters — see
+"Load and Price" below. The older `showForecast` / `showTSOForecast` /
+`tsoForecastType` boolean toggles and the D+1/D+7 button are still gone; both
+code paths above derive from the picker, never from those fields. They remain
+in the store as legacy persisted fields, but are not uniformly dead — see
+State management below for which are still read.
 
 ### 2b. Staleness disclosure in the header stat row
 
@@ -321,8 +354,8 @@ does not say so *and comes in two shapes* — measured 2026-08-07, `energy_load`
 holds 2,485,282 space-separated rows and 279,880 `'T'`-separated ones, and every
 GB/UA row is the `'T'` form, which a browser parses as **local** time. The
 server now stamps the `Z` (`toIsoUtc`, `server/src/utils/timestamp.ts`) and the
-client parser accepts both, because acceptance is routinely proxied at a
-not-yet-redeployed prod (`API_PROXY_TARGET`). And an absent/unparseable
+client parser accepts both, because acceptance routinely proxies a built image
+that may predate the working-tree server change (`API_PROXY_TARGET`). And an absent/unparseable
 timestamp **withholds** rather than assuming freshness — the failure being fixed
 is a number presented as current on no evidence.
 
@@ -363,10 +396,11 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   sibling module now refuses a row that is both forward-filled and exactly
   `0.0`, so MK stores 1 row instead of 24 (verified through the real fetch
   path, 2026-08-06).
-  **That fix is not deployed** — it is stacked behind the pending
-  `energy-data-gathering` main deploy decision, so the count on the replica
-  keeps growing until it ships. And it does not make this read-side guard
-  redundant even then: MK's `position 1` **was** genuinely published as `0.0`,
+  **That fix shipped 2026-08-10** (ABL-157 redeployed the `energy-data-gathering`
+  container at 15:34Z; `published_points.py` is present and the guard fired on
+  the 18:30 pass, dropping 191 of 667 LU load rows). The count stops growing.
+  And it does not make this read-side guard redundant: MK's `position 1` **was**
+  genuinely published as `0.0`,
   so it is still stored on purpose, and `measuredLoadClause()` is the only
   thing keeping it off a chart. The two rules are complementary, not
   duplicative — do not remove this one when the ingest fix lands.
@@ -447,6 +481,105 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   auto-enables `include_dayahead` from that flag, and prod's request URL on
   2026-08-06 was literally `documentType=A44&…&periodEnd=202608080000` — the
   end of D+1 — on all four passes. See ABL-54.
+
+  **Both tabs' `ModelPicker` is multi-select (ABL-204), extending net
+  position's shipped baseline (ABL-203) to the two forecast types where
+  coverage is the hard part rather than the easy part.** Checking several ml
+  models here is not the same shape as net position's: net position's four
+  candidates are all ml and mostly overlap in coverage, so a selected-but-
+  empty model is the exception. Measured against `energy_dashboard.db`,
+  `load`'s catboost (21 countries) and xgboost (AT/BE/FR) are **strictly
+  disjoint** — no country has both — and `price`'s are near-disjoint (AT
+  alone served by both, see "Forecast model selection" above). So on these
+  two tabs, checking two ml models is normally "one line and one nothing",
+  and that emptiness has to be named per model, not left to read as a bug.
+  `load` also registers two TSO models (D+1, D+7) alongside the two ml
+  ones, so a selection here can mix sources in a way net position's picker
+  never has to — `price` has none, so `PriceTab`'s selection view never
+  branches on source.
+
+  `useLoadChartData`/`usePriceChartData` fan out one query per checked model
+  into a `modelSelection: LoadModelQuery[] | PriceModelQuery[]` array (ml via
+  `fetchForecastData` pinned to that model id, tso via `fetchTSOLoadForecast`
+  pinned to that model's horizon) — the existing single-model fields
+  (`forecastData`, `tsoForecastData`, `servedModelId`, …) are untouched and
+  still describe the unpinned "Default" request, because `ForecastTab` reads
+  `loadData`/`forecastData` off `useLoadChartData()` directly for its own
+  single-line "forecast vs actual" overlay regardless of what is checked on
+  the Load tab. `LoadTab`/`PriceTab` each split into a default view (nothing
+  checked, today's pre-ABL-204 single-series render, unchanged) and a
+  selection view (one or more checked) exactly the way `NetPositionTab`
+  already splits on `useNetPositionData`'s `mode`.
+
+  The selection view merges actuals with N normalized forecast entries via
+  `lib/multiForecastSeries.ts`'s `buildMultiForecastSeries` — the Load/Price
+  counterpart of `chartAdapters.ts`'s `adaptNetPositionMultiSeries`, and
+  deliberately not the same function, because the honest-gap requirement is
+  stricter here. Net position's adapter drops an uncovered model from
+  `AbleLineChart`'s `forecastSeries` entirely, leaving the tab to footnote it
+  separately — reasonable when a gap is rare. `buildMultiForecastSeries`
+  instead keeps **every** checked model in `forecastSeries`, tagged
+  `covered: false` when it has zero rows, because a gap is the ordinary
+  outcome here. `AbleLineChart`'s legend renders that as a diagonal-hatched
+  swatch plus "— Not available in `<country>`" instead of a solid dot,
+  reusing `NoDataHatch`'s "texture signals absence, never a quiet value"
+  semantic in a legend rather than a choropleth. `lib/forecastGap.ts`'s
+  `describeForecastGapsForSelection` additionally footnotes each uncovered
+  model by name below the chart, and `ForecastGapNotice`'s new `gaps` prop
+  gives each one its own "Remove from comparison" button
+  (`toggleSelectedModel`) — the ABL-16 property ("a gap has to stay
+  reachable, not just visible") applied per model instead of once.
+
+  The min/max band (TSO week-ahead's daily min/max) draws under the same
+  rule net position's p10-p90 band already uses: only when exactly one model
+  is checked, because several bands on one chart is unreadable and a lone
+  band under N lines would misattribute uncertainty to models that never
+  published one.
+
+  Line colour and dash pattern are stable per model id, not per selection
+  order — `dashboard/forecastLineTokens.ts`, keyed on the registry ids
+  (`catboost`, `xgboost`, `tso-d1`, `tso-d7`). Net position's picker
+  differentiates only by colour; this one also varies the dash rhythm,
+  because two ml models trained on the same data routinely predict
+  near-identical values — lines overlapping almost exactly is the normal
+  case here, not an edge case, and a shared dash rhythm would hide the far
+  line under the near one. `AbleLineChart`'s multi-line renderer draws a 4px
+  surface-colour under-stroke beneath each 2px patterned line for the same
+  reason. Both changes are additive to `AbleForecastSeriesSpec`
+  (`dash?`/`covered?`/`coverageNote?`) and apply to every caller including
+  net position's — that picker doesn't set the new fields, so its lines keep
+  the default dash and simply gain the under-stroke halo.
+
+  This is the Design Consultant's ABL-205 recommendation, taken with two
+  deliberate exceptions, noted rather than silently dropped:
+
+  - **Net position's own picker was not rebuilt to match.** The design doc
+    frames ABL-203's checkbox list as the shipped *baseline* and asks for the
+    refinements — the "Default — automatic" radio row, real
+    `<input type="checkbox">` rows instead of a `role="listbox"`, the
+    "Models · N selected" collapsed label — to "land in the Load/Price
+    follow-up", i.e. here, not necessarily backported. Doing so would have
+    meant modifying an already-shipped, board-reviewed feature outside this
+    change's scope for a consistency gain with no functional requirement
+    behind it. `NetPositionModelPicker.tsx` is unchanged; `ModelPicker.tsx`
+    is the new, refined design and the two are intentionally two components
+    rather than one shared one, at least until net position's picker is
+    revisited on its own.
+  - **No per-row "not available here" hint inside the open picker.** The
+    design doc's item 3 asks the checkbox row itself to mirror the legend's
+    hatch/note while the dropdown is open. That needs `ModelPicker` to know
+    the current query results for this country/window, which today live in
+    each tab's own data hook, not in the picker component. Wiring that
+    through was left for a follow-up: the chart's legend and the per-model
+    footnote already satisfy the acceptance requirement ("says in words that
+    `<model>` does not forecast `<country>` — no silent gap") once the user
+    looks at the chart, and the picker is a control, not a second place that
+    needs to restate the chart's answer before the chart has rendered it.
+    Hover-dimming the non-hovered forecast lines to 35% opacity (the design
+    doc's other secondary suggestion, for legibility under heavy overlap) was
+    left for the same reason — a legibility polish, not a correctness
+    requirement, and the under-stroke halo above already addresses the
+    concrete "which line is which" problem it was proposed to solve.
 - **`GenerationTab`** — `AbleStackedMix` (the full mix, stacked) plus an
   `AbleDonut` and `SourceTable` showing window-average share of *generation*.
   **All three marks now read `energy_generation` through one grouping** (ABL-44).
@@ -502,8 +635,12 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `dashboard/generationSeries.test.ts` pins the ordering.
 
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
-  (`CountryDashboardView.tsx:56`, applied at `:116`) limits it to the tabs
-  whose chart actually reads a selection (`price`, `load`, `net-position`). It
+  (`CountryDashboardView.tsx:61`, applied at `:120`) limits it to `price` and
+  `load`, the tabs whose chart reads a multi-select picker (ABL-204).
+  `net-position` isn't in that set either, but for the opposite reason: it has
+  its own separate multi-select picker instead (`NetPositionModelPicker`,
+  ABL-203), rendered by its own `activeChartTab === 'net-position'` branch
+  beside it. It
   used to render and do nothing, while `useRenewableChartData` fired five
   per-type ML forecast queries plus a TSO one that no component consumed: six
   API calls per view, discarded. Both are gone, and so is that hook — ABL-44
@@ -511,7 +648,27 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `chartAdapters.adaptRenewableMixSeries` with it. If you add a forecast
   overlay to this tab, add it back to that set.
 - **`NetPositionTab`** — `AbleLineChart` for ENTSO-E day-ahead net position
-  plus the Chronos forecast (median, and a p10-p90 band where stored). Handles
+  plus one or more selected registered forecasts. `NetPositionModelPicker`
+  (ABL-203) is a **multi-select** box, not a dropdown: Chronos-2 V010 (the
+  production default) plus three labelled shadow candidates — Baseline V012,
+  XGBoost V014, Chronos-2 V016 (`forecastModels.ts:61-89`) — can be checked
+  together, each drawn as its own coloured, labelled dashed line over one
+  shared actuals series (`dashboard/netPositionModelColors.ts` for the
+  palette, `lib/chartAdapters.ts`'s `adaptNetPositionMultiSeries` for the
+  merge, `AbleLineChart`'s `forecastSeries` prop for the N-line draw). Only
+  V010 has a stored p10-p90 band, and it draws only when exactly one model is
+  checked — several bands on one chart is unreadable, and a lone band under N
+  lines would misattribute uncertainty to models that never published one.
+  `useNetPositionData` fans out one query per checked model through
+  `useQueries`, each pinned via `model=` and keyed on its id — the same
+  per-model-query property ABL-177 first established for the single-select
+  case, generalised to N; nothing checked ("Default", or the overlay switched
+  off) is the one unpinned query every other forecast tab already sends, and
+  the server's candidate ladder picks. A checked model with no rows for this
+  zone is named in a footnote rather than silently missing its line — the
+  degenerate-forecast case below (`describeDegenerateForecast`) and the
+  plain-no-coverage case (`lib/forecastGap.ts`'s `describeForecastGap`) both
+  apply per model now, not once for a single response. Handles
   a zone going silent upstream as an explicit "stopped publishing on <date>"
   state rather than a loading spinner. GR and IE are the live examples, and
   **this entry used to give the wrong date for both**: it said their continuous
@@ -533,16 +690,28 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `2026-07-23T22:00Z` declares `PT60M` over 24 positions and carries one Point,
   `position 1, quantity 0`.
 
-  **The two zones are not symmetric, and this matters when reading the tab.**
-  Measured on the replica 2026-08-07:
+  **The two zones were not symmetric, and this mattered for reading the tab
+  before the delete described below.** Measured on the replica 2026-08-07 —
+  this is the record of what was found and the evidence the ABL-181 deletion
+  decision rested on, not a description of the table's current state:
 
-  - **GR — 192 of 192 post-break rows are exactly `0.0`**, every one
-    fabricated, across 13 UTC-day buckets. GR has published no real net
-    position since 2025-09-30. Its own `crossborder_flows` show a median net
+  - **GR — 192 of 192 post-break rows were exactly `0.0`**, every one
+    fabricated, across 13 UTC-day buckets. GR had published no real net
+    position since 2025-09-30. Its own `crossborder_flows` showed a median net
     *export* of 1,142 MW over those same hours.
-  - **IE — only 2026-03-14 is fabricated** (23 rows, plus 1 spill row on
-    03-13 = 24). Its other post-break days carry genuine values, up to 738.8
-    MW, so IE's newest *usable* day is 2026-07-24, not 2025-09-30.
+  - **IE — only 2026-03-14 was fabricated** (23 rows, plus 1 spill row on
+    03-13 = 24). Its other post-break days carried genuine values, up to 738.8
+    MW, so IE's newest *usable* day was already 2026-07-24, not 2025-09-30 —
+    unaffected by the later delete, since `getLastSeen` already stepped back
+    over the one fabricated day to reach it.
+
+  Because `classifyActualSeries`/`getNetPositionActualSeries` judge a queried
+  window by its series **maximum**, not row by row, IE's mostly-genuine March
+  window was never classified `degenerate_zero` even before the delete — the
+  24 fabricated 03-14 rows rode along inside an otherwise-real `served` series
+  and would have been returned and drawn like any other point. GR's window,
+  100% fabricated after the break, was the one case the whole-series rule
+  caught.
 
   The ingest guard is `../energy-data-gathering/src/published_points.py`
   (`drop_unpublished_zeros_series`, wired at
@@ -556,24 +725,64 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   at a flat 500/1500 MW is encoded as one Point plus a hold. The strict rule
   would delete over half of PT's and ES's genuine rows.
 
-  **The fix is NOT deployed — verified against prod 2026-08-07, not inferred.**
-  `/app/src/published_points.py` does not exist in the running
-  `energy-data-gathering` container and `/app/src/entsoe_client.py` contains
-  zero references to either guard function. The image was built **2026-07-31
-  06:54Z** and has been up 7 days, so *every* ingest fix merged since is
-  missing from prod — `12c5a6b` (ABL-50 load guard), `1dc6e99` (this one),
-  `6299e98` (ABL-54 day-ahead price window), `4e99322` and `941d258`
-  (crossborder). Tracked on **ABL-71**. Do not read ABL-63 as having shipped
-  any of them: it deployed the *dashboard-frontend* container, so the ABL-55
-  merge being an ancestor of this module's local main says nothing about prod.
-  Note this cuts both ways for ABL-54 — its **client** half is live and its
-  **ingest** half is not.
+  **The fix shipped 2026-08-10 15:34Z** (ABL-157). Verified on prod:
+  `/app/src/published_points.py` is present (12,106 bytes),
+  `grep -c drop_unpublished_zeros_series entsoe_client.py` returns 1, and the
+  guard fired on the 18:30 UTC pass — "PL net position: dropping 29 of 780 value
+  rows that ENTSO-E published no Point for and that forward-filled to exactly 0."
+  All five fixes are live: `12c5a6b` (ABL-50 load guard), `1dc6e99` (this one),
+  `6299e98` (ABL-54 day-ahead price window), `4e99322` + `941d258` (crossborder).
+  **Lesson to carry forward:** ABL-63 deployed the *dashboard-frontend* container
+  and left the ingest container on the old image — a "done" status and a merged
+  ancestor on this module's main said nothing about the ingest side of prod. The
+  same reasoning error would apply to any future fix that has independently
+  shipping halves (like ABL-54, whose client half went live weeks before the
+  ingest half). Always grep the running container; do not infer deploy state from
+  git ancestry or issue status.
 
-  Deployed or not, the guard only stops *new* fabrications: the
-  **216** already-stored rows (GR 192, IE 24) are still in the table, and
-  deleting them is a separate CEO decision (**ABL-67**, blocked on the board),
-  not yet taken. So the read-side guards below remain the only thing keeping
-  those rows off a chart — do not remove them when the ingest fix ships.
+  Deployed or not, the guard only stops *new* fabrications. The **216**
+  fabricated rows (GR 192, IE 24) were deleted from prod on 2026-08-11 at
+  13:23:19Z under ABL-181 (ABL-67 approved the write, `request_confirmation`
+  `c5398dd4`, accepted 2026-08-11T08:11:55Z); row counts confirmed:
+  `GR_before=24271 GR_after=24079`, `IE_before=24286 IE_after=24262`, and zero
+  all-zero day buckets remain anywhere in the table. GR's series now ends
+  cleanly at `2025-09-30 21:00`. The read-side guards below are **still
+  load-bearing** — for three distinct reasons that each survive the deletion:
+
+  1. `classifyActualSeries` and `classifyForecastSeries` guard against *future*
+     fabrications. The ingest guard prevents new ones; the read-side check is
+     the backstop that catches anything the ingest guard misses, and removing it
+     before ingest is provably correct in production would trade defence-in-depth
+     for a single point of failure.
+  2. MK's `position 1, quantity 0.0` was **genuinely published** by ENTSO-E, so
+     it is still in the table on purpose. `measuredLoadClause()` is the only
+     thing keeping it off a chart — ABL-181 was scoped to the fabricated GR/IE
+     rows and did not touch MK.
+  3. GR's degenerate *forecast* series (`chronos-2-V010`, ~1e-7 MW medians) was
+     never in ABL-181's scope and is still stored. `degenerateForecast.ts` is
+     still load-bearing on live data.
+
+  Do not read the deletion as permission to remove the guards.
+
+  **Verified against prod, 2026-08-11, that GR now renders the more correct
+  state this predicts, rather than assuming it.** With the fabricated actuals
+  gone, GR has no rows at all after 2025-09-30: `/api/net-position/GR` over
+  the default 7d window now returns `actual: []` with `meta.actual_coverage:
+  'no_actuals'` — no longer `'degenerate_zero'`, because there is nothing left
+  in that range to classify — and `meta.last_seen` unchanged at
+  `2025-09-30T21:00:00`. `describeDegenerateActual` returns `null` for
+  `'no_actuals'` (`degenerateForecastNote.ts:70`), so `NetPositionTab` falls
+  through the withheld-actuals branch to the `lastSeen` branch
+  (`NetPositionTab.tsx:158-173`) and renders "Greece stopped publishing a net
+  position on September 30, 2025." — consistent with reason 3 above, its
+  forecast is untouched by the delete and still renders its own
+  `degenerate_zero` note beside the empty actuals state.
+
+  **IE's classification changed too, confirmed the same way.** As above, IE's
+  March window was already `served` even with the fabricated rows riding
+  along inside it. With them gone, IE's `2026-03-01..2026-03-30` window now
+  returns 47 rows, `actual_coverage: 'served'`, max |value| 738.8 MW — a
+  genuinely clean line, not one with a fabricated flat day inside it.
 
   The date the tab prints is **not** `MAX(timestamp_utc)` any more — see
   `getLastSeen`, which takes the newest *usable* day. That matters because GR's
@@ -664,7 +873,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   Known gap, filed separately: with both series withheld, GR's card is now
   entirely an empty state — which is correct, but it means the preset button
   says "30d" beside a card with no axis at all. `AbleLineChart`'s day-marker
-  derivation (`AbleLineChart.tsx:270`) was the reason the pre-ABL-35 24-hour
+  derivation (`AbleLineChart.tsx:304`) was the reason the pre-ABL-35 24-hour
   version carried no dates either.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
@@ -778,7 +987,7 @@ so it cannot drift from the union.
 
 Zustand store (`dashboardStore.ts`) with `persist` to localStorage
 (`energy-dashboard-storage`). **The persisted shape is versioned:**
-`PERSIST_VERSION` in `store/migrate.ts` (currently `7`, `migrate.ts:3`), bumped
+`PERSIST_VERSION` in `store/migrate.ts` (currently `9`, `migrate.ts:3`), bumped
 with a matching clause in `migratePersisted()` whenever a persisted field's
 shape or meaning changes. `migratePersisted` must never throw: `state` is an
 arbitrary, possibly years-old localStorage blob. Skipping this step leaves
@@ -793,7 +1002,12 @@ field. The clauses today coerce an unknown `currentView` / `activeChartTab` /
 stored `comparisonMetric: 'mape'` to `'wape'` (`:88`), **delete** three dead
 keys — `layers` (`:82`), `timeRange` (`:102`), `analyticsConfig` (`:114`) —
 and split `selectedModelByType`'s pin/hidden conflation into
-`forecastHiddenByType`, dropping every stored pin (`:155-163`, ABL-16).
+`forecastHiddenByType`, dropping every stored pin (`:155-163`, ABL-16), then
+convert that single pin per type into a one-element list under the renamed
+`selectedModelsByType` (`:183-192`, ABL-203/v9) — the shape net position's
+multi-select picker needs to hold several pins at once, with a returning
+user's one stored pin carrying forward as their starting selection rather
+than being dropped.
 Note `layers` is deleted, not folded into `showForecast`/`showTSOForecast` as
 an earlier version did — that folding unconditionally overwrote `showForecast`
 with `false` on every migration, clobbering a value the current code had
@@ -829,7 +1043,7 @@ is `Object.keys(ANCHOR_FOR_PRESET)`, and `ANCHOR_FOR_PRESET` is keyed
 `Record<TimePreset, TimeAnchor>`, so it cannot drift from the union.
 
 ```typescript
-// The COMPLETE persisted set — `partialize`, dashboardStore.ts:279-302.
+// The COMPLETE persisted set — `partialize`, dashboardStore.ts:357-381.
 // Anything absent here (timeOffset, isLive, servedModelByType, …) is
 // session-only and resets on reload.
 currentView: AppView;                                // 'map' | 'country' | 'comparison'
@@ -838,7 +1052,7 @@ timePreset: TimePreset;
 timeAnchor: TimeAnchor;
 mapMetric: MetricType;
 activeChartTab: string;              // price|load|renewables|net-position|analytics
-selectedModelByType: Record<string, string>;         // per forecast-type PIN; absent = server ladder
+selectedModelsByType: Record<string, string[]>;      // per forecast-type PINs; absent/empty = server ladder
 forecastHiddenByType: Record<string, boolean>;       // overlay switched off, per type; absent = shown
 comparisonCountries: string[];
 sidebarOpen: boolean;
@@ -858,9 +1072,9 @@ The legacy forecast fields are **not uniformly dead**. Before deleting one,
 check which group it is in:
 
 - **Live.** `showComparisonMode` / `showTSOComparisonMode` gate the comparison
-  queries (`useLoadChartData.ts:148`, `:189`; `usePriceChartData.ts:117`);
+  queries (`useLoadChartData.ts:172`, `:213`; `usePriceChartData.ts:133`);
   `selectedMLHorizons` drives the multi-horizon fetch
-  (`useLoadChartData.ts:107`, `:153`).
+  (`useLoadChartData.ts:131`, `:177`).
 - **Written, and read only by dead code.** `showForecast`. `setTimePreset`
   still sets it `true` for future presets (`dashboardStore.ts:150`) and
   `useLatestForecast` gates its query on it (`useDashboardData.ts:303`, `:312`)
@@ -871,8 +1085,8 @@ check which group it is in:
 
 Careful with the name `showForecast`: `useLoadChartData`/`usePriceChartData`
 declare *local* consts of that name derived from the picker
-(`selected?.source === 'ml'`, `useLoadChartData.ts:89`;
-`usePriceChartData.ts:61`), which shadow the store field. A grep hit is not
+(`selected?.source === 'ml'`, `useLoadChartData.ts:113`;
+`usePriceChartData.ts:77`), which shadow the store field. A grep hit is not
 necessarily a store read.
 
 `servedModelByType` (which model actually served the last response, per type)
@@ -918,6 +1132,46 @@ Three properties are load-bearing:
   at all.** With two values the colour only restates which number is bigger
   while implying a spread nobody measured. Live example: the `hydro_total`,
   `wind_offshore` and `biomass` heatmap columns hold BE and FR only.
+
+**Skill vs D-7 seasonal-naive, beside every WAPE in `CountryRanking` and the
+leaderboard's "Evidence and error measures" table** (ABL-186). A WAPE with no
+reference point reads as respectable in isolation — the CEO's original probe
+found a load forecast at 9.4% WAPE, invisible as a problem until set beside
+D-7 persistence at 5.9%. `crossCountryMetricsService.ts`'s per-type query
+self-joins the same actuals table a second time, at `target_timestamp_utc`
+minus 7 days, guarded by `loadActualGuard()` on that side too (a placeholder
+`load_mw = 0.0` seven days back must not pose as a real reading, same as on
+the primary actuals join). `skillScore.ts`'s `computeSkillVsSeasonalNaive` is
+the pure aggregation: `n` (pairs with an actual, a model forecast, *and* a D-7
+baseline — never larger than the WAPE's own sample), `skillPct` (`100 * (1 -
+model_wape / baseline_wape)`, `null` rather than 0 when `n` is 0 or the
+baseline's own WAPE is 0/undefined), and `baselineWape` for context.
+
+This mirrors, rather than re-derives, the methodology the board already
+reviewed for the forecast-quality scorecard — `score_against_baseline` and
+`aligned_point_baselines` in the sibling `energy-forecast` repo
+(`../energy-forecast/src/evaluation/scorecard.py:158`,
+`../energy-forecast/src/baselines.py:297`): same D-7
+same-hour baseline definition, same pair-intersection rule. That scorecard is
+a batch Python job reading the replica directly and writing JSON/markdown
+reports to its own `reports/` directory — there is no live API or shared
+artifact channel the Node/TS dashboard can call at request time, so this is a
+faithful reimplementation in a second runtime rather than a call into the
+first, the same relationship this dashboard's own WAPE already has with the
+Python side's WAPE.
+
+`CrossCountryMetricsEntry.skillVsSeasonalNaive` is optional on the client wire
+type only so pre-existing hand-built `CrossCountryMetrics` literals elsewhere
+in the test suite keep compiling without it — a real API response always
+carries it. `components/comparison/SkillCell.tsx` (shared by `CountryRanking`
+and `ComparisonLeaderboard`, colocated `skillBadge.ts` for the pure
+win/loss/insufficient-data classification) renders a loss with colour, a
+down-marker, and explicit screen-reader text — never colour alone, so a reader
+who cannot see colour still gets "worse than the D-7 naive baseline" — and
+renders "insufficient data" as its own state rather than a dash or a coerced
+0%. `ComparisonHeatmap`'s matrix cells and `ComparisonMap`'s hover tooltip
+also show WAPE but toggle between WAPE/MAE/RMSE/bias and have far less room
+per cell; skill is not yet added there.
 
 **"Not measured" is a hatch, never a paler fill** (ABL-23). WAPE is `null`
 whenever the window's actuals sum to zero, and most of the ~51 shapes in
@@ -985,9 +1239,10 @@ hat: not a wrong number in a chart, but a wrong claim *about* a chart.
 
 Each of `load`, `price`, `generation`, `tsoLoadForecast`,
 `tsoGenerationForecast` now returns `{ latest, ageHours, status }` with `status`
-one of `live` / `stale` / `none`. `none` is deliberately not a health verdict —
-a stream we have never held is not an outage, and an alarm no ingest fix could
-clear is furniture.
+one of `live` / `stale` / `ended` / `none`. `none` is deliberately not a health
+verdict — a stream we have never held is not an outage. `ended` is the matching
+non-alarm verdict for a stream we held but whose upstream series stopped; an
+alarm no ingest fix could clear is furniture.
 
 **Two rules, because the streams are not the same kind of thing**
 (`services/freshness.ts`, pure, colocated test):
@@ -998,10 +1253,12 @@ clear is furniture.
   (`../energy-data-gathering/docker/Dockerfile:22`), so the longest scheduled
   gap is 7h, and measured against prod 2026-08-07 07:10 UTC — minutes after a
   healthy 06:30 pass — 31 of 34 countries sat 0.93-3.18h behind while BG sat
-  6.18h and AL/ME ~9.2-9.4h. The slowest healthy country therefore reaches
-  ~16.4h legitimately. It is not a tuned edge: every healthy country was under
-  9.5h and the next value up was MK at 34.2h, so **any threshold from 9.5h to
-  34h selects the same set**.
+  6.18h and ME ~9.2h. The slowest healthy country therefore reaches ~16.4h
+  legitimately. It is not a tuned edge: every healthy country was under 9.5h
+  and the next value up was MK at 34.2h, so **any threshold from 9.5h to 34h
+  selects the same set**. (AL measured 9.4h in that same snapshot — but that
+  was a mid-publication coincidence, not AL's character; see "Known limit"
+  below.)
 - **Day-ahead publications** (`energy_price`, both TSO forecast tables) are
   judged on **coverage**, never age. A healthy day-ahead price is dated up to
   ~46h in the *future*, so the age rule would read it as impossibly fresh
@@ -1018,8 +1275,26 @@ clear is furniture.
   day's local start, far more than the ≤3h spread between European market
   timezones. Testing the day's *end* would mark BG (UTC+3) stale while complete.
 
-**Known limit, stated rather than papered over.** AL's ordinary 9.4h overlaps a
-fast publisher's age after one missed pass (FR would reach ~15.4h), so no
+- **Ended upstream** applies to either kind once its newest usable row is over
+  `ENDED_AFTER_HOURS` (**30 days**) old (`services/freshness.ts:74`). This is a
+  terminal, non-alarm verdict, sized against all 39 production countries on
+  2026-08-10 12:04 UTC: the slowest healthy measured stream was 11.1h, the
+  worst active stall was MK generation at 111.1h, and the next value was AL
+  generation at 1,143.1h; day-ahead streams had the same gap (CH generation
+  forecast 87.1h, then UA/GB at 39,039h/45,181h). Thirty days is over 6x the
+  worst active stall and spans at least 102 longest scheduled ingest gaps. It
+  selected only AL generation plus GB/UA load and generation forecasts.
+  There is no country ignore-list: a newer row immediately re-enters the normal
+  live/stale rule (`classifyMeasuredStream`, `services/freshness.ts:181`;
+  `classifyDayAheadStream`, `services/freshness.ts:213`).
+
+  This is still an inference from absence, not proof of upstream causality. A
+  single-stream ingest defect left untouched for 30 days has the same stored
+  shape. The long delay is what makes the operational verdict useful without
+  silently swallowing the active stalls visible in the measured fleet.
+
+**Known limit, stated rather than papered over.** ME's ~9.2h overlaps a fast
+publisher's age after one missed pass (FR would reach ~15.4h), so no
 fleet-wide threshold separates "chronically late" from "missed one pass". This
 catches a *sustained* outage, not every dropped pass. Doing better needs a
 per-country baseline the database cannot supply: `publication_timestamp_utc` is
@@ -1027,11 +1302,24 @@ rewritten on every re-fetch, so it dates the last pass that touched a row, not
 the pass that first stored it. That is an ingest-side fix — see ABL-60's
 remaining scope.
 
+**That 9.4h was a snapshot, not AL's character** (ABL-84). The 2026-08-07
+measurement above happened to catch AL mid-publication; AL does not run
+steadily 9.4h behind. It publishes in bursts and goes dark in between, so its
+age sawtooths from ~1h to *days*. Whole-history gaps over 6h in AL
+`energy_load`, measured on prod 2026-08-09: **2024-12-31 → 2025-12-17 (8,401h)**,
+2025-12-18 → 2025-12-29 (265h), 2025-12-30 → 2026-02-16 (1,147h),
+2026-06-28 → 2026-07-08 (232h), thirteen single-day 24.2h gaps across 2022-23,
+and the open one since 2026-08-06 21:45. Read against that record, an AL
+`stale` verdict is the *expected* state a good fraction of the time, and is
+still the correct verdict — do not retune the threshold to silence it. The
+number to distrust is the 9.4h, not the pill.
+
 **The header pill** renders it through `layout/freshnessPill.ts` (pure,
 colocated test). Three things worth knowing before changing it:
 
-- **The pulse animation *is* the liveness claim**, so `stale` and `none` get a
-  still dot rather than a differently-coloured pulse. A pulsing amber still
+- **The pulse animation *is* the liveness claim**, so `stale`, `ended` and
+  `none` get a still dot rather than a differently-coloured pulse
+  (`freshnessPulses`, `layout/freshnessPill.ts:28`). A pulsing amber still
   reads as "a running pipeline, in a mood".
 - **The word carries the state, not the colour** — "stale, 1 day ago" /
   "tomorrow missing". Colour is `dirty` (terracotta) rather than `medium`
@@ -1143,7 +1431,7 @@ rows matched of 860. Filed as its own ticket; current default windows
 
 **They are not all the same shape, and grepping for one misses the others:**
 
-- `crossCountryMetricsService.ts:125`, `mlForecastService.ts:200` and `:247`
+- `crossCountryMetricsService.ts:122`, `mlForecastService.ts:200` and `:247`
   normalise **only the forecast side**:
   `REPLACE(f.target_timestamp_utc, 'T', ' ') = a.<timestampCol>`.
 - `tsoForecastService.ts:293` has **no normalisation at all** —
@@ -1191,6 +1479,31 @@ complete in 120 s during this measurement.
   today (probed on prod with the pipeline's own client, 2026-08-06 and
   2026-08-07). Those 672 June rows are the anomaly, not the gap. Do not file
   a backfill for it.
+- **AL load, stalled upstream since 2026-08-06 21:45 UTC** (ABL-84, ABL-152).
+  *Distinct from the AL generation gap above, and a different shape: this is
+  intermittent, not permanent.* AL does normally publish `energy_load`; it
+  stopped here upstream. Re-confirmed on prod 2026-08-11 05:45 UTC:
+  `/api/data-freshness/AL` → `load.latest 2026-08-06 21:45:00`, `ageHours
+  103.859`, `status stale`. Both prod and the CAT replica show the same frozen
+  timestamp — not a replica-sync artifact.
+  **Upstream, confirmed twice.** ABL-84 queried ENTSO-E `A65`/`processType=A16`
+  with the pipeline's own client: the document **ends at `2026-08-06T22:00Z`**,
+  exactly our newest row. Control `A65`/`A01` (day-ahead load forecast) over the
+  same window returned 94 points through 2026-08-09, confirming the token, the
+  `10YAL-KESH-----5` domain, and the endpoint are all healthy. ABL-152
+  re-probed 2026-08-10: 327 rows, newest still `2026-08-06 21:45`, zero
+  transport errors.
+  **The `cron_update.log` 400/503 lines are a trap** (ABL-84): `cron_update.log`
+  shows sporadic errors against AL load on 08-06 13:30, 08-08 00:30, 08-09
+  00:30. They are not the cause — passes on either side succeeded and
+  `MAX(timestamp_utc)` never moved. Do not re-diagnose this from the error lines
+  alone; it produces a confident, wrong answer.
+  **This is not permanent.** Unlike AL generation, this stream is `stale` not
+  `ended` — Albania will resume publishing and the verdict will return to `live`
+  on its own. Do not promote it to a dead-zone entry. If you see this stream
+  stale with `latest = 2026-08-06 21:45` and are about to file a bug, first
+  check whether the frozen timestamp already matches a closed issue (ABL-84's
+  title carries it) — that is the fingerprint for this specific outage.
   What *is* routinely absent is a **production type a given country never
   reports**: that is `NULL`, per column, and must stay NULL rather than become
   0. Measured, `nuclear_mw` is reported by 14 of 34 countries and `marine_mw`
@@ -1236,6 +1549,34 @@ complete in 120 s during this measurement.
   (`netPositionIngestService.ts:72`, `:78`), never `net_position`. Escalated to
   the CEO under ABL-3 — do not treat "net_position is a clean NULL" as an
   invariant you can rely on. `crossborder_flows` still is.
+- **LU's `net_position` was a byte-identical duplicate of DE, until
+  2026-08-11.** Both country codes resolve to the same ENTSO-E bidding zone —
+  `NET_POSITION_BIDDING_ZONES` maps `DE` and `LU` both to `DE_LU`
+  (`../energy-data-gathering/src/entsoe_client.py:1989-1992`) — so every ingest
+  pass wrote a separate `LU` fetch that was numerically identical to the `DE`
+  fetch, double-counting DE in any per-country aggregate that summed across
+  countries (a national total, a cross-country mean). ABL-35 defect 4; fixed
+  under Board confirmation `820fa10c` (accepted 2026-08-11): the ingest now
+  skips the `LU` fetch entirely, before any API call, rather than fetching and
+  deduping after the fact — `NET_POSITION_DUPLICATE_ZONE_COUNTRIES`
+  (`../energy-data-gathering/src/entsoe_client.py:1994-2013`), applied at
+  `../energy-data-gathering/src/fetch_net_position.py:41-49`. No schema or UI
+  change: the dashboard already reads LU through a `LU -> DE_LU` alias, not as
+  a second country's series. The **459 rows already stored** under
+  `country_code='LU'` (as of 2026-08-10) are deliberately left in place.
+  **ABL-67 is now `done`, but do not read that as covering LU.** It
+  authorized only the deletion of the 216 GR/IE rows documented above under
+  ABL-181 (executed 2026-08-11 13:23 UTC) — rows with no genuine counterpart,
+  fabricated outright by a sparse-document forward-fill. LU's rows are the
+  opposite shape: real, correctly-fetched measurements that happen to
+  duplicate DE's, and were never in ABL-181's scope. Whether to delete a
+  genuine duplicate is a different, still-open database-write policy
+  question, not settled by this fix. This is `net_position`-only:
+  `PRICE_BIDDING_ZONES` carries the identical `DE`/`LU` → `DE_LU` mapping
+  (`../energy-data-gathering/src/entsoe_client.py:2017-2022`) and must **not**
+  get the same treatment — a price is intensive, not additive, so LU
+  genuinely trades at the DE-LU price and de-duplicating it would delete a
+  correct value, not a manufactured one.
 - **Uniform freshness across zones.** Every actuals table is a mirror of what
   each TSO publishes *when it publishes it*, so "country X is N hours behind
   country Y" is normally upstream cadence, not a broken ingest. The cron
@@ -1252,13 +1593,22 @@ complete in 120 s during this measurement.
   hole 07-07 → 07-13, against 45 of 45 for DE. Two zones are dead outright —
   GB stops at `2021-06-14` and UA at `2022-02-25`. **Before filing a
   "table X is stale for country Y" bug, probe upstream**, and judge freshness
-  by `MAX(timestamp_utc)` on prod, never by `data_ingestion_log`: that table
+  by `MAX(timestamp_utc)` on prod, never by `data_ingestion_log`. If your
+  remit is read-only (no ENTSO-E API access to probe), check first whether an
+  existing closed issue already carries the same frozen `MAX(timestamp_utc)` in
+  its title or body — the frozen timestamp is the fingerprint for an upstream
+  outage, and a match means the condition is already known (e.g. AL load frozen
+  at `2026-08-06 21:45` → ABL-84). that table
   records an `INSERT OR REPLACE` rowcount, so rewriting rows that already
   existed logs as inserts and a healthy ingest looks identical to a five-day
   upstream stall. (ABL-60 turned the "is this stream current" half of this into
   a served verdict — see "Data freshness" above. That answers *whether* a stream
   is behind; this bullet is why a given zone being behind is usually not a bug
-  to file. AL's ordinary ~9.4h lag is exactly why the threshold there is 18h.)
+  to file. The 18h threshold is sized from the measurement above — ME at ~9.2h
+  is the slowest genuinely-representative country, the longest ingest gap is 7h,
+  and 9.5h–34h all select the same set. AL is *not* representative: it publishes
+  in bursts and is `stale` a good fraction of the time by design — see "That
+  9.4h was a snapshot" above. **Do not retune the threshold to silence AL.**)
 - **Forecast horizons beyond ~D+2.** `forecasts.horizon_hours` runs roughly
   2-64h depending on model — there is no stored forecast for D+3 and beyond.
   Re-measured 2026-08-05: catboost 2-63h, xgboost 2-64h, chronos-2-V010 40-64h
@@ -1269,6 +1619,51 @@ complete in 120 s during this measurement.
   D+1`, and `TSO D+7`; a previous version multiplied the measured D+1 error by
   fixed factors to fabricate D+3/D+5/D+7 bars, which is why they were removed
   rather than kept.
+- **As-issued forecast vintages — added under ABL-184, server-only, and only
+  once deployed.** Until now none of the above existed for forecasts either:
+  `forecasts` and the two TSO tables are replace-on-refresh, so a corrected
+  re-run destroys the value it replaces before anything reads it
+  (`ingestNetPositionForecast`'s delete-then-reinsert in
+  `netPositionIngestService.ts` is the in-repo example; the TSO tables'
+  unique constraint carries no run/issue-time dimension at all, so *any*
+  refresh overwrites — ABL-134).
+  `server/src/services/forecastVintageArchiveService.ts` now records every
+  distinct (source, forecast_type, country, target, model, run, value) tuple
+  it sees, the first time it sees it, into a new append-only
+  `forecast_vintage_archive` table alongside the existing ones — never
+  replacing, never deleting.
+
+  **The migration, exactly:** `ensureForecastVintageArchiveTable`
+  (`forecastVintageArchiveService.ts:116`) issues only `CREATE TABLE IF NOT
+  EXISTS` plus two `CREATE INDEX IF NOT EXISTS` statements. No existing
+  table, column or row is read for writing, altered, or dropped, and there is
+  no separate migration script — the table is created lazily by the first
+  capture, not by a deploy-time step. No client change, no registry change,
+  no reader touched.
+
+  **It captures nothing until this server is deployed and running with a
+  write connection.** Landing this branch on `main` changes no running
+  process; `forecast_vintage_archive` does not exist in production until
+  code built from it is deployed. Once it is, capture is automatic and
+  gated exactly like `POST /api/weather/snapshot` already is — on
+  `HELIO_WRITE_TOKEN` being set (`shouldScheduleForecastVintageArchive`,
+  `forecastVintageArchiveScheduler.ts:50`), started from `index.ts` at
+  server boot. If that variable is unset in production for some other
+  reason, deploying this code still captures nothing until it is set.
+
+  **Runs in a worker thread, never on Express's request-handling thread.**
+  Measured against a full copy of the production-scale replica (2026-08-11):
+  one capture pass over `forecasts` (2.1M rows), `energy_load_forecast`
+  (2.4M) and `energy_generation_forecast` (3.0M) takes **~147s**, and even a
+  fully idempotent no-op rescan of unchanged data takes **~23s**.
+  better-sqlite3 is synchronous, so running that inside the process serving
+  dashboard API requests would freeze every other response for the
+  duration — the same class of problem `services/readQueryWorker.ts` already
+  exists to avoid for a single expensive read. `startForecastVintageArchiveScheduler`
+  (`forecastVintageArchiveScheduler.ts:104`) instead runs it on a 15-minute
+  timer inside `workers/captureForecastVintagesWorker.ts`, on its own
+  connection, with an in-flight guard so a slow pass is skipped rather than
+  overlapped by the next tick.
 
 ## Testing
 
@@ -1277,9 +1672,52 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-08: **436 client tests / 32 files**, **406 server tests /
-26 files**, clean typecheck. Fewer passing than that means something broke.
-(The server figure moved from 189 / 13 in ABL-17, which added
+Green as of 2026-08-11: **488 client tests / 39 files**, **421 server tests /
+27 files**, clean typecheck. Fewer passing than that means something broke.
+(ABL-204 extended the multi-model overlay to Load and Price — two new files,
+`dashboard/forecastLineTokens.test.ts` and `lib/multiForecastSeries.test.ts`,
+plus new cases in `lib/forecastGap.test.ts` for
+`describeForecastGapsForSelection` — which is where the client figure moved
+from 474/37 to 488/39; it touched no server file. ABL-203 added the
+net-position multi-model picker before it — `migrate.test.ts`'s v9 clause,
+`useForecastModels.test.ts`'s `resolveMultiSelection` cases,
+`chartAdapters.test.ts`'s `adaptNetPositionMultiSeries` cases, and a new file,
+`dashboard/netPositionModelColors.test.ts` — which is where the client figure
+moved from 449/36 to 474/37; it touched no server file, and the 411->421
+server figure this entry used to carry already held on unmodified `main`
+before this branch, so it is not part of this change's delta. (One
+shared-workstation caveat worth naming here rather than re-discovering: this
+checkout's `npx vitest run` intermittently fails ~20 client tests in
+`dashboardStore.test.ts`/`windowLabel.test.ts` with `storage.setItem is not a
+function` — a `zustand`/`localStorage` environment quirk in this sandbox, not
+a code defect. Verified identical on unmodified `main` with this branch's
+changes fully stashed, including untracked files, before attributing it to
+ABL-203; do the same before re-diagnosing it as a regression.)
+ABL-166 removed `ForecastPortfolio` and its `portfolioRows.ts` helper — the
+"Forecast performance by variable" card grid the CEO asked to drop from the
+Forecast quality portfolio page, leaving the rest of that page, its nav entry,
+and the per-country `ForecastTab` in place — which is where the client figure
+dropped by 3 tests and 1 file, from 452/37.
+ABL-156 merged ABL-146's generation-mix x-axis fix and ABL-151's fourth
+freshness verdict — both landed done but stranded on branches misleadingly
+named for other issues (ABL-101 and ABL-149, respectively, whose own fixes had
+already shipped separately) — which is where the client figure picked up 3
+more `chartTicks.test.ts` cases and the server figure picked up
+`freshness.test.ts`/`dataFreshness.test.ts` cases for the `ended` verdict. The
+server figure here is the pre-merge author's own verification, not a rerun in
+this checkout: a pre-existing `better-sqlite3` native-module ABI mismatch
+blocked `cd server && npx vitest run` in this shared workstation checkout at
+merge time, confirmed identical on unmodified `main` before either merge, so
+it predates and is unrelated to both changes. The 411 above is measured fresh
+in this checkout, not inherited: merging the ABL-101 and ABL-149 branches
+themselves on top of ABL-156's cherry-picked fixes (`3c48561`, `0116d60`)
+added one more server case beyond the 410 ABL-156 reported.
+ABL-153 reconciled `main` and `origin/main` after an 11-vs-6-commit
+divergence and landed ABL-150's cross-country-metrics fix on top, which is
+where the client figure picked up `ForecastPortfolio`/`portfolioRows.test.ts`
+and the v8 `comparisonForecastType` migration cases, and the server figure
+picked up `crossCountryMetricsService.test.ts`'s query-plan case. The server
+figure moved from 189 / 13 in ABL-17, which added
 `routes/forecast.test.ts` and `middleware/errorHandler.test.ts`; ABL-19 raised
 the client figure and touched no server file; ABL-21 added
 `utils/timestamp.test.ts` and one more `forecast.test.ts` case; ABL-23 added
@@ -1338,7 +1776,8 @@ Two conventions, and they are for different layers.
 `server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
-`lib/readingFreshness.ts`, `lib/forecastGap.ts`,
+`lib/readingFreshness.ts`, `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
+`lib/multiForecastSeries.ts`,
 `server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`.
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
@@ -1446,8 +1885,8 @@ The second rule is the one that earns its keep: of the eight stale citations
 this check found on arrival, the first rule caught three and the second caught
 seven. It is deliberately narrow — skipped for bare `:NNN` continuations, which
 idiomatically point at a *use* site rather than at the declaration
-(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:56` and
-applied at `:116`), and skipped when the named symbol is not a top-level
+(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:61` and
+applied at `:120`), and skipped when the named symbol is not a top-level
 declaration (`ENERGY_DB_PATH` is only ever read off `process.env`, so a citation
 naming it is not judged). Both exclusions were needed to reach zero false
 positives across the whole file. A check that cries wolf gets disabled.
@@ -1526,8 +1965,8 @@ type TimePreset =
 
 // Per stream, since ABL-60 — not five bare timestamps. `ageHours` is signed and
 // server-computed; negative is normal for a day-ahead stream. See "Data
-// freshness" above for the two rules behind `status`.
-type FreshnessStatus = 'live' | 'stale' | 'none';
+// freshness" above for the rules behind `status`.
+type FreshnessStatus = 'live' | 'stale' | 'ended' | 'none';
 
 interface FreshnessStream {
   latest: string | null;
@@ -1626,14 +2065,16 @@ interface TSOForecastAccuracyMetrics {
   (`config/database.ts:15`) and again if the write handle opens
   (`config/writeDatabase.ts:29`). It does **not** log queries — there is no
   per-query logging to check
-- Acceptance must use the workstation replica through the local API. If a
-  one-off diagnostic points `client/.env.local`'s `API_PROXY_TARGET` at prod,
-  a server-side fix will not show up until prod is redeployed; label that check
-  as production, then restore the local target before acceptance
+- Acceptance proxies the built local CAT Docker image, not the working-tree
+  server, so a working-tree server fix will not show up there. Use the
+  `PORT=3002` + local `ENERGY_DB_PATH` procedure in
+  [`../WORKFLOWS.md`](../WORKFLOWS.md), **API proxy on CAT**, to exercise it
 - **The workstation replica can be hours behind prod even with a fresh mtime.**
   Measured 2026-08-07 07:10 UTC: the replica's newest `energy_load` row was
-  `00:15` (≈7h old) while prod's was `05:45` (≈1.4h). Anything about freshness,
-  staleness or "is this table current" must be settled against prod
+  `00:15` (≈7h old) while prod's was `05:45` (≈1.4h). Acceptance reads this
+  replica, so its data freshness describes CAT, not prod. Anything about
+  prod health, freshness, staleness or "is this table current" must be settled
+  against prod directly
   (`http://192.168.86.36:3001/api/...`, read-only) — the replica will make a
   healthy pipeline look broken. It is still the right place to measure *shapes*
   (row counts, per-country distributions, table-vs-table comparisons)
@@ -1645,36 +2086,49 @@ interface TSOForecastAccuracyMetrics {
 - Without `ENERGY_DB_PATH` set, the server defaults to `/data/energy_dashboard.db`, which won't exist on a workstation checkout
 
 **A country's load/price forecast is blank:**
-- Check whether a specific model is pinned in `ModelPicker` — catboost and
-  xgboost coverage barely overlaps (see Forecast model selection), so a pinned
-  model with no data for that country renders nothing. The pinned row carries a
-  **Pinned** badge in the dropdown.
-- The chart now says so itself rather than just going blank: a footnote under
-  the line chart reads "<model> has no forecast for <country> in this window."
-  with a **Use the best available model** button that drops the pin
-  (`lib/forecastGap.ts`, `dashboard/ForecastGapNotice.tsx`, wired in `LoadTab`
-  and `PriceTab`). Unpinned and still empty reads "No forecast published for
-  <country> in this window." and offers no button — the ladder already tried
-  every registered model.
-- Selecting the type's **"Default"** entry clears the pin (ABL-16). It used to
-  *create* one, which is what made this state unrecoverable without clearing
-  localStorage.
+- Check whether a specific model is checked in `ModelPicker` — catboost and
+  xgboost coverage barely overlaps (see Forecast model selection), so a
+  checked model with no data for that country renders nothing for that line.
+- With nothing checked ("Default"), the chart says so itself rather than just
+  going blank: a footnote under the line chart reads "<model> has no forecast
+  for <country> in this window." with a **Use the best available model**
+  button that drops the pin (`lib/forecastGap.ts`,
+  `dashboard/ForecastGapNotice.tsx`, wired in `LoadTab` and `PriceTab`).
+  Unpinned and still empty reads "No forecast published for <country> in this
+  window." and offers no button — the ladder already tried every registered
+  model.
+- With one or more models checked (ABL-204), a checked-but-empty model stays
+  in the chart's legend with a hatched key and "— Not available in
+  <country>" rather than disappearing, and gets its own footnote below the
+  chart with a **Remove from comparison** button
+  (`lib/forecastGap.ts`'s `describeForecastGapsForSelection`,
+  `ForecastGapNotice`'s `gaps` prop) — the multi-select counterpart of the
+  single-pin case above.
+- Selecting the type's **"Default — automatic"** entry clears every checked
+  model (ABL-16). It used to *create* a pin, which is what made this state
+  unrecoverable without clearing localStorage.
 - Confirm the model is actually registered in `server/src/config/forecastModels.ts`
 
 **TSO forecasts not showing:**
-- In `ModelPicker`, select a `TSO ·` entry for that forecast type. `load` has
+- In `ModelPicker`, check a `TSO ·` entry for that forecast type. `load` has
   both D+1 and D+7 registered; `solar`/`wind_onshore`/`wind_offshore` have D+1
   only; `price`/`renewable`/`biomass`/`hydro_total`/`net_position` have no TSO
   model at all — check `forecastModels.ts` before assuming a bug
-- Note the picker does not render on the Generation or Forecast-accuracy tabs
-  at all (`TABS_WITH_MODEL_PICKER`, `CountryDashboardView.tsx:56`, applied at
-  `:116`), so there is no "picker that does nothing" to hit there
+- Note `ModelPicker` does not render on the Generation, Forecast-accuracy or
+  Net position tabs at all (`TABS_WITH_MODEL_PICKER`,
+  `CountryDashboardView.tsx:61`, applied at `:120`) — Net position instead
+  gets its own separate multi-select `NetPositionModelPicker` — so there is no
+  "picker that does nothing" to hit on any of the three
 - Check the API response has data for the selected country
 - Verify database tables have data: `energy_load_forecast`, `energy_generation_forecast`
 
 **Week-ahead (D+7) band not showing:**
-- Select "ENTSO-E TSO · D+7" in `ModelPicker` for the Load tab — there is no
+- Check "ENTSO-E TSO · D+7" in `ModelPicker` for the Load tab — there is no
   separate D+1/D+7 toggle anymore, the picker's selection controls it
+- With one or more models checked (ABL-204), the band draws only when D+7 is
+  the *sole* checked model — several bands on one chart is unreadable, and a
+  lone band under N lines would misattribute uncertainty to models that never
+  published one. Uncheck the others to see it.
 - Verify min/max data exists for that country (week-ahead is daily granularity
   at `T12:00:00Z` timestamps; the band needs `forecast_min_mw`/`forecast_max_mw`)
 
@@ -1709,10 +2163,11 @@ interface TSOForecastAccuracyMetrics {
   hours behind prod even with a fresh mtime.
 - `stale` on `price` means the day-ahead result does not reach the market day it
   should. After 14:00 UTC that is tomorrow. This is ABL-51's signature.
-- Some zones are permanently stale and always will be: GB's load stops
-  2021-06-14 and UA's 2022-02-25. That is the correct reading, not a defect to
-  suppress.
-- See "Data freshness" above before changing a threshold — both are sized from
+- `ended` is not an alarm: the stream was held before but its newest usable row
+  is over 30 days old. On the 2026-08-10 fleet this names GB/UA load and
+  generation forecasts, plus AL generation. It is derived from age and
+  self-clears when a newer row lands; do not replace it with a country list.
+- See "Data freshness" above before changing a threshold — all are sized from
   measurements recorded there.
 
 **Data freshness returning nothing:**
@@ -1764,3 +2219,22 @@ interface TSOForecastAccuracyMetrics {
 - To reproduce this class of bug at all you need `client/dist/index.html` to
   exist — it is gitignored and absent in a fresh checkout, which is why it
   survived. Create one, start the server, and curl an API path.
+
+**Every `/api/...` route returns an HTML 404 from `localhost:3001`:**
+- Read the response headers before debugging routes. If the same HTML 404
+  appears through Vite and directly on `localhost:3001`, with a `Server:` header
+  we never set (observed: `Server: gunicorn`), you are not talking to our server.
+  An unmatched `/api` route from our Express app is a JSON
+  `{ success, error, code }` envelope with no `Server` header; that response
+  contract is pinned in `server/src/app.test.ts:117`.
+- Diagnose the listener collision with the port-owner and Docker checks in
+  [`../WORKFLOWS.md`](../WORKFLOWS.md), **API proxy on CAT**. On CAT, an
+  unrelated service owns loopback `localhost:3001` even while the dashboard
+  container publishes the same port on its LAN address; the specific loopback
+  bind wins for loopback traffic.
+- This is an environment problem, not a repo problem. Do not "fix" it by
+  changing the default proxy target in `client/vite.config.ts`. Keep the
+  environment-specific acceptance target in the gitignored `.env.local` as
+  documented in `WORKFLOWS.md`; use its separate `PORT=3002` procedure for a
+  working-tree server. After editing this file, `cd server && npx vitest run`
+  checks its `file:line` citations via `docs/claudeMdCitations.test.ts`.

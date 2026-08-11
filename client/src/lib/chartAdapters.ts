@@ -1,7 +1,7 @@
 // Adapters that turn the existing time-series API response shapes into the
 // shapes the able-prototype SVG charts expect.
 
-import type { AbleSeriesPoint } from '@/components/charts/AbleLineChart';
+import type { AbleSeriesPoint, AbleForecastSeriesSpec } from '@/components/charts/AbleLineChart';
 import type { AbleHeatmapPoint } from '@/components/charts/AblePriceHeatmap';
 import type {
   LoadDataPoint,
@@ -217,6 +217,121 @@ export function adaptNetPositionSeries(
   return { series: points, nowIndex };
 }
 
+/** One model's response, on its way into `adaptNetPositionMultiSeries`. */
+export interface NetPositionModelSeriesInput {
+  /** Registry model id — the key `AbleSeriesPoint.forecasts` is written under. */
+  id: string;
+  label: string;
+  color: string;
+  /** `undefined` while that model's query is still loading or failed. */
+  response: NetPositionResponse | undefined;
+}
+
+export interface NetPositionMultiSeriesResult {
+  series: AbleSeriesPoint[];
+  nowIndex: number;
+  /** Only entries that actually drew a line — a selected model with zero rows gets no legend entry (the tab names it in a footnote instead, see NetPositionTab). */
+  forecastSeries: AbleForecastSeriesSpec[];
+}
+
+/**
+ * Net position → line series for the multi-model picker (ABL-203): merges N
+ * per-model responses (each already fetched pinned to its own model id) into
+ * one series carrying every model's forecast under `AbleSeriesPoint.forecasts`.
+ *
+ * Actuals are identical across every entry for the same country/window — the
+ * model pin only ever changes the forecast half of the response — so they are
+ * read from whichever entry has some, not merged.
+ *
+ * The band, the single `forecast` field and per-point vintage provenance
+ * (`forecastGeneratedAt`/`forecastDayLabel`) are populated only when exactly
+ * one model is active. That is not an arbitrary restriction carried over from
+ * `adaptNetPositionSeries` below — it is the same rule AbleLineChart's
+ * `forecastSeries` doc states: several bands are unreadable on one chart, and
+ * a single band under N lines would misattribute uncertainty to models that
+ * never published one. With one active model this produces the exact same
+ * points `adaptNetPositionSeries` would for that model's response.
+ */
+export function adaptNetPositionMultiSeries(
+  entries: NetPositionModelSeriesInput[],
+  now: Date = new Date(),
+): NetPositionMultiSeriesResult {
+  const defined = entries.filter(
+    (e): e is NetPositionModelSeriesInput & { response: NetPositionResponse } => e.response != null,
+  );
+
+  const actualSource = defined.find((e) => e.response.actual.length > 0) ?? defined[0];
+  const actual = actualSource?.response.actual ?? [];
+
+  const allTs: number[] = [];
+  for (const p of actual) if (p.timestamp) allTs.push(hourKey(p.timestamp));
+  for (const e of defined) {
+    for (const p of e.response.forecast) {
+      if (p.timestamp) allTs.push(hourKey(p.timestamp));
+    }
+  }
+  if (allTs.length === 0) return { series: [], nowIndex: 0, forecastSeries: [] };
+
+  const tStart = Math.min(...allTs);
+  const tEnd = Math.max(...allTs);
+  const nowMs = now.getTime();
+
+  const points: AbleSeriesPoint[] = [];
+  for (let t = tStart; t <= tEnd; t += HOUR_MS) {
+    points.push({
+      ts: new Date(t).toISOString(),
+      future: t > nowMs,
+      value: null,
+      forecast: null,
+      forecasts: {},
+    });
+  }
+  const idxOf = (ts: number) => Math.round((ts - tStart) / HOUR_MS);
+
+  for (const p of actual) {
+    if (!p.timestamp) continue;
+    const i = idxOf(hourKey(p.timestamp));
+    if (i < 0 || i >= points.length) continue;
+    if (Number.isFinite(p.net_position_mw)) points[i].value = p.net_position_mw;
+  }
+
+  const forecastSeries: AbleForecastSeriesSpec[] = [];
+  const soleActive = defined.length === 1 ? defined[0] : null;
+  const dayLabels = soleActive ? dayLabelByVintage(soleActive.response.meta.vintages) : null;
+
+  for (const entry of defined) {
+    const rows = entry.response.forecast;
+    // No rows for this model in this window - no line, no legend swatch. The
+    // tab names it in a footnote (the "honest empty state" this whole picker
+    // has to get right); a legend entry with nothing behind it would be worse
+    // than silence, not better.
+    if (rows.length === 0) continue;
+
+    forecastSeries.push({ id: entry.id, label: entry.label, color: entry.color });
+
+    for (const p of rows) {
+      if (!p.timestamp) continue;
+      const i = idxOf(hourKey(p.timestamp));
+      if (i < 0 || i >= points.length) continue;
+      if (Number.isFinite(p.p50)) points[i].forecasts![entry.id] = p.p50;
+
+      if (soleActive) {
+        points[i].forecast = p.p50;
+        if (p.p10 != null && Number.isFinite(p.p10)) points[i].min = p.p10;
+        if (p.p90 != null && Number.isFinite(p.p90)) points[i].max = p.p90;
+        points[i].forecastGeneratedAt = p.generated_at ?? null;
+        points[i].forecastDayLabel = dayLabels?.get(p.generated_at) ?? null;
+      }
+    }
+  }
+
+  let nowIndex = points.findIndex((p) => new Date(p.ts).getTime() > nowMs);
+  if (nowIndex === -1) nowIndex = points.length - 1;
+  else nowIndex = Math.max(0, nowIndex - 1);
+
+  return { series: points, nowIndex, forecastSeries };
+}
+
 // `adaptRenewableMixSeries` lived here: RenewableDataPoint[] (from the frozen,
 // renewable-only `energy_renewable`) → the four-family stacked series
 // GenerationTab used to draw. ABL-44 moved that chart onto the full A75
@@ -230,7 +345,12 @@ export function adaptNetPositionSeries(
 export function buildHeatmapCells<T extends { timestamp?: string; date?: string }>(opts: {
   data: T[] | undefined;
   value: (p: T) => number | null;
-  forecast?: ForecastDataPoint[];
+  /**
+   * Structurally typed rather than `ForecastDataPoint[]` so a selection-mode
+   * entry's normalized `{timestamp, value}` points (`lib/multiForecastSeries.ts`)
+   * can feed this directly without a wrapper (ABL-204).
+   */
+  forecast?: Array<{ timestamp?: string; value: number | null }>;
   now?: Date;
 }): AbleHeatmapPoint[] {
   const { data = [], value, forecast = [] } = opts;

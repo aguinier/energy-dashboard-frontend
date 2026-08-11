@@ -6,6 +6,7 @@ import { CountryBreadcrumb } from '@/components/dashboard/CountryBreadcrumb';
 import { AbleStatRow } from '@/components/dashboard/AbleStatRow';
 import { TimePicker } from '@/components/dashboard/TimePicker';
 import { ModelPicker } from '@/components/dashboard/ModelPicker';
+import { NetPositionModelPicker } from '@/components/dashboard/NetPositionModelPicker';
 import { ApiCta } from '@/components/dashboard/ApiCta';
 
 // Lazy-loaded tab bodies — each is self-contained (chart cards + adapters).
@@ -49,11 +50,15 @@ const LOCAL_ZONE_LABEL = (() => {
   }
 })();
 
-// Tabs whose chart actually reads a model selection. `renewables` (Generation)
-// and `analytics` (Forecast accuracy) don't — GenerationTab renders actuals
+// Tabs whose chart reads a multi-select model picker (`ModelPicker`, ABL-204
+// — was single-select until then). `renewables` (Generation) and `analytics`
+// (Forecast accuracy) render no picker at all — GenerationTab shows actuals
 // only, and the accuracy overlay is driven by the Load tab's own selection.
-// The picker for a tab outside this set would be a control that does nothing.
-const TABS_WITH_MODEL_PICKER = new Set(['price', 'load', 'net-position']);
+// `net-position` has its own separate multi-select picker
+// (`NetPositionModelPicker`, ABL-203) rather than this one — the two pickers
+// are not unified into one component; see CLAUDE.md's "Forecast model
+// selection" section for why.
+const TABS_WITH_MODEL_PICKER = new Set(['price', 'load']);
 
 export function CountryDashboardView() {
   const { selectedCountry, activeChartTab, setActiveChartTab, goToComparison } = useDashboardStore();
@@ -113,6 +118,7 @@ export function CountryDashboardView() {
           <div className="flex-1" />
           <TimePicker />
           {TABS_WITH_MODEL_PICKER.has(activeChartTab) && <ModelPicker />}
+          {activeChartTab === 'net-position' && <NetPositionModelPicker />}
         </div>
 
         {activeChartTab === 'analytics' && (

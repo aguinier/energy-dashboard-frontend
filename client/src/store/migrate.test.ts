@@ -114,11 +114,16 @@ describe('migratePersisted', () => {
 
   // v7 — `selectedModelByType` used to mean two things at once: a pinned model
   // id, or `null` for "forecast hidden". See migrate.ts and ABL-16.
+  //
+  // migratePersisted always runs every clause up to the current version in one
+  // pass, so a fromVersion-6 blob also crosses v9 (ABL-203) in the same call —
+  // these assert the final `selectedModelsByType` shape a real caller would
+  // actually see, not v7's now-intermediate `selectedModelByType`.
   describe('splits the pinned model from the hidden flag (v7)', () => {
     it('moves a null entry to forecastHiddenByType', () => {
       const out = migratePersisted({ selectedModelByType: { load: null } }, 6);
       expect(out.forecastHiddenByType).toEqual({ load: true });
-      expect(out.selectedModelByType).toEqual({});
+      expect(out.selectedModelsByType).toEqual({});
     });
 
     // Every dropdown entry wrote a pin under the old picker, "Default" and the
@@ -129,7 +134,7 @@ describe('migratePersisted', () => {
         { selectedModelByType: { price: 'catboost', load: 'tso-d7' } },
         6,
       );
-      expect(out.selectedModelByType).toEqual({});
+      expect(out.selectedModelsByType).toEqual({});
       expect(out.forecastHiddenByType).toEqual({});
     });
 
@@ -138,13 +143,13 @@ describe('migratePersisted', () => {
         { selectedModelByType: { price: 'catboost', load: null, net_position: null } },
         6,
       );
-      expect(out.selectedModelByType).toEqual({});
+      expect(out.selectedModelsByType).toEqual({});
       expect(out.forecastHiddenByType).toEqual({ load: true, net_position: true });
     });
 
     it('initialises both maps when the blob predates model selection entirely', () => {
       const out = migratePersisted({ timePreset: '7d' }, 0);
-      expect(out.selectedModelByType).toEqual({});
+      expect(out.selectedModelsByType).toEqual({});
       expect(out.forecastHiddenByType).toEqual({});
     });
   });
@@ -160,8 +165,52 @@ describe('migratePersisted', () => {
 
     it('does not re-run the v7 model migration for a v7 persisted blob', () => {
       const out = migratePersisted({ selectedModelByType: { load: 'tso-d7' }, forecastHiddenByType: { price: true } }, 7);
-      expect(out.selectedModelByType).toEqual({ load: 'tso-d7' });
+      // v7 already ran (this blob is past it) — v9 still converts the single
+      // surviving pin into a one-element selection.
+      expect(out.selectedModelsByType).toEqual({ load: ['tso-d7'] });
       expect(out.forecastHiddenByType).toEqual({ price: true });
+    });
+  });
+
+  // v9 (ABL-203) — selectedModelByType (one pin) -> selectedModelsByType
+  // (an array), for the net-position multi-select picker.
+  describe('converts the single pin to a one-element selection (v9)', () => {
+    it('migrates a single stored pin into a one-element array, keyed the same', () => {
+      const out = migratePersisted(
+        { selectedModelByType: { net_position: 'chronos-2-V010', load: 'catboost' } },
+        8,
+      );
+      expect(out.selectedModelByType).toBeUndefined();
+      expect(out.selectedModelsByType).toEqual({
+        net_position: ['chronos-2-V010'],
+        load: ['catboost'],
+      });
+    });
+
+    it('produces an empty selection map when no pins were stored', () => {
+      const out = migratePersisted({ selectedModelByType: {} }, 8);
+      expect(out.selectedModelsByType).toEqual({});
+    });
+
+    it('initialises the map when the blob predates model selection entirely', () => {
+      const out = migratePersisted({ timePreset: '7d' }, 0);
+      expect(out.selectedModelsByType).toEqual({});
+    });
+
+    // Runs after the v7 split, on whatever v7 left behind (an empty pin map,
+    // since v7 drops every stored pin) — not the pre-v7 shape.
+    it('composes with the v7 migration for a pre-v7 blob', () => {
+      const out = migratePersisted(
+        { selectedModelByType: { price: 'catboost', net_position: null } },
+        6,
+      );
+      expect(out.selectedModelsByType).toEqual({});
+      expect(out.forecastHiddenByType).toEqual({ net_position: true });
+    });
+
+    it('is a no-op re-run for a blob already at v9 or later', () => {
+      const s = { selectedModelsByType: { net_position: ['baseline-V012'] } };
+      expect(migratePersisted(s, PERSIST_VERSION)).toEqual(s);
     });
   });
 
@@ -213,6 +262,7 @@ describe('migratePersisted', () => {
       ['selectedModelByType as null', { selectedModelByType: null }],
       ['selectedModelByType as an array', { selectedModelByType: ['catboost'] }],
       ['selectedModelByType holding numbers', { selectedModelByType: { load: 7 } }],
+      ['selectedModelByType holding an array', { selectedModelByType: { load: ['catboost'] } }],
     ];
 
     it.each(garbageInputs)('%s', (_label, input) => {

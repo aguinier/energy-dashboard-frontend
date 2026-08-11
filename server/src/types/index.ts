@@ -346,3 +346,17 @@ export interface NetPositionForecastIngestPayload {
   generated_at: string;
   rows: NetPositionForecastIngestRow[];
 }
+
+// Data freshness — the server owns these verdicts; callers render them.
+export type FreshnessStatus =
+  | 'live'
+  | 'stale'
+  /** The upstream series has received no newer row across many ingest passes. */
+  | 'ended'
+  | 'none';
+
+export interface FreshnessStream {
+  latest: string | null;
+  ageHours: number | null;
+  status: FreshnessStatus;
+}

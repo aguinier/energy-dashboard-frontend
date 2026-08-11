@@ -3,7 +3,6 @@ import { useDashboardStore } from '@/store/dashboardStore';
 import { useCrossCountryMetrics } from '@/hooks/useDashboardData';
 import { ComparisonFilterBar } from '@/components/comparison/ComparisonFilterBar';
 import { CountryRanking } from '@/components/comparison/CountryRanking';
-import { ForecastPortfolio } from '@/components/comparison/ForecastPortfolio';
 
 const ComparisonHeatmap = lazy(() => import('@/components/comparison/ComparisonHeatmap').then(m => ({ default: m.ComparisonHeatmap })));
 const ComparisonMap = lazy(() => import('@/components/comparison/ComparisonMap').then(m => ({ default: m.ComparisonMap })));
@@ -24,7 +23,6 @@ export default function ComparisonView() {
       {isLoading && <SectionSkeleton />}
       {isError && <div className="flex h-64 items-center justify-center"><p className="text-sm text-ink-dim">Failed to load comparison data. The backend API may not be available yet.</p></div>}
       {data && !isLoading && <>
-        <ForecastPortfolio data={data} />
         {comparisonForecastType !== 'all' && <Suspense fallback={<SectionSkeleton />}><ComparisonMap data={data} /></Suspense>}
         <CountryRanking data={data} />
         <details className="rounded-lg border bg-card px-4 py-3"><summary className="cursor-pointer text-sm font-medium">Evidence and error measures</summary><div className="mt-3">{comparisonForecastType === 'all' ? <p className="text-sm text-ink-dim">Choose a forecast type above to inspect MAE, RMSE, bias, and data-point evidence.</p> : <Suspense fallback={<SectionSkeleton />}><ComparisonLeaderboard data={data} /></Suspense>}</div></details>
