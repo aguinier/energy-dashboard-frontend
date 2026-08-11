@@ -1,18 +1,15 @@
 import { useMemo } from 'react';
 import { AbleCard } from './AbleCard';
-import { ForecastGapNotice } from './ForecastGapNotice';
 import { AbleLineChart } from '@/components/charts/AbleLineChart';
 import { AblePriceHeatmap } from '@/components/charts/AblePriceHeatmap';
 import { usePriceChartData } from '@/hooks/usePriceChartData';
 import { useCountries } from '@/hooks/useCountries';
-import { useModelSelection } from '@/hooks/useForecastModels';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { adaptPriceSeries, buildHeatmapCells } from '@/lib/chartAdapters';
-import { describeForecastGap } from '@/lib/forecastGap';
 import { getDateRangeForPreset } from '@/hooks/useDashboardData';
 
 export function PriceTab() {
-  const { priceData, forecastData, isLoading, isLoadingForecast, isError } = usePriceChartData();
+  const { priceData, forecastData, isLoading } = usePriceChartData();
   const { data: countries } = useCountries();
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
   const country = countries?.find((c) => c.country_code === selectedCountry);
@@ -25,27 +22,11 @@ export function PriceTab() {
     () => (timePreset === 'today' ? getDateRangeForPreset(timePreset, timeOffset) : undefined),
     [timePreset, timeOffset],
   );
-  const { selected, hidden, requestModelId } = useModelSelection('price');
   const { series, nowIndex } = useMemo(
     () => adaptPriceSeries(priceData, forecastData, todayWindow),
     [priceData, forecastData, todayWindow],
   );
   const hasForecast = useMemo(() => series.some((p) => p.forecast != null), [series]);
-
-  // Price has no TSO model registered, so the overlay is on exactly when an
-  // ml model is selected.
-  const gap = useMemo(
-    () =>
-      describeForecastGap({
-        active: !hidden && selected?.source === 'ml',
-        pinnedLabel: requestModelId ? selected?.label ?? null : null,
-        isLoading: isLoading || isLoadingForecast,
-        isError,
-        pointCount: forecastData?.length ?? 0,
-        countryLabel,
-      }),
-    [hidden, selected, requestModelId, isLoading, isLoadingForecast, isError, forecastData, countryLabel],
-  );
 
   const heatmapCells = useMemo(
     () =>
@@ -85,7 +66,6 @@ export function PriceTab() {
               preset={timePreset}
               label="Day-ahead price"
             />
-            <ForecastGapNotice gap={gap} forecastType="price" />
           </>
         )}
       </AbleCard>
