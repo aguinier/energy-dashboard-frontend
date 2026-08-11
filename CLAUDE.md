@@ -975,10 +975,12 @@ alarm no ingest fix could clear is furniture.
   (`../energy-data-gathering/docker/Dockerfile:22`), so the longest scheduled
   gap is 7h, and measured against prod 2026-08-07 07:10 UTC — minutes after a
   healthy 06:30 pass — 31 of 34 countries sat 0.93-3.18h behind while BG sat
-  6.18h and AL/ME ~9.2-9.4h. The slowest healthy country therefore reaches
-  ~16.4h legitimately. It is not a tuned edge: every healthy country was under
-  9.5h and the next value up was MK at 34.2h, so **any threshold from 9.5h to
-  34h selects the same set**.
+  6.18h and ME ~9.2h. The slowest healthy country therefore reaches ~16.4h
+  legitimately. It is not a tuned edge: every healthy country was under 9.5h
+  and the next value up was MK at 34.2h, so **any threshold from 9.5h to 34h
+  selects the same set**. (AL measured 9.4h in that same snapshot — but that
+  was a mid-publication coincidence, not AL's character; see "Known limit"
+  below.)
 - **Day-ahead publications** (`energy_price`, both TSO forecast tables) are
   judged on **coverage**, never age. A healthy day-ahead price is dated up to
   ~46h in the *future*, so the age rule would read it as impossibly fresh
@@ -1013,14 +1015,26 @@ alarm no ingest fix could clear is furniture.
   shape. The long delay is what makes the operational verdict useful without
   silently swallowing the active stalls visible in the measured fleet.
 
-**Known limit, stated rather than papered over.** AL's ordinary 9.4h overlaps a
-fast publisher's age after one missed pass (FR would reach ~15.4h), so no
+**Known limit, stated rather than papered over.** ME's ~9.2h overlaps a fast
+publisher's age after one missed pass (FR would reach ~15.4h), so no
 fleet-wide threshold separates "chronically late" from "missed one pass". This
 catches a *sustained* outage, not every dropped pass. Doing better needs a
 per-country baseline the database cannot supply: `publication_timestamp_utc` is
 rewritten on every re-fetch, so it dates the last pass that touched a row, not
 the pass that first stored it. That is an ingest-side fix — see ABL-60's
 remaining scope.
+
+**That 9.4h was a snapshot, not AL's character** (ABL-84). The 2026-08-07
+measurement above happened to catch AL mid-publication; AL does not run
+steadily 9.4h behind. It publishes in bursts and goes dark in between, so its
+age sawtooths from ~1h to *days*. Whole-history gaps over 6h in AL
+`energy_load`, measured on prod 2026-08-09: **2024-12-31 → 2025-12-17 (8,401h)**,
+2025-12-18 → 2025-12-29 (265h), 2025-12-30 → 2026-02-16 (1,147h),
+2026-06-28 → 2026-07-08 (232h), thirteen single-day 24.2h gaps across 2022-23,
+and the open one since 2026-08-06 21:45. Read against that record, an AL
+`stale` verdict is the *expected* state a good fraction of the time, and is
+still the correct verdict — do not retune the threshold to silence it. The
+number to distrust is the 9.4h, not the pill.
 
 **The header pill** renders it through `layout/freshnessPill.ts` (pure,
 colocated test). Three things worth knowing before changing it:
@@ -1187,6 +1201,31 @@ complete in 120 s during this measurement.
   today (probed on prod with the pipeline's own client, 2026-08-06 and
   2026-08-07). Those 672 June rows are the anomaly, not the gap. Do not file
   a backfill for it.
+- **AL load, stalled upstream since 2026-08-06 21:45 UTC** (ABL-84, ABL-152).
+  *Distinct from the AL generation gap above, and a different shape: this is
+  intermittent, not permanent.* AL does normally publish `energy_load`; it
+  stopped here upstream. Re-confirmed on prod 2026-08-11 05:45 UTC:
+  `/api/data-freshness/AL` → `load.latest 2026-08-06 21:45:00`, `ageHours
+  103.859`, `status stale`. Both prod and the CAT replica show the same frozen
+  timestamp — not a replica-sync artifact.
+  **Upstream, confirmed twice.** ABL-84 queried ENTSO-E `A65`/`processType=A16`
+  with the pipeline's own client: the document **ends at `2026-08-06T22:00Z`**,
+  exactly our newest row. Control `A65`/`A01` (day-ahead load forecast) over the
+  same window returned 94 points through 2026-08-09, confirming the token, the
+  `10YAL-KESH-----5` domain, and the endpoint are all healthy. ABL-152
+  re-probed 2026-08-10: 327 rows, newest still `2026-08-06 21:45`, zero
+  transport errors.
+  **The `cron_update.log` 400/503 lines are a trap** (ABL-84): `cron_update.log`
+  shows sporadic errors against AL load on 08-06 13:30, 08-08 00:30, 08-09
+  00:30. They are not the cause — passes on either side succeeded and
+  `MAX(timestamp_utc)` never moved. Do not re-diagnose this from the error lines
+  alone; it produces a confident, wrong answer.
+  **This is not permanent.** Unlike AL generation, this stream is `stale` not
+  `ended` — Albania will resume publishing and the verdict will return to `live`
+  on its own. Do not promote it to a dead-zone entry. If you see this stream
+  stale with `latest = 2026-08-06 21:45` and are about to file a bug, first
+  check whether the frozen timestamp already matches a closed issue (ABL-84's
+  title carries it) — that is the fingerprint for this specific outage.
   What *is* routinely absent is a **production type a given country never
   reports**: that is `NULL`, per column, and must stay NULL rather than become
   0. Measured, `nuclear_mw` is reported by 14 of 34 countries and `marine_mw`
@@ -1248,13 +1287,22 @@ complete in 120 s during this measurement.
   hole 07-07 → 07-13, against 45 of 45 for DE. Two zones are dead outright —
   GB stops at `2021-06-14` and UA at `2022-02-25`. **Before filing a
   "table X is stale for country Y" bug, probe upstream**, and judge freshness
-  by `MAX(timestamp_utc)` on prod, never by `data_ingestion_log`: that table
+  by `MAX(timestamp_utc)` on prod, never by `data_ingestion_log`. If your
+  remit is read-only (no ENTSO-E API access to probe), check first whether an
+  existing closed issue already carries the same frozen `MAX(timestamp_utc)` in
+  its title or body — the frozen timestamp is the fingerprint for an upstream
+  outage, and a match means the condition is already known (e.g. AL load frozen
+  at `2026-08-06 21:45` → ABL-84). that table
   records an `INSERT OR REPLACE` rowcount, so rewriting rows that already
   existed logs as inserts and a healthy ingest looks identical to a five-day
   upstream stall. (ABL-60 turned the "is this stream current" half of this into
   a served verdict — see "Data freshness" above. That answers *whether* a stream
   is behind; this bullet is why a given zone being behind is usually not a bug
-  to file. AL's ordinary ~9.4h lag is exactly why the threshold there is 18h.)
+  to file. The 18h threshold is sized from the measurement above — ME at ~9.2h
+  is the slowest genuinely-representative country, the longest ingest gap is 7h,
+  and 9.5h–34h all select the same set. AL is *not* representative: it publishes
+  in bursts and is `stale` a good fraction of the time by design — see "That
+  9.4h was a snapshot" above. **Do not retune the threshold to silence AL.**)
 - **Forecast horizons beyond ~D+2.** `forecasts.horizon_hours` runs roughly
   2-64h depending on model — there is no stored forecast for D+3 and beyond.
   Re-measured 2026-08-05: catboost 2-63h, xgboost 2-64h, chronos-2-V010 40-64h
