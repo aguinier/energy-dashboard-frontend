@@ -341,7 +341,17 @@ export interface NetPositionForecastIngestRow {
   quantiles?: Record<string, number>;
 }
 
+/**
+ * Which `forecasts` row this payload writes under. Optional and defaults to
+ * 'net_position' (ABL-240) — the external Chronos-2 job that has posted here
+ * since before this field existed never sends it, and must keep working
+ * unmodified. wind_onshore/wind_offshore were added for the ABL-239 backfill
+ * of ABL-195's retrained shadow-candidate artifacts.
+ */
+export type ForecastIngestType = 'net_position' | 'wind_onshore' | 'wind_offshore';
+
 export interface NetPositionForecastIngestPayload {
+  forecast_type?: ForecastIngestType;
   model: { name: string; version: string };
   generated_at: string;
   rows: NetPositionForecastIngestRow[];

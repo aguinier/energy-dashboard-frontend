@@ -43,6 +43,12 @@ export function ensureForecastQuantilesTable(db: DatabaseType): void {
  * generated_at) so re-posting an identical run is a no-op in row count, while
  * separate runs - several a day is normal - are preserved as distinct
  * vintages that the read path can order by.
+ *
+ * `payload.forecast_type` generalizes this beyond net_position (ABL-240): it
+ * defaults to 'net_position' when absent, so the existing external Chronos-2
+ * job - which has never sent this field - is unaffected, while a caller that
+ * does send it (the ABL-239 wind backfill) gets the identical idempotent
+ * behavior keyed under its own forecast_type instead.
  */
 export function ingestNetPositionForecast(
   db: DatabaseType,
@@ -50,44 +56,45 @@ export function ingestNetPositionForecast(
 ): IngestResult {
   ensureForecastQuantilesTable(db);
 
+  const forecastType = payload.forecast_type ?? 'net_position';
   const { model, generated_at, rows } = payload;
   const countries = [...new Set(rows.map((r) => r.country_code.toUpperCase()))];
 
   const countExisting = db.prepare(
     `SELECT COUNT(*) AS n FROM forecasts
-      WHERE forecast_type = 'net_position'
+      WHERE forecast_type = ?
         AND model_name = ? AND generated_at = ? AND country_code = ?`
   );
   const deletePoints = db.prepare(
     `DELETE FROM forecasts
-      WHERE forecast_type = 'net_position'
+      WHERE forecast_type = ?
         AND model_name = ? AND generated_at = ? AND country_code = ?`
   );
   const deleteQuantiles = db.prepare(
     `DELETE FROM forecast_quantiles
-      WHERE forecast_type = 'net_position'
+      WHERE forecast_type = ?
         AND model_name = ? AND generated_at = ? AND country_code = ?`
   );
   const insertPoint = db.prepare(
     `INSERT INTO forecasts
        (country_code, forecast_type, target_timestamp_utc, generated_at,
         horizon_hours, forecast_value, model_name, model_version)
-     VALUES (?, 'net_position', ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertQuantile = db.prepare(
     `INSERT INTO forecast_quantiles
        (country_code, forecast_type, target_timestamp_utc, generated_at,
         quantile, forecast_value, model_name)
-     VALUES (?, 'net_position', ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
 
   const run = db.transaction((): IngestResult => {
     let replaced = false;
     for (const country of countries) {
-      const existing = countExisting.get(model.name, generated_at, country) as { n: number };
+      const existing = countExisting.get(forecastType, model.name, generated_at, country) as { n: number };
       if (existing.n > 0) replaced = true;
-      deletePoints.run(model.name, generated_at, country);
-      deleteQuantiles.run(model.name, generated_at, country);
+      deletePoints.run(forecastType, model.name, generated_at, country);
+      deleteQuantiles.run(forecastType, model.name, generated_at, country);
     }
 
     let points = 0;
@@ -96,6 +103,7 @@ export function ingestNetPositionForecast(
       const country = row.country_code.toUpperCase();
       insertPoint.run(
         country,
+        forecastType,
         row.target_timestamp_utc,
         generated_at,
         row.horizon_hours ?? null,
@@ -110,6 +118,7 @@ export function ingestNetPositionForecast(
         if (!Number.isFinite(q) || !Number.isFinite(value)) continue;
         insertQuantile.run(
           country,
+          forecastType,
           row.target_timestamp_utc,
           generated_at,
           q,

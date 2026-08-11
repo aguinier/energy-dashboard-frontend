@@ -180,3 +180,78 @@ describe('ingestNetPositionForecast', () => {
     expect(() => ensureForecastQuantilesTable(db)).not.toThrow();
   });
 });
+
+describe('ingestNetPositionForecast — forecast_type (ABL-240)', () => {
+  let db: DatabaseType;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.exec(FORECASTS_DDL);
+  });
+
+  it('defaults to net_position when forecast_type is omitted', () => {
+    ingestNetPositionForecast(db, payload());
+    const row = db.prepare('SELECT forecast_type FROM forecasts').get() as {
+      forecast_type: string;
+    };
+    expect(row.forecast_type).toBe('net_position');
+  });
+
+  it('writes rows under an explicit wind_onshore forecast_type', () => {
+    const result = ingestNetPositionForecast(
+      db,
+      payload({
+        forecast_type: 'wind_onshore',
+        model: { name: 'catboost-retrain-v1', version: 'artifact-abc' },
+      })
+    );
+    expect(result).toEqual({ points: 2, quantiles: 6, replaced: false });
+    const rows = db
+      .prepare('SELECT DISTINCT forecast_type, model_name FROM forecasts')
+      .all();
+    expect(rows).toEqual([{ forecast_type: 'wind_onshore', model_name: 'catboost-retrain-v1' }]);
+  });
+
+  it('keeps wind_onshore and wind_offshore as independent series for the same country/model/generated_at', () => {
+    ingestNetPositionForecast(
+      db,
+      payload({ forecast_type: 'wind_onshore', model: { name: 'shadow-v1', version: 'x' } })
+    );
+    ingestNetPositionForecast(
+      db,
+      payload({ forecast_type: 'wind_offshore', model: { name: 'shadow-v1', version: 'x' } })
+    );
+    const counts = db
+      .prepare('SELECT forecast_type, COUNT(*) n FROM forecasts GROUP BY forecast_type')
+      .all();
+    expect(counts).toEqual([
+      { forecast_type: 'wind_offshore', n: 2 },
+      { forecast_type: 'wind_onshore', n: 2 },
+    ]);
+  });
+
+  it('does not let a wind_onshore backfill replace net_position rows sharing the same model_name/generated_at/country', () => {
+    ingestNetPositionForecast(db, payload());
+    ingestNetPositionForecast(db, payload({ forecast_type: 'wind_onshore' }));
+
+    const counts = db
+      .prepare('SELECT forecast_type, COUNT(*) n FROM forecasts GROUP BY forecast_type')
+      .all();
+    expect(counts).toEqual([
+      { forecast_type: 'net_position', n: 2 },
+      { forecast_type: 'wind_onshore', n: 2 },
+    ]);
+  });
+
+  it('is idempotent per forecast_type: re-posting the same wind_offshore run replaces, not appends', () => {
+    ingestNetPositionForecast(db, payload({ forecast_type: 'wind_offshore' }));
+    const second = ingestNetPositionForecast(db, payload({ forecast_type: 'wind_offshore' }));
+
+    expect(second.replaced).toBe(true);
+    expect(
+      (db.prepare("SELECT COUNT(*) n FROM forecasts WHERE forecast_type = 'wind_offshore'").get() as {
+        n: number;
+      }).n
+    ).toBe(2);
+  });
+});

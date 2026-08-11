@@ -54,8 +54,33 @@ export const FORECAST_MODELS: Record<string, ForecastTypeConfig> = {
   price: { production: 'catboost', models: [CATBOOST, XGBOOST] },
   renewable: { production: 'catboost', models: [CATBOOST, XGBOOST] },
   solar: { production: 'catboost', models: [CATBOOST, XGBOOST, TSO_D1] },
-  wind_onshore: { production: 'catboost', models: [CATBOOST, XGBOOST, TSO_D1] },
-  wind_offshore: { production: 'xgboost', models: [XGBOOST, TSO_D1] },
+  wind_onshore: {
+    production: 'catboost',
+    models: [
+      CATBOOST,
+      XGBOOST,
+      TSO_D1,
+      {
+        id: 'catboost-retrain-v1',
+        label: 'CatBoost · retrain v1 (shadow candidate)',
+        source: 'ml',
+        modelName: 'catboost-retrain-v1',
+      },
+    ],
+  },
+  wind_offshore: {
+    production: 'xgboost',
+    models: [
+      XGBOOST,
+      TSO_D1,
+      {
+        id: 'xgboost-retrain-v1',
+        label: 'XGBoost · retrain v1 (shadow candidate)',
+        source: 'ml',
+        modelName: 'xgboost-retrain-v1',
+      },
+    ],
+  },
   biomass: { production: 'xgboost', models: [XGBOOST] },
   hydro_total: { production: 'xgboost', models: [XGBOOST] },
   net_position: {
