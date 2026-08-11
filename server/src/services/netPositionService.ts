@@ -413,10 +413,11 @@ export function getNetPosition(
   countryCode: string,
   start: string,
   end: string,
-  db: DatabaseType = defaultDb
+  db: DatabaseType = defaultDb,
+  modelId?: string
 ): NetPositionResponse {
   const actual = getNetPositionActualSeries(countryCode, start, end, db);
-  const { points, meta } = getNetPositionForecast(countryCode, start, end, db);
+  const { points, meta } = getNetPositionForecast(countryCode, start, end, db, modelId);
   return {
     actual: actual.points,
     forecast: points,

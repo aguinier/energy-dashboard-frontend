@@ -486,8 +486,13 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   overlay to this tab, add it back to that set.
 - **`NetPositionTab`** — `AbleLineChart` for ENTSO-E day-ahead net position
   plus the selected registered forecast. The picker offers Chronos-2 V010
-  (the default) and XGBoost V014; the Chronos run has a p10-p90 band where
-  stored. Handles
+  (the production default) plus three labelled shadow candidates — Baseline
+  V012, XGBoost V014, Chronos-2 V016 (`forecastModels.ts:61-89`); only V010
+  has a stored p10-p90 band. Selecting a candidate actually changes the chart
+  (ABL-177) — `useNetPositionData` sends the picker's pin as `model=` and
+  keys the query on it, mirroring every other forecast tab; before the fix it
+  read the store but never forwarded the id, so every selection rendered
+  V010. Handles
   a zone going silent upstream as an explicit "stopped publishing on <date>"
   state rather than a loading spinner. GR and IE are the live examples, and
   **this entry used to give the wrong date for both**: it said their continuous

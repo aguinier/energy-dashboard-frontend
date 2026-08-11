@@ -3,6 +3,7 @@ import { useDashboardStore } from '@/store/dashboardStore';
 import { fetchNetPosition } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { getDateRangeForPreset } from './useDashboardData';
+import { useModelSelection } from './useForecastModels';
 import type { NetPositionResponse } from '@/types';
 
 /**
@@ -21,18 +22,25 @@ export function useNetPositionData(): {
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
 
+  // The picker is the single source of truth for which model this chart
+  // shows (ABL-177) - `requestModelId` is only set once the user actually
+  // pinned an entry, so leaving it off here still lets the server's ladder
+  // pick a served model, same as every other forecast tab.
+  const { requestModelId } = useModelSelection('net_position');
+
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
   const extendedEnd = new Date(
     Math.max(end.getTime(), Date.now() + 3 * 24 * 60 * 60 * 1000),
   );
 
   const query = useQuery({
-    queryKey: ['net-position', selectedCountry, timePreset, timeOffset],
+    queryKey: ['net-position', selectedCountry, timePreset, timeOffset, requestModelId],
     queryFn: () =>
       fetchNetPosition({
         country: selectedCountry,
         start: start.toISOString(),
         end: extendedEnd.toISOString(),
+        model: requestModelId,
       }),
     staleTime: REFRESH_INTERVALS.dashboard,
   });
