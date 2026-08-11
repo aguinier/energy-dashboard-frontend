@@ -21,10 +21,23 @@ describe('forecast model registry', () => {
     }
   });
 
-  it('offers V010 and V014 for net position while keeping Chronos V010 as the default', () => {
+  it('offers all four net-position models with V010 as production and challengers labelled as shadow candidates', () => {
     const cfg = getTypeConfig('net_position');
     expect(cfg?.production).toBe('chronos-2-V010');
-    expect(cfg?.models.map((m) => m.id)).toEqual(['chronos-2-V010', 'xgboost-V014']);
+    expect(cfg?.models.map((m) => m.id)).toEqual([
+      'chronos-2-V010',
+      'baseline-V012',
+      'xgboost-V014',
+      'chronos-2-V016',
+    ]);
+    // Champion must not carry the shadow-candidate label
+    const champion = cfg?.models.find((m) => m.id === 'chronos-2-V010');
+    expect(champion?.label).not.toContain('shadow candidate');
+    // All three challengers must be clearly labelled
+    for (const id of ['baseline-V012', 'xgboost-V014', 'chronos-2-V016']) {
+      const m = cfg?.models.find((x) => x.id === id);
+      expect(m?.label, `${id} must carry shadow-candidate label`).toContain('shadow candidate');
+    }
   });
 
   it('excludes models that stopped writing months ago', () => {
