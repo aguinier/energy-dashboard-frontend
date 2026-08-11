@@ -30,3 +30,6 @@ nul
 
 # Local UI review artifacts (before/after screenshots, not source)
 .ui-review/
+
+# Playwright MCP browser session dumps (console logs, page captures)
+.playwright-mcp/
