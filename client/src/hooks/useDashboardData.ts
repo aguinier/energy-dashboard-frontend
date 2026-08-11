@@ -2,9 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import {
   fetchDashboardOverview,
   fetchMapData,
-  fetchLoadData,
-  fetchPriceData,
-  fetchRenewableData,
   fetchGenerationMix,
   fetchGenerationSeries,
   fetchLatestForecast,
@@ -15,7 +12,6 @@ import {
 import { useDashboardStore } from '@/store/dashboardStore';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { getTodayBrussels, getNextDayBrussels } from '@/lib/timezone';
-import { getPriceWindowEnd } from '@/lib/priceWindow';
 import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType } from '@/types';
 
 // ============================================================================
@@ -221,48 +217,6 @@ export function useMapData(metric?: MetricType) {
       }),
     staleTime: REFRESH_INTERVALS.map,
     refetchOnWindowFocus: false,
-  });
-}
-
-export function useLoadData() {
-  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-  const granularity = getGranularityForPreset(timePreset);
-
-  return useQuery({
-    queryKey: ['load', selectedCountry, timePreset, timeOffset, granularity],
-    queryFn: () => fetchLoadData({ country: selectedCountry, start: start.toISOString(), end: end.toISOString(), granularity }),
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-export function usePriceData() {
-  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-  const granularity = getGranularityForPreset(timePreset);
-
-  return useQuery({
-    queryKey: ['prices', selectedCountry, timePreset, timeOffset, granularity],
-    queryFn: () =>
-      fetchPriceData({
-        country: selectedCountry,
-        start: start.toISOString(),
-        end: getPriceWindowEnd(end).toISOString(),
-        granularity,
-      }),
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-export function useRenewableData() {
-  const { selectedCountry, timePreset, timeOffset } = useDashboardStore();
-  const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
-  const granularity = getGranularityForPreset(timePreset);
-
-  return useQuery({
-    queryKey: ['renewables', selectedCountry, timePreset, timeOffset, granularity],
-    queryFn: () => fetchRenewableData({ country: selectedCountry, start: start.toISOString(), end: end.toISOString(), granularity }),
-    staleTime: REFRESH_INTERVALS.dashboard,
   });
 }
 

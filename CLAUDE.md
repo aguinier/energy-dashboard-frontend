@@ -1000,8 +1000,8 @@ Adding a preset means touching six places. All six now fail loudly:
   (`store/migrate.ts:21`), whose keys `VALID_TIME_PRESETS` derives from.
 - A `const unhandled: never = preset` in the `default` branch, so the new value
   is reported as not assignable to `never`: `getDateRangeForPreset`
-  (`useDashboardData.ts:121`) and `getGranularityForPreset`
-  (`useDashboardData.ts:162`).
+  (`useDashboardData.ts:117`) and `getGranularityForPreset`
+  (`useDashboardData.ts:158`).
 - The sixth — giving the preset a **control** — cannot be typed: a preset with
   no button is unreachable, not ill-typed, which is how four of them sat in the
   union until ABL-12. It is a **test** failure instead:
@@ -1052,8 +1052,8 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
 `server/src/types/index.ts:219`), `useDashboardOverview` sends an explicit
-`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:175`,
-and `useMapData` likewise at `:212`), and `migratePersisted` deletes a stored
+`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:171`,
+and `useMapData` likewise at `:208`), and `migratePersisted` deletes a stored
 `timeRange` outright (`store/migrate.ts:102`). `timePreset` is the single field
 describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
 field for `ComparisonView`, is unrelated and does still exist.)
@@ -1110,7 +1110,7 @@ check which group it is in:
   (`useLoadChartData.ts:131`, `:177`).
 - **Written, and read only by dead code.** `showForecast`. `setTimePreset`
   still sets it `true` for future presets (`dashboardStore.ts:150`) and
-  `useLatestForecast` gates its query on it (`useDashboardData.ts:303`, `:312`)
+  `useLatestForecast` gates its query on it (`useDashboardData.ts:257`, `:266`)
   — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
   nothing, so it has no on-screen effect today.
 - **No reader at all.** `showTSOForecast`, `tsoForecastType`,
