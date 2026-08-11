@@ -113,10 +113,13 @@ energy-dashboard-frontend/
         │   ├── crossCountryComparison.ts  # /cross-country/metrics, /metrics/:forecastType
         │   ├── netPosition.ts, netPositionIngest.ts  # Read + write for the Chronos net-position pipeline
         │   ├── dataFreshness.ts, countries.ts, weather.ts
+        │   ├── opsStatus.ts           # /ops/status — host/process KPIs + fleet freshness rollup (ABL-237)
         ├── services/                  # One service module per route group
         │   ├── freshness.ts           # Pure: is a stream live / stale / never held
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
-        │   └── degenerateForecast.ts  # Pure: collapsed-to-zero net position
+        │   ├── degenerateForecast.ts  # Pure: collapsed-to-zero net position
+        │   ├── freshnessRollup.ts     # Pure: fleet-wide worst-case freshness verdict
+        │   └── hostMetrics.ts         # Pure: disk/CPU readings, null when unmeasurable
         ├── config/
         │   ├── database.ts            # SQLite connection (ENERGY_DB_PATH)
         │   ├── writeDatabase.ts       # Separate writable handle, opened lazily —
@@ -1371,6 +1374,28 @@ time by V8, so on the ~90% of `energy_load` rows that use a space separator the
 header understated the age by the viewer's UTC offset — two hours in Brussels,
 always in the reassuring direction.
 
+**`GET /api/ops/status` (ABL-237) is a fleet-wide rollup, not a new source of
+truth.** Built as the foundation for a separate acceptance/prod status
+dashboard (ABL-236), it reuses this section's per-country classification
+rather than re-deriving it: `opsStatusService.ts`'s `getFleetFreshness` calls
+`getDataFreshness` (`dataFreshnessService.ts`) once per country from
+`countryService.getAllCountries()`, then `freshnessRollup.ts`'s
+`computeFreshnessRollup` reduces every (country, stream) pair to one worst-case
+verdict — `stale` outranks everything (the only actionable alarm of the four),
+`live` outranks the two non-alarm verdicts `ended`/`none`, and an empty fleet
+reads `none` rather than throwing. It also reports host/process KPIs
+(`hostMetrics.ts`): disk usage for the directory holding `ENERGY_DB_PATH` via
+`fs.statfsSync` (one code path for the Linux container and the Windows
+acceptance host, no extra dependency), process memory/uptime, and CPU load —
+`null` on Windows rather than `os.loadavg()`'s fabricated `[0, 0, 0]`, per this
+file's own rule that a metric we cannot measure is `null`, never invented.
+Provenance (`commit`/`runtime`/`db_path`) is `getHealthProvenance()` verbatim,
+the same values `/api/health` (`routes/index.ts:45`) reports — `/health`'s own
+response contract is unchanged. Unlike `/health`, this endpoint touches the
+database (the freshness rollup), so it is expected to fail during the
+twice-daily DB sync's write-lock blackout described above — a known window,
+not a defect (see "Acceptance blackout during Stage 2", `../WORKFLOWS.md`).
+
 ## Generation data
 
 Two tables, both written from **one** A75 fetch per country per window
@@ -1751,6 +1776,18 @@ cd server && npx vitest run
 
 Green as of 2026-08-11: **488 client tests / 39 files**, **421 server tests /
 27 files**, clean typecheck. Fewer passing than that means something broke.
+ABL-237 (the `/api/ops/status` KPI endpoint) added three server files —
+`services/hostMetrics.test.ts` (5 cases), `services/freshnessRollup.test.ts`
+(8 cases), `routes/opsStatus.test.ts` (6 cases) — and touched no client file.
+The same pre-existing `better-sqlite3` native-module ABI mismatch this section
+already documents (NODE_MODULE_VERSION mismatch, next paragraph) blocked a
+full `cd server && npx vitest run` in the sandbox this branch was authored in;
+`hostMetrics.test.ts`/`freshnessRollup.test.ts` are pure and DB-free and did
+run clean (13/13), and `server`'s `tsc --noEmit` was clean, but
+`routes/opsStatus.test.ts` could only be confirmed to fail with that same
+environmental error — reproduced identically on this same checkout, not a
+code-path specific to this change — rather than actually pass. Re-run it in an
+ABI-matched environment before relying on the 6-case count above.
 (That server figure predates several since-merged branches already reflected
 in this checkout's history — e.g. ABL-190/ABL-221 — which is why a fresh run
 here shows more than 421/27 even before ABL-214's own tests; this entry was not
@@ -1864,7 +1901,12 @@ Two conventions, and they are for different layers.
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
 `lib/readingFreshness.ts`, `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
 `lib/multiForecastSeries.ts`,
-`server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`.
+`server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`,
+`server/src/services/freshnessRollup.ts`, `server/src/services/hostMetrics.ts`
+(ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
+as optional params, specifically so `hostMetrics.test.ts` can exercise the
+graceful-degradation path — a throwing stat call, a mocked Windows platform —
+without a real disk or `os.loadavg()`).
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query
@@ -1874,8 +1916,8 @@ are both easy to break and neither is visible by reading.
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
 `tsoForecast`, `crossCountryComparison`, `netPosition`, `load`, `generation`,
-`prices` and `dataFreshness`: a real request in, the real `ApiResponse<T>`
-envelope out. Two shared pieces:
+`prices`, `dataFreshness` and `opsStatus`: a real request in, the real
+`ApiResponse<T>` envelope out. Two shared pieces:
 
 - `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its
   `CREATE TABLE` statements are copied verbatim from `energy_dashboard.db`
