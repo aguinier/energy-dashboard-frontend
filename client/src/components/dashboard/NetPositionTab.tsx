@@ -6,6 +6,7 @@ import { useCountries } from '@/hooks/useCountries';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { adaptNetPositionSeries } from '@/lib/chartAdapters';
 import { summarizeVintages, capVintages } from '@/lib/netPositionProvenance';
+import { netPositionTabDisclosure } from '@/lib/netPositionScope';
 import { useModelSelection } from '@/hooks/useForecastModels';
 import { describeDegenerateActual, describeDegenerateForecast } from './degenerateForecastNote';
 
@@ -62,6 +63,13 @@ export function NetPositionTab() {
   }, [data]);
 
   const zoneNote = data ? SHARED_ZONE_NOTE[data.meta.bidding_zone] : undefined;
+
+  // Which "net position" this chart draws — a definitional fact about the
+  // selected country, independent of whether data loaded (ABL-222).
+  const scopeDisclosure = useMemo(
+    () => netPositionTabDisclosure(selectedCountry),
+    [selectedCountry],
+  );
 
   // The server withholds a forecast series that is numerically zero rather
   // than letting it draw as a flat, confident-looking line at 0 MW (ABL-25,
@@ -123,6 +131,7 @@ export function NetPositionTab() {
   return (
     <div className="space-y-3.5">
       <AbleCard title="Net position" subtitle={subtitleParts.join(' · ')}>
+        <p className="mb-2.5 text-micro text-ink-muted">{scopeDisclosure}</p>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…

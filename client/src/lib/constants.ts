@@ -32,13 +32,16 @@ export const PRESET_SHIFT_HOURS: Record<TimePreset, number> = {
 // The single source of truth for map metric copy. `unit` is the unit the map
 // actually renders — EuropeMap divides load by 1000, so it is GW, not MW.
 // `legendLabel` is what the legend says where it needs a different claim from
-// the button: net position is a window average, not an instantaneous value.
+// the button: net position is a window average, not an instantaneous value,
+// and (ABL-222) it is drawn over every ENTSO-E-coupled border, not the
+// narrower Core-region figure of the same name — see `netPositionScope.ts`
+// for the full disclosure rendered alongside this label.
 // Every entry carries one so consumers can read it off the union unconditionally.
 export const MAP_METRICS = [
   { value: 'price', label: 'Day-ahead price', unit: '€/MWh', legendLabel: 'Day-ahead price' },
   { value: 'renewable_pct', label: 'Renewable share', unit: '%', legendLabel: 'Renewable share' },
   { value: 'load', label: 'Electricity load', unit: 'GW', legendLabel: 'Electricity load' },
-  { value: 'net_position', label: 'Net position', unit: 'MW', legendLabel: 'Avg net position' },
+  { value: 'net_position', label: 'Net position', unit: 'MW', legendLabel: 'Avg net position, all coupled borders' },
 ] as const;
 
 export const API_BASE_URL = '/api';
