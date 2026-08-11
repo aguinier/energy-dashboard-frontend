@@ -514,16 +514,28 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `2026-07-23T22:00Z` declares `PT60M` over 24 positions and carries one Point,
   `position 1, quantity 0`.
 
-  **The two zones are not symmetric, and this matters when reading the tab.**
-  Measured on the replica 2026-08-07:
+  **The two zones were not symmetric, and this mattered for reading the tab
+  before the delete described below.** Measured on the replica 2026-08-07 —
+  this is the record of what was found and the evidence the ABL-181 deletion
+  decision rested on, not a description of the table's current state:
 
-  - **GR — 192 of 192 post-break rows are exactly `0.0`**, every one
-    fabricated, across 13 UTC-day buckets. GR has published no real net
-    position since 2025-09-30. Its own `crossborder_flows` show a median net
+  - **GR — 192 of 192 post-break rows were exactly `0.0`**, every one
+    fabricated, across 13 UTC-day buckets. GR had published no real net
+    position since 2025-09-30. Its own `crossborder_flows` showed a median net
     *export* of 1,142 MW over those same hours.
-  - **IE — only 2026-03-14 is fabricated** (23 rows, plus 1 spill row on
-    03-13 = 24). Its other post-break days carry genuine values, up to 738.8
-    MW, so IE's newest *usable* day is 2026-07-24, not 2025-09-30.
+  - **IE — only 2026-03-14 was fabricated** (23 rows, plus 1 spill row on
+    03-13 = 24). Its other post-break days carried genuine values, up to 738.8
+    MW, so IE's newest *usable* day was already 2026-07-24, not 2025-09-30 —
+    unaffected by the later delete, since `getLastSeen` already stepped back
+    over the one fabricated day to reach it.
+
+  Because `classifyActualSeries`/`getNetPositionActualSeries` judge a queried
+  window by its series **maximum**, not row by row, IE's mostly-genuine March
+  window was never classified `degenerate_zero` even before the delete — the
+  24 fabricated 03-14 rows rode along inside an otherwise-real `served` series
+  and would have been returned and drawn like any other point. GR's window,
+  100% fabricated after the break, was the one case the whole-series rule
+  caught.
 
   The ingest guard is `../energy-data-gathering/src/published_points.py`
   (`drop_unpublished_zeros_series`, wired at
@@ -552,11 +564,42 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   ingest half). Always grep the running container; do not infer deploy state from
   git ancestry or issue status.
 
-  Deployed or not, the guard only stops *new* fabrications: the
-  **216** already-stored rows (GR 192, IE 24) are still in the table, and
-  deleting them is a separate CEO decision (**ABL-67**, blocked on the board),
-  not yet taken. So the read-side guards below remain the only thing keeping
-  those rows off a chart — do not remove them when the ingest fix ships.
+  The ingest guard only stops *new* fabrications from landing — it does not
+  touch what was already stored. **The 216 rows above (GR 192, IE 24) were
+  deleted from `net_position` on 2026-08-11 13:23 UTC** (ABL-181, executed
+  under the Board-approved ABL-67 decision — confirmation
+  `c5398dd4-3b89-4ef6-9389-546d519cf814`, accepted 2026-08-11T08:11:55Z).
+  Verified: GR's row count fell 24,271 → 24,079 and IE's 24,286 → 24,262 —
+  exactly 192 and 24 — and zero all-zero day buckets remain anywhere in the
+  table. ABL-67 is now `done`, but it authorized only these 216 fabricated
+  rows; see the LU note below for what it did **not** authorize.
+
+  **The read-side guards are not made redundant by this delete.**
+  `services/degenerateForecast.ts` (both classifiers), `classifyActualSeries`
+  and `getLastSeen`, documented below, stay exactly as they are — they are
+  defence in depth against the next sparse A25 document, which entsoe-py will
+  forward-fill the same way that produced this one. Do not remove or weaken
+  them, and leave the fixture DB's GR shape (a degenerate forecast plus an
+  all-zero actuals day) alone; it is what exercises both.
+
+  **Verified against prod, 2026-08-11, that GR now renders the more correct
+  state this predicts.** With the fabricated actuals gone, GR has no rows at
+  all after 2025-09-30: `/api/net-position/GR` over the default 7d window now
+  returns `actual: []` with `meta.actual_coverage: 'no_actuals'` — no longer
+  `'degenerate_zero'`, because there is nothing left in that range to classify
+  — and `meta.last_seen` unchanged at `2025-09-30T21:00:00`.
+  `describeDegenerateActual` returns `null` for `'no_actuals'`
+  (`degenerateForecastNote.ts:70`), so `NetPositionTab` falls through the
+  withheld-actuals branch to the `lastSeen` branch (`NetPositionTab.tsx:158-173`)
+  and renders "Greece stopped publishing a net position on September 30,
+  2025." The forecast half is untouched by this delete: GR's `chronos-2-V010`
+  forecast is still `degenerate_zero` and still renders its own note beside
+  the empty actuals state.
+
+  **IE's classification changed too.** With its 24 fabricated 03-14 rows gone,
+  IE's `2026-03-01..2026-03-30` window returns 47 rows, `actual_coverage:
+  'served'`, max |value| 738.8 MW — a genuinely clean line, not a real one
+  with a fabricated flat day inside it.
 
   The date the tab prints is **not** `MAX(timestamp_utc)` any more — see
   `getLastSeen`, which takes the newest *usable* day. That matters because GR's
@@ -1292,9 +1335,15 @@ complete in 120 s during this measurement.
   `../energy-data-gathering/src/fetch_net_position.py:41-49`. No schema or UI
   change: the dashboard already reads LU through a `LU -> DE_LU` alias, not as
   a second country's series. The **459 rows already stored** under
-  `country_code='LU'` (as of 2026-08-10) are deliberately left in place —
-  deleting stored rows is a separate, still-open database-write policy
-  question (ABL-67), not settled by this fix. This is `net_position`-only:
+  `country_code='LU'` (as of 2026-08-10) are deliberately left in place.
+  **ABL-67 is now `done`, but do not read that as covering LU.** It
+  authorized only the deletion of the 216 GR/IE rows documented above under
+  ABL-181 (executed 2026-08-11 13:23 UTC) — rows with no genuine counterpart,
+  fabricated outright by a sparse-document forward-fill. LU's rows are the
+  opposite shape: real, correctly-fetched measurements that happen to
+  duplicate DE's. Whether to delete a genuine duplicate is a different,
+  still-open database-write policy question, not settled by this fix. This is
+  `net_position`-only:
   `PRICE_BIDDING_ZONES` carries the identical `DE`/`LU` → `DE_LU` mapping
   (`../energy-data-gathering/src/entsoe_client.py:2017-2022`) and must **not**
   get the same treatment — a price is intensive, not additive, so LU
