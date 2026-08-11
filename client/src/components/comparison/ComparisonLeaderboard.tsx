@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import type { CrossCountryMetrics } from '@/types';
 import { wapeColor, wapeScale } from './accuracyScale';
 import { buildLeaderboardRows, wapeRanks, type LeaderboardRow } from './leaderboardRows';
+import { SkillCell } from './SkillCell';
 
 type SortField = 'country' | 'wape' | 'mae' | 'rmse' | 'bias' | 'dataPoints';
 
@@ -142,6 +143,9 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
               </th>
               <SortHeader field="country" label="Country" align="left" />
               <SortHeader field="wape" label="WAPE" />
+              <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground">
+                Skill vs D-7
+              </th>
               <SortHeader field="mae" label={unit ? `MAE (${unit})` : 'MAE'} />
               <SortHeader field="rmse" label={unit ? `RMSE (${unit})` : 'RMSE'} />
               <SortHeader field="bias" label={unit ? `Bias (${unit})` : 'Bias'} />
@@ -177,6 +181,9 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
                         {row.wape.toFixed(1)}%
                       </span>
                     ) : '-'}
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <SkillCell skill={row.skill} />
                   </td>
                   <td className="px-4 py-3 text-center text-xs">
                     {row.mae !== null ? row.mae.toFixed(2) : '-'}
@@ -219,6 +226,12 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
         terracotta, ties share a colour. Rank, not distance: neighbouring shades can be a tenth of a
         point apart or twenty. Read the number for that. It is a standing among peers, not a
         pass/fail grade — nothing in this data defines a target WAPE.
+      </p>
+      <p className="px-1 text-micro text-ink-dim">
+        Skill vs D-7 compares this forecast to "the same hour last week" on the identical pairs its
+        own WAPE was measured on — never a larger sample, and <span className="font-medium">n</span>{' '}
+        is that pair count. A negative skill means the naive baseline would have done better; a WAPE
+        can look respectable in isolation and still be a loss against D-7.
       </p>
     </div>
   );

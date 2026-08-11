@@ -9,9 +9,12 @@ import {
   fetchTSOLoadForecast,
   fetchTSOLoadForecastAccuracy,
 } from '@/services/api';
+import type { ForecastFetchResult } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { maskServedModel } from '@/lib/servedModel';
-import { useModelSelection } from './useForecastModels';
+import { useModelSelection, useMultiModelSelection } from './useForecastModels';
+import { forecastLineToken } from '@/components/dashboard/forecastLineTokens';
+import type { NormalizedForecastPoint } from '@/lib/multiForecastSeries';
 import {
   getDateRangeForPreset,
   getGranularityForPreset,
@@ -27,6 +30,17 @@ import type {
   TSOForecastAccuracyMetrics,
   TSOHorizon,
 } from '@/types';
+
+/** One explicitly-checked model's normalized forecast, for the multi-select picker (ABL-204). */
+export interface LoadModelQuery {
+  id: string;
+  label: string;
+  color: string;
+  dash: string;
+  points: NormalizedForecastPoint[] | undefined;
+  isLoading: boolean;
+  isError: boolean;
+}
 
 // Helper to extend date range for forecast overlay
 function getTSOForecastDateRange(
@@ -68,6 +82,16 @@ export interface LoadChartData {
   // Aggregate loading state
   isLoading: boolean;
   isError: boolean;
+
+  /**
+   * Multi-model selection (ABL-204) — one entry per model explicitly checked
+   * in `ModelPicker`, empty in "Default" mode. The fields above (`forecastData`,
+   * `tsoForecastData`, `servedModelId`, …) describe the single unpinned or
+   * legacy single-pinned request and are unchanged by this — `ForecastTab`
+   * still reads them directly for its own single-line overlay, regardless of
+   * what is checked in the Load tab's picker.
+   */
+  modelSelection: LoadModelQuery[];
 }
 
 /**
@@ -203,6 +227,77 @@ export function useLoadChartData(): LoadChartData {
     setServedModel('load', servedModelId);
   }, [setServedModel, servedModelId]);
 
+  // Multi-model selection (ABL-204) — one query per model explicitly checked
+  // in the picker, fanned out the same way `useNetPositionData` fans out net
+  // position's picker: ml via `fetchForecastData` pinned to that model id,
+  // tso via `fetchTSOLoadForecast` pinned to that model's horizon (`load` is
+  // the one type where a selection can mix both sources). A separate
+  // `useQueries` call from the one above — both still run their requests
+  // concurrently, this just keeps the fixed single-model queries and the
+  // variable-length selection queries from having to share one array shape.
+  const { models: allLoadModels, selectedIds } = useMultiModelSelection('load');
+
+  const selectionQueries = useQueries({
+    queries: selectedIds.map((id) => {
+      const model = allLoadModels.find((m) => m.id === id);
+      if (model?.source === 'tso') {
+        return {
+          queryKey: ['tso-forecast', 'load', selectedCountry, timePreset, timeOffset, model.tsoHorizon, granularity],
+          queryFn: () =>
+            fetchTSOLoadForecast({
+              countryCode: selectedCountry,
+              start: tsoStart,
+              end: tsoEnd,
+              forecastType: model.tsoHorizon,
+              granularity,
+            }),
+          staleTime: REFRESH_INTERVALS.dashboard,
+        };
+      }
+      return {
+        queryKey: ['forecast', selectedCountry, 'load', timePreset, timeOffset, granularity, id],
+        queryFn: () =>
+          fetchForecastData({
+            country: selectedCountry,
+            type: 'load',
+            start: mlForecastStart,
+            end: mlForecastEnd,
+            granularity,
+            model: id,
+          }),
+        staleTime: REFRESH_INTERVALS.dashboard,
+      };
+    }),
+  });
+
+  const modelSelection: LoadModelQuery[] = selectedIds.map((id, i) => {
+    const model = allLoadModels.find((m) => m.id === id);
+    const q = selectionQueries[i];
+    const token = forecastLineToken(id);
+    let points: NormalizedForecastPoint[] | undefined;
+    if (model?.source === 'tso') {
+      const tso = q.data as TSOLoadForecastDataPoint[] | undefined;
+      points = tso?.map((p) => ({
+        timestamp: p.timestamp,
+        value: p.forecast_value_mw,
+        min: p.forecast_min_mw,
+        max: p.forecast_max_mw,
+      }));
+    } else {
+      const ml = q.data as ForecastFetchResult | undefined;
+      points = ml?.points.map((p) => ({ timestamp: p.timestamp, value: p.value }));
+    }
+    return {
+      id,
+      label: model?.label ?? id,
+      color: token.color,
+      dash: token.dash,
+      points,
+      isLoading: q.isLoading,
+      isError: q.isError,
+    };
+  });
+
   return {
     // Actual load data
     loadData: loadQuery.data,
@@ -232,5 +327,7 @@ export function useLoadChartData(): LoadChartData {
     // Aggregate states
     isLoading: loadQuery.isLoading, // Only consider primary data loading
     isError: queries.some((q) => q.isError),
+
+    modelSelection,
   };
 }

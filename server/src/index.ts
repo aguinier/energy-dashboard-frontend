@@ -1,6 +1,7 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createApp, resolveClientDist } from './app.js';
+import { startForecastVintageArchiveScheduler } from './services/forecastVintageArchiveScheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3001;
@@ -31,5 +32,11 @@ Available endpoints:
   GET /api/forecasts/*     - Forecast predictions
 `);
 });
+
+// ABL-184: begins capturing forecast vintages once this process is deployed
+// and running with a write connection available. See
+// services/forecastVintageArchiveScheduler.ts for why it runs in a worker
+// thread on a timer, gated the same way getWriteDb() is.
+startForecastVintageArchiveScheduler();
 
 export default app;
