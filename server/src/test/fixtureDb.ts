@@ -523,6 +523,15 @@ function seed(db: DatabaseType): void {
     quantile.run('GR', 'net_position', at(h), '2026-06-30 18:00:00', 0.9, 0.003754783421754837, 'chronos-2-V010');
   });
 
+  // BE net position, the same window, from the registered challenger
+  // baseline-V012 (ABL-177) — distinct values from the chronos-2-V010 run
+  // above so a route test can prove `?model=baseline-V012` actually changes
+  // which row set comes back rather than the server silently keeping
+  // whatever the unpinned ladder already picked.
+  HOURS.forEach((h) => {
+    forecast.run('BE', 'net_position', at(h), '2026-06-30 18:00:00', 40, -170, 'baseline-V012', 'V012');
+  });
+
   // ------------------------------------------------------- tso forecasts
 
   const loadForecast = db.prepare(

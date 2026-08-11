@@ -451,6 +451,8 @@ export async function fetchNetPosition(params: {
   country: string;
   start: string;
   end: string;
+  /** Registry model id. Omit to let the server choose the production model. */
+  model?: string;
 }): Promise<NetPositionResponse> {
   const { country, ...query } = params;
   const endpoint = `/net-position/${country}`;

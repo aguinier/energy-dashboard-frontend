@@ -217,6 +217,37 @@ describe('GET /api/net-position/:countryCode — actuals that collapsed to zero'
   });
 });
 
+describe('GET /api/net-position/:countryCode — explicit model selection (ABL-177)', () => {
+  it('serves the requested challenger model, not the production default', async () => {
+    // Reproduces the acceptance bug: the picker offers V010/V012/V014/V016,
+    // but the route ignored `model` entirely and always answered with
+    // chronos-2-V010's rows. baseline-V012's fixture values (-170) are
+    // distinct from V010's (-190) so this fails loudly if `model` is dropped
+    // anywhere along the path rather than just returning the same numbers
+    // under a different label.
+    const { status, body } = await get(`BE?${WINDOW_QS}&model=baseline-V012`);
+
+    expect(status).toBe(200);
+    const data = body.data as {
+      forecast: Array<Record<string, unknown>>;
+      meta: Record<string, unknown>;
+    };
+    expect(data.meta.model_name).toBe('baseline-V012');
+    expect(data.forecast).toHaveLength(4);
+    expect(data.forecast.every((p) => p.p50 === -170)).toBe(true);
+  });
+
+  it('still defaults to the production model when no model is requested', async () => {
+    const { body } = await get(`BE?${WINDOW_QS}`);
+    const data = body.data as {
+      forecast: Array<Record<string, unknown>>;
+      meta: Record<string, unknown>;
+    };
+    expect(data.meta.model_name).toBe('chronos-2-V010');
+    expect(data.forecast.every((p) => p.p50 === -190)).toBe(true);
+  });
+});
+
 describe('GET /api/net-position/:countryCode — required window', () => {
   it('rejects a request with no start/end', async () => {
     // Note this route hand-rolls its 400 rather than throwing AppError, so the
