@@ -552,11 +552,29 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   ingest half). Always grep the running container; do not infer deploy state from
   git ancestry or issue status.
 
-  Deployed or not, the guard only stops *new* fabrications: the
-  **216** already-stored rows (GR 192, IE 24) are still in the table, and
-  deleting them is a separate CEO decision (**ABL-67**, blocked on the board),
-  not yet taken. So the read-side guards below remain the only thing keeping
-  those rows off a chart — do not remove them when the ingest fix ships.
+  Deployed or not, the guard only stops *new* fabrications. The **216**
+  fabricated rows (GR 192, IE 24) were deleted from prod on 2026-08-11 at
+  13:23:19Z under ABL-181 (ABL-67 approved the write, `request_confirmation`
+  `c5398dd4`, accepted 2026-08-11T08:11:55Z); row counts confirmed:
+  `GR_before=24271 GR_after=24079`, `IE_before=24286 IE_after=24262`.
+  GR's series now ends cleanly at `2025-09-30 21:00`. The read-side guards
+  below are **still load-bearing** — for three distinct reasons that each
+  survive the deletion:
+
+  1. `classifyActualSeries` and `classifyForecastSeries` guard against *future*
+     fabrications. The ingest guard prevents new ones; the read-side check is
+     the backstop that catches anything the ingest guard misses, and removing it
+     before ingest is provably correct in production would trade defence-in-depth
+     for a single point of failure.
+  2. MK's `position 1, quantity 0.0` was **genuinely published** by ENTSO-E, so
+     it is still in the table on purpose. `measuredLoadClause()` is the only
+     thing keeping it off a chart — ABL-181 was scoped to the fabricated GR/IE
+     rows and did not touch MK.
+  3. GR's degenerate *forecast* series (`chronos-2-V010`, ~1e-7 MW medians) was
+     never in ABL-181's scope and is still stored. `degenerateForecast.ts` is
+     still load-bearing on live data.
+
+  Do not read the deletion as permission to remove the guards.
 
   The date the tab prints is **not** `MAX(timestamp_utc)` any more — see
   `getLastSeen`, which takes the newest *usable* day. That matters because GR's
@@ -1333,8 +1351,9 @@ complete in 120 s during this measurement.
   change: the dashboard already reads LU through a `LU -> DE_LU` alias, not as
   a second country's series. The **459 rows already stored** under
   `country_code='LU'` (as of 2026-08-10) are deliberately left in place —
-  deleting stored rows is a separate, still-open database-write policy
-  question (ABL-67), not settled by this fix. This is `net_position`-only:
+  deleting stored rows was a database-write policy question (ABL-67), now
+  settled for the GR/IE fabricated rows (deleted 2026-08-11 under ABL-181),
+  but the **459 LU rows were not in ABL-181's scope** and are still present. This is `net_position`-only:
   `PRICE_BIDDING_ZONES` carries the identical `DE`/`LU` → `DE_LU` mapping
   (`../energy-data-gathering/src/entsoe_client.py:2017-2022`) and must **not**
   get the same treatment — a price is intensive, not additive, so LU
