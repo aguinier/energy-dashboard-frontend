@@ -1278,6 +1278,28 @@ complete in 120 s during this measurement.
   (`netPositionIngestService.ts:72`, `:78`), never `net_position`. Escalated to
   the CEO under ABL-3 — do not treat "net_position is a clean NULL" as an
   invariant you can rely on. `crossborder_flows` still is.
+- **LU's `net_position` was a byte-identical duplicate of DE, until
+  2026-08-11.** Both country codes resolve to the same ENTSO-E bidding zone —
+  `NET_POSITION_BIDDING_ZONES` maps `DE` and `LU` both to `DE_LU`
+  (`../energy-data-gathering/src/entsoe_client.py:1989-1992`) — so every ingest
+  pass wrote a separate `LU` fetch that was numerically identical to the `DE`
+  fetch, double-counting DE in any per-country aggregate that summed across
+  countries (a national total, a cross-country mean). ABL-35 defect 4; fixed
+  under Board confirmation `820fa10c` (accepted 2026-08-11): the ingest now
+  skips the `LU` fetch entirely, before any API call, rather than fetching and
+  deduping after the fact — `NET_POSITION_DUPLICATE_ZONE_COUNTRIES`
+  (`../energy-data-gathering/src/entsoe_client.py:1994-2013`), applied at
+  `../energy-data-gathering/src/fetch_net_position.py:41-49`. No schema or UI
+  change: the dashboard already reads LU through a `LU -> DE_LU` alias, not as
+  a second country's series. The **459 rows already stored** under
+  `country_code='LU'` (as of 2026-08-10) are deliberately left in place —
+  deleting stored rows is a separate, still-open database-write policy
+  question (ABL-67), not settled by this fix. This is `net_position`-only:
+  `PRICE_BIDDING_ZONES` carries the identical `DE`/`LU` → `DE_LU` mapping
+  (`../energy-data-gathering/src/entsoe_client.py:2017-2022`) and must **not**
+  get the same treatment — a price is intensive, not additive, so LU
+  genuinely trades at the DE-LU price and de-duplicating it would delete a
+  correct value, not a manufactured one.
 - **Uniform freshness across zones.** Every actuals table is a mirror of what
   each TSO publishes *when it publishes it*, so "country X is N hours behind
   country Y" is normally upstream cadence, not a broken ingest. The cron
