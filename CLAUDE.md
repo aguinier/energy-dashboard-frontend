@@ -919,7 +919,8 @@ baseline's own WAPE is 0/undefined), and `baselineWape` for context.
 This mirrors, rather than re-derives, the methodology the board already
 reviewed for the forecast-quality scorecard — `score_against_baseline` and
 `aligned_point_baselines` in the sibling `energy-forecast` repo
-(`src/evaluation/scorecard.py:158`, `src/baselines.py:297`): same D-7
+(`../energy-forecast/src/evaluation/scorecard.py:158`,
+`../energy-forecast/src/baselines.py:297`): same D-7
 same-hour baseline definition, same pair-intersection rule. That scorecard is
 a batch Python job reading the replica directly and writing JSON/markdown
 reports to its own `reports/` directory — there is no live API or shared
