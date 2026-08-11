@@ -108,6 +108,19 @@ export interface GenerationSeriesPoint {
   other: number | null;
 }
 
+/**
+ * Onshore/offshore wind actuals over time, kept separate rather than summed
+ * into GenerationSeriesPoint's combined `wind` family (ABL-235) - the wind
+ * forecast tab plots and compares each type independently against its own
+ * registered forecast models. Null means this country did not report that
+ * type in this bucket, never a fabricated zero.
+ */
+export interface WindGenerationSeriesPoint {
+  timestamp: string;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+}
+
 export interface DashboardOverview {
   currentLoad: number | null;
   avgPrice: number | null;
@@ -223,6 +236,15 @@ export interface TSOLoadForecastDataPoint {
   forecast_max_mw: number | null;
   forecast_type: string;
   publication_timestamp_utc: string | null;
+}
+
+/** ENTSO-E day-ahead generation forecast — solar and wind bundled per row, day-ahead only (no week-ahead registered for generation). */
+export interface TSOGenerationForecastDataPoint {
+  timestamp: string;
+  solar_mw: number | null;
+  wind_onshore_mw: number | null;
+  wind_offshore_mw: number | null;
+  total_forecast_mw: number | null;
 }
 
 export interface TSOForecastAccuracyDataPoint {

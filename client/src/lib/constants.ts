@@ -78,11 +78,18 @@ export const REFRESH_INTERVALS = {
  * `?? 'load'` (`useForecastModels.ts:74`) — the Generation tab would then offer
  * load models for solar data, which is the wrong-number-under-a-plausible-label
  * failure this dashboard exists to avoid.
+ *
+ * `wind-onshore`/`wind-offshore` (ABL-235) are two top-level tabs rather than
+ * subtabs of `renewables`, specifically so this same generic keying serves
+ * them with zero new plumbing — each is read by `ModelPicker` exactly like
+ * `price`/`load`.
  */
 export const TAB_FORECAST_TYPE: Record<string, string> = {
   price: 'price',
   load: 'load',
   renewables: 'solar',
+  'wind-onshore': 'wind_onshore',
+  'wind-offshore': 'wind_offshore',
   'net-position': 'net_position',
   analytics: 'load',
 };

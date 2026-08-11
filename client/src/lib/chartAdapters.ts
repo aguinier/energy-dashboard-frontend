@@ -9,6 +9,8 @@ import type {
   ForecastDataPoint,
   TSOLoadForecastDataPoint,
   NetPositionResponse,
+  WindGenerationSeriesPoint,
+  TSOGenerationForecastDataPoint,
 } from '@/types';
 import { dayLabelByVintage } from './netPositionProvenance';
 
@@ -30,15 +32,18 @@ function hourKey(ts: string): number {
  * placing actual + forecast values into the right hour bins. Used by the
  * line charts in Price/Load tabs.
  */
-export function buildSeriesGrid<TActual extends { timestamp?: string; date?: string }>(opts: {
+export function buildSeriesGrid<
+  TActual extends { timestamp?: string; date?: string },
+  TAlt extends { timestamp?: string } = TSOLoadForecastDataPoint,
+>(opts: {
   actual: TActual[] | undefined;
   actualValue: (p: TActual) => number | null | undefined;
   forecast: ForecastDataPoint[] | undefined;
   /** Optional second forecast source (e.g. TSO when ML is off). */
-  forecastAlt?: TSOLoadForecastDataPoint[];
-  forecastAltValue?: (p: TSOLoadForecastDataPoint) => number | null;
-  forecastAltMin?: (p: TSOLoadForecastDataPoint) => number | null;
-  forecastAltMax?: (p: TSOLoadForecastDataPoint) => number | null;
+  forecastAlt?: TAlt[];
+  forecastAltValue?: (p: TAlt) => number | null;
+  forecastAltMin?: (p: TAlt) => number | null;
+  forecastAltMax?: (p: TAlt) => number | null;
   /**
    * Bounds the rendered hourly grid, independently of any deliberately wider
    * fetch. For example, price requests include tomorrow's published auction
@@ -142,6 +147,31 @@ export function adaptLoadSeries(opts: {
     forecastAltValue: (p) => p.forecast_value_mw,
     forecastAltMin: (p) => p.forecast_min_mw,
     forecastAltMax: (p) => p.forecast_max_mw,
+    window: opts.window,
+  });
+}
+
+/**
+ * Wind-specific shortcut (ABL-235): onshore/offshore actuals against ml
+ * and/or TSO D+1 forecast. Both the actuals response and the bundled TSO
+ * generation forecast carry both wind types on the same row — `windType`
+ * picks out the one column this chart draws, the same way `LoadSelectionView`
+ * lets a caller pick a field out of a shared response shape.
+ */
+export function adaptWindSeries(opts: {
+  windData: WindGenerationSeriesPoint[] | undefined;
+  windType: 'wind_onshore' | 'wind_offshore';
+  mlForecast?: ForecastDataPoint[];
+  tsoForecast?: TSOGenerationForecastDataPoint[];
+  window?: { start: Date; end: Date };
+}): { series: AbleSeriesPoint[]; nowIndex: number } {
+  const { windType } = opts;
+  return buildSeriesGrid<WindGenerationSeriesPoint, TSOGenerationForecastDataPoint>({
+    actual: opts.windData,
+    actualValue: (p) => (windType === 'wind_onshore' ? p.wind_onshore : p.wind_offshore),
+    forecast: opts.mlForecast,
+    forecastAlt: opts.tsoForecast,
+    forecastAltValue: (p) => (windType === 'wind_onshore' ? p.wind_onshore_mw : p.wind_offshore_mw),
     window: opts.window,
   });
 }

@@ -56,6 +56,7 @@ energy-dashboard-frontend/
 │       │   ├── dashboard/            # Country-view composition
 │       │   │   ├── PriceTab.tsx, LoadTab.tsx, GenerationTab.tsx,
 │       │   │   │   NetPositionTab.tsx, ForecastTab.tsx  # One file per tab
+│       │   │   ├── WindTab.tsx           # Onshore + offshore share this one (ABL-235) — same chart, different column
 │       │   │   ├── AbleCard.tsx          # Card shell dashboard chart compositions wrap their charts in
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
 │       │   │   ├── ForecastGapNotice.tsx # multi-select "<model> has no forecast here" + remove-from-comparison button
@@ -188,7 +189,7 @@ repository.
 
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
-- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:122`).
+- **`CountryDashboardView`** — six top-level country tabs: Price, Load, Generation, Wind onshore, Wind offshore (ABL-235) and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:131`).
 - **`ComparisonView`** — the Forecast quality portfolio home: a type-local ranking/map for the default `load` type leads the page, then disclosed error evidence, then the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:29`). (The portfolio used to lead with a "Forecast performance by variable" card grid, `ForecastPortfolio`/`portfolioRows.ts` — removed under ABL-166 at the CEO's request; the rest of the page, its nav entry, and the per-country `ForecastTab` were untouched.)
 
 ### 2. Forecast model selection
@@ -616,8 +617,9 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `dashboard/generationSeries.test.ts` pins the ordering.
 
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
-  (`CountryDashboardView.tsx:60`, applied at `:117`) limits it to `price` and
-  `load`, the tabs whose chart reads a multi-select picker (ABL-204).
+  (`CountryDashboardView.tsx:68`, applied at `:127`) limits it to `price`,
+  `load`, `wind-onshore` and `wind-offshore` (ABL-235), the tabs whose chart
+  reads a multi-select picker (ABL-204).
   `net-position` isn't in that set either, but for the opposite reason: it has
   its own separate multi-select picker instead (`NetPositionModelPicker`,
   ABL-203), rendered by its own `activeChartTab === 'net-position'` branch
@@ -1037,7 +1039,7 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `/dashboard/*` endpoints forced it. Neither is true any more: nothing in
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
-`server/src/types/index.ts:219`), every per-tab hook sends an explicit
+`server/src/types/index.ts:233`), every per-tab hook sends an explicit
 `start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
 `useDashboardData.ts:206`, and `useMapData` likewise at `:187`), and
 `migratePersisted` deletes a stored
@@ -1071,7 +1073,7 @@ selectedCountry: string;
 timePreset: TimePreset;
 timeAnchor: TimeAnchor;
 mapMetric: MetricType;
-activeChartTab: string;              // price|load|renewables|net-position|analytics
+activeChartTab: string;              // price|load|renewables|wind-onshore|wind-offshore|net-position|analytics
 selectedModelsByType: Record<string, string[]>;      // per forecast-type PINs; absent/empty = server ladder
 forecastHiddenByType: Record<string, boolean>;       // overlay switched off, per type; absent = shown
 comparisonCountries: string[];
@@ -2008,8 +2010,8 @@ The second rule is the one that earns its keep: of the eight stale citations
 this check found on arrival, the first rule caught three and the second caught
 seven. It is deliberately narrow — skipped for bare `:NNN` continuations, which
 idiomatically point at a *use* site rather than at the declaration
-(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:60` and
-applied at `:117`), and skipped when the named symbol is not a top-level
+(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:68` and
+applied at `:127`), and skipped when the named symbol is not a top-level
 declaration (`ENERGY_DB_PATH` is only ever read off `process.env`, so a citation
 naming it is not judged). Both exclusions were needed to reach zero false
 positives across the whole file. A check that cries wolf gets disabled.
@@ -2246,7 +2248,7 @@ interface TSOForecastAccuracyMetrics {
   model at all — check `forecastModels.ts` before assuming a bug
 - Note `ModelPicker` does not render on the Generation, Forecast-accuracy or
   Net position tabs at all (`TABS_WITH_MODEL_PICKER`,
-  `CountryDashboardView.tsx:60`, applied at `:117`) — Net position instead
+  `CountryDashboardView.tsx:68`, applied at `:127`) — Net position instead
   gets its own separate multi-select `NetPositionModelPicker` — so there is no
   "picker that does nothing" to hit on any of the three
 - Check the API response has data for the selected country

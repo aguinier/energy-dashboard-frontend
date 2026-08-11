@@ -159,3 +159,81 @@ describe('GET /api/generation/series', () => {
     expect((body.data as SeriesPoint[])[0].timestamp).toBe('2026-07-01');
   });
 });
+
+interface WindSeriesPoint {
+  timestamp: string;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+}
+
+/**
+ * ABL-235: the wind forecast tab needs onshore and offshore actuals plotted
+ * (and compared against their own registered forecast models) independently
+ * — /series' combined `wind` family above cannot support that split.
+ */
+describe('GET /api/generation/wind', () => {
+  it('splits onshore and offshore rather than summing them', async () => {
+    const { status, body } = await get(`wind?country=DE&granularity=hourly&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    const data = body.data as WindSeriesPoint[];
+
+    expect(data).toHaveLength(4);
+    expect(data[0]).toEqual({ timestamp: isoAt(0), wind_onshore: 200, wind_offshore: null });
+  });
+
+  it('keeps a measured zero for one type apart from an unreported sibling', async () => {
+    // BE reports wind_onshore as a measured 0.0 every hour and never reports
+    // wind_offshore at all — a country that has always had offshore wind read
+    // as "unmeasured", not as "zero output".
+    const { body } = await get(`wind?country=BE&granularity=hourly&${WINDOW_QS}`);
+    const data = body.data as WindSeriesPoint[];
+
+    expect(data).toHaveLength(4);
+    for (const point of data) {
+      expect(point.wind_onshore).toBe(0);
+      expect(point.wind_offshore).toBeNull();
+    }
+  });
+
+  it('reports a country that sends neither type as all-null, never as zeros', async () => {
+    // PT: rows exist for every hour, every column NULL.
+    const { body } = await get(`wind?country=PT&granularity=hourly&${WINDOW_QS}`);
+    const data = body.data as WindSeriesPoint[];
+
+    expect(data).toHaveLength(4);
+    for (const point of data) {
+      expect(point.wind_onshore).toBeNull();
+      expect(point.wind_offshore).toBeNull();
+    }
+  });
+
+  it('returns an empty series for a country with no generation rows at all', async () => {
+    const { status, body } = await get(`wind?country=AT&granularity=hourly&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    expect(body.data).toEqual([]);
+  });
+
+  it('stops where a country stopped publishing, rather than padding the window', async () => {
+    // GR has rows for 00:00 and 01:00 only.
+    const { body } = await get(`wind?country=GR&granularity=hourly&${WINDOW_QS}`);
+    const data = body.data as WindSeriesPoint[];
+
+    expect(data.map((p) => p.timestamp)).toEqual([isoAt(0), isoAt(1)]);
+  });
+
+  it('requires a country', async () => {
+    const { status, body } = await get(`wind?${WINDOW_QS}`);
+
+    expect(status).toBe(400);
+    expect(body).toMatchObject({ success: false, code: 'MISSING_COUNTRY' });
+  });
+
+  it('echoes the granularity and count it actually served', async () => {
+    const { body } = await get(`wind?country=DE&granularity=daily&${WINDOW_QS}`);
+
+    expect(body.meta).toMatchObject({ count: 1, granularity: 'daily' });
+    expect((body.data as WindSeriesPoint[])[0].timestamp).toBe('2026-07-01');
+  });
+});

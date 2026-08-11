@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { adaptNetPositionSeries, adaptNetPositionMultiSeries, buildSeriesGrid } from './chartAdapters';
+import { adaptNetPositionSeries, adaptNetPositionMultiSeries, adaptWindSeries, buildSeriesGrid } from './chartAdapters';
 import type { NetPositionModelSeriesInput } from './chartAdapters';
 import type { NetPositionResponse } from '@/types';
 
@@ -48,6 +48,40 @@ describe('buildSeriesGrid', () => {
     expect(series.at(-1)?.ts).toBe('2026-08-05T21:00:00.000Z');
     expect(series.at(-1)?.value).toBe(110);
     expect(series.some((point) => point.value === 120)).toBe(false);
+  });
+});
+
+describe('adaptWindSeries', () => {
+  const windData = [
+    { timestamp: '2026-08-04T10:00:00', wind_onshore: 200, wind_offshore: 50 },
+    { timestamp: '2026-08-04T11:00:00', wind_onshore: null, wind_offshore: 60 },
+  ];
+  const tsoForecast = [
+    { timestamp: '2026-08-04T10:00:00', solar_mw: 10, wind_onshore_mw: 300, wind_offshore_mw: 80, total_forecast_mw: 390 },
+  ];
+
+  it('reads the onshore column when windType is wind_onshore, not offshore', () => {
+    const { series } = adaptWindSeries({ windData, windType: 'wind_onshore' });
+
+    expect(series[0].value).toBe(200);
+    // Second bucket's onshore reading is unreported (null), never a
+    // fabricated 0 - even though offshore has a real 60 that hour.
+    expect(series[1].value).toBeNull();
+  });
+
+  it('reads the offshore column when windType is wind_offshore', () => {
+    const { series } = adaptWindSeries({ windData, windType: 'wind_offshore' });
+
+    expect(series[0].value).toBe(50);
+    expect(series[1].value).toBe(60);
+  });
+
+  it('picks the matching column out of the bundled TSO forecast response', () => {
+    const onshore = adaptWindSeries({ windData, windType: 'wind_onshore', tsoForecast });
+    const offshore = adaptWindSeries({ windData, windType: 'wind_offshore', tsoForecast });
+
+    expect(onshore.series[0].forecast).toBe(300);
+    expect(offshore.series[0].forecast).toBe(80);
   });
 });
 

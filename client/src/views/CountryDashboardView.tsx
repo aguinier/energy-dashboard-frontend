@@ -18,6 +18,12 @@ const LoadTab = lazy(() =>
 const GenerationTab = lazy(() =>
   import('@/components/dashboard/GenerationTab').then((m) => ({ default: m.GenerationTab })),
 );
+const WindOnshoreTab = lazy(() =>
+  import('@/components/dashboard/WindTab').then((m) => ({ default: m.WindOnshoreTab })),
+);
+const WindOffshoreTab = lazy(() =>
+  import('@/components/dashboard/WindTab').then((m) => ({ default: m.WindOffshoreTab })),
+);
 const ForecastTab = lazy(() =>
   import('@/components/dashboard/ForecastTab').then((m) => ({ default: m.ForecastTab })),
 );
@@ -53,11 +59,13 @@ const LOCAL_ZONE_LABEL = (() => {
 // — was single-select until then). `renewables` (Generation) and `analytics`
 // (Forecast accuracy) render no picker at all — GenerationTab shows actuals
 // only, and the accuracy overlay is driven by the Load tab's own selection.
+// `wind-onshore`/`wind-offshore` (ABL-235) reuse this same generic picker —
+// unlike `renewables`, they have a real forecast-overlay chart behind them.
 // `net-position` has its own separate multi-select picker
 // (`NetPositionModelPicker`, ABL-203) rather than this one — the two pickers
 // are not unified into one component; see CLAUDE.md's "Forecast model
 // selection" section for why.
-const TABS_WITH_MODEL_PICKER = new Set(['price', 'load']);
+const TABS_WITH_MODEL_PICKER = new Set(['price', 'load', 'wind-onshore', 'wind-offshore']);
 
 export function CountryDashboardView() {
   const { selectedCountry, activeChartTab, setActiveChartTab, goToComparison } = useDashboardStore();
@@ -109,6 +117,8 @@ export function CountryDashboardView() {
               <TabsTrigger value="price">Price</TabsTrigger>
               <TabsTrigger value="load">Load</TabsTrigger>
               <TabsTrigger value="renewables">Generation</TabsTrigger>
+              <TabsTrigger value="wind-onshore">Wind onshore</TabsTrigger>
+              <TabsTrigger value="wind-offshore">Wind offshore</TabsTrigger>
               <TabsTrigger value="net-position">Net position</TabsTrigger>
             </TabsList>
           </Tabs>
@@ -144,6 +154,16 @@ export function CountryDashboardView() {
           <TabsContent value="renewables">
             <Suspense fallback={<TabSkeleton height={400} />}>
               <GenerationTab />
+            </Suspense>
+          </TabsContent>
+          <TabsContent value="wind-onshore">
+            <Suspense fallback={<TabSkeleton />}>
+              <WindOnshoreTab />
+            </Suspense>
+          </TabsContent>
+          <TabsContent value="wind-offshore">
+            <Suspense fallback={<TabSkeleton />}>
+              <WindOffshoreTab />
             </Suspense>
           </TabsContent>
           <TabsContent value="net-position">
