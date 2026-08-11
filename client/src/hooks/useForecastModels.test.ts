@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSelection } from './useForecastModels';
+import { resolveSelection, resolveMultiSelection } from './useForecastModels';
 import type { ForecastModelRegistry } from '@/types';
 
 const REGISTRY: ForecastModelRegistry = {
@@ -8,6 +8,15 @@ const REGISTRY: ForecastModelRegistry = {
     models: [
       { id: 'catboost', label: 'able-ml · catboost', source: 'ml', modelName: 'catboost' },
       { id: 'xgboost', label: 'able-ml · xgboost', source: 'ml', modelName: 'xgboost' },
+    ],
+  },
+  net_position: {
+    production: 'chronos-2-V010',
+    models: [
+      { id: 'chronos-2-V010', label: 'Chronos-2 · V010', source: 'ml', modelName: 'chronos-2-V010' },
+      { id: 'baseline-V012', label: 'Baseline · V012', source: 'ml', modelName: 'baseline-V012' },
+      { id: 'xgboost-V014', label: 'XGBoost · V014', source: 'ml', modelName: 'xgboost-V014' },
+      { id: 'chronos-2-V016', label: 'Chronos-2 · V016', source: 'ml', modelName: 'chronos-2-V016' },
     ],
   },
 };
@@ -72,5 +81,68 @@ describe('resolveSelection', () => {
     expect(r.hidden).toBe(false);
     expect(r.requestModelId).toBeUndefined();
     expect(r.selected?.id).toBe('catboost');
+  });
+});
+
+describe('resolveMultiSelection', () => {
+  it('is empty ("Default") when nothing is pinned', () => {
+    const r = resolveMultiSelection(REGISTRY, 'net_position', undefined, false);
+    expect(r.selectedIds).toEqual([]);
+    expect(r.models).toHaveLength(4);
+    expect(r.hidden).toBe(false);
+  });
+
+  it('carries every pinned id through, in the order given', () => {
+    const r = resolveMultiSelection(
+      REGISTRY,
+      'net_position',
+      ['xgboost-V014', 'chronos-2-V010'],
+      false,
+    );
+    expect(r.selectedIds).toEqual(['xgboost-V014', 'chronos-2-V010']);
+  });
+
+  it('a single stored pin resolves to a one-element selection — the v9 migration path', () => {
+    const r = resolveMultiSelection(REGISTRY, 'net_position', ['baseline-V012'], false);
+    expect(r.selectedIds).toEqual(['baseline-V012']);
+  });
+
+  it('drops ids no longer registered rather than sending them on the wire', () => {
+    const r = resolveMultiSelection(
+      REGISTRY,
+      'net_position',
+      ['chronos-2-V010', 'retired-model'],
+      false,
+    );
+    expect(r.selectedIds).toEqual(['chronos-2-V010']);
+  });
+
+  it('de-duplicates a repeated id', () => {
+    const r = resolveMultiSelection(
+      REGISTRY,
+      'net_position',
+      ['chronos-2-V010', 'chronos-2-V010'],
+      false,
+    );
+    expect(r.selectedIds).toEqual(['chronos-2-V010']);
+  });
+
+  it('empties the selection when hidden, without losing what was pinned in the store', () => {
+    const r = resolveMultiSelection(
+      REGISTRY,
+      'net_position',
+      ['chronos-2-V010', 'baseline-V012'],
+      true,
+    );
+    expect(r.hidden).toBe(true);
+    expect(r.selectedIds).toEqual([]);
+    // models still populated, so a picker toggled back on has something to show
+    expect(r.models).toHaveLength(4);
+  });
+
+  it('is empty for an unknown forecast type', () => {
+    const r = resolveMultiSelection(REGISTRY, 'solar', ['catboost'], false);
+    expect(r.models).toEqual([]);
+    expect(r.selectedIds).toEqual([]);
   });
 });

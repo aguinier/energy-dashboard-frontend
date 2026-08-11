@@ -218,6 +218,12 @@ stored pin cannot be told apart from an artefact of the bug, and unpinned is
 the state that always renders something. That is also what frees users already
 trapped.
 
+(`selectedModelByType` above is this section's name for it at ABL-16 — the
+field net position's multi-select picker later needed to hold several ids in
+was renamed `selectedModelsByType`, an array per type, at ABL-203/v9. See
+"ModelPicker" below and State management for the current shape; nothing about
+the ABL-16 fix itself changed.)
+
 **Accuracy by model.** The accuracy endpoints also accept `model`, but resolve
 it through `resolveAccuracyModel` rather than `resolveModel`/`resolveModelCandidates`
 — **deliberately stricter**: an unregistered id is rejected with a 400, not
@@ -247,9 +253,15 @@ normal answer. `meta.coverage` on `/ml-accuracy` distinguishes `served` /
 does not serve it reads as *no coverage* and never as a flawless 0% error.
 
 `ModelPicker` renders once per active tab (`TAB_FORECAST_TYPE` maps tab ->
-forecast type) and stores the choice per type in `selectedModelByType`, so a
-choice on one tab never leaks into a type where that model doesn't exist. The
-older `showForecast` / `showTSOForecast` / `tsoForecastType` boolean toggles
+forecast type) and stores the choice per type in `selectedModelsByType`
+(`Record<string, string[]>`, ABL-203 — was `selectedModelByType`, one string
+per type, before net position's picker needed to hold several at once), so a
+choice on one tab never leaks into a type where that model doesn't exist.
+`ModelPicker`'s own single-select `setSelectedModel`/`clearSelectedModel`
+write/clear a one-element list, so Load and Price are unaffected by the
+shape change; net position's `NetPositionModelPicker` is the one caller that
+writes more than one id, via `toggleSelectedModel`. The older
+`showForecast` / `showTSOForecast` / `tsoForecastType` boolean toggles
 and the D+1/D+7 button are gone — `LoadTab`/`PriceTab`/`NetPositionTab` derive
 `useMl` / `useTso` / `tsoHorizon` straight from the picker's selected model
 (`selected.source`, `selected.tsoHorizon`, `useLoadChartData.ts:89-91`). Those
@@ -476,8 +488,11 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `dashboard/generationSeries.test.ts` pins the ordering.
 
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
-  (`CountryDashboardView.tsx:56`, applied at `:116`) limits it to the tabs
-  whose chart actually reads a selection (`price`, `load`, `net-position`). It
+  (`CountryDashboardView.tsx:60`, applied at `:119`) limits it to `price` and
+  `load`, the tabs whose chart reads a single-select pin. `net-position` isn't
+  in that set either, but for the opposite reason: it has its own multi-select
+  picker instead (`NetPositionModelPicker`, ABL-203), rendered by its own
+  `activeChartTab === 'net-position'` branch beside it. It
   used to render and do nothing, while `useRenewableChartData` fired five
   per-type ML forecast queries plus a TSO one that no component consumed: six
   API calls per view, discarded. Both are gone, and so is that hook — ABL-44
@@ -485,14 +500,27 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `chartAdapters.adaptRenewableMixSeries` with it. If you add a forecast
   overlay to this tab, add it back to that set.
 - **`NetPositionTab`** — `AbleLineChart` for ENTSO-E day-ahead net position
-  plus the selected registered forecast. The picker offers Chronos-2 V010
-  (the production default) plus three labelled shadow candidates — Baseline
-  V012, XGBoost V014, Chronos-2 V016 (`forecastModels.ts:61-89`); only V010
-  has a stored p10-p90 band. Selecting a candidate actually changes the chart
-  (ABL-177) — `useNetPositionData` sends the picker's pin as `model=` and
-  keys the query on it, mirroring every other forecast tab; before the fix it
-  read the store but never forwarded the id, so every selection rendered
-  V010. Handles
+  plus one or more selected registered forecasts. `NetPositionModelPicker`
+  (ABL-203) is a **multi-select** box, not a dropdown: Chronos-2 V010 (the
+  production default) plus three labelled shadow candidates — Baseline V012,
+  XGBoost V014, Chronos-2 V016 (`forecastModels.ts:61-89`) — can be checked
+  together, each drawn as its own coloured, labelled dashed line over one
+  shared actuals series (`dashboard/netPositionModelColors.ts` for the
+  palette, `lib/chartAdapters.ts`'s `adaptNetPositionMultiSeries` for the
+  merge, `AbleLineChart`'s `forecastSeries` prop for the N-line draw). Only
+  V010 has a stored p10-p90 band, and it draws only when exactly one model is
+  checked — several bands on one chart is unreadable, and a lone band under N
+  lines would misattribute uncertainty to models that never published one.
+  `useNetPositionData` fans out one query per checked model through
+  `useQueries`, each pinned via `model=` and keyed on its id — the same
+  per-model-query property ABL-177 first established for the single-select
+  case, generalised to N; nothing checked ("Default", or the overlay switched
+  off) is the one unpinned query every other forecast tab already sends, and
+  the server's candidate ladder picks. A checked model with no rows for this
+  zone is named in a footnote rather than silently missing its line — the
+  degenerate-forecast case below (`describeDegenerateForecast`) and the
+  plain-no-coverage case (`lib/forecastGap.ts`'s `describeForecastGap`) both
+  apply per model now, not once for a single response. Handles
   a zone going silent upstream as an explicit "stopped publishing on <date>"
   state rather than a loading spinner. GR and IE are the live examples, and
   **this entry used to give the wrong date for both**: it said their continuous
@@ -761,7 +789,7 @@ so it cannot drift from the union.
 
 Zustand store (`dashboardStore.ts`) with `persist` to localStorage
 (`energy-dashboard-storage`). **The persisted shape is versioned:**
-`PERSIST_VERSION` in `store/migrate.ts` (currently `7`, `migrate.ts:3`), bumped
+`PERSIST_VERSION` in `store/migrate.ts` (currently `9`, `migrate.ts:3`), bumped
 with a matching clause in `migratePersisted()` whenever a persisted field's
 shape or meaning changes. `migratePersisted` must never throw: `state` is an
 arbitrary, possibly years-old localStorage blob. Skipping this step leaves
@@ -776,7 +804,12 @@ field. The clauses today coerce an unknown `currentView` / `activeChartTab` /
 stored `comparisonMetric: 'mape'` to `'wape'` (`:88`), **delete** three dead
 keys — `layers` (`:82`), `timeRange` (`:102`), `analyticsConfig` (`:114`) —
 and split `selectedModelByType`'s pin/hidden conflation into
-`forecastHiddenByType`, dropping every stored pin (`:155-163`, ABL-16).
+`forecastHiddenByType`, dropping every stored pin (`:155-163`, ABL-16), then
+convert that single pin per type into a one-element list under the renamed
+`selectedModelsByType` (`:183-192`, ABL-203/v9) — the shape net position's
+multi-select picker needs to hold several pins at once, with a returning
+user's one stored pin carrying forward as their starting selection rather
+than being dropped.
 Note `layers` is deleted, not folded into `showForecast`/`showTSOForecast` as
 an earlier version did — that folding unconditionally overwrote `showForecast`
 with `false` on every migration, clobbering a value the current code had
@@ -812,7 +845,7 @@ is `Object.keys(ANCHOR_FOR_PRESET)`, and `ANCHOR_FOR_PRESET` is keyed
 `Record<TimePreset, TimeAnchor>`, so it cannot drift from the union.
 
 ```typescript
-// The COMPLETE persisted set — `partialize`, dashboardStore.ts:279-302.
+// The COMPLETE persisted set — `partialize`, dashboardStore.ts:357-381.
 // Anything absent here (timeOffset, isLive, servedModelByType, …) is
 // session-only and resets on reload.
 currentView: AppView;                                // 'map' | 'country' | 'comparison'
@@ -821,7 +854,7 @@ timePreset: TimePreset;
 timeAnchor: TimeAnchor;
 mapMetric: MetricType;
 activeChartTab: string;              // price|load|renewables|net-position|analytics
-selectedModelByType: Record<string, string>;         // per forecast-type PIN; absent = server ladder
+selectedModelsByType: Record<string, string[]>;      // per forecast-type PINs; absent/empty = server ladder
 forecastHiddenByType: Record<string, boolean>;       // overlay switched off, per type; absent = shown
 comparisonCountries: string[];
 sidebarOpen: boolean;
@@ -1350,9 +1383,23 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-11: **449 client tests / 36 files**, **411 server tests /
-26 files**, clean typecheck. Fewer passing than that means something broke.
-(ABL-166 removed `ForecastPortfolio` and its `portfolioRows.ts` helper — the
+Green as of 2026-08-11: **474 client tests / 37 files**, **421 server tests /
+27 files**, clean typecheck. Fewer passing than that means something broke.
+(ABL-203 added the net-position multi-model picker — `migrate.test.ts`'s v9
+clause, `useForecastModels.test.ts`'s `resolveMultiSelection` cases,
+`chartAdapters.test.ts`'s `adaptNetPositionMultiSeries` cases, and a new file,
+`dashboard/netPositionModelColors.test.ts` — which is where the client figure
+moved from 449/36 to 474/37; it touched no server file, and the 411->421
+server figure this entry used to carry already held on unmodified `main`
+before this branch, so it is not part of this change's delta. (One
+shared-workstation caveat worth naming here rather than re-discovering: this
+checkout's `npx vitest run` intermittently fails ~20 client tests in
+`dashboardStore.test.ts`/`windowLabel.test.ts` with `storage.setItem is not a
+function` — a `zustand`/`localStorage` environment quirk in this sandbox, not
+a code defect. Verified identical on unmodified `main` with this branch's
+changes fully stashed, including untracked files, before attributing it to
+ABL-203; do the same before re-diagnosing it as a regression.)
+ABL-166 removed `ForecastPortfolio` and its `portfolioRows.ts` helper — the
 "Forecast performance by variable" card grid the CEO asked to drop from the
 Forecast quality portfolio page, leaving the rest of that page, its nav entry,
 and the per-country `ForecastTab` in place — which is where the client figure
@@ -1543,8 +1590,8 @@ The second rule is the one that earns its keep: of the eight stale citations
 this check found on arrival, the first rule caught three and the second caught
 seven. It is deliberately narrow — skipped for bare `:NNN` continuations, which
 idiomatically point at a *use* site rather than at the declaration
-(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:56` and
-applied at `:116`), and skipped when the named symbol is not a top-level
+(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:60` and
+applied at `:119`), and skipped when the named symbol is not a top-level
 declaration (`ENERGY_DB_PATH` is only ever read off `process.env`, so a citation
 naming it is not judged). Both exclusions were needed to reach zero false
 positives across the whole file. A check that cries wolf gets disabled.
@@ -1765,9 +1812,11 @@ interface TSOForecastAccuracyMetrics {
   both D+1 and D+7 registered; `solar`/`wind_onshore`/`wind_offshore` have D+1
   only; `price`/`renewable`/`biomass`/`hydro_total`/`net_position` have no TSO
   model at all — check `forecastModels.ts` before assuming a bug
-- Note the picker does not render on the Generation or Forecast-accuracy tabs
-  at all (`TABS_WITH_MODEL_PICKER`, `CountryDashboardView.tsx:56`, applied at
-  `:116`), so there is no "picker that does nothing" to hit there
+- Note `ModelPicker` does not render on the Generation, Forecast-accuracy or
+  Net position tabs at all (`TABS_WITH_MODEL_PICKER`,
+  `CountryDashboardView.tsx:60`, applied at `:119`) — Net position instead
+  gets its own multi-select `NetPositionModelPicker` — so there is no "picker
+  that does nothing" to hit on any of the three
 - Check the API response has data for the selected country
 - Verify database tables have data: `energy_load_forecast`, `energy_generation_forecast`
 
