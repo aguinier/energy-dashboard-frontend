@@ -1,4 +1,4 @@
-import type { CrossCountryMetrics, CrossCountryMetricsEntry } from '@/types';
+import type { CrossCountryMetrics, CrossCountryMetricsEntry, SkillVsSeasonalNaive } from '@/types';
 
 /**
  * One leaderboard row: a single country measured on a single forecast type.
@@ -32,6 +32,8 @@ export interface LeaderboardRow {
   rmse: number | null;
   bias: number | null;
   dataPoints: number;
+  /** Absent only for a stale cached response predating ABL-186 — see `describeSkill`. */
+  skill?: SkillVsSeasonalNaive;
 }
 
 function measured(v: unknown): number | null {
@@ -57,6 +59,7 @@ export function buildLeaderboardRows(
       rmse: measured(entry.rmse),
       bias: measured(entry.bias),
       dataPoints: measured(entry.dataPoints) ?? 0,
+      skill: entry.skillVsSeasonalNaive,
     });
   }
   return rows;

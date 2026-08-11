@@ -902,6 +902,45 @@ Three properties are load-bearing:
   while implying a spread nobody measured. Live example: the `hydro_total`,
   `wind_offshore` and `biomass` heatmap columns hold BE and FR only.
 
+**Skill vs D-7 seasonal-naive, beside every WAPE in `CountryRanking` and the
+leaderboard's "Evidence and error measures" table** (ABL-186). A WAPE with no
+reference point reads as respectable in isolation — the CEO's original probe
+found a load forecast at 9.4% WAPE, invisible as a problem until set beside
+D-7 persistence at 5.9%. `crossCountryMetricsService.ts`'s per-type query
+self-joins the same actuals table a second time, at `target_timestamp_utc`
+minus 7 days, guarded by `loadActualGuard()` on that side too (a placeholder
+`load_mw = 0.0` seven days back must not pose as a real reading, same as on
+the primary actuals join). `skillScore.ts`'s `computeSkillVsSeasonalNaive` is
+the pure aggregation: `n` (pairs with an actual, a model forecast, *and* a D-7
+baseline — never larger than the WAPE's own sample), `skillPct` (`100 * (1 -
+model_wape / baseline_wape)`, `null` rather than 0 when `n` is 0 or the
+baseline's own WAPE is 0/undefined), and `baselineWape` for context.
+
+This mirrors, rather than re-derives, the methodology the board already
+reviewed for the forecast-quality scorecard — `score_against_baseline` and
+`aligned_point_baselines` in the sibling `energy-forecast` repo
+(`src/evaluation/scorecard.py:158`, `src/baselines.py:297`): same D-7
+same-hour baseline definition, same pair-intersection rule. That scorecard is
+a batch Python job reading the replica directly and writing JSON/markdown
+reports to its own `reports/` directory — there is no live API or shared
+artifact channel the Node/TS dashboard can call at request time, so this is a
+faithful reimplementation in a second runtime rather than a call into the
+first, the same relationship this dashboard's own WAPE already has with the
+Python side's WAPE.
+
+`CrossCountryMetricsEntry.skillVsSeasonalNaive` is optional on the client wire
+type only so pre-existing hand-built `CrossCountryMetrics` literals elsewhere
+in the test suite keep compiling without it — a real API response always
+carries it. `components/comparison/SkillCell.tsx` (shared by `CountryRanking`
+and `ComparisonLeaderboard`, colocated `skillBadge.ts` for the pure
+win/loss/insufficient-data classification) renders a loss with colour, a
+down-marker, and explicit screen-reader text — never colour alone, so a reader
+who cannot see colour still gets "worse than the D-7 naive baseline" — and
+renders "insufficient data" as its own state rather than a dash or a coerced
+0%. `ComparisonHeatmap`'s matrix cells and `ComparisonMap`'s hover tooltip
+also show WAPE but toggle between WAPE/MAE/RMSE/bias and have far less room
+per cell; skill is not yet added there.
+
 **"Not measured" is a hatch, never a paler fill** (ABL-23). WAPE is `null`
 whenever the window's actuals sum to zero, and most of the ~51 shapes in
 `europe.topojson` carry no entry at all — on the default 30-day window, measured

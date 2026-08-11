@@ -3,6 +3,7 @@ import { ForecastType } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { loadActualGuard } from './loadQuality.js';
 import { runReadQueryInWorker } from './readQueryWorker.js';
+import { computeSkillVsSeasonalNaive, type SkillVsSeasonalNaive } from './skillScore.js';
 
 /**
  * Cross-Country Forecast Metrics Service
@@ -36,6 +37,8 @@ export interface CountryMetrics {
   rmse: number;
   bias: number;
   dataPoints: number;
+  /** Skill vs the D-7 seasonal-naive baseline, on this WAPE's own pair intersection (ABL-186). */
+  skillVsSeasonalNaive: SkillVsSeasonalNaive;
 }
 
 export type CrossCountryMetricsResult = Record<string, CountryMetrics>;
@@ -48,6 +51,10 @@ interface MetricsRow {
   rmse: number | null;
   bias: number | null;
   data_points: number;
+  skill_n: number;
+  skill_actual_abs_sum: number;
+  skill_model_err_abs_sum: number;
+  skill_baseline_err_abs_sum: number;
 }
 
 // A private `normalizeTimestamp` used to shadow the shared one here, keeping
@@ -103,6 +110,11 @@ function metricSelect(forecastType: ForecastType): string {
   const actualColumn = forecastType === 'hydro_total'
     ? '(a.hydro_run_mw + a.hydro_reservoir_mw)'
     : `a.${mapping.column}`;
+  // Same table, same column expression, aliased `s` (source of the D-7
+  // seasonal-naive baseline) — see the `skill_*` aggregates below.
+  const baselineColumn = forecastType === 'hydro_total'
+    ? '(s.hydro_run_mw + s.hydro_reservoir_mw)'
+    : `s.${mapping.column}`;
 
   return `
     SELECT
@@ -115,11 +127,19 @@ function metricSelect(forecastType: ForecastType): string {
       END AS wape,
       ROUND(SQRT(AVG((${actualColumn} - f.forecast_value) * (${actualColumn} - f.forecast_value))), 2) AS rmse,
       ROUND(AVG(${actualColumn} - f.forecast_value), 2) AS bias,
-      COUNT(*) AS data_points
+      COUNT(*) AS data_points,
+      SUM(CASE WHEN ${baselineColumn} IS NOT NULL THEN 1 ELSE 0 END) AS skill_n,
+      SUM(CASE WHEN ${baselineColumn} IS NOT NULL THEN ABS(${actualColumn}) ELSE 0 END) AS skill_actual_abs_sum,
+      SUM(CASE WHEN ${baselineColumn} IS NOT NULL THEN ABS(${actualColumn} - f.forecast_value) ELSE 0 END) AS skill_model_err_abs_sum,
+      SUM(CASE WHEN ${baselineColumn} IS NOT NULL THEN ABS(${actualColumn} - ${baselineColumn}) ELSE 0 END) AS skill_baseline_err_abs_sum
     FROM latest_forecasts f
     INNER JOIN ${mapping.table} a
       ON a.country_code = f.country_code
       AND REPLACE(f.target_timestamp_utc, 'T', ' ') = a.${mapping.timestampCol}
+    LEFT JOIN ${mapping.table} s
+      ON s.country_code = f.country_code
+      AND s.${mapping.timestampCol} = datetime(REPLACE(f.target_timestamp_utc, 'T', ' '), '-7 days')
+      ${loadActualGuard(forecastType, baselineColumn)}
     WHERE f.forecast_type = '${forecastType}'
       AND ${actualColumn} IS NOT NULL
       ${loadActualGuard(forecastType, actualColumn)}
@@ -174,6 +194,12 @@ function rowsToResult(rows: MetricsRow[]): Record<string, CrossCountryMetricsRes
       rmse: row.rmse ?? 0,
       bias: row.bias ?? 0,
       dataPoints: row.data_points,
+      skillVsSeasonalNaive: computeSkillVsSeasonalNaive({
+        n: row.skill_n,
+        actualAbsSum: row.skill_actual_abs_sum,
+        modelErrAbsSum: row.skill_model_err_abs_sum,
+        baselineErrAbsSum: row.skill_baseline_err_abs_sum,
+      }),
     };
   }
   return result;
