@@ -60,7 +60,6 @@ energy-dashboard-frontend/
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
 │       │   │   ├── ForecastGapNotice.tsx # multi-select "<model> has no forecast here" + remove-from-comparison button
 │       │   │   ├── TimePicker.tsx        # categorised presets + window nav
-│       │   │   ├── AbleStatRow.tsx       # Top 4-stat strip (price/load/renewable share/peak)
 │       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
 │       │   │   ├── ForecastMetadataBadge.tsx  # ORPHANED — no importer (see State management)
 │       │   │   ├── ModelComparisonPanel.tsx    # "Compare forecast models" table (ForecastTab)
@@ -316,56 +315,35 @@ code paths above derive from the picker, never from those fields. They remain
 in the store as legacy persisted fields, but are not uniformly dead — see
 State management below for which are still read.
 
-### 2b. Staleness disclosure in the header stat row
+### 2b. The header stat row was removed
 
-`AbleStatRow`'s four tiles are not the same kind of number, and that governs
-how each handles missing/old data. Three are **aggregates over the selected
-window** (day-ahead price, renewable share, peak demand): their queries are
-bounded, so a window with no rows yields `null` and the tile renders `—` on its
-own. "Current load" is the one **instantaneous** tile, and its query in
-`getDashboardOverview` is deliberately **not** window-bounded — `TimePicker`
-exposes the forward presets (`next24h`/`next7d`, and the `Tomorrow`/`+7d` quick
-buttons), and `getDateRangeForPreset` starts those windows at now, so bounding
-it would blank the tile for all 34 countries the moment the user looks forward.
-Verified: under `next7d`, DE still reads `40.76 GW` while its three windowed
-siblings correctly read `—`. (It *is* filtered by `measuredLoadClause()`, the
-ABL-35 impossible-zero guard — "the latest measurement we hold" means the
-latest one that is not a placeholder.)
+`AbleStatRow` — a four-tile strip (day-ahead price, current load, renewable
+share, peak demand) that sat above the tab bar on every country page — is
+gone (ABL-221). The reported "confusing banner" was not, as a first pass
+assumed, the sparklines under each tile (`6350836`/`19f27b6` dropped those
+first); a second round of the same complaint, naming all four numbers
+explicitly, was the strip itself. Removed with it: `AbleStatRow.tsx`, its
+sole data source `useDashboardOverview` (`useDashboardData.ts`), and
+`client/src/lib/readingFreshness.ts` — the per-reading staleness classifier
+"Current load" used, left with no caller. `GET /api/dashboard/overview`
+(`getDashboardOverview`, `dashboardService.ts`) and the route itself are
+untouched: it is still the documented public endpoint `ApiCta` advertises,
+and no other client code ever called it.
 
-Because the value is unbounded in time, **the number alone says nothing about
-whether it describes now** — which is how GB rendered a 2021-06-14 reading as
-`CURRENT LOAD 37.27 GW` for five years (ABL-58). So the age travels with it:
-`DashboardOverview.dataTimestamp` is that row's own `timestamp_utc`, and
-`client/src/lib/readingFreshness.ts` decides between three outcomes —
-
-| age | outcome |
-|---|---|
-| `< 2h` | show bare (normal ENTSO-E publication lag) |
-| `2h – 48h` | show with an `as of 6h ago` caveat beside the label |
-| `> 48h`, or no parseable timestamp | **withhold** the number, label `last reading 5y ago` |
-
-The 2h line is the same one `trailingGap.ts` and `chartSummary.ts` already draw,
-so the page doesn't define "stale" three ways. The 48h line is two diurnal
-cycles: below it a caveat is honest (the healthy fleet runs 6-8h behind, MK 33h),
-above it no caveat rescues the number, because the user reads the figure first.
-
-Two related traps this fixed: `timestamp_utc` is UTC by name but the stored text
-does not say so *and comes in two shapes* — measured 2026-08-07, `energy_load`
-holds 2,485,282 space-separated rows and 279,880 `'T'`-separated ones, and every
-GB/UA row is the `'T'` form, which a browser parses as **local** time. The
-server now stamps the `Z` (`toIsoUtc`, `server/src/utils/timestamp.ts`) and the
-client parser accepts both, because acceptance routinely proxies a built image
-that may predate the working-tree server change (`API_PROXY_TARGET`). And an absent/unparseable
-timestamp **withholds** rather than assuming freshness — the failure being fixed
-is a number presented as current on no evidence.
-
-**This is not the same signal as the header pill** (section 7). The pill reports
-the *pipeline's* health per stream from `/api/data-freshness/:cc`, with its own
-threshold (`MEASURED_STALE_AFTER_HOURS`, 18h) sized from the ingest schedule.
-This rule governs one *rendered reading*, and is stricter (48h, and it withholds
-rather than annotates) because a stat tile leads with the figure. Two read
-paths, two thresholds, on purpose — a stale pill still leaves a 6h-old number
-worth showing, and a five-year-old number is not rescued by a pill beside it.
+This is also where ABL-58's fix used to render: the rule that a "current"
+reading over 48h old (`WITHHOLD_AFTER_HOURS`) is withheld rather than shown
+bare, which is what stopped GB's 2021-06-14 `energy_load` row from reading
+`CURRENT LOAD 37.27 GW` for five years. That rule protected one specific
+on-screen number; with the tile gone, there is nothing left on this page for
+it to protect, and no page currently renders an unbounded "current load"
+figure outside the documented API. The server-side correctness guards are
+unaffected — `measuredLoadClause()` (see "LoadTab" below) and the `toIsoUtc`
+timestamp stamping (`server/src/utils/timestamp.ts`) were never client-only
+and still apply to `/dashboard/overview`'s own response. If a future feature
+resurrects a headline, instantaneous (not window-bounded) number, it needs a
+display-time freshness gate again, not just the raw value — the deleted
+`readingFreshness.ts` (recoverable from this branch's history before this
+commit) is the reference implementation to restore.
 
 ### 3. Country dashboard tabs
 
@@ -635,7 +613,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `dashboard/generationSeries.test.ts` pins the ordering.
 
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
-  (`CountryDashboardView.tsx:61`, applied at `:120`) limits it to `price` and
+  (`CountryDashboardView.tsx:60`, applied at `:117`) limits it to `price` and
   `load`, the tabs whose chart reads a multi-select picker (ABL-204).
   `net-position` isn't in that set either, but for the opposite reason: it has
   its own separate multi-select picker instead (`NetPositionModelPicker`,
@@ -806,7 +784,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `2025-09-30T21:00:00`. `describeDegenerateActual` returns `null` for
   `'no_actuals'` (`degenerateForecastNote.ts:70`), so `NetPositionTab` falls
   through the withheld-actuals branch to the `lastSeen` branch
-  (`NetPositionTab.tsx:158-173`) and renders "Greece stopped publishing a net
+  (`NetPositionTab.tsx:227-251`) and renders "Greece stopped publishing a net
   position on September 30, 2025." — consistent with reason 3 above, its
   forecast is untouched by the delete and still renders its own
   `degenerate_zero` note beside the empty actuals state.
@@ -986,11 +964,16 @@ because no fixed hour count steps a Brussels day across DST: 24h back from
 **A shifted window must never wear a now-anchored label.** Every preset label
 ("7d", "next 24h") claims a window anchored to now, and that claim expires the
 moment the window moves. `describeWindow()` (`dashboard/windowLabel.ts`)
-returns the preset name at offset 0 and the window's own bounds otherwise;
-`AbleStatRow` reads both `timePreset` and `timeOffset` through it. Bounds are
-formatted in the **viewer's** timezone, matching the chart axes and the "times
-in <zone>" caption — a Brussels-formatted caption over a locally-formatted
-axis would disagree with itself.
+returns the preset name at offset 0 and the window's own bounds otherwise —
+the same rule `TimePicker`'s own shifted-window caption follows by calling
+`formatWindowRange` directly (`TimePicker.tsx:8`, applied at `:55`), since it
+only ever needs the shifted half. (`describeWindow` itself has had no
+production caller since ABL-221 removed `AbleStatRow`, its only consumer;
+`windowLabel.test.ts` and `dashboard/timePresets.test.ts`'s exhaustiveness
+check on `WINDOW_LABEL` are why the file stays.) Bounds are formatted in the
+**viewer's** timezone, matching the chart axes and the "times in <zone>"
+caption — a Brussels-formatted caption over a locally-formatted axis would
+disagree with itself.
 
 Adding a preset means touching six places. All six now fail loudly:
 
@@ -1051,9 +1034,10 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `/dashboard/*` endpoints forced it. Neither is true any more: nothing in
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
-`server/src/types/index.ts:219`), `useDashboardOverview` sends an explicit
-`start`/`end` computed by `getDateRangeForPreset` (`useDashboardData.ts:171`,
-and `useMapData` likewise at `:208`), and `migratePersisted` deletes a stored
+`server/src/types/index.ts:219`), every per-tab hook sends an explicit
+`start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
+`useDashboardData.ts:206`, and `useMapData` likewise at `:187`), and
+`migratePersisted` deletes a stored
 `timeRange` outright (`store/migrate.ts:102`). `timePreset` is the single field
 describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
 field for `ComparisonView`, is unrelated and does still exist.)
@@ -1110,7 +1094,7 @@ check which group it is in:
   (`useLoadChartData.ts:131`, `:177`).
 - **Written, and read only by dead code.** `showForecast`. `setTimePreset`
   still sets it `true` for future presets (`dashboardStore.ts:150`) and
-  `useLatestForecast` gates its query on it (`useDashboardData.ts:257`, `:266`)
+  `useLatestForecast` gates its query on it (`useDashboardData.ts:236`, `:245`)
   — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
   nothing, so it has no on-screen effect today.
 - **No reader at all.** `showTSOForecast`, `tsoForecastType`,
@@ -1749,8 +1733,20 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-11: **488 client tests / 39 files**, **421 server tests /
-27 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-11: **520 client tests / 41 files**, **461 server tests /
+30 files**, clean typecheck. Fewer passing than that means something broke.
+(ABL-221's second pass — the user's "remove the whole banner, not just the
+mini graphs" follow-up comment — deleted `AbleStatRow.tsx` outright. The first
+pass, `6350836`, had only dropped its sparklines, which was not what "confusing
+banner" meant. Gone with the component: its sole data source
+`useDashboardOverview` (`useDashboardData.ts`) and `lib/readingFreshness.ts`,
+the per-reading staleness classifier "Current load" used with no other caller
+— see "The header stat row was removed" above. That dropped 1 client file / 14
+tests (`readingFreshness.test.ts`); no server file changed. Measured
+immediately before this change: 534 client tests / 42 files — already above
+the 488/39 this entry had recorded, for the same never-fully-reconciled-merges
+reason the ABL-214 note below names; this entry reconciles only against
+ABL-221's own delta, landing at 520/41, not the whole gap.)
 (That server figure predates several since-merged branches already reflected
 in this checkout's history — e.g. ABL-190/ABL-221 — which is why a fresh run
 here shows more than 421/27 even before ABL-214's own tests; this entry was not
@@ -1862,7 +1858,7 @@ Two conventions, and they are for different layers.
 `server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
-`lib/readingFreshness.ts`, `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
+`lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
 `lib/multiForecastSeries.ts`,
 `server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`.
 Logic is extracted into a pure function
@@ -1971,8 +1967,8 @@ The second rule is the one that earns its keep: of the eight stale citations
 this check found on arrival, the first rule caught three and the second caught
 seven. It is deliberately narrow — skipped for bare `:NNN` continuations, which
 idiomatically point at a *use* site rather than at the declaration
-(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:61` and
-applied at `:120`), and skipped when the named symbol is not a top-level
+(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:60` and
+applied at `:117`), and skipped when the named symbol is not a top-level
 declaration (`ENERGY_DB_PATH` is only ever read off `process.env`, so a citation
 naming it is not judged). Both exclusions were needed to reach zero false
 positives across the whole file. A check that cries wolf gets disabled.
@@ -2209,7 +2205,7 @@ interface TSOForecastAccuracyMetrics {
   model at all — check `forecastModels.ts` before assuming a bug
 - Note `ModelPicker` does not render on the Generation, Forecast-accuracy or
   Net position tabs at all (`TABS_WITH_MODEL_PICKER`,
-  `CountryDashboardView.tsx:61`, applied at `:120`) — Net position instead
+  `CountryDashboardView.tsx:60`, applied at `:117`) — Net position instead
   gets its own separate multi-select `NetPositionModelPicker` — so there is no
   "picker that does nothing" to hit on any of the three
 - Check the API response has data for the selected country

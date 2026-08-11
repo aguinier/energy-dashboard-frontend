@@ -167,25 +167,6 @@ export async function fetchGenerationSeries(params: {
   return unwrap(data, '/generation/series');
 }
 
-// Dashboard Data
-export async function fetchDashboardOverview(params: {
-  country: string;
-  start?: string;
-  end?: string;
-}): Promise<DashboardOverview> {
-  // AbleStatRow's top stat strip, fetched unconditionally on every country
-  // tab. `start`/`end` come from the same `getDateRangeForPreset` every other
-  // hook already uses, so this can no longer disagree with the window the
-  // header stat's qualifier claims (windowLabel.ts). The server route
-  // comment (`dashboard.ts`) calls this "an expensive query" even at 7d — it
-  // runs five separate scans over the window.
-  const { data } = await api.get<ApiResponse<DashboardOverview>>('/dashboard/overview', {
-    params,
-    timeout: LONG_RANGE_TIMEOUT_MS,
-  });
-  return unwrap(data, '/dashboard/overview');
-}
-
 export async function fetchMapData(params: {
   metric?: MetricType;
   start?: string;
