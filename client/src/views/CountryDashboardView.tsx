@@ -3,7 +3,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useCountries } from '@/hooks/useCountries';
 import { CountryBreadcrumb } from '@/components/dashboard/CountryBreadcrumb';
-import { AbleStatRow } from '@/components/dashboard/AbleStatRow';
 import { TimePicker } from '@/components/dashboard/TimePicker';
 import { ModelPicker } from '@/components/dashboard/ModelPicker';
 import { NetPositionModelPicker } from '@/components/dashboard/NetPositionModelPicker';
@@ -96,8 +95,6 @@ export function CountryDashboardView() {
             times in {LOCAL_ZONE_LABEL}
           </p>
         </div>
-
-        <AbleStatRow />
 
         {/* One control bar, one control height. Tabs (h-9, the radix default),
             the range control (~24px) and ModelPicker (~26px) previously each

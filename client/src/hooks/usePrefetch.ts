@@ -1,9 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 import {
-  fetchDashboardOverview,
   fetchPriceData,
-  fetchRenewableData,
   fetchCountries,
   fetchInitialCountryData,
 } from '@/services/api';
@@ -35,8 +33,13 @@ export function usePrefetchCountry() {
         staleTime: 3600000, // 1 hour
       });
 
-      // Use combined endpoint to fetch overview + load in one request
-      // This is faster than two separate requests
+      // Use combined endpoint to fetch overview + load in one request.
+      // This is faster than two separate requests, and the server always
+      // returns both fields together — but only `loadData` still has a
+      // client-side reader (useLoadChartData's ['load', …] key) since
+      // AbleStatRow, the only consumer of the overview half, was removed
+      // (ABL-221). `result.overview` is fetched and discarded rather than
+      // seeded into a cache nothing looks up.
       queryClient.prefetchQuery({
         queryKey: ['dashboard', 'initial', countryCode, timePreset, timeOffset, granularity],
         queryFn: async () => {
@@ -47,15 +50,9 @@ export function usePrefetchCountry() {
             granularity,
           });
 
-          // Populate individual caches so components can use their normal
-          // hooks. This key MUST match useDashboardOverview's queryKey
-          // exactly (['dashboard', 'overview', country, timePreset,
-          // timeOffset]) or the seeded cache sits under a key React Query
-          // never looks up, and prefetching silently does nothing.
-          queryClient.setQueryData(
-            ['dashboard', 'overview', countryCode, timePreset, timeOffset],
-            result.overview
-          );
+          // Populate the load cache so LoadTab's normal hook
+          // (useLoadChartData's ['load', country, timePreset, timeOffset,
+          // granularity] key) can use it.
           queryClient.setQueryData(
             ['load', countryCode, timePreset, timeOffset, granularity],
             result.loadData
@@ -63,18 +60,6 @@ export function usePrefetchCountry() {
 
           return result;
         },
-        staleTime: REFRESH_INTERVALS.dashboard,
-      });
-
-      // Also prefetch overview separately as a fallback (in case combined fails)
-      queryClient.prefetchQuery({
-        queryKey: ['dashboard', 'overview', countryCode, timePreset, timeOffset],
-        queryFn: () =>
-          fetchDashboardOverview({
-            country: countryCode,
-            start: start.toISOString(),
-            end: end.toISOString(),
-          }),
         staleTime: REFRESH_INTERVALS.dashboard,
       });
 
@@ -91,21 +76,12 @@ export function usePrefetchCountry() {
         staleTime: REFRESH_INTERVALS.dashboard,
       });
 
-      // Warms AbleStatRow's renewable stat. The Generation tab's own trend
-      // (['generation','series',…]) is deliberately NOT prefetched on hover —
-      // it is a second full-window query for a tab the user may never open,
-      // and the tab has its own loading state.
-      queryClient.prefetchQuery({
-        queryKey: ['renewables', countryCode, timePreset, timeOffset, granularity],
-        queryFn: () =>
-          fetchRenewableData({
-            country: countryCode,
-            start: start.toISOString(),
-            end: end.toISOString(),
-            granularity,
-          }),
-        staleTime: REFRESH_INTERVALS.dashboard,
-      });
+      // The Generation tab's own trend (['generation','series',…]) is
+      // deliberately NOT prefetched on hover — it is a second full-window
+      // query for a tab the user may never open, and the tab has its own
+      // loading state. (A ['renewables',…] prefetch used to run here too,
+      // warming AbleStatRow's renewable stat; both the query and the
+      // component it warmed are gone — ABL-221.)
     },
     [queryClient, timePreset, timeOffset]
   );

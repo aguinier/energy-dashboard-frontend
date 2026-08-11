@@ -66,12 +66,16 @@ describe('getWindowLabel', () => {
 // `timePreset` too, so the label and the fetch structurally cannot describe
 // two different fields any more.
 //
-// We still can't render AbleStatRow itself (vitest here has no jsdom / RTL),
-// so this test pins the invariant one layer down: it drives the *real* store
-// action every picker button calls (`setTimePreset`), computes the
-// *real* window `useDashboardOverview()` would fetch, and asserts the label
-// truthfully describes that window's actual shape and direction.
-describe('qualifier source matches what useDashboardOverview() actually fetches on', () => {
+// `useDashboardOverview` (and its sole caller, AbleStatRow) was later removed
+// outright (ABL-221) — this test now pins the invariant against
+// `getDateRangeForPreset` directly, the same function every remaining
+// per-tab hook fetches through, rather than against that hook by name. Kept
+// one layer down from any component (vitest here has no jsdom / RTL): it
+// drives the *real* store action every picker button calls
+// (`setTimePreset`), computes the *real* window a fetch would use, and
+// asserts the label truthfully describes that window's actual shape and
+// direction.
+describe('qualifier source matches the window getDateRangeForPreset() actually computes', () => {
   beforeEach(() => {
     useDashboardStore.setState({ timePreset: '7d', timeOffset: 0 });
   });
@@ -79,13 +83,13 @@ describe('qualifier source matches what useDashboardOverview() actually fetches 
   const QUICK_PRESETS: TimePreset[] = ['24h', '7d', '30d', 'next24h', 'next7d'];
 
   it.each(QUICK_PRESETS)(
-    'for preset "%s", the label is keyed off the same field useDashboardOverview() fetches on',
+    'for preset "%s", the label is keyed off the same field the fetch uses',
     (preset) => {
       useDashboardStore.getState().setTimePreset(preset);
       const { timePreset } = useDashboardStore.getState();
 
-      // This is exactly the field useDashboardOverview()'s queryKey/queryFn
-      // uses (client/src/hooks/useDashboardData.ts). Since the qualifier is
+      // This is exactly the field every per-tab hook's queryKey/queryFn uses
+      // (client/src/hooks/useDashboardData.ts). Since the qualifier is
       // computed from this same field, it cannot disagree with what was
       // actually fetched.
       expect(timePreset).toBe(preset);
@@ -97,11 +101,11 @@ describe('qualifier source matches what useDashboardOverview() actually fetches 
     useDashboardStore.getState().setTimePreset('next24h');
     const { timePreset, timeOffset } = useDashboardStore.getState();
 
-    expect(timePreset).toBe('next24h'); // drives the sparkline correctly
+    expect(timePreset).toBe('next24h'); // drives the fetch correctly
     expect(timeOffset).toBe(0);
 
-    // The window useDashboardOverview() actually fetches — computed with the
-    // exact same function the hook calls.
+    // The window a fetch actually uses — computed with the exact same
+    // function every per-tab hook calls.
     const { start, end, anchor } = getDateRangeForPreset(timePreset, timeOffset);
     expect(anchor).toBe('future');
     expect((end.getTime() - start.getTime()) / (60 * 60 * 1000)).toBe(24);
