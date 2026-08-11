@@ -50,13 +50,14 @@ const LOCAL_ZONE_LABEL = (() => {
   }
 })();
 
-// Tabs whose chart reads a single-select model pin, via `ModelPicker`.
-// `renewables` (Generation) and `analytics` (Forecast accuracy) render no
-// picker at all — GenerationTab shows actuals only, and the accuracy overlay
-// is driven by the Load tab's own selection. `net-position` has its own
-// multi-select picker (`NetPositionModelPicker`, ABL-203) instead of this one
-// — it is the type with several production-ready models worth comparing on
-// one chart, so its control renders a checklist rather than a dropdown.
+// Tabs whose chart reads a multi-select model picker (`ModelPicker`, ABL-204
+// — was single-select until then). `renewables` (Generation) and `analytics`
+// (Forecast accuracy) render no picker at all — GenerationTab shows actuals
+// only, and the accuracy overlay is driven by the Load tab's own selection.
+// `net-position` has its own separate multi-select picker
+// (`NetPositionModelPicker`, ABL-203) rather than this one — the two pickers
+// are not unified into one component; see CLAUDE.md's "Forecast model
+// selection" section for why.
 const TABS_WITH_MODEL_PICKER = new Set(['price', 'load']);
 
 export function CountryDashboardView() {

@@ -60,3 +60,51 @@ export function describeForecastGap(input: ForecastGapInput): ForecastGap | null
     clearable: false,
   };
 }
+
+/** One explicitly-checked model that came back with no rows, for the multi-select footnote list below. */
+export interface SelectionGapEntry {
+  id: string;
+  label: string;
+  color: string;
+  isLoading: boolean;
+  isError: boolean;
+  pointCount: number;
+}
+
+export interface SelectionGap {
+  id: string;
+  color: string;
+  message: string;
+}
+
+/**
+ * Per-model counterpart of `describeForecastGap`, for Load/Price's multi-model
+ * picker (ABL-204). Every registered model can be checked alongside any other,
+ * and catboost/xgboost cover near-disjoint country sets — so "some of the
+ * checked models have nothing here" is the ordinary outcome of checking two
+ * boxes, not an edge case. One gap can no longer be described as "the" pin,
+ * so this returns one entry per empty model instead of at most one message.
+ *
+ * Reuses `describeForecastGap`'s exact wording for the same reason that
+ * function exists: naming the cause in the same voice everywhere it appears
+ * is what keeps a gap reading as expected behaviour rather than a bug report.
+ * Every entry here is by construction an explicit selection (there is no
+ * "unpinned" case in a checked list — that is what an empty selection reads
+ * as "Default" instead), so the message is always the pinned form.
+ */
+export function describeForecastGapsForSelection(
+  entries: SelectionGapEntry[],
+  countryLabel: string,
+): SelectionGap[] {
+  const gaps: SelectionGap[] = [];
+  for (const entry of entries) {
+    if (entry.isLoading || entry.isError) continue;
+    if (entry.pointCount > 0) continue;
+    gaps.push({
+      id: entry.id,
+      color: entry.color,
+      message: `${entry.label} has no forecast for ${countryLabel} in this window.`,
+    });
+  }
+  return gaps;
+}

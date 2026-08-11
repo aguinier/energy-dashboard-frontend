@@ -161,7 +161,7 @@ duplicating it here.
 
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
-- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:121`).
+- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:122`).
 - **`ComparisonView`** — the Forecast quality portfolio home: a type-local ranking/map for the default `load` type leads the page, then disclosed error evidence, then the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:29`). (The portfolio used to lead with a "Forecast performance by variable" card grid, `ForecastPortfolio`/`portfolioRows.ts` — removed under ABL-166 at the CEO's request; the rest of the page, its nav entry, and the per-country `ForecastTab` were untouched.)
 
 ### 2. Forecast model selection
@@ -254,19 +254,42 @@ does not serve it reads as *no coverage* and never as a flawless 0% error.
 
 `ModelPicker` renders once per active tab (`TAB_FORECAST_TYPE` maps tab ->
 forecast type) and stores the choice per type in `selectedModelsByType`
-(`Record<string, string[]>`, ABL-203 — was `selectedModelByType`, one string
-per type, before net position's picker needed to hold several at once), so a
-choice on one tab never leaks into a type where that model doesn't exist.
-`ModelPicker`'s own single-select `setSelectedModel`/`clearSelectedModel`
-write/clear a one-element list, so Load and Price are unaffected by the
-shape change; net position's `NetPositionModelPicker` is the one caller that
-writes more than one id, via `toggleSelectedModel`. The older
-`showForecast` / `showTSOForecast` / `tsoForecastType` boolean toggles
-and the D+1/D+7 button are gone — `LoadTab`/`PriceTab`/`NetPositionTab` derive
-`useMl` / `useTso` / `tsoHorizon` straight from the picker's selected model
-(`selected.source`, `selected.tsoHorizon`, `useLoadChartData.ts:89-91`). Those
-booleans remain in the store as legacy persisted fields, but they are not
-uniformly dead — see State management below for which are still read.
+(`Record<string, string[]>`, ABL-203/v9 — was `selectedModelByType`, one
+string per type, before net position's picker needed to hold several at
+once), so a choice on one tab never leaks into a type where that model
+doesn't exist.
+
+**`ModelPicker` is multi-select on every tab it renders on, as of ABL-204.**
+It started single-select (one pin, `setSelectedModel`/`clearSelectedModel`
+writing/clearing a one-element list) and was rewritten to a checkbox popover
+matching net position's shipped baseline (`NetPositionModelPicker`, ABL-203),
+reading/writing the selection through `toggleSelectedModel` directly rather
+than through the one-element-list helpers. Those two setters still exist and
+still write/clear a one-element list — `ForecastTab`'s own read of
+`useLoadChartData()` and a returning user's pre-ABL-204 single pin both rely
+on that shape — but `ModelPicker` itself no longer calls them. `Load` and
+`Price` and `net_position` are consequently three independent multi-select
+pickers over the same store shape, not one shared component:
+`ModelPicker.tsx` renders for `price`/`load` (`TABS_WITH_MODEL_PICKER`),
+`NetPositionModelPicker.tsx` for `net_position`. They were deliberately left
+as two files rather than unified into one generic component — see this
+section's "Load and Price" entry below for why.
+
+Each tab's data hook reduces the picker's selection to one of two shapes,
+mirroring net position's `mode: 'default' | 'selection'` split
+(`useNetPositionData`): with nothing checked, `LoadTab`/`PriceTab` derive
+`useMl` / `useTso` / `tsoHorizon` straight from the unpinned candidate the
+server's ladder would try first — always ml, since `load` and `price` both
+register an ml model as production (`selected.source`, `selected.tsoHorizon`,
+`useLoadChartData.ts:112-114`). With one or more models checked, the hook
+instead returns a `modelSelection: LoadModelQuery[]` (or `PriceModelQuery[]`)
+array, one entry per checked model, and the tab renders through
+`lib/multiForecastSeries.ts` instead of the single-series adapters — see
+"Load and Price" below. The older `showForecast` / `showTSOForecast` /
+`tsoForecastType` boolean toggles and the D+1/D+7 button are still gone; both
+code paths above derive from the picker, never from those fields. They remain
+in the store as legacy persisted fields, but are not uniformly dead — see
+State management below for which are still read.
 
 ### 2b. Staleness disclosure in the header stat row
 
@@ -433,6 +456,105 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   auto-enables `include_dayahead` from that flag, and prod's request URL on
   2026-08-06 was literally `documentType=A44&…&periodEnd=202608080000` — the
   end of D+1 — on all four passes. See ABL-54.
+
+  **Both tabs' `ModelPicker` is multi-select (ABL-204), extending net
+  position's shipped baseline (ABL-203) to the two forecast types where
+  coverage is the hard part rather than the easy part.** Checking several ml
+  models here is not the same shape as net position's: net position's four
+  candidates are all ml and mostly overlap in coverage, so a selected-but-
+  empty model is the exception. Measured against `energy_dashboard.db`,
+  `load`'s catboost (21 countries) and xgboost (AT/BE/FR) are **strictly
+  disjoint** — no country has both — and `price`'s are near-disjoint (AT
+  alone served by both, see "Forecast model selection" above). So on these
+  two tabs, checking two ml models is normally "one line and one nothing",
+  and that emptiness has to be named per model, not left to read as a bug.
+  `load` also registers two TSO models (D+1, D+7) alongside the two ml
+  ones, so a selection here can mix sources in a way net position's picker
+  never has to — `price` has none, so `PriceTab`'s selection view never
+  branches on source.
+
+  `useLoadChartData`/`usePriceChartData` fan out one query per checked model
+  into a `modelSelection: LoadModelQuery[] | PriceModelQuery[]` array (ml via
+  `fetchForecastData` pinned to that model id, tso via `fetchTSOLoadForecast`
+  pinned to that model's horizon) — the existing single-model fields
+  (`forecastData`, `tsoForecastData`, `servedModelId`, …) are untouched and
+  still describe the unpinned "Default" request, because `ForecastTab` reads
+  `loadData`/`forecastData` off `useLoadChartData()` directly for its own
+  single-line "forecast vs actual" overlay regardless of what is checked on
+  the Load tab. `LoadTab`/`PriceTab` each split into a default view (nothing
+  checked, today's pre-ABL-204 single-series render, unchanged) and a
+  selection view (one or more checked) exactly the way `NetPositionTab`
+  already splits on `useNetPositionData`'s `mode`.
+
+  The selection view merges actuals with N normalized forecast entries via
+  `lib/multiForecastSeries.ts`'s `buildMultiForecastSeries` — the Load/Price
+  counterpart of `chartAdapters.ts`'s `adaptNetPositionMultiSeries`, and
+  deliberately not the same function, because the honest-gap requirement is
+  stricter here. Net position's adapter drops an uncovered model from
+  `AbleLineChart`'s `forecastSeries` entirely, leaving the tab to footnote it
+  separately — reasonable when a gap is rare. `buildMultiForecastSeries`
+  instead keeps **every** checked model in `forecastSeries`, tagged
+  `covered: false` when it has zero rows, because a gap is the ordinary
+  outcome here. `AbleLineChart`'s legend renders that as a diagonal-hatched
+  swatch plus "— Not available in `<country>`" instead of a solid dot,
+  reusing `NoDataHatch`'s "texture signals absence, never a quiet value"
+  semantic in a legend rather than a choropleth. `lib/forecastGap.ts`'s
+  `describeForecastGapsForSelection` additionally footnotes each uncovered
+  model by name below the chart, and `ForecastGapNotice`'s new `gaps` prop
+  gives each one its own "Remove from comparison" button
+  (`toggleSelectedModel`) — the ABL-16 property ("a gap has to stay
+  reachable, not just visible") applied per model instead of once.
+
+  The min/max band (TSO week-ahead's daily min/max) draws under the same
+  rule net position's p10-p90 band already uses: only when exactly one model
+  is checked, because several bands on one chart is unreadable and a lone
+  band under N lines would misattribute uncertainty to models that never
+  published one.
+
+  Line colour and dash pattern are stable per model id, not per selection
+  order — `dashboard/forecastLineTokens.ts`, keyed on the registry ids
+  (`catboost`, `xgboost`, `tso-d1`, `tso-d7`). Net position's picker
+  differentiates only by colour; this one also varies the dash rhythm,
+  because two ml models trained on the same data routinely predict
+  near-identical values — lines overlapping almost exactly is the normal
+  case here, not an edge case, and a shared dash rhythm would hide the far
+  line under the near one. `AbleLineChart`'s multi-line renderer draws a 4px
+  surface-colour under-stroke beneath each 2px patterned line for the same
+  reason. Both changes are additive to `AbleForecastSeriesSpec`
+  (`dash?`/`covered?`/`coverageNote?`) and apply to every caller including
+  net position's — that picker doesn't set the new fields, so its lines keep
+  the default dash and simply gain the under-stroke halo.
+
+  This is the Design Consultant's ABL-205 recommendation, taken with two
+  deliberate exceptions, noted rather than silently dropped:
+
+  - **Net position's own picker was not rebuilt to match.** The design doc
+    frames ABL-203's checkbox list as the shipped *baseline* and asks for the
+    refinements — the "Default — automatic" radio row, real
+    `<input type="checkbox">` rows instead of a `role="listbox"`, the
+    "Models · N selected" collapsed label — to "land in the Load/Price
+    follow-up", i.e. here, not necessarily backported. Doing so would have
+    meant modifying an already-shipped, board-reviewed feature outside this
+    change's scope for a consistency gain with no functional requirement
+    behind it. `NetPositionModelPicker.tsx` is unchanged; `ModelPicker.tsx`
+    is the new, refined design and the two are intentionally two components
+    rather than one shared one, at least until net position's picker is
+    revisited on its own.
+  - **No per-row "not available here" hint inside the open picker.** The
+    design doc's item 3 asks the checkbox row itself to mirror the legend's
+    hatch/note while the dropdown is open. That needs `ModelPicker` to know
+    the current query results for this country/window, which today live in
+    each tab's own data hook, not in the picker component. Wiring that
+    through was left for a follow-up: the chart's legend and the per-model
+    footnote already satisfy the acceptance requirement ("says in words that
+    `<model>` does not forecast `<country>` — no silent gap") once the user
+    looks at the chart, and the picker is a control, not a second place that
+    needs to restate the chart's answer before the chart has rendered it.
+    Hover-dimming the non-hovered forecast lines to 35% opacity (the design
+    doc's other secondary suggestion, for legibility under heavy overlap) was
+    left for the same reason — a legibility polish, not a correctness
+    requirement, and the under-stroke halo above already addresses the
+    concrete "which line is which" problem it was proposed to solve.
 - **`GenerationTab`** — `AbleStackedMix` (the full mix, stacked) plus an
   `AbleDonut` and `SourceTable` showing window-average share of *generation*.
   **All three marks now read `energy_generation` through one grouping** (ABL-44).
@@ -488,11 +610,12 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `dashboard/generationSeries.test.ts` pins the ordering.
 
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
-  (`CountryDashboardView.tsx:60`, applied at `:119`) limits it to `price` and
-  `load`, the tabs whose chart reads a single-select pin. `net-position` isn't
-  in that set either, but for the opposite reason: it has its own multi-select
-  picker instead (`NetPositionModelPicker`, ABL-203), rendered by its own
-  `activeChartTab === 'net-position'` branch beside it. It
+  (`CountryDashboardView.tsx:61`, applied at `:120`) limits it to `price` and
+  `load`, the tabs whose chart reads a multi-select picker (ABL-204).
+  `net-position` isn't in that set either, but for the opposite reason: it has
+  its own separate multi-select picker instead (`NetPositionModelPicker`,
+  ABL-203), rendered by its own `activeChartTab === 'net-position'` branch
+  beside it. It
   used to render and do nothing, while `useRenewableChartData` fired five
   per-type ML forecast queries plus a TSO one that no component consumed: six
   API calls per view, discarded. Both are gone, and so is that hook — ABL-44
@@ -675,7 +798,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   Known gap, filed separately: with both series withheld, GR's card is now
   entirely an empty state — which is correct, but it means the preset button
   says "30d" beside a card with no axis at all. `AbleLineChart`'s day-marker
-  derivation (`AbleLineChart.tsx:270`) was the reason the pre-ABL-35 24-hour
+  derivation (`AbleLineChart.tsx:304`) was the reason the pre-ABL-35 24-hour
   version carried no dates either.
 - **`ForecastTab`** ("Forecast accuracy") — a 4-stat strip (MAE/MAPE/RMSE/
   samples) from `/tso-forecast/metrics`, measured-only error-by-horizon bars
@@ -874,9 +997,9 @@ The legacy forecast fields are **not uniformly dead**. Before deleting one,
 check which group it is in:
 
 - **Live.** `showComparisonMode` / `showTSOComparisonMode` gate the comparison
-  queries (`useLoadChartData.ts:148`, `:189`; `usePriceChartData.ts:117`);
+  queries (`useLoadChartData.ts:172`, `:213`; `usePriceChartData.ts:133`);
   `selectedMLHorizons` drives the multi-horizon fetch
-  (`useLoadChartData.ts:107`, `:153`).
+  (`useLoadChartData.ts:131`, `:177`).
 - **Written, and read only by dead code.** `showForecast`. `setTimePreset`
   still sets it `true` for future presets (`dashboardStore.ts:150`) and
   `useLatestForecast` gates its query on it (`useDashboardData.ts:303`, `:312`)
@@ -887,8 +1010,8 @@ check which group it is in:
 
 Careful with the name `showForecast`: `useLoadChartData`/`usePriceChartData`
 declare *local* consts of that name derived from the picker
-(`selected?.source === 'ml'`, `useLoadChartData.ts:89`;
-`usePriceChartData.ts:61`), which shadow the store field. A grep hit is not
+(`selected?.source === 'ml'`, `useLoadChartData.ts:113`;
+`usePriceChartData.ts:77`), which shadow the store field. A grep hit is not
 necessarily a store read.
 
 `servedModelByType` (which model actually served the last response, per type)
@@ -1383,10 +1506,15 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-11: **474 client tests / 37 files**, **421 server tests /
+Green as of 2026-08-11: **488 client tests / 39 files**, **421 server tests /
 27 files**, clean typecheck. Fewer passing than that means something broke.
-(ABL-203 added the net-position multi-model picker — `migrate.test.ts`'s v9
-clause, `useForecastModels.test.ts`'s `resolveMultiSelection` cases,
+(ABL-204 extended the multi-model overlay to Load and Price — two new files,
+`dashboard/forecastLineTokens.test.ts` and `lib/multiForecastSeries.test.ts`,
+plus new cases in `lib/forecastGap.test.ts` for
+`describeForecastGapsForSelection` — which is where the client figure moved
+from 474/37 to 488/39; it touched no server file. ABL-203 added the
+net-position multi-model picker before it — `migrate.test.ts`'s v9 clause,
+`useForecastModels.test.ts`'s `resolveMultiSelection` cases,
 `chartAdapters.test.ts`'s `adaptNetPositionMultiSeries` cases, and a new file,
 `dashboard/netPositionModelColors.test.ts` — which is where the client figure
 moved from 449/36 to 474/37; it touched no server file, and the 411->421
@@ -1482,7 +1610,8 @@ Two conventions, and they are for different layers.
 `server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
-`lib/readingFreshness.ts`, `lib/forecastGap.ts`,
+`lib/readingFreshness.ts`, `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
+`lib/multiForecastSeries.ts`,
 `server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`.
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
@@ -1590,8 +1719,8 @@ The second rule is the one that earns its keep: of the eight stale citations
 this check found on arrival, the first rule caught three and the second caught
 seven. It is deliberately narrow — skipped for bare `:NNN` continuations, which
 idiomatically point at a *use* site rather than at the declaration
-(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:60` and
-applied at `:119`), and skipped when the named symbol is not a top-level
+(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:61` and
+applied at `:120`), and skipped when the named symbol is not a top-level
 declaration (`ENERGY_DB_PATH` is only ever read off `process.env`, so a citation
 naming it is not judged). Both exclusions were needed to reach zero false
 positives across the whole file. A check that cries wolf gets disabled.
@@ -1791,38 +1920,49 @@ interface TSOForecastAccuracyMetrics {
 - Without `ENERGY_DB_PATH` set, the server defaults to `/data/energy_dashboard.db`, which won't exist on a workstation checkout
 
 **A country's load/price forecast is blank:**
-- Check whether a specific model is pinned in `ModelPicker` — catboost and
-  xgboost coverage barely overlaps (see Forecast model selection), so a pinned
-  model with no data for that country renders nothing. The pinned row carries a
-  **Pinned** badge in the dropdown.
-- The chart now says so itself rather than just going blank: a footnote under
-  the line chart reads "<model> has no forecast for <country> in this window."
-  with a **Use the best available model** button that drops the pin
-  (`lib/forecastGap.ts`, `dashboard/ForecastGapNotice.tsx`, wired in `LoadTab`
-  and `PriceTab`). Unpinned and still empty reads "No forecast published for
-  <country> in this window." and offers no button — the ladder already tried
-  every registered model.
-- Selecting the type's **"Default"** entry clears the pin (ABL-16). It used to
-  *create* one, which is what made this state unrecoverable without clearing
-  localStorage.
+- Check whether a specific model is checked in `ModelPicker` — catboost and
+  xgboost coverage barely overlaps (see Forecast model selection), so a
+  checked model with no data for that country renders nothing for that line.
+- With nothing checked ("Default"), the chart says so itself rather than just
+  going blank: a footnote under the line chart reads "<model> has no forecast
+  for <country> in this window." with a **Use the best available model**
+  button that drops the pin (`lib/forecastGap.ts`,
+  `dashboard/ForecastGapNotice.tsx`, wired in `LoadTab` and `PriceTab`).
+  Unpinned and still empty reads "No forecast published for <country> in this
+  window." and offers no button — the ladder already tried every registered
+  model.
+- With one or more models checked (ABL-204), a checked-but-empty model stays
+  in the chart's legend with a hatched key and "— Not available in
+  <country>" rather than disappearing, and gets its own footnote below the
+  chart with a **Remove from comparison** button
+  (`lib/forecastGap.ts`'s `describeForecastGapsForSelection`,
+  `ForecastGapNotice`'s `gaps` prop) — the multi-select counterpart of the
+  single-pin case above.
+- Selecting the type's **"Default — automatic"** entry clears every checked
+  model (ABL-16). It used to *create* a pin, which is what made this state
+  unrecoverable without clearing localStorage.
 - Confirm the model is actually registered in `server/src/config/forecastModels.ts`
 
 **TSO forecasts not showing:**
-- In `ModelPicker`, select a `TSO ·` entry for that forecast type. `load` has
+- In `ModelPicker`, check a `TSO ·` entry for that forecast type. `load` has
   both D+1 and D+7 registered; `solar`/`wind_onshore`/`wind_offshore` have D+1
   only; `price`/`renewable`/`biomass`/`hydro_total`/`net_position` have no TSO
   model at all — check `forecastModels.ts` before assuming a bug
 - Note `ModelPicker` does not render on the Generation, Forecast-accuracy or
   Net position tabs at all (`TABS_WITH_MODEL_PICKER`,
-  `CountryDashboardView.tsx:60`, applied at `:119`) — Net position instead
-  gets its own multi-select `NetPositionModelPicker` — so there is no "picker
-  that does nothing" to hit on any of the three
+  `CountryDashboardView.tsx:61`, applied at `:120`) — Net position instead
+  gets its own separate multi-select `NetPositionModelPicker` — so there is no
+  "picker that does nothing" to hit on any of the three
 - Check the API response has data for the selected country
 - Verify database tables have data: `energy_load_forecast`, `energy_generation_forecast`
 
 **Week-ahead (D+7) band not showing:**
-- Select "ENTSO-E TSO · D+7" in `ModelPicker` for the Load tab — there is no
+- Check "ENTSO-E TSO · D+7" in `ModelPicker` for the Load tab — there is no
   separate D+1/D+7 toggle anymore, the picker's selection controls it
+- With one or more models checked (ABL-204), the band draws only when D+7 is
+  the *sole* checked model — several bands on one chart is unreadable, and a
+  lone band under N lines would misattribute uncertainty to models that never
+  published one. Uncheck the others to see it.
 - Verify min/max data exists for that country (week-ahead is daily granularity
   at `T12:00:00Z` timestamps; the band needs `forecast_min_mw`/`forecast_max_mw`)
 

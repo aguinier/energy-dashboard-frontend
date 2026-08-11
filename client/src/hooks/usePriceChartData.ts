@@ -8,7 +8,9 @@ import {
 } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { maskServedModel } from '@/lib/servedModel';
-import { useModelSelection } from './useForecastModels';
+import { useModelSelection, useMultiModelSelection } from './useForecastModels';
+import { forecastLineToken } from '@/components/dashboard/forecastLineTokens';
+import type { NormalizedForecastPoint } from '@/lib/multiForecastSeries';
 import {
   getDateRangeForPreset,
   getGranularityForPreset,
@@ -20,6 +22,17 @@ import type {
   ForecastDataPoint,
   ForecastComparisonData,
 } from '@/types';
+
+/** One explicitly-checked model's normalized forecast, for the multi-select picker (ABL-204). Price has no TSO model registered, so every entry is ml. */
+export interface PriceModelQuery {
+  id: string;
+  label: string;
+  color: string;
+  dash: string;
+  points: NormalizedForecastPoint[] | undefined;
+  isLoading: boolean;
+  isError: boolean;
+}
 
 export interface PriceChartData {
   // Actual price data
@@ -39,6 +52,9 @@ export interface PriceChartData {
   // Aggregate loading state
   isLoading: boolean;
   isError: boolean;
+
+  /** Multi-model selection (ABL-204) — see the identical field on `LoadChartData` for why this is separate from `forecastData` above. */
+  modelSelection: PriceModelQuery[];
 }
 
 /**
@@ -131,6 +147,42 @@ export function usePriceChartData(): PriceChartData {
     setServedModel('price', servedModelId);
   }, [setServedModel, servedModelId]);
 
+  // Multi-model selection (ABL-204) — one query per model explicitly checked
+  // in the picker. Price registers only ml models, so unlike Load's
+  // counterpart this never branches on source.
+  const { models: allPriceModels, selectedIds } = useMultiModelSelection('price');
+
+  const selectionQueries = useQueries({
+    queries: selectedIds.map((id) => ({
+      queryKey: ['forecast', selectedCountry, 'price', timePreset, timeOffset, granularity, id],
+      queryFn: () =>
+        fetchForecastData({
+          country: selectedCountry,
+          type: 'price',
+          start: mlForecastStart,
+          end: mlForecastEnd,
+          granularity,
+          model: id,
+        }),
+      staleTime: REFRESH_INTERVALS.dashboard,
+    })),
+  });
+
+  const modelSelection: PriceModelQuery[] = selectedIds.map((id, i) => {
+    const model = allPriceModels.find((m) => m.id === id);
+    const q = selectionQueries[i];
+    const token = forecastLineToken(id);
+    return {
+      id,
+      label: model?.label ?? id,
+      color: token.color,
+      dash: token.dash,
+      points: q.data?.points.map((p) => ({ timestamp: p.timestamp, value: p.value })),
+      isLoading: q.isLoading,
+      isError: q.isError,
+    };
+  });
+
   return {
     // Actual price data
     priceData: priceQuery.data,
@@ -148,5 +200,7 @@ export function usePriceChartData(): PriceChartData {
     // Aggregate states
     isLoading: priceQuery.isLoading, // Only consider primary data loading
     isError: queries.some((q) => q.isError),
+
+    modelSelection,
   };
 }

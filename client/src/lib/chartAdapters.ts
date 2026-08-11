@@ -345,7 +345,12 @@ export function adaptNetPositionMultiSeries(
 export function buildHeatmapCells<T extends { timestamp?: string; date?: string }>(opts: {
   data: T[] | undefined;
   value: (p: T) => number | null;
-  forecast?: ForecastDataPoint[];
+  /**
+   * Structurally typed rather than `ForecastDataPoint[]` so a selection-mode
+   * entry's normalized `{timestamp, value}` points (`lib/multiForecastSeries.ts`)
+   * can feed this directly without a wrapper (ABL-204).
+   */
+  forecast?: Array<{ timestamp?: string; value: number | null }>;
   now?: Date;
 }): AbleHeatmapPoint[] {
   const { data = [], value, forecast = [] } = opts;

@@ -42,6 +42,27 @@ export interface AbleForecastSeriesSpec {
   id: string;
   label: string;
   color: string;
+  /**
+   * SVG stroke-dasharray for this line. Defaults to `'4 4'` (the single-line
+   * forecast dash every caller used before ABL-204) when omitted — net
+   * position's picker (ABL-203) does not set this, so its lines are
+   * unaffected. Load/Price's picker (ABL-204) sets a distinct dash per model
+   * via `forecastLineTokens.ts`, because models trained on the same data
+   * routinely predict near-identical values — the normal case, not an edge
+   * case — and a shared dash rhythm hides the far line under the near one.
+   */
+  dash?: string;
+  /**
+   * False when this model was explicitly selected but returned zero rows for
+   * the current country/window. Defaults to true (drawn normally). A false
+   * entry draws no line (there is nothing to draw) but stays IN the legend
+   * with a hatched key instead of being silently dropped — the ABL-205
+   * "selected but not covered" mark, carrying forward `NoDataHatch`'s
+   * semantic that a texture signals absence, never a quiet/low value.
+   */
+  covered?: boolean;
+  /** Shown beside the hatched legend key when `covered` is false, e.g. "Not available in Belgium". */
+  coverageNote?: string;
 }
 
 export interface AbleLineChartProps {
@@ -452,18 +473,24 @@ export function AbleLineChart({
               const d = multiForecastPaths[spec.id];
               if (!d) return null;
               return (
-                <path
-                  key={spec.id}
-                  d={d}
-                  fill="none"
-                  stroke={spec.color}
-                  strokeWidth={1.5}
-                  strokeOpacity={0.85}
-                  strokeDasharray="4,4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ opacity: 0, animation: 'chartFadeIn 0.6s ease-out 0.55s forwards' }}
-                />
+                <g key={spec.id} style={{ opacity: 0, animation: 'chartFadeIn 0.6s ease-out 0.55s forwards' }}>
+                  {/* Surface-colour under-stroke: exact overlap between two
+                      models on the same training data is normal, not an edge
+                      case, and this is what keeps a fully-hidden line's dash
+                      rhythm visible through the gaps of whichever line is on
+                      top of it (ABL-205). */}
+                  <path d={d} fill="none" stroke={T.panel} strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" />
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke={spec.color}
+                    strokeWidth={2}
+                    strokeOpacity={0.9}
+                    strokeDasharray={spec.dash ?? '4 4'}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </g>
               );
             })
           : forecastPath && (
@@ -593,19 +620,43 @@ export function AbleLineChart({
 
       {/* Legend — only when several named forecast series are on screen.
           Colour is never the only way to tell them apart: each swatch carries
-          its model's label as text right beside it. */}
+          its model's label as text right beside it. A `covered: false` entry
+          stays in this list rather than being dropped — a selected model with
+          no rows for this country/window gets a hatched key and explicit
+          text, the same "texture signals absence" rule NoDataHatch uses on
+          the choropleth maps (ABL-205). */}
       {multi && (
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-micro text-ink-muted">
           <span className="flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full" style={{ background: T.primary }} />
             actual
           </span>
-          {forecastSeries!.map((spec) => (
-            <span key={spec.id} className="flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full" style={{ background: spec.color }} />
-              {spec.label}
-            </span>
-          ))}
+          {forecastSeries!.map((spec) => {
+            const notCovered = spec.covered === false;
+            return (
+              <span
+                key={spec.id}
+                className="flex items-center gap-1.5"
+                aria-label={notCovered ? `${spec.label}, selected, ${spec.coverageNote ?? 'not available'}` : undefined}
+              >
+                {notCovered ? (
+                  <span
+                    aria-hidden="true"
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{
+                      background: `repeating-linear-gradient(45deg, ${spec.color}, ${spec.color} 1px, transparent 1px, transparent 3px)`,
+                    }}
+                  />
+                ) : (
+                  <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full" style={{ background: spec.color }} />
+                )}
+                <span>
+                  {spec.label}
+                  {notCovered && <span className="text-ink-faint"> — {spec.coverageNote ?? 'not available'}</span>}
+                </span>
+              </span>
+            );
+          })}
         </div>
       )}
 
