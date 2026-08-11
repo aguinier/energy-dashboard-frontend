@@ -194,7 +194,7 @@ justifies — ordered rather than absolute preference — is unaffected.)
 
 **A pin is clearable, and "pinned" is not "shown" (ABL-16).** The server still
 honours an explicit request strictly — "if you asked for xgboost and it has
-nothing, you get nothing, not a silent substitution" (`forecastModels.ts:183`).
+nothing, you get nothing, not a silent substitution" (`forecastModels.ts:195`).
 That strictness is correct; what was wrong was that the client could only ever
 *add* a pin. Two things changed, both client-side:
 

@@ -68,10 +68,22 @@ export const FORECAST_MODELS: Record<string, ForecastTypeConfig> = {
         modelName: 'chronos-2-V010',
       },
       {
+        id: 'baseline-V012',
+        label: 'Baseline · V012 (shadow candidate)',
+        source: 'ml',
+        modelName: 'baseline-V012',
+      },
+      {
         id: 'xgboost-V014',
-        label: 'XGBoost · V014',
+        label: 'XGBoost · V014 (shadow candidate)',
         source: 'ml',
         modelName: 'xgboost-V014',
+      },
+      {
+        id: 'chronos-2-V016',
+        label: 'Chronos-2 · V016 (shadow candidate)',
+        source: 'ml',
+        modelName: 'chronos-2-V016',
       },
     ],
   },
