@@ -54,8 +54,6 @@ export function PriceTab() {
       priceData={chartData.priceData}
       forecastData={chartData.forecastData}
       isLoading={chartData.isLoading}
-      isLoadingForecast={chartData.isLoadingForecast}
-      isError={chartData.isError}
       countryLabel={countryLabel}
       timePreset={timePreset}
       todayWindow={todayWindow}
@@ -68,8 +66,6 @@ function PriceDefaultView({
   priceData,
   forecastData,
   isLoading,
-  isLoadingForecast,
-  isError,
   countryLabel,
   timePreset,
   todayWindow,
@@ -77,8 +73,6 @@ function PriceDefaultView({
   priceData: PriceDataPoint[] | undefined;
   forecastData: ForecastDataPoint[] | undefined;
   isLoading: boolean;
-  isLoadingForecast: boolean;
-  isError: boolean;
   countryLabel: string;
   timePreset: string;
   todayWindow: TodayWindow;

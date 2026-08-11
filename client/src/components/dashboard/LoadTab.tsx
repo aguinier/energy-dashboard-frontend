@@ -62,9 +62,6 @@ export function LoadTab() {
       forecastData={chartData.forecastData}
       tsoForecastData={chartData.tsoForecastData}
       isLoading={chartData.isLoading}
-      isLoadingForecast={chartData.isLoadingForecast}
-      isLoadingTSOForecast={chartData.isLoadingTSOForecast}
-      isError={chartData.isError}
       countryLabel={countryLabel}
       timePreset={timePreset}
       todayWindow={todayWindow}
@@ -87,9 +84,6 @@ function LoadDefaultView({
   forecastData,
   tsoForecastData,
   isLoading,
-  isLoadingForecast,
-  isLoadingTSOForecast,
-  isError,
   countryLabel,
   timePreset,
   todayWindow,
@@ -98,9 +92,6 @@ function LoadDefaultView({
   forecastData: ForecastDataPoint[] | undefined;
   tsoForecastData: TSOLoadForecastDataPoint[] | undefined;
   isLoading: boolean;
-  isLoadingForecast: boolean;
-  isLoadingTSOForecast: boolean;
-  isError: boolean;
   countryLabel: string;
   timePreset: string;
   todayWindow: TodayWindow;

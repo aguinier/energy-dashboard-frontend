@@ -58,7 +58,7 @@ energy-dashboard-frontend/
 │       │   │   │   NetPositionTab.tsx, ForecastTab.tsx  # One file per tab
 │       │   │   ├── AbleCard.tsx          # Card shell dashboard chart compositions wrap their charts in
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
-│       │   │   ├── ForecastGapNotice.tsx # "<model> has no forecast here" + clear-the-pin button
+│       │   │   ├── ForecastGapNotice.tsx # multi-select "<model> has no forecast here" + remove-from-comparison button
 │       │   │   ├── TimePicker.tsx        # categorised presets + window nav
 │       │   │   ├── AbleStatRow.tsx       # Top 4-stat strip (price/load/renewable share/peak)
 │       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
@@ -2089,21 +2089,28 @@ interface TSOForecastAccuracyMetrics {
 - Check whether a specific model is checked in `ModelPicker` — catboost and
   xgboost coverage barely overlaps (see Forecast model selection), so a
   checked model with no data for that country renders nothing for that line.
-- With nothing checked ("Default"), the chart says so itself rather than just
-  going blank: a footnote under the line chart reads "<model> has no forecast
-  for <country> in this window." with a **Use the best available model**
-  button that drops the pin (`lib/forecastGap.ts`,
-  `dashboard/ForecastGapNotice.tsx`, wired in `LoadTab` and `PriceTab`).
-  Unpinned and still empty reads "No forecast published for <country> in this
-  window." and offers no button — the ladder already tried every registered
-  model.
-- With one or more models checked (ABL-204), a checked-but-empty model stays
-  in the chart's legend with a hatched key and "— Not available in
-  <country>" rather than disappearing, and gets its own footnote below the
+- With nothing checked ("Default"), an empty overlay is silent: the actuals
+  still render, there is just no dashed line and no footnote explaining why.
+  **This is a deliberate exception to this file's usual "never fill a gap
+  silently, say why" rule** (ABL-221) — the single-pin footnote that used to
+  read "<model> has no forecast for <country> in this window." with a **Use
+  the best available model** button was reported confusing and removed from
+  `LoadTab`'s and `PriceTab`'s default views. `describeForecastGap` and the
+  `ForecastGap` type it returns still live in `lib/forecastGap.ts` and are
+  still exercised — `NetPositionTab` calls `describeForecastGap` directly
+  (not through `ForecastGapNotice`) for its own per-model footnote, and that
+  one was **not** touched; see the `NetPositionTab` entry above.
+- With one or more Load/Price models checked (ABL-204), a checked-but-empty
+  model stays in the chart's legend with a hatched key and "— Not available
+  in <country>" rather than disappearing, and gets its own footnote below the
   chart with a **Remove from comparison** button
   (`lib/forecastGap.ts`'s `describeForecastGapsForSelection`,
-  `ForecastGapNotice`'s `gaps` prop) — the multi-select counterpart of the
-  single-pin case above.
+  `ForecastGapNotice`'s `gaps` prop, now the component's only prop — ABL-221
+  deleted the single-select `gap` prop and its render branch as dead code
+  once `LoadTab`/`PriceTab` stopped passing it). This multi-select case is
+  unrelated to the removed default-view footnote above: it only renders once
+  a user has explicitly checked more than one model to compare, so ABL-221
+  left it in place.
 - Selecting the type's **"Default — automatic"** entry clears every checked
   model (ABL-16). It used to *create* a pin, which is what made this state
   unrecoverable without clearing localStorage.
