@@ -46,6 +46,12 @@ RUN apt-get update && apt-get install -y python3 make g++ \
 # Create data directory for mounted database
 RUN mkdir -p /data
 
+# Bake the commit SHA so /api/health can prove which build answered.
+# Pass at build time: docker build --build-arg COMMIT_SHA=$(git rev-parse HEAD) …
+# docker-compose.yml passes it via the COMMIT_SHA env var; empty when unset.
+ARG COMMIT_SHA=""
+ENV COMMIT_SHA=${COMMIT_SHA}
+
 # Environment
 ENV NODE_ENV=production
 ENV PORT=3001
