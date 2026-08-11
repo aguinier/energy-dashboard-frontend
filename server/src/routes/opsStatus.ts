@@ -16,12 +16,12 @@ const router = Router();
  *
  * Additive to `/api/health` (`routes/index.ts`), not a replacement — that
  * endpoint's provenance contract is depended on by ABL-172's acceptance
- * checks (see `../../WORKFLOWS.md`, "Proving the container answered") and is
- * unchanged here.
+ * checks (see `../../../../WORKFLOWS.md`, "Proving the container answered")
+ * and is unchanged here.
  *
  * Unlike `/health`, this route touches the database (the freshness rollup),
  * so it is expected to fail during the twice-daily DB sync's write-lock
- * blackout (`../../WORKFLOWS.md`, "Acceptance blackout during Stage 2",
+ * blackout (`../../../../WORKFLOWS.md`, "Acceptance blackout during Stage 2",
  * ABL-220 — ~07:00 and ~16:30 local) — a known window, not a defect.
  */
 router.get('/status', (_req, res) => {
