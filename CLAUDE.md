@@ -176,7 +176,7 @@ model must be listed there to be served at all.**
 `useForecastModels.ts`'s `resolveSelection` — `requestModelId` is set from an
 id the user actually chose and from nothing else, `useForecastModels.ts:62`).
 Leaving it off lets the server walk its candidate ladder
-(`resolveModelCandidates`, `forecastModels.ts:180-190`): production model
+(`resolveModelCandidates`, `forecastModels.ts:186-195`): production model
 first, then the other registered ml models, returning the first with rows for
 that country.
 
@@ -189,13 +189,13 @@ This matters because catboost and xgboost barely overlap. Measured against
 model the response's `meta.model` reports actually served, which can differ
 from the picker's own selection when the ladder fell back.
 
-(`forecastModels.ts:168` still asserts the sets are fully disjoint, as measured
+(`forecastModels.ts:174` still asserts the sets are fully disjoint, as measured
 on 2026-07-26. That comment is now stale for `price`; the behaviour it
 justifies — ordered rather than absolute preference — is unaffected.)
 
 **A pin is clearable, and "pinned" is not "shown" (ABL-16).** The server still
 honours an explicit request strictly — "if you asked for xgboost and it has
-nothing, you get nothing, not a silent substitution" (`forecastModels.ts:177`).
+nothing, you get nothing, not a silent substitution" (`forecastModels.ts:195`).
 That strictness is correct; what was wrong was that the client could only ever
 *add* a pin. Two things changed, both client-side:
 
@@ -485,7 +485,9 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `chartAdapters.adaptRenewableMixSeries` with it. If you add a forecast
   overlay to this tab, add it back to that set.
 - **`NetPositionTab`** — `AbleLineChart` for ENTSO-E day-ahead net position
-  plus the Chronos forecast (median, and a p10-p90 band where stored). Handles
+  plus the selected registered forecast. The picker offers Chronos-2 V010
+  (the default) and XGBoost V014; the Chronos run has a p10-p90 band where
+  stored. Handles
   a zone going silent upstream as an explicit "stopped publishing on <date>"
   state rather than a loading spinner. GR and IE are the live examples, and
   **this entry used to give the wrong date for both**: it said their continuous
