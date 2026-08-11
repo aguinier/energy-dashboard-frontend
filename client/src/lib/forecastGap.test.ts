@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { describeForecastGap, type ForecastGapInput } from './forecastGap';
+import {
+  describeForecastGap,
+  describeForecastGapsForSelection,
+  type ForecastGapInput,
+  type SelectionGapEntry,
+} from './forecastGap';
 
 const BASE: ForecastGapInput = {
   active: true,
@@ -52,5 +57,48 @@ describe('describeForecastGap', () => {
   it('uses whatever country label it was given', () => {
     const gap = describeForecastGap({ ...BASE, countryLabel: 'PT', pinnedLabel: 'ENTSO-E TSO · D+7' });
     expect(gap?.message).toBe('ENTSO-E TSO · D+7 has no forecast for PT in this window.');
+  });
+});
+
+const GAP_ENTRY: SelectionGapEntry = {
+  id: 'catboost',
+  label: 'able-ml · catboost',
+  color: '#2C8A6B',
+  isLoading: false,
+  isError: false,
+  pointCount: 0,
+};
+
+describe('describeForecastGapsForSelection', () => {
+  // The ABL-204 acceptance case: catboost and xgboost checked together for a
+  // country only one of them forecasts.
+  it('names the empty model and leaves the covered one out', () => {
+    const gaps = describeForecastGapsForSelection(
+      [GAP_ENTRY, { ...GAP_ENTRY, id: 'xgboost', label: 'able-ml · xgboost', color: '#756BB1', pointCount: 12 }],
+      'France',
+    );
+    expect(gaps).toEqual([
+      { id: 'catboost', color: '#2C8A6B', message: 'able-ml · catboost has no forecast for France in this window.' },
+    ]);
+  });
+
+  it('says nothing for a model still loading', () => {
+    expect(describeForecastGapsForSelection([{ ...GAP_ENTRY, isLoading: true }], 'France')).toEqual([]);
+  });
+
+  it('says nothing for a model whose request failed — that is an error state, not an empty one', () => {
+    expect(describeForecastGapsForSelection([{ ...GAP_ENTRY, isError: true }], 'France')).toEqual([]);
+  });
+
+  it('returns one gap per empty model, all checked models empty', () => {
+    const gaps = describeForecastGapsForSelection(
+      [GAP_ENTRY, { ...GAP_ENTRY, id: 'tso-d1', label: 'ENTSO-E TSO · D+1', color: '#C99A2A' }],
+      'Malta',
+    );
+    expect(gaps.map((g) => g.id)).toEqual(['catboost', 'tso-d1']);
+  });
+
+  it('returns nothing when every checked model has rows', () => {
+    expect(describeForecastGapsForSelection([{ ...GAP_ENTRY, pointCount: 48 }], 'France')).toEqual([]);
   });
 });

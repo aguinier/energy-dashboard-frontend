@@ -1,6 +1,6 @@
 import type { TimePreset, TimeAnchor } from '@/types';
 
-export const PERSIST_VERSION = 8;
+export const PERSIST_VERSION = 9;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
@@ -170,6 +170,26 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
   // an explicit matrix-only choice in the filter.
   if (fromVersion < 8 && next.comparisonForecastType === 'all') {
     next.comparisonForecastType = 'load';
+  }
+
+  // v9 (ABL-203) — `selectedModelByType` held one pin per forecast type.
+  // Net position's multi-select picker needs to hold several at once, so
+  // every type now stores an array (`selectedModelsByType`). Unlike v7 above,
+  // there is no pin/hidden ambiguity to untangle here: by this point any
+  // surviving entry is either a genuine pin (a plain string) or already gone,
+  // so a single stored pin carries forward as a one-element selection rather
+  // than being dropped — a returning user with one net-position model pinned
+  // must land on that model selected, not on a blank chart.
+  if (fromVersion < 9) {
+    const stored = next.selectedModelByType;
+    const selectedModelsByType: Record<string, string[]> = {};
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+      for (const [forecastType, value] of Object.entries(stored as Record<string, unknown>)) {
+        if (typeof value === 'string') selectedModelsByType[forecastType] = [value];
+      }
+    }
+    delete next.selectedModelByType;
+    next.selectedModelsByType = selectedModelsByType;
   }
 
   return next;

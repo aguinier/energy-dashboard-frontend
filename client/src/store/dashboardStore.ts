@@ -46,19 +46,29 @@ interface DashboardState {
   activeChartTab: string;
   setActiveChartTab: (tab: string) => void;
 
-  // Forecast model PINNED per forecast type. Absent = no pin, which is what
-  // lets the server walk its candidate ladder (production model first, then
-  // the other registered ml models) — the only state that renders a forecast
-  // for a country the production model does not cover.
+  // Forecast models PINNED per forecast type, as a list. Absent/empty = no
+  // pin, which is what lets the server walk its candidate ladder (production
+  // model first, then the other registered ml models) — the only state that
+  // renders a forecast for a country the production model does not cover.
+  //
+  // Every type still only ever gets ONE pin except net_position, whose picker
+  // (ABL-203) is the one multi-select UI — `setSelectedModel`/
+  // `clearSelectedModel` below keep Load/Price/ForecastTab's single-select
+  // callers source-compatible by writing/clearing a one-element list;
+  // `toggleSelectedModel` is the multi-select primitive net position's picker
+  // uses instead.
   //
   // Hidden lives in `forecastHiddenByType`, not here. The two used to share
-  // this slot (`null` meant hidden), so hiding destroyed the pin and showing
+  // one slot (`null` meant hidden), so hiding destroyed the pin and showing
   // again had to invent one — it re-pinned the production model, blanking
   // every country that model has no rows for, with no UI way back (ABL-16).
-  selectedModelByType: Record<string, string>;
+  selectedModelsByType: Record<string, string[]>;
+  /** Single-select: pin exactly one model, replacing any existing selection. */
   setSelectedModel: (forecastType: string, modelId: string) => void;
-  /** Drop the pin, handing model choice back to the server's candidate ladder. */
+  /** Drop every pin, handing model choice back to the server's candidate ladder. */
   clearSelectedModel: (forecastType: string) => void;
+  /** Multi-select: add `modelId` to the selection, or remove it if already selected. */
+  toggleSelectedModel: (forecastType: string, modelId: string) => void;
 
   // Whether the forecast overlay is switched off, per forecast type.
   // Absent = shown.
@@ -229,17 +239,35 @@ export const useDashboardStore = create<DashboardState>()(
       activeChartTab: 'load',
       setActiveChartTab: (tab) => set({ activeChartTab: tab }),
 
-      selectedModelByType: {},
+      selectedModelsByType: {},
       setSelectedModel: (forecastType, modelId) =>
         set((state) => ({
-          selectedModelByType: { ...state.selectedModelByType, [forecastType]: modelId },
+          selectedModelsByType: { ...state.selectedModelsByType, [forecastType]: [modelId] },
         })),
       clearSelectedModel: (forecastType) =>
         set((state) => {
-          if (state.selectedModelByType[forecastType] === undefined) return state;
-          const next = { ...state.selectedModelByType };
+          if (state.selectedModelsByType[forecastType] === undefined) return state;
+          const next = { ...state.selectedModelsByType };
           delete next[forecastType];
-          return { selectedModelByType: next };
+          return { selectedModelsByType: next };
+        }),
+      toggleSelectedModel: (forecastType, modelId) =>
+        set((state) => {
+          const current = state.selectedModelsByType[forecastType] ?? [];
+          const next = { ...state.selectedModelsByType };
+          if (current.includes(modelId)) {
+            const remaining = current.filter((id) => id !== modelId);
+            // Absent rather than `[]`, so "everything unchecked" persists the
+            // same way `clearSelectedModel`'s "Default" does — both reach the
+            // server's candidate ladder, and a persisted blob should not
+            // distinguish an artefact of unchecking the last box from an
+            // explicit Default click.
+            if (remaining.length === 0) delete next[forecastType];
+            else next[forecastType] = remaining;
+          } else {
+            next[forecastType] = [...current, modelId];
+          }
+          return { selectedModelsByType: next };
         }),
 
       forecastHiddenByType: {},
@@ -333,7 +361,7 @@ export const useDashboardStore = create<DashboardState>()(
         timeAnchor: state.timeAnchor,
         mapMetric: state.mapMetric,
         activeChartTab: state.activeChartTab,
-        selectedModelByType: state.selectedModelByType,
+        selectedModelsByType: state.selectedModelsByType,
         forecastHiddenByType: state.forecastHiddenByType,
         comparisonCountries: state.comparisonCountries,
         sidebarOpen: state.sidebarOpen,
