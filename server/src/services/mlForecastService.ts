@@ -1,6 +1,6 @@
 import db from '../config/database.js';
 import { ForecastType, Granularity } from '../types/index.js';  
-import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
+import { timestampRange, rangeClause, rangeArgs, timestampFormOnClause } from '../utils/timestamp.js';
 import { loadActualGuard } from './loadQuality.js';
 
 /**
@@ -92,7 +92,44 @@ export function modelFilterSql(alias: string, modelName?: string): string {
 // Two local normalizers used to live here — `normalizeForForecastsTable`
 // (kept 'T') and `normalizeForActualsTable` (kept space, and had no caller at
 // all). Neither form is correct on its own: both `forecasts` and the actuals
-// tables store a mix of the two separators. See `timestampRange` (ABL-21).
+// tables store a mix of the two separators. See `timestampRange` (ABL-21) for
+// window bounds and `resolvedActualJoin`/`timestampFormOnClause` (ABL-214) for
+// the join below — normalizing only the forecast side of the join dropped
+// every T-separated actual (energy_load and energy_price both, not just
+// energy_price).
+
+/**
+ * The actuals-side JOIN for an accuracy query, resolving whichever separator
+ * form the row happens to be stored in (ABL-214) — see `timestampFormOnClause`
+ * for why this is two LEFT JOINs and a COALESCE rather than one join matching
+ * either form: `energy_load`/`energy_price`/`energy_renewable` all hold
+ * country-hours where a 'T' row and a space row both exist with CONFLICTING
+ * values, and a single join would silently return both.
+ *
+ * `alias` lets a correlated `EXISTS`/subquery reuse this against a different
+ * outer alias (none does today, but the two aliases this always introduces —
+ * `<alias>` for the space match, `<alias>2` for the 'T' fallback — must not
+ * collide with anything else in the surrounding query).
+ */
+function resolvedActualJoin(
+  mapping: { table: string; column: string; timestampCol: string },
+  forecastType: ForecastType,
+  alias = 'a'
+): { actualColumn: string; joinClause: string } {
+  const rawColumn = (a: string) =>
+    forecastType === 'hydro_total' ? `(${a}.hydro_run_mw + ${a}.hydro_reservoir_mw)` : `${a}.${mapping.column}`;
+  const fallbackAlias = `${alias}2`;
+  return {
+    actualColumn: `COALESCE(${rawColumn(alias)}, ${rawColumn(fallbackAlias)})`,
+    joinClause: `
+      LEFT JOIN ${mapping.table} ${alias}
+        ON ${alias}.country_code = ?
+        AND ${timestampFormOnClause(`${alias}.${mapping.timestampCol}`, 'f.target_timestamp_utc', 'space')}
+      LEFT JOIN ${mapping.table} ${fallbackAlias}
+        ON ${fallbackAlias}.country_code = ?
+        AND ${timestampFormOnClause(`${fallbackAlias}.${mapping.timestampCol}`, 'f.target_timestamp_utc', 't')}`,
+  };
+}
 
 /**
  * Get ML forecast accuracy data by comparing forecasts with actuals
@@ -158,10 +195,7 @@ export function getMLForecastAccuracy(
 
   // For hourly granularity, join forecasts with actuals
   if (granularity === 'hourly') {
-    // Handle special case for hydro_total which is a computed column
-    const actualColumn = forecastType === 'hydro_total'
-      ? '(a.hydro_run_mw + a.hydro_reservoir_mw)'
-      : `a.${mapping.column}`;
+    const { actualColumn, joinClause } = resolvedActualJoin(mapping, forecastType);
 
     const stmt = db.prepare(`
       WITH latest_forecasts AS (
@@ -196,24 +230,20 @@ export function getMLForecastAccuracy(
         END as error_pct,
         f.horizon_hours
       FROM latest_forecasts f
-      INNER JOIN ${mapping.table} a
-        ON a.country_code = ?
-        AND REPLACE(f.target_timestamp_utc, 'T', ' ') = a.${mapping.timestampCol}
+      ${joinClause}
       WHERE ${actualColumn} IS NOT NULL
         ${loadActualGuard(forecastType, actualColumn)}
       ORDER BY f.target_timestamp_utc
     `);
 
     return stmt.all(
-      upperCode, forecastType, ...rangeArgs(range), ...modelParams, upperCode
+      upperCode, forecastType, ...rangeArgs(range), ...modelParams, upperCode, upperCode
     ) as MLForecastAccuracyDataPoint[];
   }
 
   // For aggregated granularity (daily, weekly, monthly)
   const groupByClause = getGroupByClause(granularity);
-  const actualColumn = forecastType === 'hydro_total'
-    ? '(a.hydro_run_mw + a.hydro_reservoir_mw)'
-    : `a.${mapping.column}`;
+  const { actualColumn, joinClause } = resolvedActualJoin(mapping, forecastType);
 
   const stmt = db.prepare(`
     WITH latest_forecasts AS (
@@ -244,9 +274,7 @@ export function getMLForecastAccuracy(
         ${actualColumn} as actual_value,
         f.horizon_hours
       FROM latest_forecasts f
-      INNER JOIN ${mapping.table} a
-        ON a.country_code = ?
-        AND REPLACE(f.target_timestamp_utc, 'T', ' ') = a.${mapping.timestampCol}
+      ${joinClause}
       WHERE ${actualColumn} IS NOT NULL
         ${loadActualGuard(forecastType, actualColumn)}
     )
@@ -263,7 +291,7 @@ export function getMLForecastAccuracy(
   `);
 
   return stmt.all(
-    upperCode, forecastType, ...rangeArgs(range), ...modelParams, upperCode
+    upperCode, forecastType, ...rangeArgs(range), ...modelParams, upperCode, upperCode
   ) as MLForecastAccuracyDataPoint[];
 }
 

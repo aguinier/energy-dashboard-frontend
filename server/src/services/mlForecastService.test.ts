@@ -1,12 +1,14 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeAll, describe, it, expect, vi } from 'vitest';
+import { buildFixtureDb, WINDOW } from '../test/fixtureDb.js';
 
-// The module under test imports the shared database connection, which opens
-// a real SQLite file at import time (same pattern as tsoForecastService.test.ts
-// and renewableService.test.ts). `calculateMetrics` is a pure function and
-// never touches `db`, so the default export just needs to not exist.
-vi.mock('../config/database.js', () => ({ default: null }));
+// `calculateMetrics`/`classifyCoverage`/`modelFilterSql` are pure and never
+// touch `db`, but the ABL-214 join-fix tests below need a real one — the
+// shared fixture, same as crossCountryMetricsService.test.ts.
+const fixtureDb = buildFixtureDb();
+vi.mock('../config/database.js', () => ({ default: fixtureDb }));
 
-const { calculateMetrics, classifyCoverage, modelFilterSql } = await import('./mlForecastService.js');
+const { calculateMetrics, classifyCoverage, modelFilterSql, getMLForecastAccuracy } =
+  await import('./mlForecastService.js');
 
 const pt = (actual: number, forecast: number) => ({
   timestamp: '2026-07-27T00:00:00Z',
@@ -85,5 +87,47 @@ describe('classifyCoverage', () => {
     // The model forecast this window, but no actual has landed against it —
     // a different fact from "this model does not serve here".
     expect(classifyCoverage(0, true)).toBe('no_paired_actuals');
+  });
+});
+
+describe('getMLForecastAccuracy — separator-agnostic actuals join (ABL-214)', () => {
+  // Neither country is in the shared fixture's base seed, so these rows are
+  // exclusively this describe block's.
+  beforeAll(() => {
+    fixtureDb.exec(`
+      -- IT: the actual exists ONLY in 'T' form — the genuinely dropped case.
+      -- Before this fix, REPLACE(f.target_timestamp_utc,'T',' ') = a.timestamp_utc
+      -- normalised the forecast to space form and never matched this row.
+      INSERT INTO energy_load (country_code, timestamp_utc, load_mw)
+        VALUES ('IT', '2026-07-01T00:00:00', 700);
+      INSERT INTO forecasts
+        (country_code, forecast_type, target_timestamp_utc, generated_at, horizon_hours, forecast_value, model_name, model_version)
+        VALUES ('IT', 'load', '2026-07-01T00:00:00', '2026-06-30T18:00:00.000000', 6, 650, 'catboost', 'v1');
+
+      -- ES: a genuine ABL-211/ABL-215 conflict — BOTH forms exist for the same
+      -- hour with DIFFERENT values (900 space-form, 999 'T'-form). The naive
+      -- IN(...) join would match both rows and return two data points, or the
+      -- wrong one; this must return exactly one, and it must be the space-form
+      -- value — unchanged from what the pre-fix join already served.
+      INSERT INTO energy_load (country_code, timestamp_utc, load_mw)
+        VALUES ('ES', '2026-07-01 01:00:00', 900), ('ES', '2026-07-01T01:00:00', 999);
+      INSERT INTO forecasts
+        (country_code, forecast_type, target_timestamp_utc, generated_at, horizon_hours, forecast_value, model_name, model_version)
+        VALUES ('ES', 'load', '2026-07-01T01:00:00', '2026-06-30T18:00:00.000000', 6, 850, 'catboost', 'v1');
+    `);
+  });
+
+  it('rescues an actual stored only in T-form, which the old one-sided REPLACE join dropped', () => {
+    const rows = getMLForecastAccuracy('IT', 'load', WINDOW.start, WINDOW.end);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ actual_value: 700, forecast_value: 650, error: 50 });
+  });
+
+  it('never fans out on a conflicting T/space pair, and keeps preferring the space-form value', () => {
+    const rows = getMLForecastAccuracy('ES', 'load', WINDOW.start, WINDOW.end);
+    // Exactly one data point — not two. A naive `actual IN (spaceForm, tForm)`
+    // join would return both ES rows for this single forecast row.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].actual_value).toBe(900);
   });
 });

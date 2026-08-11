@@ -104,3 +104,41 @@ describe('skill vs seasonal-naive (ABL-186)', () => {
     expect(result.DE.skillVsSeasonalNaive).toEqual({ n: 0, skillPct: null, baselineWape: null });
   });
 });
+
+describe('separator-agnostic actuals + D-7 baseline join (ABL-214)', () => {
+  // Neither country is in the shared fixture's base seed.
+  beforeAll(() => {
+    fixtureDb.exec(`
+      -- PL: the actual AND its D-7 baseline exist ONLY in 'T' form — the
+      -- genuinely dropped case for both joins in metricSelect().
+      INSERT INTO energy_load (country_code, timestamp_utc, load_mw)
+        VALUES ('PL', '2026-07-01T00:00:00', 700), ('PL', '2026-06-24T00:00:00', 690);
+      INSERT INTO forecasts
+        (country_code, forecast_type, target_timestamp_utc, generated_at, horizon_hours, forecast_value, model_name, model_version)
+        VALUES ('PL', 'load', '2026-07-01T00:00:00', '2026-06-30T18:00:00.000000', 6, 650, 'catboost', 'v1');
+
+      -- NL: a genuine ABL-211/ABL-215 conflict on the actual side — both forms
+      -- exist with different values (900 space, 999 'T'). Must score against
+      -- exactly one row (the space-form 900), never both.
+      INSERT INTO energy_load (country_code, timestamp_utc, load_mw)
+        VALUES ('NL', '2026-07-01 01:00:00', 900), ('NL', '2026-07-01T01:00:00', 999);
+      INSERT INTO forecasts
+        (country_code, forecast_type, target_timestamp_utc, generated_at, horizon_hours, forecast_value, model_name, model_version)
+        VALUES ('NL', 'load', '2026-07-01T01:00:00', '2026-06-30T18:00:00.000000', 6, 850, 'catboost', 'v1');
+    `);
+  });
+
+  it('rescues a T-form-only actual into the WAPE, and a T-form-only D-7 baseline into skill', () => {
+    const result = getCrossCountryMetrics('load', WINDOW.start, WINDOW.end);
+    expect(result.PL.dataPoints).toBe(1);
+    expect(result.PL.mae).toBe(50); // |700 - 650|
+    expect(result.PL.skillVsSeasonalNaive.n).toBe(1); // D-7 baseline (690) resolved via the 'T'-only fallback
+  });
+
+  it('never fans out on a conflicting T/space actual pair — one data point, the space-form value', () => {
+    const result = getCrossCountryMetrics('load', WINDOW.start, WINDOW.end);
+    // A naive `actual IN (spaceForm, tForm)` join would double this to 2.
+    expect(result.NL.dataPoints).toBe(1);
+    expect(result.NL.mae).toBe(50); // |900 - 850|, not |999 - 850|
+  });
+});

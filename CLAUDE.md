@@ -1455,36 +1455,80 @@ forecast_type=? AND target_timestamp_utc>? AND target_timestamp_utc<?)` to
 `(country_code=? AND forecast_type=?)`. See the `date()`/`strftime()` entry in
 Common Issues for the 51s scar this repo already has from that class of change.
 
-**Still open (not fixed by ABL-21):** the forecast↔actual *join* predicates are
-not separator-agnostic, so a window reaching before the 2025-11-26 cutover
-silently fails to join `T`-separated actuals — a WAPE over a biased sample
-rather than a short series. Measured on `energy_price` FR, 2025-11-20..25: 741
-rows matched of 860. Filed as its own ticket; current default windows
-(7d/30d/90d) do not reach back that far.
+**Fixed for the ml accuracy joins (ABL-214).** This section used to say the
+forecast↔actual *join* predicates were not separator-agnostic and frame that as
+`energy_price`-specific, citing `energy_price` FR 2025-11-20..25: 741 of 860
+rows matched. ABL-211 found the underlying join is generic across every
+forecast type sharing `ACTUAL_DATA_MAPPING` — it dropped `T`-separated
+`energy_load` actuals identically, not just `energy_price`'s. Both sites are
+now separator-agnostic: `mlForecastService.ts`'s `resolvedActualJoin()`
+(`mlForecastService.ts:114`, called from both its hourly and aggregated
+branches) and `crossCountryMetricsService.ts`'s `metricSelect()`
+(`crossCountryMetricsService.ts:108`, covering both the actuals join and the
+D-7 seasonal-naive baseline join beneath it).
 
-**They are not all the same shape, and grepping for one misses the others:**
+**The obvious fix is wrong, not just imprecise — measure before joining on
+"either form."** A single join matching `actualCol IN (REPLACE(expr,'T',' '),
+REPLACE(expr,' ','T'))` looks like the natural extension of `rangeClause`'s
+seek-preserving two-clause shape to an equality, and was the approach this
+ticket originally sketched. It silently fans out: `energy_load` alone has
+**137,113** country-hours where a `T` row and a space row both exist, and
+**107,047** of those pairs hold **conflicting** values (measured 2026-08-11,
+against ABL-211/ABL-215's still-open "which one is authoritative" board
+question — `energy_price` has 16,896 such pairs, 2 conflicting;
+`energy_renewable` 26,694 pairs, 2,441 conflicting). An `IN(...)` join matches
+*both* rows whenever both exist, so it would have traded ABL-214's silent-drop
+defect for a silent-fan-out one — double-counting that hour, and on a
+conflicting pair, handing an accuracy metric the right-looking value and the
+wrong one as if they were independent observations. That is exactly the
+confidently-wrong-number defect this whole file exists to catch, and it is not
+this join's decision to make: ABL-215 (still blocked) is what settles which of
+a conflicting pair is authoritative, not a read-side accuracy query.
 
-- `crossCountryMetricsService.ts:122`, `mlForecastService.ts:200` and `:247`
-  normalise **only the forecast side**:
-  `REPLACE(f.target_timestamp_utc, 'T', ' ') = a.<timestampCol>`.
-- `tsoForecastService.ts:293` has **no normalisation at all** —
-  `f.target_timestamp_utc = a.timestamp_utc`, joining
-  `energy_generation_forecast` to `energy_renewable`. That forecast column is
-  100% space-form (measured 2026-08-05: 0 `T` of 3,033,167), so a one-sided
-  `REPLACE` on it would be a no-op and this bare form fails on exactly the same
-  rows — the impact is identical, but a grep for `REPLACE(f.` does not find the
-  site. Fixing this class means normalising the **actuals** side, which is the
-  side that is mixed.
+`timestampFormOnClause` (`server/src/utils/timestamp.ts:140`) is instead
+always used as **two separate LEFT JOINs** — one matching the space form, one
+matching the `T` form, on two different aliases — `COALESCE`d together
+preferring space. That changes nothing for any country-hour that already
+matched before this fix (a space-form row, unconditionally preferred, exactly
+like the one-sided-`REPLACE` join it replaces) and only adds coverage for an
+hour where a `T` row is the *only* one that exists (142,767 of `energy_load`'s
+279,880 `T` rows, measured 2026-08-11) — the genuinely dropped case ABL-214
+exists to fix. Two separate LEFT JOINs can never fan out the way one `IN(...)`
+join can: each side matches at most one physical row (verified 2026-08-11 —
+zero exact `(country_code, timestamp_utc)` string duplicates in `energy_load`,
+`energy_price` or `energy_renewable`), so their combination is at most one row,
+not up to two.
 
-Sizing, measured 2026-08-05 over the whole `T` era (`energy_renewable` holds
-90,636 `T` rows, 2021-12-31..2025-11-25): solar pairs a separator-agnostic join
-would match and `:293` drops — BA 9,315 (vs 43,043 matched), DE 7,396 (vs
-24,658), PL 4,804 (vs 23,122), FI 4,740 (vs 24,632), RO 4,600, IT 4,535. So
-roughly a fifth of the available history on the affected countries, not a
-rounding error — it is invisible today only because the default windows are
-recent. Note the naive both-sides `REPLACE` fix is the expensive one this repo
-already has a scar from: it defeats the index on a 3.0M × 811k join and did not
-complete in 120 s during this measurement.
+**Currently a no-op against live data — measured, not assumed.** The
+`energy_price` FR 741-of-860 figure this section used to cite no longer
+reproduces against the live replica: as of 2026-08-11 the earliest row in
+`forecasts`, across *every* forecast type, is 2025-12-26 (`load`/xgboost) — a
+month after the ~2025-11-26 actuals cutover this whole section is about. So
+today this fix changes zero currently-computed metrics; it stays dormant until
+a historical backfill, a retrained model's archived vintage, or the table's own
+earliest row otherwise reaches back past the cutover again. Filing that as a
+regression would be wrong — the fix is correct and was worth shipping now
+rather than waiting for it to matter, but there is no headline WAPE it moves
+today.
+
+**Still open, and deliberately not folded into ABL-214 — a real, live gap, not
+the same one-line shape.** `tsoForecastService.ts:296`
+(`getGenerationForecastAccuracy`, joining `energy_generation_forecast` to
+`energy_renewable`) has the identical defect — `f.target_timestamp_utc =
+a.timestamp_utc`, no normalisation on either side — and unlike the two services
+above it **is** currently live: `energy_generation_forecast` holds rows back to
+2021-01-01, deep inside `energy_renewable`'s `T`-form window
+(90,636 rows, 2021-12-31..2025-11-25). Measured on a DE/solar window straddling
+the cutover (2025-11-15..2025-12-01): today's bare-equality join returns 1,057
+rows; the separator-agnostic, dedup-safe join returns 2,013 — essentially
+double. It needs the identical `timestampFormOnClause`-pair-plus-`COALESCE`
+treatment as the two fixed services above (never the naive `IN(...)`, for the
+same fan-out reason — `energy_renewable` alone has 2,441 conflicting `T`/space
+pairs), in both its hourly and aggregated branches. That is materially more
+than "the same one line" this ticket was scoped for, and nothing in this
+client currently calls `/tso-forecast/accuracy/generation/:cc` (see
+"ForecastTab" above), so it was left unfixed here rather than grown into this
+change — filed as its own follow-up instead.
 
 ## Data the database does not have
 
@@ -1707,6 +1751,15 @@ cd server && npx vitest run
 
 Green as of 2026-08-11: **488 client tests / 39 files**, **421 server tests /
 27 files**, clean typecheck. Fewer passing than that means something broke.
+(That server figure predates several since-merged branches already reflected
+in this checkout's history — e.g. ABL-190/ABL-221 — which is why a fresh run
+here shows more than 421/27 even before ABL-214's own tests; this entry was not
+re-reconciled against all of them, only against the delta ABL-214 itself adds.
+ABL-214 touched no client file. It added 9 server cases across three existing
+files — `timestampFormOnClause` cases in `utils/timestamp.test.ts`, and a
+conflicting-T/space-pair-does-not-fan-out case plus a T-form-only-rescue case
+in each of `services/mlForecastService.test.ts` and
+`services/crossCountryMetricsService.test.ts` — no new file.)
 (ABL-204 extended the multi-model overlay to Load and Price — two new files,
 `dashboard/forecastLineTokens.test.ts` and `lib/multiForecastSeries.test.ts`,
 plus new cases in `lib/forecastGap.test.ts` for

@@ -6,6 +6,7 @@ import {
   rangeClause,
   rangeArgs,
   toIsoUtc,
+  timestampFormOnClause,
 } from './timestamp.js';
 
 describe('normalizeTimestamp', () => {
@@ -110,6 +111,85 @@ describe('rangeClause + rangeArgs against real SQLite', () => {
     // The whole reason for the two-clause form: REPLACE() alone would drop the
     // `ts>? AND ts<?` seek and scan the table.
     expect(plan).toMatch(/USING (COVERING )?INDEX idx_t_ts \(ts>\? AND ts<\?\)/);
+  });
+});
+
+describe('timestampFormOnClause + a paired LEFT JOIN (ABL-214)', () => {
+  // A forecasts-shaped table joined to an actuals-shaped table that — like
+  // energy_load/energy_price/energy_renewable in production — can hold a 'T'
+  // row and a space row for the SAME country-hour, sometimes with conflicting
+  // values (ABL-211/ABL-215).
+  const db = new Database(':memory:');
+  db.exec(`
+    CREATE TABLE f (country_code TEXT, target_timestamp_utc TEXT);
+    CREATE TABLE a (country_code TEXT, ts TEXT, value REAL);
+    CREATE UNIQUE INDEX idx_a ON a(country_code, ts);
+    INSERT INTO f VALUES
+      ('DE', '2026-07-01T00:00:00'), -- actual exists ONLY as space form
+      ('DE', '2026-07-01T01:00:00'), -- actual exists ONLY as 'T' form
+      ('DE', '2026-07-01T02:00:00'), -- actual exists in BOTH forms, CONFLICTING
+      ('DE', '2026-07-01T03:00:00'); -- no actual in either form
+    INSERT INTO a VALUES
+      ('DE', '2026-07-01 00:00:00', 100),
+      ('DE', '2026-07-01T01:00:00', 200),
+      ('DE', '2026-07-01 02:00:00', 300), ('DE', '2026-07-01T02:00:00', 999);
+  `);
+
+  const resolved = () =>
+    db
+      .prepare(`
+        SELECT f.target_timestamp_utc as ts, COALESCE(a1.value, a2.value) as resolved
+        FROM f
+        LEFT JOIN a a1 ON a1.country_code = f.country_code
+          AND ${timestampFormOnClause('a1.ts', 'f.target_timestamp_utc', 'space')}
+        LEFT JOIN a a2 ON a2.country_code = f.country_code
+          AND ${timestampFormOnClause('a2.ts', 'f.target_timestamp_utc', 't')}
+        ORDER BY f.target_timestamp_utc
+      `)
+      .all() as Array<{ ts: string; resolved: number | null }>;
+
+  it('matches a space-form-only row via the space clause', () => {
+    expect(resolved().find((r) => r.ts === '2026-07-01T00:00:00')?.resolved).toBe(100);
+  });
+
+  it("rescues a 'T'-form-only row via the fallback clause — the ABL-214 fix", () => {
+    expect(resolved().find((r) => r.ts === '2026-07-01T01:00:00')?.resolved).toBe(200);
+  });
+
+  it('never fans out on a conflicting pair, and keeps preferring the space-form value', () => {
+    const rows = db
+      .prepare(`
+        SELECT COUNT(*) as n FROM f
+        LEFT JOIN a a1 ON a1.country_code = f.country_code
+          AND ${timestampFormOnClause('a1.ts', 'f.target_timestamp_utc', 'space')}
+        LEFT JOIN a a2 ON a2.country_code = f.country_code
+          AND ${timestampFormOnClause('a2.ts', 'f.target_timestamp_utc', 't')}
+        WHERE f.target_timestamp_utc = '2026-07-01T02:00:00'
+      `)
+      .get() as { n: number };
+    expect(rows.n).toBe(1); // not 2 — a naive `IN(spaceForm, tForm)` join would double this
+    expect(resolved().find((r) => r.ts === '2026-07-01T02:00:00')?.resolved).toBe(300); // space-form, not 999
+  });
+
+  it('resolves to null when neither form exists', () => {
+    expect(resolved().find((r) => r.ts === '2026-07-01T03:00:00')?.resolved).toBeNull();
+  });
+
+  it('keeps the index seek on each side of the pair', () => {
+    const plan = db
+      .prepare(`
+        EXPLAIN QUERY PLAN
+        SELECT f.target_timestamp_utc FROM f
+        LEFT JOIN a a1 ON a1.country_code = f.country_code
+          AND ${timestampFormOnClause('a1.ts', 'f.target_timestamp_utc', 'space')}
+        LEFT JOIN a a2 ON a2.country_code = f.country_code
+          AND ${timestampFormOnClause('a2.ts', 'f.target_timestamp_utc', 't')}
+      `)
+      .all()
+      .map((row) => (row as { detail: string }).detail)
+      .join(' ');
+    expect(plan).toMatch(/SEARCH a1 USING (COVERING )?INDEX idx_a \(country_code=\? AND ts=\?\)/);
+    expect(plan).toMatch(/SEARCH a2 USING (COVERING )?INDEX idx_a \(country_code=\? AND ts=\?\)/);
   });
 });
 

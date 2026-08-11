@@ -105,6 +105,45 @@ export function rangeArgs(range: TimestampRange): [string, string, string, strin
 }
 
 /**
+ * A join predicate matching `actualCol` to exactly ONE stored separator form
+ * of `expr` — never both (ABL-214).
+ *
+ * The obvious version of this fix is a single join matching `actualCol IN
+ * (REPLACE(expr,'T',' '), REPLACE(expr,' ','T'))`. That is wrong, not just
+ * imprecise: `energy_load` alone has **137,113** country-hours where a 'T'-form
+ * row and a space-form row BOTH exist, and **107,047** of those pairs hold
+ * CONFLICTING values (measured 2026-08-11) — `energy_price` (16,896 pairs, 2
+ * conflicting) and `energy_renewable` (26,694 pairs, 2,441 conflicting) carry
+ * the same shape. An `IN(...)` join matches both rows whenever both exist, so
+ * it would silently double-count that hour and, on a conflicting pair, hand an
+ * accuracy metric both the right-looking value and the wrong one as if they
+ * were two independent observations — trading ABL-214's silent-drop defect for
+ * a silent-fan-out one, which is worse. Which of a conflicting pair is
+ * authoritative is ABL-215, an open board decision this join does not get to
+ * make.
+ *
+ * So: two separate LEFT JOINs, one per form, `COALESCE`d together preferring
+ * space — see the call sites. That changes nothing for any country-hour that
+ * already matches today (a space-form row, unconditionally preferred, exactly
+ * like the one-sided-REPLACE join this replaces) and only adds coverage for a
+ * country-hour where a 'T'-form row is the ONLY one that exists (142,767 of
+ * `energy_load`'s 279,880 'T' rows, measured 2026-08-11) — the genuinely
+ * dropped case this fix exists for.
+ *
+ * `actualCol` stays bare so each join can still seek an index on it — the same
+ * seek-preserving shape `rangeClause` uses for a range, adapted to an
+ * equality, doubled rather than combined into one `IN`. Do not instead wrap
+ * `actualCol` itself in `REPLACE`: measured on a 3.0M x 811k join (CLAUDE.md,
+ * "Timestamp storage"), normalizing both sides of a join this way defeats the
+ * index and did not complete in 120s.
+ */
+export function timestampFormOnClause(actualCol: string, expr: string, form: 'space' | 't'): string {
+  return form === 'space'
+    ? `${actualCol} = REPLACE(${expr}, 'T', ' ')`
+    : `${actualCol} = REPLACE(${expr}, ' ', 'T')`;
+}
+
+/**
  * The inverse: a stored timestamp -> an unambiguous ISO-8601 UTC string.
  *
  * Every `timestamp_utc` column is UTC by name and by construction, but the

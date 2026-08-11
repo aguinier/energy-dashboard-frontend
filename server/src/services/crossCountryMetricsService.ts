@@ -1,6 +1,6 @@
 import db from '../config/database.js';
 import { ForecastType } from '../types/index.js';
-import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
+import { timestampRange, rangeClause, rangeArgs, timestampFormOnClause } from '../utils/timestamp.js';
 import { loadActualGuard } from './loadQuality.js';
 import { runReadQueryInWorker } from './readQueryWorker.js';
 import { computeSkillVsSeasonalNaive, type SkillVsSeasonalNaive } from './skillScore.js';
@@ -107,14 +107,18 @@ export function getCrossCountryMetrics(
 
 function metricSelect(forecastType: ForecastType): string {
   const mapping = ACTUAL_DATA_MAPPING[forecastType];
-  const actualColumn = forecastType === 'hydro_total'
-    ? '(a.hydro_run_mw + a.hydro_reservoir_mw)'
-    : `a.${mapping.column}`;
-  // Same table, same column expression, aliased `s` (source of the D-7
-  // seasonal-naive baseline) — see the `skill_*` aggregates below.
-  const baselineColumn = forecastType === 'hydro_total'
-    ? '(s.hydro_run_mw + s.hydro_reservoir_mw)'
-    : `s.${mapping.column}`;
+  const rawColumn = (alias: string) =>
+    forecastType === 'hydro_total' ? `(${alias}.hydro_run_mw + ${alias}.hydro_reservoir_mw)` : `${alias}.${mapping.column}`;
+
+  // Actuals: prefer the space-form row (`a`), falling back to the 'T'-form-only
+  // row (`a2`) only when no space row exists for that country-hour at all — see
+  // `timestampFormOnClause` for why this is two LEFT JOINs and a COALESCE
+  // rather than one join matching either form.
+  const actualColumn = `COALESCE(${rawColumn('a')}, ${rawColumn('a2')})`;
+  // Same table, same rule, aliased `s`/`s2` — the D-7 seasonal-naive baseline
+  // (source of the `skill_*` aggregates below).
+  const baselineColumn = `COALESCE(${rawColumn('s')}, ${rawColumn('s2')})`;
+  const dayAgoExpr = `datetime(REPLACE(f.target_timestamp_utc, 'T', ' '), '-7 days')`;
 
   return `
     SELECT
@@ -133,13 +137,20 @@ function metricSelect(forecastType: ForecastType): string {
       SUM(CASE WHEN ${baselineColumn} IS NOT NULL THEN ABS(${actualColumn} - f.forecast_value) ELSE 0 END) AS skill_model_err_abs_sum,
       SUM(CASE WHEN ${baselineColumn} IS NOT NULL THEN ABS(${actualColumn} - ${baselineColumn}) ELSE 0 END) AS skill_baseline_err_abs_sum
     FROM latest_forecasts f
-    INNER JOIN ${mapping.table} a
+    LEFT JOIN ${mapping.table} a
       ON a.country_code = f.country_code
-      AND REPLACE(f.target_timestamp_utc, 'T', ' ') = a.${mapping.timestampCol}
+      AND ${timestampFormOnClause(`a.${mapping.timestampCol}`, 'f.target_timestamp_utc', 'space')}
+    LEFT JOIN ${mapping.table} a2
+      ON a2.country_code = f.country_code
+      AND ${timestampFormOnClause(`a2.${mapping.timestampCol}`, 'f.target_timestamp_utc', 't')}
     LEFT JOIN ${mapping.table} s
       ON s.country_code = f.country_code
-      AND s.${mapping.timestampCol} = datetime(REPLACE(f.target_timestamp_utc, 'T', ' '), '-7 days')
-      ${loadActualGuard(forecastType, baselineColumn)}
+      AND ${timestampFormOnClause(`s.${mapping.timestampCol}`, dayAgoExpr, 'space')}
+      ${loadActualGuard(forecastType, rawColumn('s'))}
+    LEFT JOIN ${mapping.table} s2
+      ON s2.country_code = f.country_code
+      AND ${timestampFormOnClause(`s2.${mapping.timestampCol}`, dayAgoExpr, 't')}
+      ${loadActualGuard(forecastType, rawColumn('s2'))}
     WHERE f.forecast_type = '${forecastType}'
       AND ${actualColumn} IS NOT NULL
       ${loadActualGuard(forecastType, actualColumn)}
