@@ -211,7 +211,7 @@ repository.
 
 `server/src/v1/` holds a **separate Express application** for the commercial
 `/v1` surface, built by `createPublicApp`
-(`server/src/v1/publicApp.ts:59`) and run as its own process from
+(`server/src/v1/publicApp.ts:80`) and run as its own process from
 `server/src/v1/publicIndex.ts`. It is not `createApp()` with routes hidden.
 
 The distinction is the whole point (ABL-304, specified by ABL-293 §2f). A
@@ -294,12 +294,122 @@ is meant to be updated deliberately — an edge added there is the moment the
 isolation stops being free.
 
 Not done by ABL-304, and deliberately: the `/v1` resources themselves
-(ABL-303), API-key auth (ABL-300), metering (ABL-301), quotas and the row cap
-(ABL-302), and the OpenAPI document and its drift check (ABL-305). The public
-process binds `127.0.0.1` by default and **is not deployed or exposed**;
-`PUBLIC_BIND_HOST` exists so the bind address is configuration rather than a
-code change, but choosing anything other than loopback is a network-exposure
-decision that needs its own Board-approved issue.
+(ABL-303), metering (ABL-301), quotas and the row cap (ABL-302), and the
+OpenAPI document and its drift check (ABL-305). API-key auth is ABL-300, below.
+The public process binds `127.0.0.1` by default and **is not deployed or
+exposed**; `PUBLIC_BIND_HOST` exists so the bind address is configuration
+rather than a code change, but choosing anything other than loopback is a
+network-exposure decision that needs its own Board-approved issue.
+
+## `/v1` authenticates with an API key, and the key store is its own database
+
+ABL-300. `Authorization: Bearer able_<env>_<prefix>_<secret>` — for example
+`able_live_7f3a9c21_xR4k…`. Four `_`-separated segments, each of which earns
+its place: a fixed `able` namespace so a leaked key is attributable and
+greppable, a `live`/`test` environment, an **8-character non-secret prefix**
+stored in clear, and the secret.
+
+`middleware/writeAuth.ts` is untouched and keeps gating the two ingest `POST`s
+on the private app. It could not be the public mechanism, for reasons that are
+structural rather than a matter of hardening (ABL-293 §2b): it is **one shared
+secret** compared with `!==` against `HELIO_WRITE_TOKEN`
+(`middleware/writeAuth.ts:27`), so there is no identity, therefore no
+attribution, therefore nothing ABL-301 could meter; there is no revocation
+short of breaking every caller at once; and `!==` on a secret is a timing
+oracle. Its own comment says it is LAN-only.
+
+**Nothing stores a raw key.** `mintApiKey`
+(`server/src/v1/keys/keyFormat.ts:204`) returns the key string once, and the
+store persists `sha256(secret)` and the prefix — there is no column that could
+hold a key, and `sqliteApiKeyStore.test.ts` asserts that against the database
+file's bytes rather than against the schema. SHA-256 rather than bcrypt or
+argon2 is correct *here specifically*, which is the opposite of the usual
+advice and so is written down: the secret is 43 base62 characters of CSPRNG
+output — about 256 bits — so there is nothing to brute-force, and a slow KDF
+would put tens of milliseconds on the critical path of every request for no
+benefit. Same reason there is no salt. Verification is a prefix lookup plus
+`crypto.timingSafeEqual`, and an unknown prefix burns a comparison anyway
+(`burnSecretComparison`) so the non-secret handle is not an enumeration oracle.
+
+**Where the records live: a second SQLite file at `API_KEYS_DB_PATH`, never the
+energy database.** That file is 376 GiB, is owned by `energy-data-gathering`
+and is opened readonly here (`config/database.ts:11`); writing accounts and
+keys into it would mean a write path contending with ingest, in a schema we do
+not own, and would undo the property ABL-304 established — that the public
+process holds no write handle on energy data. `resolveApiKeysDbPath`
+(`server/src/v1/keys/sqliteApiKeyStore.ts:88`) refuses to start when the two
+paths resolve to the same file, and refuses `config/database.ts`'s literal
+default too. There is no default for `API_KEYS_DB_PATH` itself, because a
+credentials file must not land somewhere nobody chose. ABL-301's
+`usage_events`/`usage_rollup` belong in this same file and are deliberately not
+created yet.
+
+Two capabilities over that file, split at the type *and* at the file handle:
+
+- `openApiKeyDirectory` opens it **readonly** and returns `findByPrefix` and
+  nothing else. This is what `publicIndex.ts` gives `createPublicApp`, so the
+  serving process cannot alter a key record — not a check that returns false,
+  an operating-system-level one.
+- `openApiKeyAdminStore` opens it read-write and is reached only from the keys
+  CLI. `publicAppGraph.test.ts` asserts by name that neither entrypoint can
+  reach `keysCli.ts` or the test-only `memoryApiKeyDirectory.ts`, and that
+  `better-sqlite3` is imported by exactly one module in the entrypoint's graph.
+
+**The gate covers paths, not routes.** `publicApp.ts` mounts three things in
+order: `v1/routes/root.ts` (the entire unauthenticated surface — one discovery
+endpoint returning two constants), then `requireApiKey`, then
+`v1/routes/index.ts`. So `/v1/anything` answers **401 rather than 404** without
+a key — the surface cannot be enumerated, and a resource ABL-303 adds to
+`routes/index.ts` is authenticated whether or not its author thought about it.
+CORS sits ahead of the gate deliberately: `cors` answers a preflight itself,
+and a preflight carries no `Authorization` header by specification. Handlers
+read the caller with `requireApiPrincipal`
+(`server/src/v1/auth/apiKeyAuth.ts:77`), which **throws** rather than returning
+`undefined` — a route mounted on the wrong side of the gate fails loudly the
+first time it is exercised instead of being metered to nobody.
+
+Six refusal codes, each a distinct `error.code`: `key_missing`,
+`key_malformed`, `key_invalid`, `key_revoked`, `key_expired` (all 401) and
+`account_disabled` (403 — the credential is good, so telling the customer to
+check their key would be the wrong afternoon to spend). The specific ones are
+not an information leak: revoked, expired and disabled are reachable **only
+after** the presented secret has matched the stored hash, so someone guessing
+keys sees nothing but `key_invalid`. Every message is a constant — nothing
+interpolates the key, the prefix or an account name — because a 401 body is the
+single most likely thing a customer pastes into a public tracker.
+
+Keys are issued by an operator, not by an endpoint. There is no `POST /v1/keys`
+until there is an account model, an identity provider and a payment
+relationship, none of which exist:
+
+```bash
+cd server                        # reads server/.env.public — see .env.public.example
+npm run keys -- accounts:create --name "Acme Energy" --plan developer
+npm run keys -- keys:issue --account acct_... --label "prod ETL"
+npm run keys -- keys:rotate --key key_... --overlap-days 7
+npm run keys -- keys:revoke --key key_... --reason "leaked in a support ticket"
+```
+
+Rotation is one atomic store operation, not "issue then remember to retire":
+the sequence has two quiet failure states — a new key with the old never
+retired, and an old key retired with no replacement. With an overlap the
+outgoing key gets an `expires_at` so the customer can deploy before it stops;
+`--overlap-days 0` revokes it immediately, which is what a suspected leak
+wants. Revocation is **soft** — a `revoked_at` timestamp, never a row delete,
+because ABL-301's usage records will point at the key id and a billing history
+whose foreign key dangles is a dispute we cannot answer. An account holds at
+most **5** live keys (`MAX_LIVE_KEYS_PER_ACCOUNT`); a rotation with an overlap
+counts both while they overlap.
+
+There is no `last_used_at`. It is the obvious column to want and it would cost
+a write on the critical path of every authenticated request to maintain a field
+nobody needs to the second; once ABL-301 lands it is a `MAX(received_at)` over
+`usage_events`. An unused column invites someone to start filling it.
+
+Not done by ABL-300: metering (ABL-301), quotas, rate limits and the 429
+contract (ABL-302), and the resources themselves (ABL-303). The `plan` on the
+principal is carried for ABL-302 to enforce and nothing here branches on it —
+this issue authenticates and identifies a caller, it does not meter one.
 
 ## Key Features
 
@@ -2480,10 +2590,22 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
-ABL-288 + ABL-295 + ABL-287): **48 client test files / 640 tests** and **56 server test
-files / 863 tests**, all passing, clean typecheck on both. Fewer tests passing
-than that means something broke.
+Green as of 2026-08-12, measured on this tree (ABL-300 branched from
+`origin/main` `1ffbae5`): **48 client test files / 640 tests** and **65 server
+test files / 1,148 tests**, all passing, clean typecheck on both. Fewer tests
+passing than that means something broke.
+
+(ABL-300 added four server files — `v1/keys/keyFormat.test.ts`,
+`v1/keys/sqliteApiKeyStore.test.ts`, `v1/keys/keysCli.test.ts` and
+`v1/auth/apiKeyAuth.test.ts` — plus new cases in the two ABL-304 files it
+touches: +4 files / +160 cases. No client file changed, and the client figure
+above is a fresh run rather than a carried-forward one. The delta was taken
+against `origin/main` measured in its own detached worktree the same hour:
+**61 server files / 988 tests**. Worth recording because the 56/863 figure this
+paragraph used to carry was measured before ABL-304 merged and was already
+stale by 5 files / 125 tests — a count is only true of the tree it was measured
+on, which is the ABL-234 rule below, gone stale exactly the way that rule
+predicts.)
 
 (ABL-287 added five server files — `lib/opsAlertRules.test.ts`,
 `lib/opsAlertEngine.test.ts`, `lib/opsAlertStateStore.test.ts`,

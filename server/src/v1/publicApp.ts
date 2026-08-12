@@ -3,8 +3,11 @@ import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
 import v1Routes from './routes/index.js';
+import publicRootRoutes from './routes/root.js';
+import { requireApiKey } from './auth/apiKeyAuth.js';
 import { publicErrorHandler, publicNotFoundHandler } from './publicErrors.js';
 import { assertPublicEnvironment, parsePublicCorsOrigins, type PublicEnv } from './publicEnv.js';
+import type { ApiKeyDirectory } from './keys/apiKeyStore.js';
 
 /**
  * The public application, composed from scratch.
@@ -48,6 +51,24 @@ import { assertPublicEnvironment, parsePublicCorsOrigins, type PublicEnv } from 
 
 export interface PublicAppOptions {
   /**
+   * The store the API-key gate authenticates against (ABL-300).
+   *
+   * **Required, with no default**, and that is the point: an app built without
+   * a key store would be an unauthenticated public API, so there is no way to
+   * spell one. The type is {@link ApiKeyDirectory} — read-only by construction,
+   * so the composition cannot issue, rotate or revoke a key even by mistake;
+   * that capability lives on `ApiKeyAdminStore` and is held only by the keys
+   * CLI.
+   *
+   * Injected rather than opened here, which is also what keeps
+   * `better-sqlite3` out of this module's import graph: `publicApp.ts` names
+   * the *shape* of a key store, and `publicIndex.ts` decides which one. The
+   * type-only import above is erased by `tsc`, so it is not a runtime edge —
+   * `publicAppGraph.test.ts` pins that.
+   */
+  apiKeyDirectory: ApiKeyDirectory;
+
+  /**
    * The environment to configure from and to vet. Defaults to `process.env`.
    *
    * Injectable so tests can assert the refusal without mutating a global under
@@ -56,7 +77,7 @@ export interface PublicAppOptions {
   env?: PublicEnv;
 }
 
-export function createPublicApp({ env = process.env }: PublicAppOptions = {}): Express {
+export function createPublicApp({ apiKeyDirectory, env = process.env }: PublicAppOptions): Express {
   // First, before anything is wired: refuse to exist in a process that was
   // handed a write or ops capability. See FORBIDDEN_PUBLIC_ENV for why this is
   // a startup failure rather than a warning.
@@ -121,6 +142,26 @@ export function createPublicApp({ env = process.env }: PublicAppOptions = {}): E
 
   app.use(compression());
 
+  // Three mounts, and the order is the security property (ABL-300).
+  //
+  // `publicRootRoutes` is the entire unauthenticated surface — one discovery
+  // endpoint returning two constants. It is a separate module rather than the
+  // first route inside `v1Routes` so that "what needs no key" is a file
+  // somebody edits deliberately, not a consequence of which line came first.
+  //
+  // `requireApiKey` then gates **everything else under `/v1`**, including paths
+  // that match no route. So an unauthenticated caller gets 401 rather than 404
+  // from `/v1/observations/load`, which means the surface cannot be enumerated
+  // without a key — and, more usefully, a resource ABL-303 adds to `v1Routes`
+  // is authenticated whether or not its author thought about it.
+  //
+  // CORS is deliberately ahead of the gate: the `cors` middleware answers a
+  // preflight `OPTIONS` itself and ends the chain, so a browser's preflight —
+  // which by specification carries no `Authorization` header — is never 401'd.
+  // ABL-301's meter and ABL-302's quota check slot in after the gate, in that
+  // order, both of them outside the cache (ABL-293 §2c).
+  app.use('/v1', publicRootRoutes);
+  app.use('/v1', requireApiKey({ directory: apiKeyDirectory }));
   app.use('/v1', v1Routes);
 
   // Unconditional and last, in this order — `notFound` first so anything that

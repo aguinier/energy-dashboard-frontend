@@ -1,39 +1,31 @@
 import { Router } from 'express';
 
 /**
- * The public `/v1` router — the only router the public app mounts.
+ * The authenticated `/v1` resources.
  *
- * ABL-304 builds the composition; the resources go in behind it:
- * `/v1/observations/*`, `/v1/forecasts*`, `/v1/accuracy` and `/v1/catalog/*`
- * are ABL-303, with auth (ABL-300), metering (ABL-301) and quotas (ABL-302)
- * ahead of them in the stack, in that order — metering must sit outside the
- * cache or every cached hit goes unbilled (ABL-293 §2c).
+ * Everything mounted here sits **behind** `requireApiKey` — `publicApp.ts`
+ * mounts the gate between `routes/root.ts` and this router, so a route added to
+ * this file requires a key by construction rather than by its author
+ * remembering to ask for one. A handler here can call
+ * `requireApiPrincipal(res)` (`v1/auth/apiKeyAuth.ts:79`) and get an account,
+ * never `undefined`.
+ *
+ * ABL-303 fills this in: `/v1/observations/*`, `/v1/forecasts*`, `/v1/accuracy`
+ * and `/v1/catalog/*`. Metering (ABL-301) and quotas (ABL-302) go between the
+ * gate and these routes, in that order — metering must sit outside the cache or
+ * every cached hit goes unbilled (ABL-293 §2c).
+ *
+ * It is empty rather than absent, and that is worth a line: an unauthenticated
+ * request to `/v1/observations/load` gets 401 today because the gate is ahead
+ * of this router, and an *authenticated* one gets 404. Those are the two right
+ * answers for a resource that does not exist yet, and they are already the
+ * answers ABL-303 will inherit.
  *
  * **Every module reachable from this file becomes reachable from the public
- * app**, and `publicApp.test.ts` asserts the resulting graph. So a new resource
- * is added by importing a `v1/routes/*` module here, and if that module reaches
- * back into `routes/`, `services/opsStatus*` or anything holding a write
- * handle, the suite says so by name.
+ * app**, and `publicAppGraph.test.ts` asserts the resulting graph. So if a
+ * resource module reaches back into `routes/`, `services/opsStatus*` or
+ * anything holding a write handle, the suite says so by name.
  */
 const router = Router();
-
-/**
- * Discovery root. Two constants and nothing else.
- *
- * It exists so the isolation tests have a positive control: without a route
- * that *does* answer, "every internal path 404s" is also satisfied by an app
- * that was never wired up, and the test would pass while proving nothing. It
- * deliberately carries none of what `/api/health` carries — no `db_path`, no
- * `commit`, no `runtime` (`lib/healthProvenance.ts`) — because those are the
- * three fields ABL-293 §1.2(b) flags as the reason `/health` must not be on
- * this surface.
- *
- * ABL-305 owns whether this endpoint survives into the published OpenAPI
- * document or is replaced by a documented root; it is listed here rather than
- * invented there.
- */
-router.get('/', (_req, res) => {
-  res.json({ version: 'v1', status: 'ok' });
-});
 
 export default router;
