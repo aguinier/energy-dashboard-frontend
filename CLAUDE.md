@@ -2652,6 +2652,21 @@ Installed under v24.18.0 this run, `node -p "process.versions.modules"` reports
 **137** and the module loads, which is the check worth doing before trusting a
 count.)
 
+### A raw control byte makes a test file invisible to review
+
+Write control characters in test fixtures as **escapes** (`'\0'`, `'\x1b'`),
+never as the raw byte. A single `0x00` anywhere in a file makes git classify the
+whole blob as binary: `git diff --stat` reports `Bin 9542 -> 9543 bytes` instead
+of line counts, the PR renders the file as *0 additions, 0 deletions*, and the
+file will not merge line-wise. ABL-300 hit this — `v1/keys/keyFormat.test.ts`
+held a literal NUL in a hostile-input list, and the reviewer could not read the
+diff of the most security-relevant test in the change. It was first written off
+as a GitHub rename-detection artifact, which it was not; `git diff --stat`
+saying `Bin` on your own machine is the tell that settles it. `'\0'` is the same
+single NUL character at runtime, so nothing about the test weakens. If a PR
+shows a text file as `0 additions`, check for a stray control byte before
+believing any explanation that blames the renderer.
+
 (Measurement conditions, which are not optional. Run under **v24.18.0**: see
 the two measurement notes below for why a count taken in a tree shared with a
 concurrent run is not trustworthy, and the `storage.setItem` note for why the
