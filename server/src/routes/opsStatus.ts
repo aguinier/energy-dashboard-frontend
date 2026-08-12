@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getOpsStatus } from '../services/opsStatusService.js';
+import { getCombinedOpsStatus } from '../services/combinedOpsStatusService.js';
 
 const router = Router();
 
@@ -26,6 +27,26 @@ const router = Router();
  */
 router.get('/status', (_req, res) => {
   res.json({ success: true, data: getOpsStatus() });
+});
+
+/**
+ * GET /ops/status/combined
+ *
+ * This side's `/ops/status` plus the peer environment's (fetched over HTTP
+ * via `OPS_PEER_URL` — prod's peer is acceptance and vice versa, never
+ * hardcoded, see `combinedOpsStatusService.ts`), for the acceptance/prod
+ * status comparison page (ABL-238). Either side degrades to `reachable: false`
+ * rather than failing the whole request — an unreachable peer must never
+ * blank this environment's own KPIs, and a locked local DB during the ABL-220
+ * sync blackout must never blank the peer's. `syncBlackout` tells the client
+ * when to render that as a known, expected state instead of a red alarm.
+ */
+router.get('/status/combined', async (_req, res, next) => {
+  try {
+    res.json({ success: true, data: await getCombinedOpsStatus() });
+  } catch (error) {
+    next(error);
+  }
 });
 
 export default router;

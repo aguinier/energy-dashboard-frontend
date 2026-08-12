@@ -100,3 +100,24 @@ describe('GET /api/ops/status', () => {
     expect(Object.keys(data).sort()).toEqual(['commit', 'db_path', 'runtime', 'status', 'timestamp']);
   });
 });
+
+describe('GET /api/ops/status/combined', () => {
+  it('reports local KPIs and an honest unconfigured peer when OPS_PEER_URL is unset (test env)', async () => {
+    const { status, body } = await api.get('ops/status/combined');
+    expect(status).toBe(200);
+
+    const data = body.data as Record<string, unknown>;
+    expect(Object.keys(data).sort()).toEqual(
+      ['local', 'peer', 'peerConfigured', 'syncBlackout', 'timestamp'],
+    );
+
+    const local = data.local as Record<string, unknown>;
+    expect(local.reachable).toBe(true);
+    expect((local.status as Record<string, unknown>).freshness).toBeDefined();
+
+    // No OPS_PEER_URL in this test process's env — the honest "not configured"
+    // state, distinct from "configured but unreachable".
+    expect(data.peerConfigured).toBe(false);
+    expect((data.peer as Record<string, unknown>).reachable).toBe(false);
+  });
+});

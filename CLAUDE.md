@@ -115,7 +115,7 @@ energy-dashboard-frontend/
         │   ├── coreNetPosition.ts     # Minimal, provisional read for the JAO Core
         │   │                          #   net position archive (ABL-230)
         │   ├── dataFreshness.ts, countries.ts, weather.ts
-        │   ├── opsStatus.ts           # /ops/status — host/process KPIs + fleet freshness rollup (ABL-237)
+        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined (ABL-237, ABL-238)
         ├── services/                  # One service module per route group
         │   ├── freshness.ts           # Pure: is a stream live / stale / never held
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
@@ -124,6 +124,8 @@ energy-dashboard-frontend/
         │   ├── hostMetrics.ts         # Pure: disk/CPU readings, null when unmeasurable
         │   ├── forecastVintageArchiveService.ts, forecastVintageArchiveScheduler.ts
         │   │                          # Append-only forecast-vintage capture (ABL-184)
+        │   ├── peerOpsStatus.ts       # Fetches the peer environment's /api/ops/status (OPS_PEER_URL)
+        │   ├── combinedOpsStatusService.ts  # Merges local + peer for the ABL-238 status page
         │   └── coreNetPositionService.ts, jaoCoreNetPositionCapture.ts,
         │       coreNetPositionScheduler.ts
         │                              # JAO Core CCR net position capture (ABL-230) —
@@ -131,6 +133,8 @@ energy-dashboard-frontend/
         ├── workers/                   # captureForecastVintagesWorker.ts,
         │                              #   captureCoreNetPositionWorker.ts — each
         │                              #   scheduler's writable-connection thread
+        ├── lib/
+        │   └── syncBlackoutWindow.ts  # Pure: is `now` inside the ABL-220 DB-sync lock window
         ├── config/
         │   ├── database.ts            # SQLite connection (ENERGY_DB_PATH)
         │   ├── writeDatabase.ts       # Separate writable handle, opened lazily —
@@ -1566,6 +1570,36 @@ database (the freshness rollup), so it is expected to fail during the
 twice-daily DB sync's write-lock blackout described above — a known window,
 not a defect (see "Acceptance blackout during Stage 2", `../WORKFLOWS.md`).
 
+**`GET /api/ops/status/combined` (ABL-238) is the acceptance/prod status
+page's data source** — the internal `/ops-status` route, not in the main nav
+(`App.tsx` checks `window.location.pathname` directly rather than going
+through the persisted `currentView` store, so visiting it never changes what a
+normal user's next visit lands on). It fetches the peer environment's own
+`/api/ops/status` server-side (`peerOpsStatus.ts`) rather than having the
+browser call both origins directly — a cross-origin browser fetch from prod's
+page straight to acceptance's API (or vice versa) would hit CORS, and this
+also keeps the peer's LAN IP out of the client bundle. The peer's base URL is
+`OPS_PEER_URL` (`server/.env.example`, `docker/.env.example`,
+`docker-compose.yml`) — prod's points at acceptance and acceptance's points at
+prod; deliberately not hardcoded, since the same built image runs as either
+side. `combinedOpsStatusService.ts`'s `getCombinedOpsStatus` wraps **both**
+sides — the local call to `getOpsStatus()` and the peer HTTP fetch — in the
+same `{ reachable, ... }` shape, so a DB lock on this side during the sync
+blackout degrades this side alone, never blanks the peer's KPIs, and never
+500s the whole combined payload; `peerConfigured: false` (unset `OPS_PEER_URL`)
+is reported distinctly from `peer.reachable: false` (configured but not
+answering), so the page can say "not set up" instead of "down". `syncBlackout`
+(`lib/syncBlackoutWindow.ts`, ABL-220) tells the client to render an
+unreachable side as a known-state annotation rather than a red alarm when the
+timestamp falls in the ~07:00 / ~16:30 local sync window. That module owns the
+pad sizing and its justification — 2 min before the scheduled minute and a
+per-window `padAfterMin` (`server/src/lib/syncBlackoutWindow.ts:61`), widened
+to 60 min by ABL-249 after a 34m07s run on 2026-08-12; this page consumes it
+and does not size it. The window was previously misdiagnosed as a code/container defect
+(ABL-220's writeup) and the status page is built specifically not to repeat
+that mistake. No visitor-counter KPI and no external alerting/paging are in
+scope here — see the issue for why.
+
 ## Generation data
 
 Two tables, both written from **one** A75 fetch per country per window
@@ -2062,24 +2096,33 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12: **44 client test files / 575 tests** (555 passing in
+Green as of 2026-08-12: **45 client test files / 590 tests** (570 passing in
 this checkout — the other 20, in `dashboardStore.test.ts`/`windowLabel.test.ts`,
 fail on the pre-existing `storage.setItem is not a function` sandbox quirk the
-ABL-203 paragraph below already documents, not a regression), **41 server
-test files / 602 tests**, all passing, clean typecheck. Fewer tests passing
-than that means something broke.
+ABL-203 paragraph below already documents, not a regression; ABL-263 tracks
+them), **44 server test files / 620 tests**, all passing, clean typecheck.
+Fewer tests passing than that means something broke.
 
-(That server figure is measured on ABL-234 merged with `origin/main`, which is
-what `main` becomes when this lands — not on ABL-234's own 39/585. The extra
-2 files / 17 cases are `main`'s, not this change's: ABL-244 added
-`scripts/backfillModelGuard.test.ts` **and** `server/vitest.config.ts`, whose
-`include: ['src/**/*.test.ts', '../scripts/**/*.test.ts']` is what makes the
-repo-root scripts discoverable at all, and ABL-262 added
-`server/src/routes/countries.test.ts`. Both `main` and this branch were
-separately claiming 39 files here — `main` at 563 cases, this branch at 585 —
-so neither side's number survived the merge, and the two edits did not
-conflict textually because they touched the same claim from different
-directions.)
+(Both figures are a fresh `npx vitest run` on ABL-238 merged with `origin/main`
+at `0871259` — what `main` becomes when this lands — not arithmetic on the two
+branches' separate claims. Measured on a detached `origin/main` immediately
+beforehand: **42 server files / 604 tests** and **44 client files / 575 tests**,
+555 passing with the same 20 failing and no ABL-238 file on disk, which is what
+establishes those 20 as `main`'s rather than this branch's. ABL-238 adds +2
+server files / +16 cases (`services/peerOpsStatus.test.ts`,
+`services/combinedOpsStatusService.test.ts`, and new cases in the existing
+`routes/opsStatus.test.ts`) and +1 client file / +15 cases
+(`lib/opsStatusThresholds.test.ts`).)
+
+(`main` arrived here already claiming 41/602 while measuring 42/604: ABL-234
+counted correctly, but ABL-266 landed afterwards and
+`server/src/release/checkUnmergedWork.test.ts` is exactly the missing +1 file /
++2 cases. A count is only true of the tree it was measured on — re-measure it,
+never re-derive it from two branches' claims. The server file count includes
+the repo-root `scripts/backfillModelGuard.test.ts` (43 files under `server/`
+plus that one): ABL-244 added it together with `server/vitest.config.ts:11`,
+whose `include: ['src/**/*.test.ts', '../scripts/**/*.test.ts']` is what makes
+repo-root scripts discoverable from the server suite at all.)
 
 (ABL-234 added the Core / all-coupled-borders scope toggle. Client: 3 new
 files — `lib/coreNetPositionSeries.test.ts`, `components/map/
