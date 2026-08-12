@@ -439,6 +439,80 @@ export interface CombinedOpsStatus {
   };
 }
 
+// ----------------------------------------------------------------------------
+// Ops status history (ABL-288)
+// ----------------------------------------------------------------------------
+// Mirrors server/src/services/opsSnapshot.ts, opsHistoryService.ts and
+// lib/diskHeadroom.ts. Snapshots of the combined reading, stored on a timer,
+// so the page can show a trend and a disk projection rather than only "now".
+
+/**
+ * One side of one stored reading. Every metric is `| null`, and `null` means
+ * that reading did not contain it — the side was unreachable, or the host
+ * could not measure it. It never means zero.
+ */
+export interface OpsSideSnapshot {
+  reachable: boolean;
+  latencyMs: number | null;
+  diskUsedBytes: number | null;
+  diskTotalBytes: number | null;
+  rssBytes: number | null;
+  uptimeSeconds: number | null;
+  freshnessStatus: FreshnessStatus | null;
+  staleCountryCount: number | null;
+  commit: string | null;
+}
+
+export interface OpsSnapshot {
+  /** ISO-8601 UTC instant the reading was taken. */
+  t: string;
+  local: OpsSideSnapshot;
+  peer: OpsSideSnapshot;
+}
+
+/** Why a headroom projection is absent — the page states this rather than showing a number. */
+export type DiskHeadroomReason =
+  | 'ok'
+  | 'no_readings'
+  | 'insufficient_history'
+  | 'insufficient_span'
+  | 'not_rising'
+  | 'noisy_fit'
+  | 'already_breached'
+  | 'beyond_horizon';
+
+export interface DiskHeadroomBasis {
+  points: number;
+  spanHours: number;
+  slopePercentPerDay: number;
+  r2: number;
+  currentPercent: number;
+}
+
+export interface DiskHeadroom {
+  thresholdPercent: number;
+  /** Days until the threshold is crossed, or `null` — see `reason`. */
+  days: number | null;
+  reason: DiskHeadroomReason;
+  basis: DiskHeadroomBasis | null;
+}
+
+export interface OpsStatusHistory {
+  timestamp: string;
+  /** Hours actually served — the request's `hours` clamped to retention. */
+  windowHours: number;
+  snapshots: OpsSnapshot[];
+  headroom: { local: DiskHeadroom; peer: DiskHeadroom };
+  storage: {
+    captureEnabled: boolean;
+    intervalMinutes: number;
+    retentionDays: number;
+    storedSnapshots: number;
+    skippedLines: number;
+    error: string | null;
+  };
+}
+
 // ============================================================================
 // Data Layers
 // ============================================================================

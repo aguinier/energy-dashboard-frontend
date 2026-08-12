@@ -116,8 +116,9 @@ energy-dashboard-frontend/
         │   ├── coreNetPosition.ts     # Minimal, provisional read for the JAO Core
         │   │                          #   net position archive (ABL-230)
         │   ├── dataFreshness.ts, countries.ts, weather.ts
-        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined (ABL-237, ABL-238;
-        │   │                          #   `derived` warn/error verdicts added by ABL-292)
+        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined, /ops/status/history
+        │   │                          #   (ABL-237, ABL-238; `derived` warn/error verdicts
+        │   │                          #   added by ABL-292, history by ABL-288)
         ├── services/                  # One service module per route group
         │   ├── freshness.ts           # Pure: is a stream live / stale / never held
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
@@ -128,6 +129,9 @@ energy-dashboard-frontend/
         │   │                          # Append-only forecast-vintage capture (ABL-184)
         │   ├── peerOpsStatus.ts       # Fetches the peer environment's /api/ops/status (OPS_PEER_URL)
         │   ├── combinedOpsStatusService.ts  # Merges local + peer for the ABL-238 status page
+        │   ├── opsSnapshot.ts, opsSnapshotStore.ts, opsSnapshotScheduler.ts,
+        │   │   opsHistoryService.ts   # Append-only JSONL ops-status snapshots (ABL-288) —
+        │   │                          #   a file next to the DB, never a table in it
         │   └── coreNetPositionService.ts, jaoCoreNetPositionCapture.ts,
         │       coreNetPositionScheduler.ts
         │                              # JAO Core CCR net position capture (ABL-230) —
@@ -1680,6 +1684,58 @@ Two rules this endpoint holds to, both load-bearing:
   Anything asserting on `environment` for an unreachable side must read
   `syncBlackout.active` rather than assume `error`, or it fails twice a day.
 
+**`GET /api/ops/status/history` (ABL-288) is the trend half of that page**, and
+it is the one ops route that does **not** touch the database. A scheduler
+(`startOpsSnapshotScheduler`, `server/src/services/opsSnapshotScheduler.ts:114`)
+records a narrow projection of the combined reading — `toOpsSnapshot`
+(`server/src/services/opsSnapshot.ts:67`) keeps disk/RSS/uptime/freshness and
+drops the stale-country list and per-stream counts — into an append-only JSONL
+file every `OPS_SNAPSHOT_INTERVAL_MINUTES` (default 15), kept
+`OPS_SNAPSHOT_RETENTION_DAYS` (default 14). **It is a file, not a table**: the
+shared SQLite database belongs to `energy-data-gathering` and adding a table to
+it is out of bounds, and the deployed Windows acceptance host cannot open a WAL
+connection on its bind-mounted filesystem at all, while a plain append to that
+same mount works. The default path sits next to the database
+(`resolveSnapshotConfig`, `server/src/services/opsSnapshotStore.ts:68`) — so
+**deploying this makes a new `ops-status-snapshots.jsonl` appear in `/data`**,
+alongside the database, never inside it. Unlike the two DB-writing schedulers
+this one is **on by default**: it writes only its own file, and a trend that
+needs a deploy-time flag flipped before it starts accumulating is a trend
+nobody has when they first need it. `OPS_SNAPSHOT_ENABLED=false` turns capture
+off; reads are still served.
+
+The `days` figure is a **projection, not a measurement**, and
+`computeDiskHeadroom` (`server/src/lib/diskHeadroom.ts:142`) is written to
+refuse far more often than it answers — a least-squares fit of used-percent
+against time that returns `days: null` with a machine-readable `reason` for
+seven distinct refusals: fewer than four readings, a span under 12 hours, a
+flat or falling disk (`not_rising` — not "never", not a huge number), R² under
+0.5 (`noisy_fit`), already at the threshold (`already_breached` — the alarm is
+the current reading, not a countdown), and a crossing past a year
+(`beyond_horizon`, because extrapolating years from days of history is
+fabrication with a decimal point on it). It projects off the last **measured**
+percent, never the fitted value at that instant. `basis` (readings, span,
+slope, R², current percent) is returned even for the refusals, and the page
+renders it, so a projection built on 42 readings with R²=0.97 and a refusal
+built on three readings are told apart by the reader rather than trusted.
+`DISK_THRESHOLD_PERCENT` (`server/src/lib/diskHeadroom.ts:77`) is not a number
+of its own — it is `DISK_ERROR_RATIO * 100`, imported from the single
+thresholds module above. The countdown and the badge cannot drift because
+there is only one constant to change; were it mirrored, the page would say a
+disk is fine and that it crosses "full" tomorrow.
+
+Every one of those refusals is a *sentence*, not a blank cell: `describeHeadroom`
+(`client/src/lib/opsHistorySeries.ts:74`) maps all eight reasons to prose, and
+`describeStorage` (`:126`) separates "capture is switched off" from "nothing
+captured yet" from "the store could not be read" — three states that all render
+as an empty chart and have three different fixes. A side that was unreachable,
+or reported no disk, is a **hole in the line, never a zero**: `diskSeries`
+(`:39`) emits `null` and the chart splits its stroke with `drawableRuns`, the
+same rule the forecast lines follow. `hours` is clamped to what is actually
+retained and the served window echoed back as `windowHours`, so a client asking
+for 90 days of a 14-day file is told it got 14 rather than handed 14 days
+labelled 90.
+
 ## Generation data
 
 Two tables, both written from **one** A75 fetch per country per window
@@ -2176,18 +2232,29 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292):
-**45 client test files / 598 tests** and **45 server test files / 651 tests**,
-all passing, clean typecheck on both. Fewer tests passing than that means
-something broke.
+Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
+ABL-288): **47 client test files / 631 tests** and **50 server test files /
+735 tests**, all passing, clean typecheck on both. Fewer tests passing than
+that means something broke.
 
 (ABL-285 added `forecastVintage.test.ts`, +1 client file / +20 tests. ABL-292
 then deleted the client's `lib/opsStatusThresholds.*`, -1 file / -15 tests, and
 added `server/src/lib/opsStatusThresholds.test.ts`, +1 server file / +31 tests
 counting the derived-state cases in `services/combinedOpsStatusService.test.ts`
-and `routes/opsStatus.test.ts`. The figure above is a fresh run on the merge,
+and `routes/opsStatus.test.ts`. ABL-288 then added +5 server files
+(`lib/diskHeadroom.test.ts`, `services/opsSnapshot.test.ts`,
+`services/opsSnapshotStore.test.ts`, `services/opsSnapshotScheduler.test.ts`,
+`services/opsHistoryService.test.ts`) and +1 client file
+(`lib/opsHistorySeries.test.ts`). The figure above is a fresh run on the merge,
 not those deltas summed — see the ABL-234 note below on why a count is only
 true of the tree it was measured on.)
+
+`src/docs/claudeMdCitations.test.ts` is what keeps the `file:line` references
+in this document honest: it resolves every one of them and fails if a citation
+lands on the wrong line. It caught this merge shifting
+`computeDiskHeadroom` by two lines. If you move code that this file cites,
+that suite tells you before a reader is misled — so run the server suite after
+editing either.
 
 Two measurement notes worth having before you diagnose a "failure":
 

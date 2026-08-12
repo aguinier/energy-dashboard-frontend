@@ -1,6 +1,8 @@
 import { AlertTriangle, CheckCircle2, Clock, HelpCircle, XCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { OpsHistoryCard } from '@/components/ops/OpsHistoryCard';
 import { useOpsStatus } from '@/hooks/useOpsStatus';
+import { useOpsStatusHistory } from '@/hooks/useOpsStatusHistory';
 import { buildNetworkRows } from '@/lib/networkRows';
 import { formatBytes, formatTimeAgo } from '@/lib/formatters';
 import type {
@@ -31,6 +33,11 @@ import type {
  */
 export default function OpsStatusView() {
   const { data, isLoading, isError, refetch, isFetching } = useOpsStatus();
+  // Separate query, separate failure: the live KPIs must still render when the
+  // snapshot store is unreadable, and the trend must still render during the
+  // ABL-220 blackout that degrades the live call (the history endpoint does
+  // not touch the database).
+  const historyQuery = useOpsStatusHistory();
 
   return (
     <div className="flex-1 overflow-auto bg-background">
@@ -61,6 +68,18 @@ export default function OpsStatusView() {
                 peerConfigured={data.peerConfigured}
               />
             </div>
+            {historyQuery.data && <OpsHistoryCard history={historyQuery.data} />}
+            {historyQuery.isError && (
+              <p className="text-meta text-ink-dim">
+                Could not load the snapshot history.{' '}
+                <button
+                  onClick={() => historyQuery.refetch()}
+                  className="cursor-pointer underline underline-offset-2 hover:text-foreground"
+                >
+                  Retry
+                </button>
+              </p>
+            )}
             <p className="text-micro text-ink-faint">
               As of {formatTimeAgo(data.timestamp)}{isFetching ? ' · refreshing…' : ''}
             </p>

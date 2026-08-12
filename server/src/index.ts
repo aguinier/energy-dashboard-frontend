@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { createApp, resolveClientDist } from './app.js';
 import { startForecastVintageArchiveScheduler } from './services/forecastVintageArchiveScheduler.js';
 import { startCoreNetPositionScheduler } from './services/coreNetPositionScheduler.js';
+import { startOpsSnapshotScheduler } from './services/opsSnapshotScheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3001;
@@ -47,5 +48,12 @@ startForecastVintageArchiveScheduler();
 // that means deploying this code changes nothing in prod until a separate,
 // coordinated step turns it on.
 startCoreNetPositionScheduler();
+
+// ABL-288: records a snapshot of /api/ops/status/combined every
+// OPS_SNAPSHOT_INTERVAL_MINUTES so /ops-status can show a trend and a disk
+// headroom projection. Unlike the two schedulers above it writes only its own
+// JSONL file — never the shared database — so it is on by default; see
+// services/opsSnapshotStore.ts. A capture that fails is logged and dropped.
+startOpsSnapshotScheduler();
 
 export default app;
