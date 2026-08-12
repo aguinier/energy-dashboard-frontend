@@ -15,6 +15,7 @@ import weatherRouter from './weather.js';
 import netPositionRouter from './netPosition.js';
 import netPositionIngestRouter from './netPositionIngest.js';
 import opsStatusRouter from './opsStatus.js';
+import coreNetPositionRouter from './coreNetPosition.js';
 
 const router = Router();
 
@@ -30,6 +31,9 @@ router.use('/forecasts', forecastRouter);
 // same /forecasts prefix, before nothing else claims POST /net-position.
 router.use('/forecasts', netPositionIngestRouter);
 router.use('/net-position', netPositionRouter);
+// Minimal, provisional read for the JAO Core net position archive (ABL-230) —
+// see routes/coreNetPosition.ts for why this is not the client-facing shape.
+router.use('/core-net-position', coreNetPositionRouter);
 router.use('/tso-forecast', tsoForecastRouter);
 router.use('/data-freshness', dataFreshnessRouter);
 router.use('/forecast-comparison', forecastComparisonRouter);
