@@ -115,3 +115,77 @@ describe('getCombinedOpsStatus', () => {
     expect(result.syncBlackout).toEqual({ active: false, label: null });
   });
 });
+
+/**
+ * ABL-292. The verdicts themselves are exhaustively covered in
+ * `lib/opsStatusThresholds.test.ts`; what matters here is that the endpoint
+ * attaches them for **both** lanes, off each side's own reported numbers, and
+ * that adding them changed nothing a consumer already reads.
+ */
+describe('getCombinedOpsStatus derived state', () => {
+  const withDisk = (usedBytes: number, totalBytes: number): OpsStatus => ({
+    ...SAMPLE_STATUS,
+    host: { ...SAMPLE_STATUS.host, disk: { totalBytes, freeBytes: totalBytes - usedBytes, usedBytes } },
+  });
+
+  it('derives each lane independently — a full local disk must not colour the peer, or vice versa', async () => {
+    const result = await getCombinedOpsStatus(NOON, {
+      getLocalStatus: () => withDisk(95, 100),
+      fetchPeer: async () => ({ reachable: true, latencyMs: 42, status: withDisk(10, 100) }),
+      env: { OPS_PEER_URL: 'http://192.168.86.36:3001' },
+    });
+
+    expect(result.derived.local).toEqual({ environment: 'error', disk: 'error', freshness: 'ok' });
+    expect(result.derived.peer).toEqual({ environment: 'ok', disk: 'ok', freshness: 'ok' });
+  });
+
+  it('reads the live acceptance disk figure (85.11%) as warn, not error, end to end through the endpoint', async () => {
+    const result = await getCombinedOpsStatus(NOON, {
+      getLocalStatus: () => withDisk(8511, 10_000),
+      fetchPeer: reachablePeer,
+      env: { OPS_PEER_URL: 'http://192.168.86.36:3001' },
+    });
+
+    expect(result.derived.local).toEqual({ environment: 'warn', disk: 'warn', freshness: 'ok' });
+  });
+
+  it('reports an unreachable peer as environment error with unmeasured KPIs, never a clean ok', async () => {
+    const result = await getCombinedOpsStatus(NOON, {
+      getLocalStatus: () => SAMPLE_STATUS,
+      fetchPeer: unreachablePeer,
+      env: { OPS_PEER_URL: 'http://192.168.86.237:3001' },
+    });
+
+    expect(result.derived.peer).toEqual({ environment: 'error', disk: 'unknown', freshness: 'unknown' });
+    expect(result.derived.local.environment).toBe('ok');
+  });
+
+  it('applies the same blackout downgrade the page used to apply client-side', async () => {
+    const result = await getCombinedOpsStatus(DURING_BLACKOUT, {
+      getLocalStatus: () => {
+        throw new Error('SQLITE_BUSY: database is locked');
+      },
+      fetchPeer: reachablePeer,
+      env: { OPS_PEER_URL: 'http://192.168.86.36:3001' },
+    });
+
+    expect(result.syncBlackout.active).toBe(true);
+    expect(result.derived.local.environment).toBe('warn');
+  });
+
+  it('is additive — every field the deployed /ops-status page already reads is unchanged', async () => {
+    const result = await getCombinedOpsStatus(NOON, {
+      getLocalStatus: () => SAMPLE_STATUS,
+      fetchPeer: reachablePeer,
+      env: { OPS_PEER_URL: 'http://192.168.86.36:3001' },
+    });
+
+    expect(Object.keys(result).sort()).toEqual(
+      ['derived', 'local', 'peer', 'peerConfigured', 'syncBlackout', 'timestamp'].sort(),
+    );
+    // The two side objects keep their exact ABL-238 shape — the verdict is a
+    // sibling key, not a field grafted into either side.
+    expect(result.local).toEqual({ reachable: true, latencyMs: expect.any(Number), status: SAMPLE_STATUS });
+    expect(result.peer).toEqual({ reachable: true, latencyMs: 42, status: SAMPLE_STATUS });
+  });
+});
