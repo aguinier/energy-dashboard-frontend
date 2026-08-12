@@ -112,6 +112,8 @@ energy-dashboard-frontend/
         │   ├── forecastComparison.ts  # /forecast-comparison/:cc, /summary, /best, /rolling, /ml-accuracy
         │   ├── crossCountryComparison.ts  # /cross-country/metrics, /metrics/:forecastType
         │   ├── netPosition.ts, netPositionIngest.ts  # Read + write for the Chronos net-position pipeline
+        │   ├── coreNetPosition.ts     # Minimal, provisional read for the JAO Core
+        │   │                          #   net position archive (ABL-230)
         │   ├── dataFreshness.ts, countries.ts, weather.ts
         │   ├── opsStatus.ts           # /ops/status — host/process KPIs + fleet freshness rollup (ABL-237)
         ├── services/                  # One service module per route group
@@ -119,7 +121,16 @@ energy-dashboard-frontend/
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
         │   ├── degenerateForecast.ts  # Pure: collapsed-to-zero net position
         │   ├── freshnessRollup.ts     # Pure: fleet-wide worst-case freshness verdict
-        │   └── hostMetrics.ts         # Pure: disk/CPU readings, null when unmeasurable
+        │   ├── hostMetrics.ts         # Pure: disk/CPU readings, null when unmeasurable
+        │   ├── forecastVintageArchiveService.ts, forecastVintageArchiveScheduler.ts
+        │   │                          # Append-only forecast-vintage capture (ABL-184)
+        │   └── coreNetPositionService.ts, jaoCoreNetPositionCapture.ts,
+        │       coreNetPositionScheduler.ts
+        │                              # JAO Core CCR net position capture (ABL-230) —
+        │                              #   see "Core CCR net position (JAO)" below
+        ├── workers/                   # captureForecastVintagesWorker.ts,
+        │                              #   captureCoreNetPositionWorker.ts — each
+        │                              #   scheduler's writable-connection thread
         ├── config/
         │   ├── database.ts            # SQLite connection (ENERGY_DB_PATH)
         │   ├── writeDatabase.ts       # Separate writable handle, opened lazily —
@@ -1427,7 +1438,7 @@ acceptance host, no extra dependency), process memory/uptime, and CPU load —
 `null` on Windows rather than `os.loadavg()`'s fabricated `[0, 0, 0]`, per this
 file's own rule that a metric we cannot measure is `null`, never invented.
 Provenance (`commit`/`runtime`/`db_path`) is `getHealthProvenance()` verbatim,
-the same values `/api/health` (`routes/index.ts:45`) reports — `/health`'s own
+the same values `/api/health` (`routes/index.ts:49`) reports — `/health`'s own
 response contract is unchanged. Unlike `/health`, this endpoint touches the
 database (the freshness rollup), so it is expected to fail during the
 twice-daily DB sync's write-lock blackout described above — a known window,
@@ -1535,17 +1546,72 @@ REPLACE(expr,' ','T'))` looks like the natural extension of `rangeClause`'s
 seek-preserving two-clause shape to an equality, and was the approach this
 ticket originally sketched. It silently fans out: `energy_load` alone has
 **137,113** country-hours where a `T` row and a space row both exist, and
-**107,047** of those pairs hold **conflicting** values (measured 2026-08-11,
-against ABL-211/ABL-215's still-open "which one is authoritative" board
+**107,047** of those pairs held **conflicting** values (measured 2026-08-11,
+against ABL-211/ABL-215's then-still-open "which one is authoritative" board
 question — `energy_price` has 16,896 such pairs, 2 conflicting;
 `energy_renewable` 26,694 pairs, 2,441 conflicting). An `IN(...)` join matches
 *both* rows whenever both exist, so it would have traded ABL-214's silent-drop
 defect for a silent-fan-out one — double-counting that hour, and on a
 conflicting pair, handing an accuracy metric the right-looking value and the
 wrong one as if they were independent observations. That is exactly the
-confidently-wrong-number defect this whole file exists to catch, and it is not
-this join's decision to make: ABL-215 (still blocked) is what settles which of
-a conflicting pair is authoritative, not a read-side accuracy query.
+confidently-wrong-number defect this whole file exists to catch, and it was
+not this join's decision to make: settling which of a conflicting pair is
+authoritative is a data-provenance judgment, not a read-side accuracy query,
+and that is what ABL-215 was for.
+
+**ABL-215 ruled and executed on 2026-08-12, but only for `energy_load` and
+only for 23 of the ~26 conflicted countries.** ABL-227 sampled ~200
+conflicting country-hours against live ENTSO-E and found the winner is
+consistent *within* a country, not global: the Board approved a per-country
+rule — space-row wins (AT, BE, BG, CZ, DE, FR, GR, HR, IT, LU, LV, NL, PT),
+T-row wins (DK, EE, IE, LT, NO, RO, SE, SK — space was wrong by 8-57%, not a
+plausible revision), format-only normalize with no value change (FI, HU —
+conflicts were rounding artifacts of the same reading, average diff
+~0.004%). Re-enumerated immediately before writing (97,551 conflicting pairs
+for these 23 countries, not the stale 107,047 total): the losing row was
+copied to `energy_load_conflict_backup_abl215` (tagged `rule_applied`) before
+being deleted, and the 26,465 T-wins rows had their surviving space-row
+`load_mw` updated to the T value. **CH, PL and SI are still open** — ABL-227's
+sample couldn't resolve them (differences were noise-scale against a further,
+later ENTSO-E revision neither stored snapshot captured) — leaving 9,496
+conflicting pairs. `energy_price`'s 16,896 conflicting pairs are untouched
+entirely; ABL-227/ABL-215 scoped to `energy_load` only, since price's overlap
+is mostly disjoint coverage rather than value conflict. The two-LEFT-JOIN-
+COALESCE shape below is therefore still load-bearing for CH/PL/SI and for all
+of `energy_price` — do not simplify it back to a single join on the theory
+that ABL-215 "closed" the conflict question.
+
+**ABL-256 executed on 2026-08-12 and closed the rest — every non-conflicting
+`energy_load` T-row, format only, zero `load_mw` values changed anywhere.**
+Two blocks ABL-215 explicitly left untouched, because neither carried a
+provenance question: **142,767 orphan T-rows with no space-form counterpart at
+all** (AL 103,960, GB 24,792, plus 22 smaller countries — all written in one
+batch at `2025-11-25 10:18:1x`, the same historical cutover moment, ~8.5
+months before AL's unrelated 2026-08-06 upstream stall, ABL-84/ABL-152 — that
+stall is unaffected, this touched no row from it) had their separator
+rewritten in place, id-addressed
+(`UPDATE energy_load SET timestamp_utc = REPLACE(timestamp_utc,'T',' ')
+WHERE id = ?`, `load_mw` never named in the statement); and **30,066
+agreeing-duplicate T-rows**, where the T-row and its space-row twin already
+held byte-identical `load_mw` (20,562 across the 23 ABL-215 countries, plus a
+newly-found 9,504 across 5 more — GB, PL, ES, CH, UA — that were never in
+conflict and so were never inside ABL-215's scope either way), had the
+redundant T-row deleted; the surviving space-row was never written to. Board
+accepted the proposal outright, folding in the 9,504-row third block.
+Executed under the identical ABL-181/ABL-210 procedure: fresh re-enumeration
+immediately before writing (confirmed the 172,833-row total to the exact row,
+zero drift since the proposal), ingest paused only for the transaction's
+duration (5.5s), a single transaction with pre-image backup tables
+(`energy_load_orphan_backup_abl256`, `energy_load_agreeing_backup_abl256`)
+row-count-verified before either statement ran, and independent post-commit
+re-verification (20/20 spot checks on each block; `energy_price` and every
+other table confirmed byte-for-byte unchanged). `energy_load` dropped from
+182,329 to exactly **9,496** T-separator rows — CH 1,783 / PL 5,853 / SI
+1,860, precisely the still-open conflicts ABL-215 could not resolve — and
+gained zero new orphans, since every rewritten row already had no space-form
+counterpart to collide with. `energy_load`'s own row count dropped by exactly
+30,066 (the deletes, from 2,679,772 to 2,649,706); nothing else in the table
+or the database changed.
 
 `timestampFormOnClause` (`server/src/utils/timestamp.ts:140`) is instead
 always used as **two separate LEFT JOINs** — one matching the space form, one
@@ -1553,13 +1619,18 @@ matching the `T` form, on two different aliases — `COALESCE`d together
 preferring space. That changes nothing for any country-hour that already
 matched before this fix (a space-form row, unconditionally preferred, exactly
 like the one-sided-`REPLACE` join it replaces) and only adds coverage for an
-hour where a `T` row is the *only* one that exists (142,767 of `energy_load`'s
-279,880 `T` rows, measured 2026-08-11) — the genuinely dropped case ABL-214
-exists to fix. Two separate LEFT JOINs can never fan out the way one `IN(...)`
-join can: each side matches at most one physical row (verified 2026-08-11 —
-zero exact `(country_code, timestamp_utc)` string duplicates in `energy_load`,
-`energy_price` or `energy_renewable`), so their combination is at most one row,
-not up to two.
+hour where a `T` row is the *only* one that exists — **142,767 of
+`energy_load`'s then-279,880 `T` rows, measured 2026-08-11**, is now a
+historical figure: ABL-256 rewrote every one of those specific rows to space
+form, so none of them are `T`-only (or `T` at all) any more, and the shape's
+remaining `energy_load` role is purely the space-preferred tie-break over
+CH/PL/SI's 9,496 still-conflicting pairs, not an orphan rescue. The orphan-
+rescue case is still live and unmeasured-since-2026-08-11 for `energy_price`
+and `energy_renewable`, which ABL-256 did not touch. Two separate LEFT JOINs
+can never fan out the way one `IN(...)` join can: each side matches at most
+one physical row (verified 2026-08-11 — zero exact `(country_code,
+timestamp_utc)` string duplicates in `energy_load`, `energy_price` or
+`energy_renewable`), so their combination is at most one row, not up to two.
 
 **Currently a no-op against live data — measured, not assumed.** The
 `energy_price` FR 741-of-860 figure this section used to cite no longer
@@ -1804,6 +1875,66 @@ change — filed as its own follow-up instead.
   connection, with an in-flight guard so a slow pass is skipped rather than
   overlapped by the next tick.
 
+- **Core CCR net position (JAO) — added under ABL-230, server-only, and only
+  once explicitly enabled.** Step 2 of ABL-219 (Board-approved via
+  `confirmation:e4484ddc-7dcc-4e96-bb3d-23883577e078:core-netpos-ingest:v3`).
+  `net_position.net_position_mw` (see "NetPositionTab" above) is a zone's net
+  position over every SDAC-coupled border; the **Core** net position is a
+  separately-published, narrower quantity — only exchanges inside the 12-zone
+  Core CCR flow-based domain — that can disagree with it, including in sign
+  (France 2026-08-09 08:00 UTC: Core -114.9 MW vs the all-borders +1,557.7 MW;
+  full evidence in ABL-219's research brief, issue comment `5ba93873`). This
+  is the pipeline's **first non-ENTSO-E source**:
+  `https://publicationtool.jao.eu/core/api/data/netPos?FromUtc=<iso>&ToUtc=<iso>`,
+  public and unauthenticated, 15-minute resolution, verified working
+  2026-08-11. Do not call the distinction "AC vs DC" — it is which borders are
+  in scope, not conductor type (Germany's Core figure already nets in its
+  HVDC links; France's excludes its AC borders to ES/IT).
+
+  Mirrors the `forecast_vintage_archive` pattern directly above rather than
+  `netPositionIngestService.ts`: an append-only capture from an external
+  source on a timer, not a client-triggered write. `server/src/services/
+  coreNetPositionService.ts` owns a new, additive `core_net_position` table
+  (`ensureCoreNetPositionTable`, `CREATE TABLE IF NOT EXISTS` only — no
+  existing table touched), `jaoCoreNetPositionCapture.ts` fetches and parses
+  one window, and `coreNetPositionScheduler.ts` runs that on a 15-minute timer
+  inside `workers/captureCoreNetPositionWorker.ts`, on its own writable
+  connection, with the same in-flight guard as the forecast archive.
+
+  Only the 12 Core zone `hub_*` fields are stored (`CORE_ZONE_HUB_TO_COUNTRY`,
+  `coreNetPositionService.ts`) — the response also carries 2 ALEGrO hubs and 9
+  other external/DC virtual hubs Germany's own figure already nets in, and
+  none of those is a standalone bidding-zone net position. `hub_DE` is the
+  DE_LU zone; it is stored once, under `'DE'`, never duplicated under `'LU'`
+  — creating that duplicate is the exact defect ABL-35 (defect 4) already cost
+  a dedicated fix to remove from `net_position`. `resolveCoreCountryCode`
+  aliases a caller's `'LU'` to `'DE'` at read time, reusing
+  `netPositionService.ts`'s `resolveBiddingZone` for the DE/LU mapping itself
+  rather than duplicating it.
+
+  **Gated on TWO env vars, not a reuse of `HELIO_WRITE_TOKEN` alone.** That
+  token is very plausibly already set in production, since it also gates the
+  live weather-snapshot and net-position-forecast write endpoints — reusing
+  it here would risk enabling live JAO capture the moment this code deploys,
+  which is exactly what ABL-230 says must not happen as a side effect of
+  merging. `shouldScheduleCoreNetPositionCapture`
+  (`coreNetPositionScheduler.ts`) requires `JAO_CORE_NET_POSITION_ENABLED` — a
+  new variable, not set anywhere, not set as part of this change — **and**
+  `HELIO_WRITE_TOKEN`, since a writable connection is still the same
+  prerequisite `getWriteDb()` has (unopenable on the Windows/Docker-Desktop
+  acceptance box). Landing and deploying this code changes nothing in prod
+  until both are set, which is a deliberate follow-up step coordinated with
+  the CEO, not part of this issue.
+
+  A minimal, explicitly provisional read exists — `GET
+  /api/core-net-position/:countryCode?start=&end=`
+  (`routes/coreNetPosition.ts`) — so the ingest is testable end to end. It is
+  not the client-facing contract: the toggle UI is a separate, still-blocked
+  issue that owns the real endpoint shape (units, whether it rides alongside
+  `/net-position` or stands alone, how a Core-less country like GB/CH
+  responds) and should revise or replace this route rather than treat it as
+  fixed.
+
 ## Testing
 
 ```bash
@@ -1811,9 +1942,39 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-11: **520 client tests / 41 files**, **492 server tests /
-34 files**, clean typecheck. Fewer passing than that means something broke.
-(ABL-221's second pass — the user's "remove the whole banner, not just the
+Green as of 2026-08-12: **41 client test files / 523 tests** (503 passing in
+this checkout — the other 20, in `dashboardStore.test.ts`/`windowLabel.test.ts`,
+fail on the pre-existing `storage.setItem is not a function` sandbox quirk the
+ABL-203 paragraph below already documents, not a regression), **39 server
+tests files / 563 tests**, all passing, clean typecheck. Fewer server tests
+passing than that means something broke.
+(ABL-230 added the JAO Core net position ingest, server-only: 4 new files
+(`services/coreNetPositionService.test.ts`, `services/
+jaoCoreNetPositionCapture.test.ts`, `services/coreNetPositionScheduler.test.ts`,
+`routes/coreNetPosition.test.ts`), 45 new cases, no client file touched. It
+also fixed one pre-existing failure this checkout already carried, unrelated
+to ABL-230 itself: `docs/claudeMdCitations.test.ts` had flagged the
+`NetPositionTab.tsx` citation a few sections above (in "NetPositionTab") as
+landing on a blank line at its old line numbers, 158 through 173 — ordinary
+line drift from an earlier, unrelated change — corrected to the actual
+`lastSeen` branch that citation was always describing, now
+`NetPositionTab.tsx:251-265` (verified: the same "stopped publishing a net
+position" ternary this section's own prose quotes). This branch was rebased
+onto `main` 2026-08-12 after ABL-221's second pass, ABL-237 and ABL-240 landed
+there (492 server tests / 34 files, 520 client tests / 41 files, per the
+paragraphs below) — ABL-230's 45 server cases land on top of that base, not
+the 421/27 this entry originally measured against before the rebase. The
+rebase also shifted the `/api/health` line number the "host/process KPIs"
+paragraph below cites — `coreNetPositionRouter`'s mount line now lands above
+it — and that citation was updated to match. Neither the 492/34 nor the 520/41
+figures below
+survive a fresh count in this checkout either (35 server test files, 523
+client tests present before this rebase's own additions) — the same
+never-fully-reconciled-merges drift the ABL-214 paragraph names; this entry
+reconciles only ABL-230's own delta against the top-line figures actually
+measured just now, not the whole gap.)
+
+ABL-221's second pass — the user's "remove the whole banner, not just the
 mini graphs" follow-up comment — deleted `AbleStatRow.tsx` outright. The first
 pass, `6350836`, had only dropped its sparklines, which was not what "confusing
 banner" meant. Gone with the component: its sole data source

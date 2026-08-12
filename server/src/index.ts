@@ -2,6 +2,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createApp, resolveClientDist } from './app.js';
 import { startForecastVintageArchiveScheduler } from './services/forecastVintageArchiveScheduler.js';
+import { startCoreNetPositionScheduler } from './services/coreNetPositionScheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3001;
@@ -38,5 +39,13 @@ Available endpoints:
 // services/forecastVintageArchiveScheduler.ts for why it runs in a worker
 // thread on a timer, gated the same way getWriteDb() is.
 startForecastVintageArchiveScheduler();
+
+// ABL-230: begins capturing JAO's Core CCR net position once BOTH
+// JAO_CORE_NET_POSITION_ENABLED and HELIO_WRITE_TOKEN are set. Neither is set
+// by this change — see services/coreNetPositionScheduler.ts for why this is a
+// dedicated variable rather than a reuse of HELIO_WRITE_TOKEN alone, and why
+// that means deploying this code changes nothing in prod until a separate,
+// coordinated step turns it on.
+startCoreNetPositionScheduler();
 
 export default app;
