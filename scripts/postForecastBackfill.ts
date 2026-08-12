@@ -8,9 +8,18 @@
  *
  * This is a one-time backfill, not a standing job — there is no cron, no
  * package.json script entry, and no expectation this file runs again once
- * ABL-240's backfill has landed. Re-running it is harmless (the ingest is
- * idempotent per country/forecast_type/model_name/generated_at), but nothing
- * schedules it.
+ * ABL-240's backfill has landed. Re-running it with the same manifest is
+ * harmless: the ingest deletes and re-inserts every row for a matching
+ * (forecast_type, model_name, generated_at, country) rather than appending
+ * (`server/src/services/netPositionIngestService.ts:63-98`), so a second run
+ * converges on the same rows. Nothing schedules it.
+ *
+ * (Under ABL-240 that idempotency claim was true of the ingest but false of
+ * this script: its own guard refused any model_name registered in
+ * forecastModels.ts, and ABL-240 registered `catboost-retrain-v1` /
+ * `xgboost-retrain-v1` in the same merge — so every re-run died before posting.
+ * ABL-244 narrowed the guard to the production model_name only; see
+ * `backfillModelGuard.ts`.)
  *
  * Usage:
  *   npx tsx scripts/postForecastBackfill.ts --manifest <path/to/manifest.json> [--execute]
@@ -38,7 +47,7 @@
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { getTypeConfig } from '../server/src/config/forecastModels.js';
+import { checkBackfillModelName } from './backfillModelGuard.js';
 
 const WIND_FORECAST_TYPES = new Set(['wind_onshore', 'wind_offshore']);
 
@@ -85,21 +94,14 @@ function sha256(text: string): string {
 }
 
 /**
- * Refuse to post under a model_name that is already registered for this
- * forecast_type in forecastModels.ts — that would either collide with a live
- * model (including production) or silently register nothing new. The whole
- * point of ABL-239's distinct *-retrain-v1 names is that this check passes.
+ * Refuse to post under the forecast_type's PRODUCTION model_name, which the
+ * ingest would overwrite. A registered shadow candidate is the intended target,
+ * not a clash — see `backfillModelGuard.ts` for why.
  */
-function assertModelNameIsNew(forecastType: string, modelName: string): void {
-  const cfg = getTypeConfig(forecastType);
-  const clash = cfg?.models.find((m) => m.modelName === modelName);
-  if (clash) {
-    throw new Error(
-      `Refusing to post: model_name '${modelName}' is already registered for '${forecastType}' ` +
-      `as '${clash.id}' in forecastModels.ts. A backfill must use a name distinct from every ` +
-      `existing registration, production included.`
-    );
-  }
+function assertModelNamePostable(forecastType: string, modelName: string): void {
+  const check = checkBackfillModelName(forecastType, modelName);
+  if (!check.ok) throw new Error(check.message);
+  if (check.note) console.log(`  NOTE: ${check.note}`);
 }
 
 async function postOne(apiBase: string, token: string, forecastType: string, file: IngestFile): Promise<void> {
@@ -167,13 +169,12 @@ async function main(): Promise<void> {
       );
     }
 
-    assertModelNameIsNew(output.forecast_type, output.model_name);
-
     const countries = [...new Set(file.rows.map((r) => r.country_code))].sort();
     console.log(`${output.forecast_type}:`);
     console.log(`  model_name=${output.model_name} model_version=${output.model_version}`);
     console.log(`  rows=${file.rows.length} countries=${countries.join(',')}`);
     console.log(`  sha256 verified against manifest: OK`);
+    assertModelNamePostable(output.forecast_type, output.model_name);
 
     prepared.push({ forecastType: output.forecast_type, file, modelName: output.model_name });
   }
