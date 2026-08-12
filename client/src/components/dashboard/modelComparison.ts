@@ -1,4 +1,4 @@
-import type { ForecastModel, MLAccuracyCoverage, MLHorizon } from '@/types';
+import type { ForecastModel, LoadForecastBasis, MLAccuracyCoverage, MLHorizon } from '@/types';
 
 /**
  * Per-model accuracy comparison rows.
@@ -44,7 +44,17 @@ export type ModelMeasurement =
   | { status: 'error' }
   /** This client has no accuracy route for that model's source on this forecast type. */
   | { status: 'unsupported' }
-  | { status: 'ok'; metrics: MeasuredMetrics; coverage?: MLAccuracyCoverage };
+  | {
+      status: 'ok';
+      metrics: MeasuredMetrics;
+      coverage?: MLAccuracyCoverage;
+      /**
+       * The server's verdict on whether this model's forecast and the actuals
+       * measure the same quantity (ABL-277). TSO load only; absent elsewhere.
+       */
+      basis?: LoadForecastBasis;
+      basisNote?: string | null;
+    };
 
 /**
  * The part of either accuracy response this comparison reads.
@@ -54,7 +64,7 @@ export type ModelMeasurement =
  * carries `coverage`.
  */
 export interface AccuracyResultLike {
-  metrics?: MeasuredMetrics | null;
+  metrics?: (MeasuredMetrics & { basis?: LoadForecastBasis; basisNote?: string | null }) | null;
   coverage?: MLAccuracyCoverage;
 }
 
@@ -82,6 +92,7 @@ export function measurementFromQuery(query: {
   return {
     status: 'ok',
     ...(coverage ? { coverage } : {}),
+    ...(metrics.basis ? { basis: metrics.basis, basisNote: metrics.basisNote ?? null } : {}),
     metrics: {
       mae: metrics.mae,
       mape: metrics.mape,
@@ -100,6 +111,12 @@ export type ModelRowState =
   | 'no_paired_actuals'
   /** Nothing paired, and no classification to say which of the two it was. */
   | 'no_measured_points'
+  /**
+   * Points paired in quantity, but the forecast and the actuals measure
+   * different quantities, so their difference is not error (ABL-277).
+   * Distinct from every state above: this is not an absence of data.
+   */
+  | 'divergent_basis'
   | 'unsupported'
   | 'loading'
   | 'error';
@@ -173,6 +190,23 @@ export function buildModelComparisonRows(
     }
 
     const { metrics, coverage } = measurement;
+
+    // Checked before the zero-pairs branch below, because a divergent basis is
+    // not an absence: the points paired, the server just cannot attribute the
+    // difference to forecast skill. Passing it through as `measured` would
+    // print a row of em-dashes beside a healthy sample count — the same
+    // "cannot tell this apart from a sparse measurement" failure the
+    // zero-pairs branch exists to prevent.
+    if (measurement.basis === 'divergent_basis') {
+      return {
+        ...base,
+        state: 'divergent_basis' as const,
+        metrics: null,
+        note:
+          measurement.basisNote ??
+          `Not measurable — this forecast and ${cc}'s realized load measure different quantities.`,
+      };
+    }
 
     // Zero paired points is the whole point of this module. `metrics` at this
     // stage is all nulls and zeros server-side; passing it through would print

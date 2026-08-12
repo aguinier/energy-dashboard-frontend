@@ -255,6 +255,14 @@ export interface TSOForecastAccuracyDataPoint {
   error_pct: number | null; // null when actual_value <= 0 — unmeasurable as a percentage
 }
 
+/**
+ * Whether the country's realized load and its TSO load forecast measure the
+ * same quantity. `divergent_basis` is NOT a "no data" word — both series are
+ * held in full; it is the error measures derived from the pair that are not
+ * publishable. See `server/src/services/loadForecastBasis.ts` (ABL-277).
+ */
+export type LoadForecastBasis = 'comparable' | 'divergent_basis';
+
 export interface TSOForecastAccuracyMetrics {
   mae: number | null;
   mape: number | null;
@@ -262,6 +270,10 @@ export interface TSOForecastAccuracyMetrics {
   dataPoints: number;
   /** Count of points with a positive actual — may be lower than dataPoints; mape covers only these. */
   mapeSamples: number;
+  /** Absent on responses predating ABL-277; treat as 'comparable'. */
+  basis?: LoadForecastBasis;
+  /** Non-null exactly when `basis` is `divergent_basis`: why there are no numbers. */
+  basisNote?: string | null;
 }
 
 export interface ApiResponse<T> {
@@ -413,10 +425,16 @@ export type TSOHorizon = 'day_ahead' | 'week_ahead';
  * Accuracy metrics for a single forecast source/horizon
  */
 export interface AccuracyMetrics {
-  mae: number;      // Mean Absolute Error (MW or EUR/MWh)
+  /**
+   * Mean Absolute Error (MW or EUR/MWh). Nullable since ABL-277 — a country
+   * whose actuals and TSO forecast measure different quantities pairs points
+   * but has no publishable error, so `dataPoints > 0` does not imply a number.
+   */
+  mae: number | null;
   mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
-  rmse: number;     // Root Mean Square Error
-  bias: number;     // Mean Error (positive = over-forecast)
+  rmse: number | null;     // Root Mean Square Error
+  /** Mean Error (positive = over-forecast); null on a divergent basis, where the mean difference is definitional, not bias. */
+  bias: number | null;
   dataPoints: number;
 }
 
