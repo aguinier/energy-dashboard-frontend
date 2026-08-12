@@ -58,7 +58,7 @@ export default function OpsStatusView() {
         {data && (
           <div className="space-y-4">
             {shouldShowBlackoutBanner(data) && <BlackoutBanner label={data.syncBlackout.label} />}
-            <CommitDriftBanner local={data.local} peer={data.peer} />
+            <CommitDriftBanner local={data.local} peer={data.peer} state={data.derived.commitDrift} />
             <div className="grid gap-4 md:grid-cols-2">
               <EnvironmentCard title="This environment" side={data.local} derived={data.derived.local} />
               <EnvironmentCard
@@ -112,12 +112,28 @@ function BlackoutBanner({ label }: { label: string | null }) {
  * unremarkable default and says nothing worth a banner for. Silent (not
  * "unavailable") when either side has no commit to compare, since a `null`
  * commit means a dev server, not drift.
+ *
+ * The *verdict* is the server's (`derived.commitDrift`, ABL-287), not this
+ * component's: the alert engine notifies on the same comparison, and a page
+ * that decided for itself whether the lanes agree is exactly the second copy
+ * ABL-292 removed. Both silent cases above are `'unknown'` server-side, so
+ * keying on `'warn'` reproduces them without restating the rule. The commit
+ * values are still read here — only to render them.
  */
-function CommitDriftBanner({ local, peer }: { local: OpsSideStatus; peer: OpsSideStatus }) {
+function CommitDriftBanner({
+  local,
+  peer,
+  state,
+}: {
+  local: OpsSideStatus;
+  peer: OpsSideStatus;
+  state: ThresholdState;
+}) {
+  if (state !== 'warn') return null;
   if (!local.reachable || !peer.reachable) return null;
   const localCommit = local.status.provenance.commit;
   const peerCommit = peer.status.provenance.commit;
-  if (!localCommit || !peerCommit || localCommit === peerCommit) return null;
+  if (!localCommit || !peerCommit) return null;
 
   return (
     <div className="flex items-center gap-2 rounded-lg border border-dirty/40 bg-dirty/5 px-4 py-3 text-body text-foreground">

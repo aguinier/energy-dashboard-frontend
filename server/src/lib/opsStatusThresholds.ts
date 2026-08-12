@@ -89,6 +89,29 @@ export function deriveEnvironmentState(side: SideStatus, blackoutActive: boolean
   ]);
 }
 
+/**
+ * Commit drift between the two lanes — the one verdict that is a *comparison*
+ * rather than a property of either side, which is why it lives beside the
+ * per-side verdicts instead of inside `OpsSideDerived`.
+ *
+ * `warn`, never `error`: two environments on different builds is worth telling
+ * someone about, but it is a normal state for the minutes between deploying one
+ * lane and the other, and paging on it would page on every rollout.
+ *
+ * `unknown` — not `ok` — whenever there is nothing to compare: either side
+ * unreachable, or either `commit` null. A null `commit` means a dev server that
+ * never had `COMMIT_SHA` baked in (`healthProvenance.ts:23`), so "they match"
+ * would be a fabricated clean bill of health for two hosts whose builds we
+ * simply did not measure.
+ */
+export function deriveCommitDriftState(local: SideStatus, peer: SideStatus): ThresholdState {
+  if (!local.reachable || !peer.reachable) return 'unknown';
+  const localCommit = local.status.provenance.commit;
+  const peerCommit = peer.status.provenance.commit;
+  if (!localCommit || !peerCommit) return 'unknown';
+  return localCommit === peerCommit ? 'ok' : 'warn';
+}
+
 /** Per-KPI verdicts for one environment, plus the worst-wins roll-up the badge renders. */
 export interface OpsSideDerived {
   /** Worst-wins over the KPIs below, with the unreachable/blackout rule applied first. */
