@@ -2065,9 +2065,21 @@ cd server && npx vitest run
 Green as of 2026-08-12: **44 client test files / 575 tests** (555 passing in
 this checkout — the other 20, in `dashboardStore.test.ts`/`windowLabel.test.ts`,
 fail on the pre-existing `storage.setItem is not a function` sandbox quirk the
-ABL-203 paragraph below already documents, not a regression), **39 server
-test files / 585 tests**, all passing, clean typecheck. Fewer tests passing
+ABL-203 paragraph below already documents, not a regression), **41 server
+test files / 602 tests**, all passing, clean typecheck. Fewer tests passing
 than that means something broke.
+
+(That server figure is measured on ABL-234 merged with `origin/main`, which is
+what `main` becomes when this lands — not on ABL-234's own 39/585. The extra
+2 files / 17 cases are `main`'s, not this change's: ABL-244 added
+`scripts/backfillModelGuard.test.ts` **and** `server/vitest.config.ts`, whose
+`include: ['src/**/*.test.ts', '../scripts/**/*.test.ts']` is what makes the
+repo-root scripts discoverable at all, and ABL-262 added
+`server/src/routes/countries.test.ts`. Both `main` and this branch were
+separately claiming 39 files here — `main` at 563 cases, this branch at 585 —
+so neither side's number survived the merge, and the two edits did not
+conflict textually because they touched the same claim from different
+directions.)
 
 (ABL-234 added the Core / all-coupled-borders scope toggle. Client: 3 new
 files — `lib/coreNetPositionSeries.test.ts`, `components/map/
