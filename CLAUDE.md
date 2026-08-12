@@ -1457,17 +1457,40 @@ REPLACE(expr,' ','T'))` looks like the natural extension of `rangeClause`'s
 seek-preserving two-clause shape to an equality, and was the approach this
 ticket originally sketched. It silently fans out: `energy_load` alone has
 **137,113** country-hours where a `T` row and a space row both exist, and
-**107,047** of those pairs hold **conflicting** values (measured 2026-08-11,
-against ABL-211/ABL-215's still-open "which one is authoritative" board
+**107,047** of those pairs held **conflicting** values (measured 2026-08-11,
+against ABL-211/ABL-215's then-still-open "which one is authoritative" board
 question — `energy_price` has 16,896 such pairs, 2 conflicting;
 `energy_renewable` 26,694 pairs, 2,441 conflicting). An `IN(...)` join matches
 *both* rows whenever both exist, so it would have traded ABL-214's silent-drop
 defect for a silent-fan-out one — double-counting that hour, and on a
 conflicting pair, handing an accuracy metric the right-looking value and the
 wrong one as if they were independent observations. That is exactly the
-confidently-wrong-number defect this whole file exists to catch, and it is not
-this join's decision to make: ABL-215 (still blocked) is what settles which of
-a conflicting pair is authoritative, not a read-side accuracy query.
+confidently-wrong-number defect this whole file exists to catch, and it was
+not this join's decision to make: settling which of a conflicting pair is
+authoritative is a data-provenance judgment, not a read-side accuracy query,
+and that is what ABL-215 was for.
+
+**ABL-215 ruled and executed on 2026-08-12, but only for `energy_load` and
+only for 23 of the ~26 conflicted countries.** ABL-227 sampled ~200
+conflicting country-hours against live ENTSO-E and found the winner is
+consistent *within* a country, not global: the Board approved a per-country
+rule — space-row wins (AT, BE, BG, CZ, DE, FR, GR, HR, IT, LU, LV, NL, PT),
+T-row wins (DK, EE, IE, LT, NO, RO, SE, SK — space was wrong by 8-57%, not a
+plausible revision), format-only normalize with no value change (FI, HU —
+conflicts were rounding artifacts of the same reading, average diff
+~0.004%). Re-enumerated immediately before writing (97,551 conflicting pairs
+for these 23 countries, not the stale 107,047 total): the losing row was
+copied to `energy_load_conflict_backup_abl215` (tagged `rule_applied`) before
+being deleted, and the 26,465 T-wins rows had their surviving space-row
+`load_mw` updated to the T value. **CH, PL and SI are still open** — ABL-227's
+sample couldn't resolve them (differences were noise-scale against a further,
+later ENTSO-E revision neither stored snapshot captured) — leaving 9,496
+conflicting pairs. `energy_price`'s 16,896 conflicting pairs are untouched
+entirely; ABL-227/ABL-215 scoped to `energy_load` only, since price's overlap
+is mostly disjoint coverage rather than value conflict. The two-LEFT-JOIN-
+COALESCE shape below is therefore still load-bearing for CH/PL/SI and for all
+of `energy_price` — do not simplify it back to a single join on the theory
+that ABL-215 "closed" the conflict question.
 
 `timestampFormOnClause` (`server/src/utils/timestamp.ts:140`) is instead
 always used as **two separate LEFT JOINs** — one matching the space form, one
