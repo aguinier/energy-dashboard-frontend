@@ -179,7 +179,10 @@ export function getGranularityForPreset(preset: TimePreset): Granularity {
 // render every country as "no data" — a real regression, not just a style
 // change. So the map keeps its own fixed, independent window instead of
 // reusing the country page's live selection.
-const MAP_WINDOW_PRESET: TimePreset = '7d';
+// Exported so the Core net-position map (useCoreNetPositionData.ts) averages
+// over exactly the same span — the scope toggle must change which borders are
+// counted and nothing else.
+export const MAP_WINDOW_PRESET: TimePreset = '7d';
 
 export function useMapData(metric?: MetricType) {
   const mapMetricFromStore = useDashboardStore((state) => state.mapMetric);

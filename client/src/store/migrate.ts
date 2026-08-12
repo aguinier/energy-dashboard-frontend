@@ -1,6 +1,10 @@
 import type { TimePreset, TimeAnchor } from '@/types';
+// `lib/netPositionScope` is a leaf: it imports nothing at all, so this does
+// not violate the "loadable by the store alone" note on ANCHOR_FOR_PRESET
+// below — it pulls in no hooks and no React Query graph.
+import { isNetPositionScope } from '@/lib/netPositionScope';
 
-export const PERSIST_VERSION = 9;
+export const PERSIST_VERSION = 10;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
@@ -190,6 +194,26 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
     }
     delete next.selectedModelByType;
     next.selectedModelsByType = selectedModelsByType;
+  }
+
+  // v10 (ABL-234) — `netPositionScope` joins `partialize`: which borders the
+  // net position map and tab count, 'all_coupled' (every ENTSO-E-coupled
+  // border, the only view that existed before) or 'core' (the 12-zone Core
+  // flow-based region, from JAO).
+  //
+  // Unlike the clauses above there is nothing to carry forward — no older
+  // field encoded this — so the whole job is refusing a value outside the
+  // union. That is not ceremony: the two views can disagree in SIGN (France,
+  // 2026-08-09 08:00 UTC: Core -368.9 MW importing vs all-coupled +1,494.6 MW
+  // exporting), and an unrecognised persisted string must not be able to
+  // leave a reader on a chart whose legend names a scope the query did not
+  // use. Coerced to the default rather than to 'core': 'all_coupled' is the
+  // view with data for every zone the map draws, and Core capture is off by
+  // default in a deployment (see server/src/services/
+  // coreNetPositionScheduler.ts), so it is also the view guaranteed to render
+  // something.
+  if (!isNetPositionScope(next.netPositionScope)) {
+    next.netPositionScope = 'all_coupled';
   }
 
   return next;

@@ -209,16 +209,72 @@ export function resolveCoreCountryCode(countryCode: string): string {
   return zone === 'DE_LU' ? 'DE' : zone;
 }
 
+/**
+ * The 12 Core CCR zones, derived from the ingest's own hub map rather than
+ * restated as a second literal — a hand-copied list is exactly how two
+ * definitions of one set drift apart (`lib/dataScale.ts`'s and
+ * `NoDataHatch.tsx`'s doc comments both record this repo paying for that).
+ * `resolveCoreCountryCode` is applied first, so `'LU'` is in Core (it shares
+ * the DE_LU zone) even though no row is ever stored under it.
+ */
+const CORE_STORED_CODES: ReadonlySet<string> = new Set(
+  Object.values(CORE_ZONE_HUB_TO_COUNTRY)
+);
+
+export function isCoreZone(countryCode: string): boolean {
+  return CORE_STORED_CODES.has(resolveCoreCountryCode(countryCode));
+}
+
 export interface CoreNetPositionPoint {
   timestamp: string;
   net_position_mw: number;
 }
 
 /**
- * Minimal read for `core_net_position` — deliberately thin. This exists so
- * the ingest can be exercised end to end; the real endpoint shape for the
- * client toggle is owned by the follow-up UI issue (ABL-230's description),
- * which should revise or replace this rather than treat it as fixed.
+ * Why a country has no Core series, as four claims that are NOT
+ * interchangeable — the whole reason this endpoint exists rather than an
+ * empty array with a shrug (ABL-234):
+ *
+ * - `out_of_core`: the zone is not one of the 12 Core CCR zones, so no Core
+ *   net position exists for it, ever. GB and CH are the obvious cases, but so
+ *   are ES, IT and the Nordics. This is NOT missing data, and the map must
+ *   not render it with the same claim as one that is.
+ * - `not_captured`: `core_net_position` does not exist in this deployment —
+ *   the JAO capture has never run here (it is gated off by default; see
+ *   `coreNetPositionScheduler.ts`). A deployment-state fact, not a fact about
+ *   the zone.
+ * - `no_data`: a Core zone, capture has run, but this window holds no rows.
+ * - `served`: rows returned.
+ */
+export type CoreNetPositionCoverage =
+  | 'served'
+  | 'no_data'
+  | 'out_of_core'
+  | 'not_captured';
+
+export interface CoreNetPositionSeries {
+  actual: CoreNetPositionPoint[];
+  meta: {
+    country_code: string;
+    bidding_zone: string;
+    in_core: boolean;
+    coverage: CoreNetPositionCoverage;
+    /** Newest stored hour for this zone, ignoring the window. */
+    last_seen: string | null;
+  };
+}
+
+function hasCoreTable(db: DatabaseType): boolean {
+  const row = db
+    .prepare(`SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name = 'core_net_position'`)
+    .get() as { present: number } | undefined;
+  return row !== undefined;
+}
+
+/**
+ * Raw rows for one zone and window. Callers want `getCoreNetPositionSeries`;
+ * this stays exported because the route tests and the capture's own
+ * round-trip check read the rows without the coverage vocabulary.
  */
 export function getCoreNetPosition(
   countryCode: string,
@@ -226,6 +282,7 @@ export function getCoreNetPosition(
   end: string,
   db: DatabaseType = defaultDb
 ): CoreNetPositionPoint[] {
+  if (!hasCoreTable(db)) return [];
   const stmt = db.prepare(`
     SELECT
       REPLACE(timestamp_utc, ' ', 'T') as timestamp,
@@ -240,4 +297,131 @@ export function getCoreNetPosition(
     normalizeTimestamp(start),
     normalizeTimestamp(end)
   ) as CoreNetPositionPoint[];
+}
+
+/** Newest stored hour for a zone, window-independent — dates an outage. */
+export function getCoreLastSeen(
+  countryCode: string,
+  db: DatabaseType = defaultDb
+): string | null {
+  if (!hasCoreTable(db)) return null;
+  const row = db
+    .prepare(
+      `SELECT MAX(REPLACE(timestamp_utc, 'T', ' ')) AS last
+         FROM core_net_position WHERE country_code = ?`
+    )
+    .get(resolveCoreCountryCode(countryCode)) as { last: string | null } | undefined;
+  return row?.last ? row.last.replace(' ', 'T') : null;
+}
+
+/**
+ * The Core series for one zone, with the reason named when it is empty.
+ *
+ * DELIBERATELY NOT GUARDED BY `classifyActualSeries`, unlike
+ * `netPositionService.getNetPositionActualSeries` — and that asymmetry is a
+ * decision, not an oversight. That guard withholds a series whose largest
+ * |value| is under 1 MW, because ENTSO-E's sparse-document forward-fill
+ * manufactured a full year of exact-`0.0` GR rows that were false by better
+ * than a gigawatt. Neither half of that reasoning transfers here:
+ *
+ * - There is no forward-fill on this path. `parseJaoCoreNetPositionResponse`
+ *   skips a hub that is missing or non-numeric for an interval rather than
+ *   carrying the previous value forward, so a stored Core row is a value JAO
+ *   actually published for that interval.
+ * - The 1 MW floor is sized from a measurement over 26,882 `net_position`
+ *   country-days. No equivalent measurement exists for `core_net_position` —
+ *   nothing has been captured yet — so importing the threshold would be an
+ *   uncalibrated cutoff, exactly what `comparisonConstants.ts`'s removed
+ *   `METRIC_THRESHOLDS` was. A Core zone genuinely balanced across a window
+ *   is an ordinary outcome, and withholding it would be its own defect.
+ *
+ * If a fabrication mode ever shows up in this table, size a threshold against
+ * it and add the guard then.
+ */
+export function getCoreNetPositionSeries(
+  countryCode: string,
+  start: string,
+  end: string,
+  db: DatabaseType = defaultDb
+): CoreNetPositionSeries {
+  const upper = countryCode.toUpperCase();
+  const meta = {
+    country_code: upper,
+    bidding_zone: resolveBiddingZone(upper),
+    in_core: isCoreZone(upper),
+  };
+
+  if (!meta.in_core) {
+    return { actual: [], meta: { ...meta, coverage: 'out_of_core', last_seen: null } };
+  }
+  if (!hasCoreTable(db)) {
+    return { actual: [], meta: { ...meta, coverage: 'not_captured', last_seen: null } };
+  }
+
+  const actual = getCoreNetPosition(upper, start, end, db);
+  return {
+    actual,
+    meta: {
+      ...meta,
+      coverage: actual.length > 0 ? 'served' : 'no_data',
+      last_seen: getCoreLastSeen(upper, db),
+    },
+  };
+}
+
+export interface CoreNetPositionMapPoint {
+  country_code: string;
+  country_name: string;
+  value: number;
+  timestamp: string;
+}
+
+/**
+ * Window-average Core net position per zone, shaped like `/dashboard/map`'s
+ * `MapDataPoint` so the choropleth can colour it with the metric's existing
+ * diverging scale.
+ *
+ * Two properties carried over from `dashboardService.getMapNetPositionData`,
+ * for the same reasons stated there:
+ *
+ * - Averaged over the window, so it reads as "net exporter over this period"
+ *   rather than at one instant. Note the two series are averaged at different
+ *   native resolutions — JAO publishes Core at 15 minutes, ENTSO-E publishes
+ *   the all-coupled figure hourly — which is not a discrepancy: measured
+ *   2026-08-09 08:00 UTC, DE-LU's four Core quarters (7594.9, 9583.5, 9676.6,
+ *   10840.5) average to 9423.875, exactly its all-coupled hourly value.
+ * - LU is emitted with DE's value rather than left out. DE_LU is one bidding
+ *   zone and Luxembourg is inside Core; a hole there would read as "outside
+ *   the Core region", which is the one claim this view must get right.
+ */
+export function getCoreNetPositionMap(
+  start: string,
+  end: string,
+  db: DatabaseType = defaultDb
+): CoreNetPositionMapPoint[] {
+  if (!hasCoreTable(db)) return [];
+
+  const rows = db
+    .prepare(
+      `SELECT
+         n.country_code,
+         c.country_name,
+         ROUND(AVG(n.net_position_mw), 0) as value,
+         MAX(REPLACE(n.timestamp_utc, 'T', ' ')) as timestamp
+       FROM core_net_position n
+       JOIN countries c ON c.country_code = n.country_code
+       WHERE n.timestamp_utc BETWEEN ? AND ?
+       GROUP BY n.country_code, c.country_name
+       ORDER BY c.country_name`
+    )
+    .all(normalizeTimestamp(start), normalizeTimestamp(end)) as CoreNetPositionMapPoint[];
+
+  const de = rows.find((r) => r.country_code === 'DE');
+  if (!de) return rows;
+
+  const lu = db
+    .prepare(`SELECT country_name FROM countries WHERE country_code = 'LU'`)
+    .get() as { country_name: string } | undefined;
+  if (lu) rows.push({ ...de, country_code: 'LU', country_name: lu.country_name });
+  return rows;
 }

@@ -6,6 +6,7 @@ import { CountryBreadcrumb } from '@/components/dashboard/CountryBreadcrumb';
 import { TimePicker } from '@/components/dashboard/TimePicker';
 import { ModelPicker } from '@/components/dashboard/ModelPicker';
 import { NetPositionModelPicker } from '@/components/dashboard/NetPositionModelPicker';
+import { NetPositionScopeToggle } from '@/components/dashboard/NetPositionScopeToggle';
 import { ApiCta } from '@/components/dashboard/ApiCta';
 
 // Lazy-loaded tab bodies — each is self-contained (chart cards + adapters).
@@ -69,6 +70,7 @@ const TABS_WITH_MODEL_PICKER = new Set(['price', 'load', 'wind-onshore', 'wind-o
 
 export function CountryDashboardView() {
   const { selectedCountry, activeChartTab, setActiveChartTab, goToComparison } = useDashboardStore();
+  const netPositionScope = useDashboardStore((s) => s.netPositionScope);
   const { data: countries } = useCountries();
 
   const country = countries?.find((c) => c.country_code === selectedCountry);
@@ -125,7 +127,16 @@ export function CountryDashboardView() {
           <div className="flex-1" />
           <TimePicker />
           {TABS_WITH_MODEL_PICKER.has(activeChartTab) && <ModelPicker />}
-          {activeChartTab === 'net-position' && <NetPositionModelPicker />}
+          {/* Scope toggle after the time picker (ABL-231's placement). The
+              model picker renders beside it only in the all-coupled view:
+              nothing forecasts the Core figure, so in Core view a picker
+              would be a control that provably cannot change the chart — the
+              "renders and does nothing" state ABL-44 removed from the
+              Generation tab. */}
+          {activeChartTab === 'net-position' && <NetPositionScopeToggle />}
+          {activeChartTab === 'net-position' && netPositionScope === 'all_coupled' && (
+            <NetPositionModelPicker />
+          )}
         </div>
 
         {activeChartTab === 'analytics' && (
