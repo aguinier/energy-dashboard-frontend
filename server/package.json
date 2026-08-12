@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "dev:public": "tsx watch --env-file-if-exists=.env.public src/v1/publicIndex.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:public": "node dist/v1/publicIndex.js",
     "test": "vitest run",
     "check:unmerged": "tsx src/release/checkUnmergedWork.ts"
   },
