@@ -12,6 +12,10 @@ const {
   ensureCoreNetPositionTable,
   storeCoreNetPositionRows,
   getCoreNetPosition,
+  getCoreNetPositionSeries,
+  getCoreNetPositionMap,
+  getCoreLastSeen,
+  isCoreZone,
   resolveCoreCountryCode,
   CORE_ZONE_HUB_TO_COUNTRY,
 } = await import('./coreNetPositionService.js');
@@ -223,5 +227,187 @@ describe('getCoreNetPosition', () => {
   it('returns an empty array for a country with no captured rows, never a fabricated point', () => {
     const rows = getCoreNetPosition('PL', '2026-08-09T00:00:00Z', '2026-08-09T23:59:59Z', seededDb());
     expect(rows).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------- ABL-234
+// The read shape the scope toggle needs: an empty series that names WHICH
+// kind of empty it is, and a map payload the choropleth can colour.
+
+describe('isCoreZone', () => {
+  it('covers all 12 Core CCR zones, derived from the ingest hub map', () => {
+    for (const cc of ['AT', 'BE', 'CZ', 'DE', 'FR', 'HR', 'HU', 'NL', 'PL', 'RO', 'SI', 'SK']) {
+      expect(isCoreZone(cc)).toBe(true);
+    }
+  });
+
+  it('counts LU as Core — it shares the DE_LU zone, even with no row of its own', () => {
+    expect(isCoreZone('LU')).toBe(true);
+  });
+
+  it('excludes zones that are outside the Core region entirely', () => {
+    // ES and IT matter as much as the obvious GB/CH: France's Core figure
+    // excludes precisely those two AC borders, which is why "AC vs DC" is the
+    // wrong framing for this whole distinction.
+    for (const cc of ['GB', 'CH', 'ES', 'IT', 'NO', 'SE', 'DK', 'GR', 'BG']) {
+      expect(isCoreZone(cc)).toBe(false);
+    }
+  });
+});
+
+describe('getCoreNetPositionSeries', () => {
+  function seededDb(): DatabaseType {
+    const db = new Database(':memory:');
+    storeCoreNetPositionRows(db, [
+      { countryCode: 'FR', timestampUtc: '2026-08-09 08:00:00', netPositionMw: -114.9 },
+      { countryCode: 'DE', timestampUtc: '2026-08-09 08:00:00', netPositionMw: 7594.9 },
+    ]);
+    return db;
+  }
+
+  const START = '2026-08-09T00:00:00Z';
+  const END = '2026-08-09T23:59:59Z';
+
+  it('serves a Core zone with rows, and keeps the sign', () => {
+    const s = getCoreNetPositionSeries('FR', START, END, seededDb());
+    expect(s.meta.coverage).toBe('served');
+    expect(s.meta.in_core).toBe(true);
+    // France importing in the Core figure at this hour is the fact ABL-219
+    // exists to surface — a sign flip here would be the wiring bug.
+    expect(s.actual).toEqual([{ timestamp: '2026-08-09T08:00:00', net_position_mw: -114.9 }]);
+  });
+
+  it('says out_of_core — not no_data — for a country the Core region never covers', () => {
+    // The distinction this endpoint exists for. Spain has a perfectly good
+    // all-coupled-borders net position; reporting "no data" would invite a
+    // reader (and a future ingest bug report) to treat that as a gap.
+    const s = getCoreNetPositionSeries('ES', START, END, seededDb());
+    expect(s.meta.coverage).toBe('out_of_core');
+    expect(s.meta.in_core).toBe(false);
+    expect(s.actual).toEqual([]);
+    expect(s.meta.last_seen).toBeNull();
+  });
+
+  it('says no_data for a Core zone whose window is empty', () => {
+    const s = getCoreNetPositionSeries('PL', START, END, seededDb());
+    expect(s.meta.coverage).toBe('no_data');
+    expect(s.meta.in_core).toBe(true);
+  });
+
+  it('says not_captured when the table does not exist at all', () => {
+    // The state every deployment is in until JAO_CORE_NET_POSITION_ENABLED is
+    // set: a fact about this deployment, not about France.
+    const s = getCoreNetPositionSeries('FR', START, END, new Database(':memory:'));
+    expect(s.meta.coverage).toBe('not_captured');
+    expect(s.meta.in_core).toBe(true);
+    expect(s.actual).toEqual([]);
+  });
+
+  it('reports LU as an in-Core zone served from DE_LU', () => {
+    const s = getCoreNetPositionSeries('LU', START, END, seededDb());
+    expect(s.meta.in_core).toBe(true);
+    expect(s.meta.bidding_zone).toBe('DE_LU');
+    expect(s.meta.coverage).toBe('served');
+    expect(s.actual).toEqual([{ timestamp: '2026-08-09T08:00:00', net_position_mw: 7594.9 }]);
+  });
+
+  it('does NOT withhold a near-zero series the way net_position does', () => {
+    // Deliberate asymmetry, documented on getCoreNetPositionSeries: the 1 MW
+    // degenerate floor is sized from a measurement over net_position and from
+    // an entsoe-py forward-fill this path does not have. A genuinely balanced
+    // Core zone must draw, not vanish.
+    const db = new Database(':memory:');
+    storeCoreNetPositionRows(db, [
+      { countryCode: 'FR', timestampUtc: '2026-08-09 08:00:00', netPositionMw: 0.04 },
+      { countryCode: 'FR', timestampUtc: '2026-08-09 09:00:00', netPositionMw: -0.02 },
+    ]);
+    const s = getCoreNetPositionSeries('FR', START, END, db);
+    expect(s.meta.coverage).toBe('served');
+    expect(s.actual).toHaveLength(2);
+  });
+
+  it('returns a window-independent last_seen', () => {
+    const db = seededDb();
+    storeCoreNetPositionRows(db, [
+      { countryCode: 'FR', timestampUtc: '2026-08-20 10:00:00', netPositionMw: 500 },
+    ]);
+    const s = getCoreNetPositionSeries('FR', START, END, db);
+    expect(s.meta.last_seen).toBe('2026-08-20T10:00:00');
+    expect(getCoreLastSeen('FR', db)).toBe('2026-08-20T10:00:00');
+  });
+});
+
+describe('getCoreNetPositionMap', () => {
+  function mapDb(): DatabaseType {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE countries (country_code TEXT PRIMARY KEY, country_name TEXT NOT NULL)`);
+    const c = db.prepare('INSERT INTO countries VALUES (?, ?)');
+    for (const [code, name] of [
+      ['FR', 'France'],
+      ['DE', 'Germany'],
+      ['LU', 'Luxembourg'],
+      ['NL', 'Netherlands'],
+    ]) {
+      c.run(code, name);
+    }
+
+    // France's and Germany's four real quarters for 2026-08-09 08:00 UTC,
+    // fetched live from JAO. FR's mean is -368.9 MW (an IMPORTER) against an
+    // all-coupled +1,494.575 for the same hour; DE's mean is 9,423.875, which
+    // is its all-coupled value to the digit.
+    storeCoreNetPositionRows(db, [
+      { countryCode: 'FR', timestampUtc: '2026-08-09 08:00:00', netPositionMw: -114.9 },
+      { countryCode: 'FR', timestampUtc: '2026-08-09 08:15:00', netPositionMw: -624.8 },
+      { countryCode: 'FR', timestampUtc: '2026-08-09 08:30:00', netPositionMw: 174.8 },
+      { countryCode: 'FR', timestampUtc: '2026-08-09 08:45:00', netPositionMw: -910.7 },
+      { countryCode: 'DE', timestampUtc: '2026-08-09 08:00:00', netPositionMw: 7594.9 },
+      { countryCode: 'DE', timestampUtc: '2026-08-09 08:15:00', netPositionMw: 9583.5 },
+      { countryCode: 'DE', timestampUtc: '2026-08-09 08:30:00', netPositionMw: 9676.6 },
+      { countryCode: 'DE', timestampUtc: '2026-08-09 08:45:00', netPositionMw: 10840.5 },
+    ]);
+    return db;
+  }
+
+  const START = '2026-08-09T00:00:00Z';
+  const END = '2026-08-09T23:59:59Z';
+
+  it('averages the window and keeps France negative — the sign-disagreement case', () => {
+    const rows = getCoreNetPositionMap(START, END, mapDb());
+    const fr = rows.find((r) => r.country_code === 'FR');
+    // -368.9 rounded, matching the other map metrics' ROUND(...,0). Sampling
+    // one quarter instead of averaging would have given -910.7 or +174.8 —
+    // the latter would have coloured France an exporter.
+    expect(fr?.value).toBe(-369);
+    expect(fr?.country_name).toBe('France');
+  });
+
+  it('reproduces DE-LU averaging exactly to its all-coupled hourly value', () => {
+    // Measured 2026-08-09 08:00 UTC: net_position holds 9423.875 for DE, and
+    // the four Core quarters average to the same number. This is the check
+    // that the Core map is not silently a different quantity where the two
+    // genuinely coincide — and the reason DE cannot be used to verify the
+    // toggle is wired at all.
+    const rows = getCoreNetPositionMap(START, END, mapDb());
+    expect(rows.find((r) => r.country_code === 'DE')?.value).toBe(9424);
+  });
+
+  it('emits LU with the DE_LU value rather than leaving a hole', () => {
+    // A hole would render as the hatch, which in Core view reads as "outside
+    // the Core region" — the one claim that would be wrong for Luxembourg.
+    const rows = getCoreNetPositionMap(START, END, mapDb());
+    const lu = rows.find((r) => r.country_code === 'LU');
+    expect(lu?.value).toBe(9424);
+    expect(lu?.country_name).toBe('Luxembourg');
+  });
+
+  it('omits a Core zone with no rows rather than emitting a zero', () => {
+    const rows = getCoreNetPositionMap(START, END, mapDb());
+    expect(rows.find((r) => r.country_code === 'NL')).toBeUndefined();
+  });
+
+  it('returns an empty array when the table does not exist', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE countries (country_code TEXT PRIMARY KEY, country_name TEXT NOT NULL)`);
+    expect(getCoreNetPositionMap(START, END, db)).toEqual([]);
   });
 });

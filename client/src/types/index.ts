@@ -648,6 +648,38 @@ export interface NetPositionResponse {
   };
 }
 
+/**
+ * Why a Core net position series is empty (ABL-234). Four claims, and the UI
+ * has to tell them apart — `out_of_core` is "no such number exists for this
+ * zone", which the map must not draw with the same meaning as a data gap.
+ * Mirrors `server/src/services/coreNetPositionService.ts`.
+ */
+export type CoreNetPositionCoverage =
+  | 'served'
+  | 'no_data'
+  | 'out_of_core'
+  | 'not_captured';
+
+/**
+ * The Core CCR net position: exchanges inside the 12-zone Core flow-based
+ * region only, published by JAO. A DIFFERENT quantity from
+ * `NetPositionResponse`'s all-coupled-borders figure, not a correction of it —
+ * they can disagree in sign. There is no forecast half: nothing in this
+ * dashboard forecasts the Core figure.
+ */
+export interface CoreNetPositionResponse {
+  actual: Array<{ timestamp: string; net_position_mw: number }>;
+  meta: {
+    country_code: string;
+    /** DE and LU both report DE_LU, exactly as the all-coupled figure does. */
+    bidding_zone: string;
+    in_core: boolean;
+    coverage: CoreNetPositionCoverage;
+    /** Newest stored hour for this zone, ignoring the query window. */
+    last_seen: string | null;
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Forecast model registry — served by GET /api/forecasts/models.
 // The picker renders from this, so a model can only reach the UI by being

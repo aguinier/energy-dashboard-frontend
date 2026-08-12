@@ -32,6 +32,7 @@ import type {
   CrossCountryMetrics,
   CrossCountryMetricsEntry,
   NetPositionResponse,
+  CoreNetPositionResponse,
   ForecastModelRegistry,
   CombinedOpsStatus,
 } from '@/types';
@@ -474,6 +475,40 @@ export async function fetchNetPosition(params: {
     { params: query },
   );
   return unwrap(data, endpoint);
+}
+
+/**
+ * The Core CCR net position for one zone (ABL-234). Actuals only — nothing
+ * forecasts the Core figure — and an empty `actual` always arrives with a
+ * `meta.coverage` naming which kind of empty it is.
+ */
+export async function fetchCoreNetPosition(params: {
+  country: string;
+  start: string;
+  end: string;
+}): Promise<CoreNetPositionResponse> {
+  const { country, ...query } = params;
+  const endpoint = `/core-net-position/${country}`;
+  const { data } = await api.get<ApiResponse<CoreNetPositionResponse>>(endpoint, {
+    params: query,
+  });
+  return unwrap(data, endpoint);
+}
+
+/**
+ * Window-average Core net position per zone, shaped like `/dashboard/map`'s
+ * points so the choropleth colours it with the same diverging scale. Only the
+ * 12 Core zones appear; every other country is absent by definition, not by
+ * omission — see `lib/netPositionScope.ts`'s `NON_CORE_MAP_NOTICE`.
+ */
+export async function fetchCoreNetPositionMap(params: {
+  start: string;
+  end: string;
+}): Promise<MapDataPoint[]> {
+  const { data } = await api.get<ApiResponse<MapDataPoint[]>>('/core-net-position/map', {
+    params,
+  });
+  return unwrap(data, '/core-net-position/map');
 }
 
 /** The server-side model registry: which models may serve which forecast type. */
