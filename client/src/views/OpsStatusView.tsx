@@ -1,7 +1,8 @@
 import { AlertTriangle, CheckCircle2, Clock, HelpCircle, XCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useOpsStatus } from '@/hooks/useOpsStatus';
-import { formatTimeAgo } from '@/lib/formatters';
+import { buildNetworkRows } from '@/lib/networkRows';
+import { formatBytes, formatTimeAgo } from '@/lib/formatters';
 import type {
   CombinedOpsStatus,
   FreshnessRollup,
@@ -177,6 +178,9 @@ function EnvironmentCard({
         <Row label="Memory (RSS)" value={formatBytes(status.process.memory.rssBytes)} />
         <Row label="Uptime" value={formatUptime(status.process.uptimeSeconds)} />
         <Row label="CPU load (1m)" value={status.host.cpuLoad ? status.host.cpuLoad.load1.toFixed(2) : 'not measured on Windows'} />
+        {buildNetworkRows(status.host).map((row) => (
+          <Row key={row.label} label={row.label} value={row.value} />
+        ))}
         {status.freshness.staleCountries.length > 0 && (
           <p className="pt-1 text-meta text-ink-dim">Stale: {status.freshness.staleCountries.join(', ')}</p>
         )}
@@ -247,13 +251,6 @@ function describeFreshnessRollup(freshness: FreshnessRollup): string {
   if (freshness.status === 'live') return 'live';
   if (freshness.status === 'ended') return 'ended (not an alarm)';
   return 'no data held';
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** exp).toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
 }
 
 function formatUptime(seconds: number): string {

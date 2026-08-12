@@ -81,6 +81,35 @@ describe('GET /api/ops/status', () => {
     }
   });
 
+  it('reports network throughput as real counters or an honest null, never a zeroed shape', async () => {
+    const { body } = await api.get('ops/status');
+    const host = (body.data as any).host;
+
+    // `/proc/net/dev` exists on Linux only. Everywhere else the honest answer
+    // is `null` — a zero-filled interface list would render as a quiet network
+    // on the Windows acceptance host rather than as "not measured".
+    if (process.platform !== 'linux') {
+      expect(host.network).toBeNull();
+      return;
+    }
+
+    expect(Array.isArray(host.network)).toBe(true);
+    for (const iface of host.network) {
+      expect(typeof iface.name).toBe('string');
+      expect(iface.name).not.toBe('lo');
+      expect(iface.rxBytes).toBeGreaterThanOrEqual(0);
+      expect(iface.txBytes).toBeGreaterThanOrEqual(0);
+      // Rates are derived from two samples, so they are legitimately null on
+      // the first request; what they must never be is a number with no window
+      // to have measured it over.
+      if (iface.rxBytesPerSec !== null) {
+        expect(iface.sampleWindowMs).toBeGreaterThan(0);
+        expect(Number.isFinite(iface.rxBytesPerSec)).toBe(true);
+        expect(iface.rxBytesPerSec).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
   it('surfaces the fleet as stale, reusing dataFreshnessService rather than a stub', async () => {
     const { body } = await api.get('ops/status');
     const freshness = (body.data as any).freshness;
