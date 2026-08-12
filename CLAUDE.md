@@ -2590,22 +2590,79 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12, measured on this tree (ABL-300 branched from
-`origin/main` `1ffbae5`): **48 client test files / 640 tests** and **65 server
-test files / 1,148 tests**, all passing, clean typecheck on both. Fewer tests
+Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
+ABL-288 + ABL-295 + ABL-287 + ABL-304 + ABL-311 + ABL-282 + ABL-300):
+**49 client test files / 644 tests**, all passing, and **66 server test files**
+of which **65 collected and passed, 1,114 tests, zero assertion failures**.
+Clean typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests
 passing than that means something broke.
+
+Both figures are a fresh `npx vitest run` on the merged tree — neither is
+carried forward, and neither is a sum of the branch deltas below. The deltas
+are recorded to explain the movement, not to be added up.
+
+**Read the server figure with its one caveat, which is environmental and not a
+regression.** The 66th file, `services/generationService.test.ts`, could not be
+*collected* during this measurement: it ends in an opportunistic `describe`
+against the read-only development replica at `C:/Code/able/data/energy_dashboard.db`,
+and that database was mid-refresh (a 3.6 GB rollback journal growing during the
+run), so the readonly open raised `SqliteError: database is locked` at import
+time. That is a locked shared database, not a failing assertion — no assertion
+failure appeared anywhere in the run, and the file plus its whole import chain
+is byte-identical to `origin/main`, so it cannot be attributed to any branch
+merged here. The file is written to skip when the replica is *absent*; a lock is
+not absence, which is why it throws rather than skipping.
+
+That file contributes its replica-backed cases whenever the shared database is
+reachable, so a run against a free database reads **higher** than 1,114, and
+1,114 is a floor rather than a ceiling. The size of the gap is itself measured,
+not derived: the same PR-head tree read **1,148** when the replica was reachable
+and **1,100** when it was not, in two independent runs — a 48-case swing that is
+entirely this one opportunistic `describe`. Do not treat a number above 1,114 as
+drift, and do not "fix" this file by deleting the replica check.
 
 (ABL-300 added four server files — `v1/keys/keyFormat.test.ts`,
 `v1/keys/sqliteApiKeyStore.test.ts`, `v1/keys/keysCli.test.ts` and
 `v1/auth/apiKeyAuth.test.ts` — plus new cases in the two ABL-304 files it
-touches: +4 files / +160 cases. No client file changed, and the client figure
-above is a fresh run rather than a carried-forward one. The delta was taken
-against `origin/main` measured in its own detached worktree the same hour:
-**61 server files / 988 tests**. Worth recording because the 56/863 figure this
-paragraph used to carry was measured before ABL-304 merged and was already
-stale by 5 files / 125 tests — a count is only true of the tree it was measured
-on, which is the ABL-234 rule below, gone stale exactly the way that rule
-predicts.)
+touches: +4 files / +160 cases. It changed no client file.)
+
+(ABL-311 re-measured this, and the correction was large. The whole chain is
+kept because every link in it was a stale figure cited as a live one. The entry
+before ABL-311 read 56 server files / 863 tests, taken before PR #17 (ABL-304)
+merged as `c3f0dac` and so predating its +5 files / +125 tests: 56 + 5 = 61,
+863 + 125 = 988, measured on unmodified `origin/main` at `1ffbae5`. ABL-311
+then added `release/publishState.test.ts`, +1 file / +14 tests, giving
+62 / 1002 including one skip. The client figure survived all of that, because
+ABL-304, ABL-311 and ABL-300 are server-only — but **ABL-282 (PR #16) moved
+it**, landing a component-test environment (`jsdom`, `@testing-library/react`)
+and a `LoadTab.test.tsx` change. Re-measured here rather than carried forward,
+the client suite is **49 / 644**, so the 48 / 640 that stood through everything
+above is retired: +1 file / +4 cases. A count is only true of the tree it was
+measured on — the ABL-234 rule below, gone stale twice in one day exactly the
+way that rule predicts.)
+
+(Note for whoever measures next, learned the hard way this run: ABL-282's
+`jsdom` and `@testing-library/*` are new dependencies, so a worktree created
+before PR #16 will not have them and the client suite cannot run until you
+`npm install`. Do that install under **v24.18.0** as well: `prebuild-install`
+resolves the `better-sqlite3` binary against the running Node, so installing
+under the v25.6.1 first on `PATH` is the same ABI-141 trap the standing
+instruction below documents for `npm rebuild`, arrived at by a different route.
+Installed under v24.18.0 this run, `node -p "process.versions.modules"` reports
+**137** and the module loads, which is the check worth doing before trusting a
+count.)
+
+(Measurement conditions, which are not optional. Run under **v24.18.0**: see
+the two measurement notes below for why a count taken in a tree shared with a
+concurrent run is not trustworthy, and the `storage.setItem` note for why the
+Node version decides whether the client suite passes at all. ABL-311 measured
+in a throwaway clone at `1ffbae5` with `node_modules` junctioned from the
+primary checkout, because that checkout was held the whole time; the figures
+above were measured in this branch's own worktree with its own `node_modules`,
+which no other run holds. The *worktree* being exclusive is not the same as the
+*database* being free, which is the distinction the 66th-file caveat above turns
+on: source isolation is cheap, but the one shared 376 GiB database is a single
+resource and any suite that touches it inherits whatever ingest is doing.)
 
 (ABL-287 added five server files — `lib/opsAlertRules.test.ts`,
 `lib/opsAlertEngine.test.ts`, `lib/opsAlertStateStore.test.ts`,
@@ -2671,13 +2728,25 @@ Two measurement notes worth having before you diagnose a "failure":
   45/590 figure before it likewise. Run `git status` first; if it is not clean,
   measure in a worktree instead (`git worktree add`, then junction or install
   `node_modules`) — that is how ABL-292's numbers were taken.
-- **The `storage.setItem is not a function` failures did not reproduce.**
-  Earlier entries recorded 20 failing in
-  `dashboardStore.test.ts`/`windowLabel.test.ts`; on 2026-08-12 every client
-  test passed in a clean worktree, before and after ABL-292. That quirk is
-  documented as intermittent (ABL-203 below, tracked by ABL-263) — treat it as
-  environmental and re-check on unmodified `main` before attributing it to a
-  branch, exactly as that paragraph says. It is **not** confirmed fixed.
+- **The `storage.setItem is not a function` failures are not intermittent —
+  they are the Node version on your `PATH`, deterministically** (ABL-311).
+  Earlier entries here recorded 20 failures in
+  `dashboardStore.test.ts`/`windowLabel.test.ts`, then recorded them as having
+  "not reproduced", and called the quirk intermittent. It is not intermittent —
+  and the drift was in *this document*: **ABL-263 had already root-caused it
+  exactly**, down to the `--localstorage-file` warning, and is open with that
+  diagnosis. Do not re-investigate it; read that issue.
+  **Node v25.6.1 defines a global `localStorage` object whose `setItem` is
+  `undefined`** unless `--localstorage-file` is passed; the store's
+  `createJSONStorage(() => localStorage)` gets that truthy-but-hollow object and
+  zustand calls straight through to a missing method. Under **v24.18.0**
+  `typeof localStorage === 'undefined'`, zustand's persist middleware takes its
+  no-storage path, and all 640 client tests pass — that tree's figure; the
+  merged tree reads 644, see "Testing" above. Verified both ways on the same
+  tree at `1ffbae5`, and again 60 commits back at `cb83944` with identical
+  results — so it never depended on a branch. This is the **same root cause as
+  the NODE_MODULE_VERSION section below**: `C:\Program Files\nodejs` (v25.6.1)
+  shadowing the nvm v24.18.0 install. One `export PATH` fixes both suites.
 
 ### NODE_MODULE_VERSION mismatch
 
@@ -2698,8 +2767,13 @@ just move the breakage to whoever has the other one first on `PATH`:
 
 ```bash
 export PATH="/c/Users/guill/AppData/Local/nvm/v24.18.0:$PATH"
-cd server && npx vitest run   # 56 files / 863 tests
+cd server && npx vitest run   # 66 files / 1,114 tests — see "Testing" above
 ```
+
+That `export` fixes the client suite too, for a different mechanism with the
+same cause — see the `storage.setItem` note above. Set it once per shell and
+run both suites. (`/c/nvm4w/nodejs2/nodejs` is the nvm4w "current" symlink and
+also resolves to v24.18.0; either path works, the versioned one is stable.)
 
 This is a standing instruction, not a suggestion, and it was re-tested under
 ABL-287: `npm rebuild better-sqlite3` under the v25.6.1 on `PATH` does fix the
@@ -2895,8 +2969,58 @@ server-side actually arrived, and added `release/unmergedWork.test.ts`.)
 ### Before you mark an issue `done`
 
 ```bash
-cd server && npm run check:unmerged
+npm run predone            # from the repo root; = npm run check:unmerged -w server
 ```
+
+**Publishing to `origin/main` is the last step of `done`, not an optional
+one.** Prod is built from the remote. Work that is merged to local `main` and
+not pushed has not shipped, however green its tests are and whatever the board
+says. This has now recurred five times — ABL-79, ABL-98, ABL-136,
+ABL-189/190/196, ABL-262/265, and on 2026-08-12 five issues (ABL-285, ABL-292,
+ABL-288, ABL-290, ABL-295) all read `done` while local `main` sat **12 commits
+ahead of `origin/main`**.
+
+`predone` runs **two gates**, and the second is the one ABL-311 added:
+
+1. **Per branch** — `done` + not an ancestor of the target = shipping gap.
+2. **`main` itself** — local `main` ahead of the target = **not published**
+   (`release/publishState.ts`, pure, colocated test).
+
+Gate 2 exists because gate 1 structurally could not see the common case. It
+reads an issue identifier out of the branch name, and `main` has none, so
+`issueFromBranch('main')` returns null and the verdict was `unattributed` —
+"reported, not failed". A `main` twelve commits ahead printed one grey line and
+the command exited **0**. Verified on a synthetic repo in the ABL-311 run: the
+pre-ABL-311 checker exits 0 on a merged-but-unpushed `main`, the current one
+exits 1. Gate 2 also survives the two shapes that leave gate 1 no tip at all —
+deleting the feature branch after merging, and committing straight to `main`.
+
+Gate 2 is deliberately **board-independent**: it asks git a question git can
+always answer. A gate that needs a reachable network in order to fail is a gate
+that fails open, and gate 1 does exit 0 when the board is unreachable.
+
+So: `git push origin main` — then re-run `predone` and see `0 ahead, 0 behind`
+— *then* mark the issue `done`. If the push is not yours to make, say so on the
+issue and leave the status `in_review`, not `done`.
+
+#### PR or direct push?
+
+Both are legitimate; the split is by *what the change touches*, not by who is
+awake. Inferring the convention from whatever the last agent did is what left
+the push step belonging to nobody (ABL-311).
+
+- **Open a PR** for changes to shared contracts and anything security-sensitive:
+  the database layer and query shapes, the public `/v1` surface, auth or
+  credential handling, `energy_renewable`, ingest-adjacent code, and any schema
+  or dependency change. These get a second reader before they reach prod.
+- **Push direct to `origin/main`** for everything else once it is green on both
+  suites and `predone` passes: a tab, a chart, a pure helper, a route that reads
+  existing tables, docs, tooling and tests. Requiring a CEO merge on every issue
+  would make an hourly heartbeat the bottleneck on all work, which costs more
+  than the stranding it prevents.
+
+Either way the branch-per-concern rule stands, and either way the issue is not
+`done` until the work is an ancestor of `origin/main`.
 
 **A commit on a branch is not shipping.** ABL-76 found five issues marked `done`
 whose branch was created, committed, and never merged — three of them absent
@@ -2908,9 +3032,10 @@ neither is.
 The check joins `git merge-base --is-ancestor <tip> main` to the board's issue
 status and fails only on `done` + unmerged (`release/unmergedWork.ts`, pure,
 colocated test). In-flight, blocked and in-review branches are listed but never
-failed — the whole point is a check nobody wants to disable. It needs
+failed — the whole point is a check nobody wants to disable. **Gate 1** needs
 `PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` / `PAPERCLIP_COMPANY_ID`; without them
-it lists unmerged branches and exits 0 rather than guessing.
+it lists unmerged branches and exits 0 rather than guessing. **Gate 2 still
+fails without any of them** — that is the point of keeping it board-independent.
 
 It is deliberately **not** in the vitest suite: a test that failed whenever an
 unmerged branch existed would be red on every working branch every day. Run it
@@ -2936,6 +3061,9 @@ pure modules for the reason `comparison/mapFill.ts` does: `<Geographies>`
 fetches its topojson, so the map's Core/out-of-scope decision cannot be
 asserted through the component),
 `server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`,
+`server/src/release/publishState.ts` (ABL-311 — the caller hands it two
+integers from one `git rev-list --left-right --count`, so every publish verdict
+is asserted without a repo, a remote or a network),
 `server/src/services/freshnessRollup.ts`, `server/src/services/hostMetrics.ts`
 (ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
 as optional params, specifically so `hostMetrics.test.ts` can exercise the
