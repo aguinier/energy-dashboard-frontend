@@ -5,6 +5,12 @@ dist/
 .env
 .env.local
 .env.*.local
+# The public /v1 process's environment (`npm run dev:public`, `npm run keys`).
+# It names API_KEYS_DB_PATH — the file holding hashed API keys — so it is
+# ignored for the same reason `.env` is. `server/.env.public.example` is the
+# committed template. The line above does NOT cover this: `.env.*.local`
+# matches `.env.public.local`, not `.env.public` (ABL-300).
+.env.public
 
 # TypeScript incremental build cache — churns on every build, not source
 *.tsbuildinfo

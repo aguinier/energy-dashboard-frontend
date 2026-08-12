@@ -1,0 +1,231 @@
+import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
+import {
+  KEY_ENVIRONMENTS,
+  KEY_NAMESPACE,
+  KEY_PREFIX_LENGTH,
+  KEY_SECRET_LENGTH,
+  burnSecretComparison,
+  formatApiKey,
+  hashKeySecret,
+  mintApiKey,
+  newRecordId,
+  parseApiKey,
+  randomBase62,
+  readBearerToken,
+  secretMatchesHash,
+} from './keyFormat.js';
+
+/**
+ * The format, exhaustively — because everything downstream trusts it.
+ *
+ * Two properties carry the most weight here and neither is obvious from
+ * reading the code: that a minted key round-trips through the parser, and that
+ * `parseApiKey` is strict enough for `key_malformed` to mean "this cannot be a
+ * key" rather than "this is a key with a typo". The second is what makes the
+ * error codes in `apiKeyAuth.ts` useful instead of merely different.
+ */
+
+describe('randomBase62', () => {
+  it('produces the requested length from the intended alphabet', () => {
+    for (const length of [1, 8, 43, 100]) {
+      const value = randomBase62(length);
+      expect(value).toHaveLength(length);
+      expect(value).toMatch(/^[0-9A-Za-z]*$/);
+    }
+  });
+
+  it('never emits a separator or a character that needs escaping', () => {
+    // The key is `_`-separated and will end up in URLs, shells, CSV cells and
+    // JSON strings. One stray `_` would make parsing ambiguous.
+    const sample = randomBase62(20_000);
+    expect(sample).not.toMatch(/[^0-9A-Za-z]/);
+  });
+
+  it('covers the whole alphabet roughly evenly', () => {
+    // A modulo-bias bug would show as the first six characters of the alphabet
+    // appearing ~1.6% more often. This is a coarse net — it catches a *broken*
+    // generator (a stuck byte, a truncated alphabet), which is the failure that
+    // actually costs entropy.
+    const counts = new Map<string, number>();
+    for (const ch of randomBase62(62_000)) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+
+    expect(counts.size).toBe(62);
+    for (const count of counts.values()) {
+      expect(count).toBeGreaterThan(700);
+      expect(count).toBeLessThan(1300);
+    }
+  });
+
+  it('does not repeat itself across draws', () => {
+    const draws = new Set(Array.from({ length: 200 }, () => randomBase62(KEY_SECRET_LENGTH)));
+    expect(draws.size).toBe(200);
+  });
+});
+
+describe('mintApiKey', () => {
+  it.each(KEY_ENVIRONMENTS)('mints a %s key that parses back to what it stored', (environment) => {
+    const minted = mintApiKey(environment);
+    const parsed = parseApiKey(minted.key);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.environment).toBe(environment);
+    expect(parsed?.prefix).toBe(minted.prefix);
+    expect(minted.prefix).toHaveLength(KEY_PREFIX_LENGTH);
+    expect(parsed?.secret).toHaveLength(KEY_SECRET_LENGTH);
+  });
+
+  it('returns the hash of the secret half, not of the whole key', () => {
+    // The distinction matters: hashing the whole string would make the stored
+    // digest depend on the prefix, so re-deriving it during verification would
+    // need the prefix too — and any future change to the format would
+    // invalidate every stored hash.
+    const minted = mintApiKey('live');
+    const secret = parseApiKey(minted.key)?.secret as string;
+
+    expect(minted.secretSha256).toBe(createHash('sha256').update(secret).digest('hex'));
+    expect(minted.secretSha256).not.toBe(createHash('sha256').update(minted.key).digest('hex'));
+  });
+
+  it('never puts the secret anywhere but the key string', () => {
+    const minted = mintApiKey('live');
+    const secret = parseApiKey(minted.key)?.secret as string;
+
+    // Everything the store persists, checked for the plaintext. This is the
+    // day-one property from ABL-293 §2b: the raw key is unrecoverable by
+    // construction from the moment it is minted.
+    expect(minted.prefix).not.toContain(secret);
+    expect(minted.secretSha256).not.toContain(secret);
+    expect(JSON.stringify({ ...minted, key: undefined })).not.toContain(secret);
+  });
+
+  it('is 256 bits of secret, which is the reason SHA-256 is the right primitive', () => {
+    expect(Math.round(KEY_SECRET_LENGTH * Math.log2(62))).toBeGreaterThanOrEqual(256);
+  });
+});
+
+describe('parseApiKey', () => {
+  const good = mintApiKey('live').key;
+
+  it('accepts a well-formed key', () => {
+    expect(parseApiKey(good)).not.toBeNull();
+  });
+
+  const rejected: ReadonlyArray<{ why: string; value: string }> = [
+    { why: 'empty', value: '' },
+    { why: 'no separators at all', value: 'ablelive7f3a9c21secret' },
+    { why: 'three segments', value: 'able_live_7f3a9c21' },
+    { why: 'five segments', value: `${good}_extra` },
+    { why: 'wrong namespace', value: good.replace(/^able_/, 'acme_') },
+    { why: 'unknown environment', value: good.replace('_live_', '_staging_') },
+    { why: 'prefix one character short', value: good.replace(/^able_live_./, 'able_live_') },
+    { why: 'secret one character short', value: good.slice(0, -1) },
+    { why: 'secret one character long', value: `${good}A` },
+    { why: 'non-base62 in the secret', value: `${good.slice(0, -1)}-` },
+    { why: 'non-base62 in the prefix', value: `able_live_7f3a9c2-_${'a'.repeat(KEY_SECRET_LENGTH)}` },
+    { why: 'a bearer header rather than a key', value: `Bearer ${good}` },
+    { why: 'the private app shared secret', value: 'some-helio-write-token' },
+    { why: 'surrounding whitespace', value: ` ${good} ` },
+  ];
+
+  it.each(rejected)('rejects $why', ({ value }) => {
+    expect(parseApiKey(value)).toBeNull();
+  });
+
+  it('is a total function on arbitrary input', () => {
+    // It runs on unvalidated bytes from the public internet. It must never
+    // throw — a throw here would be a 500 where a 401 belongs.
+    for (const value of ['\0', '_'.repeat(500), '💥', 'able_live__'.repeat(40)]) {
+      expect(() => parseApiKey(value)).not.toThrow();
+    }
+  });
+
+  it('round-trips through formatApiKey', () => {
+    const parsed = parseApiKey(good);
+    expect(formatApiKey(parsed!)).toBe(good);
+  });
+});
+
+describe('secretMatchesHash', () => {
+  it('accepts the right secret and rejects a wrong one', () => {
+    expect(secretMatchesHash('correct-horse', hashKeySecret('correct-horse'))).toBe(true);
+    expect(secretMatchesHash('correct-hors3', hashKeySecret('correct-horse'))).toBe(false);
+  });
+
+  it('rejects rather than throwing when the stored hash is corrupt', () => {
+    // A truncated or hand-edited row must fail closed. `timingSafeEqual` throws
+    // on a length mismatch, so without the guard this would be a 500 on the
+    // request path — and a 500 on an auth check is an availability bug caused
+    // by a data problem.
+    for (const corrupt of ['', 'not-hex', 'ab', 'f'.repeat(63), 'f'.repeat(65)]) {
+      expect(() => secretMatchesHash('anything', corrupt)).not.toThrow();
+      expect(secretMatchesHash('anything', corrupt)).toBe(false);
+    }
+  });
+
+  it('is case-insensitive about the stored hex but not about the secret', () => {
+    const hash = hashKeySecret('s3cret');
+    expect(secretMatchesHash('s3cret', hash.toUpperCase())).toBe(true);
+    expect(secretMatchesHash('S3CRET', hash)).toBe(false);
+  });
+
+  it('burnSecretComparison does the work and reports nothing', () => {
+    expect(burnSecretComparison('anything')).toBeUndefined();
+  });
+});
+
+describe('readBearerToken', () => {
+  it.each([
+    { header: undefined, kind: 'absent' },
+    { header: '', kind: 'absent' },
+    { header: '   ', kind: 'absent' },
+    { header: 'Bearer abc', kind: 'token' },
+    { header: 'bearer abc', kind: 'token' },
+    { header: 'BEARER abc', kind: 'token' },
+    { header: 'Bearer\tabc', kind: 'token' },
+    { header: 'Bearer   abc', kind: 'token' },
+    { header: '  Bearer abc  ', kind: 'token' },
+    { header: 'Basic dXNlcjpwdw==', kind: 'malformed' },
+    { header: 'Bearer', kind: 'malformed' },
+    { header: 'Bearer ', kind: 'malformed' },
+    { header: 'abc', kind: 'malformed' },
+    { header: 'Bearer abc def', kind: 'malformed' },
+  ])('reads $header as $kind', ({ header, kind }) => {
+    expect(readBearerToken(header).kind).toBe(kind);
+  });
+
+  it('returns the token itself, unmodified', () => {
+    const read = readBearerToken('Bearer able_live_abcdefgh_xyz');
+    expect(read).toEqual({ kind: 'token', token: 'able_live_abcdefgh_xyz' });
+  });
+
+  it('does not silently truncate a header with trailing content', () => {
+    // A caller who pasted `Bearer <key> # prod` should hear "malformed", not
+    // spend an hour on the `key_invalid` that truncation would produce.
+    expect(readBearerToken('Bearer able_live_abcdefgh_xyz # prod').kind).toBe('malformed');
+  });
+});
+
+describe('newRecordId', () => {
+  it('is prefixed by kind and unique', () => {
+    const ids = new Set(Array.from({ length: 500 }, () => newRecordId('key')));
+    expect(ids.size).toBe(500);
+    for (const id of ids) expect(id).toMatch(/^key_[0-9A-Za-z]{12}$/);
+    expect(newRecordId('acct')).toMatch(/^acct_[0-9A-Za-z]{12}$/);
+  });
+
+  it('is not sequential, so two ids do not disclose how many customers exist', () => {
+    // A counter would come out in ascending order every time. A hundred random
+    // draws arriving sorted has probability 1/100!, so this is a real
+    // distinction rather than a coin flip.
+    const ids = Array.from({ length: 100 }, () => newRecordId('acct'));
+    expect(ids).not.toEqual([...ids].sort());
+  });
+});
+
+describe('the namespace is fixed', () => {
+  it('is what makes a leaked key attributable and greppable', () => {
+    expect(KEY_NAMESPACE).toBe('able');
+    expect(mintApiKey('test').key.startsWith('able_test_')).toBe(true);
+  });
+});

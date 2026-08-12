@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import type { Express } from 'express';
 import { createPublicApp } from './publicApp.js';
 import { FORBIDDEN_PUBLIC_ENV } from './publicEnv.js';
+import { createMemoryApiKeyDirectory } from './keys/memoryApiKeyDirectory.js';
 
 /**
  * What the public composition does, from the outside.
@@ -65,12 +66,24 @@ async function probe(origin: string, p: string, init?: RequestInit): Promise<Pro
 const savedEnv = new Map<string, string | undefined>();
 let api: Awaited<ReturnType<typeof listen>>;
 
+/**
+ * One seeded key, so this file can reach past the ABL-300 gate.
+ *
+ * `createPublicApp` requires a key store — there is no way to spell an
+ * unauthenticated public app — so every `createPublicApp` call here passes one.
+ * The in-memory directory keeps this file free of a database, which is the
+ * property the header above describes: if the public graph ever reaches the
+ * *energy* database that is a finding, not a nuisance to be mocked away.
+ */
+const seeded = createMemoryApiKeyDirectory([{ accountName: 'Test Account' }]);
+const AUTH = { Authorization: `Bearer ${seeded.keys[0].key}` };
+
 beforeAll(async () => {
   for (const name of FORBIDDEN_PUBLIC_ENV) {
     savedEnv.set(name, process.env[name]);
     delete process.env[name];
   }
-  api = await listen(createPublicApp());
+  api = await listen(createPublicApp({ apiKeyDirectory: seeded.directory }));
 });
 
 afterAll(async () => {
@@ -166,11 +179,38 @@ describe('the public composition does answer /v1', () => {
     expect(Object.keys(body).sort()).toEqual(['status', 'version']);
   });
 
-  it('404s an unknown path under /v1 with the public envelope', async () => {
-    const res = await probe(api.origin, '/v1/observations/load');
+  it('404s an unknown path under /v1 with the public envelope, once authenticated', async () => {
+    const res = await probe(api.origin, '/v1/observations/load', { headers: AUTH });
 
     expect(res.status).toBe(404);
     expect(res.json()).toEqual({ error: { code: 'not_found', message: 'No such resource.' } });
+  });
+
+  it('401s that same path without a key, so the surface cannot be enumerated', async () => {
+    // ABL-300. The gate is mounted between the discovery root and `v1Routes`,
+    // so it covers *paths* rather than routes: an unauthenticated caller
+    // cannot tell an unimplemented resource from an implemented one, and a
+    // route ABL-303 adds is authenticated whether or not its author thought
+    // about it.
+    const res = await probe(api.origin, '/v1/observations/load');
+
+    expect(res.status).toBe(401);
+    expect(res.json()).toEqual({
+      error: {
+        code: 'key_missing',
+        message: 'This endpoint requires an API key. Send it as: Authorization: Bearer able_live_...',
+      },
+    });
+  });
+
+  it('keeps the discovery root open, and it is the only thing that is', async () => {
+    expect((await probe(api.origin, '/v1')).status).toBe(200);
+    for (const path of ['/v1/', '/v1/catalog', '/v1/anything/at/all']) {
+      const res = await probe(api.origin, path);
+      // `/v1/` is the root again after Express strips the mount path; the rest
+      // are gated.
+      expect(res.status).toBe(path === '/v1/' ? 200 : 401);
+    }
   });
 });
 
@@ -187,7 +227,10 @@ describe('hardened HTTP configuration', () => {
 
   it('allows an origin that is on the allowlist, and only that one', async () => {
     const allowlisted = await listen(
-      createPublicApp({ env: { PUBLIC_CORS_ORIGINS: 'https://docs.example.com, https://app.example.com' } })
+      createPublicApp({
+        apiKeyDirectory: seeded.directory,
+        env: { PUBLIC_CORS_ORIGINS: 'https://docs.example.com, https://app.example.com' },
+      })
     );
     try {
       const ok = await probe(allowlisted.origin, '/v1', {
@@ -220,16 +263,16 @@ describe('hardened HTTP configuration', () => {
 
 describe('the public app refuses a process holding write or ops capability', () => {
   it.each([...FORBIDDEN_PUBLIC_ENV])('refuses to build when %s is set', (name) => {
-    expect(() => createPublicApp({ env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
   });
 
   it('never puts the value in the message', () => {
     // An error message is the one place a secret reliably reaches a log file.
-    expect(() => createPublicApp({ env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
       /HELIO_WRITE_TOKEN/
     );
     try {
-      createPublicApp({ env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
+      createPublicApp({ apiKeyDirectory: seeded.directory, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
       expect.unreachable('should have thrown');
     } catch (err) {
       expect((err as Error).message).not.toContain('super-secret-value');
@@ -237,7 +280,7 @@ describe('the public app refuses a process holding write or ops capability', () 
   });
 
   it('builds when the environment is clean', () => {
-    expect(() => createPublicApp({ env: {} })).not.toThrow();
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, env: {} })).not.toThrow();
   });
 });
 
