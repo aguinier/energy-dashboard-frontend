@@ -2108,7 +2108,9 @@ ticket originally sketched. It silently fans out: `energy_load` alone has
 **107,047** of those pairs held **conflicting** values (measured 2026-08-11,
 against ABL-211/ABL-215's then-still-open "which one is authoritative" board
 question — `energy_price` has 16,896 such pairs, 2 conflicting;
-`energy_renewable` 26,694 pairs, 2,441 conflicting). An `IN(...)` join matches
+`energy_renewable` 26,694 pairs, **26,400** conflicting, re-measured 2026-08-12
+over the whole 829,568-row table, pairing length-19 rows on `(country_code,
+instant)` and comparing `total_renewable_mw`). An `IN(...)` join matches
 *both* rows whenever both exist, so it would have traded ABL-214's silent-drop
 defect for a silent-fan-out one — double-counting that hour, and on a
 conflicting pair, handing an accuracy metric the right-looking value and the
@@ -2117,6 +2119,25 @@ confidently-wrong-number defect this whole file exists to catch, and it was
 not this join's decision to make: settling which of a conflicting pair is
 authoritative is a data-provenance judgment, not a read-side accuracy query,
 and that is what ABL-215 was for.
+
+**That `energy_renewable` figure read `2,441` here until ABL-329, understating
+it by ~10x** — it made a near-universal defect read as a marginal one, and
+anyone sizing work against this table from that number would have sized it an
+order of magnitude too small. The pair count reproduces to the row (26,694),
+which pins the definition exactly; the conflict count does not reproduce at
+2,441 under any predicate tried — 24 of them, every `*_mw` column both
+differs-at-all and differs-with-both-sides-non-zero, plus rounding, magnitude
+and relative-difference variants — so `2,441` measured nothing recoverable
+rather than something narrower. The real distribution, 2026-08-12:
+`total_renewable_mw` differs on 26,400 pairs, still 26,400 after `ROUND(,2)`,
+26,362 by more than 0.5 MW, and 23,237 with both sides non-zero. **Not one of
+the 26,400 is a NULL-against-a-value mismatch** — all 26,400 are two non-NULL,
+genuinely different numbers, which is what makes the `IN(...)` fan-out an
+accuracy defect rather than a coalescing nuisance. BA alone contributes 17,013;
+excluding it leaves 9,387 across 28 other countries, so this is not one bad
+country either. **The design conclusion is unchanged and strictly better
+supported** at a 98.9% conflict rate than at the 9% the old number implied:
+still two `LEFT JOIN`s plus `COALESCE`, never one `IN(...)`.
 
 **ABL-215 ruled and executed on 2026-08-12, but only for `energy_load` and
 only for 23 of the ~26 conflicted countries.** ABL-227 sampled ~200
@@ -2172,7 +2193,7 @@ counterpart to collide with. `energy_load`'s own row count dropped by exactly
 30,066 (the deletes, from 2,679,772 to 2,649,706); nothing else in the table
 or the database changed.
 
-`timestampFormOnClause` (`server/src/utils/timestamp.ts:140`) is instead
+`timestampFormOnClause` (`server/src/utils/timestamp.ts:145`) is instead
 always used as **two separate LEFT JOINs** — one matching the space form, one
 matching the `T` form, on two different aliases — `COALESCE`d together
 preferring space. That changes nothing for any country-hour that already
@@ -2215,8 +2236,9 @@ the cutover (2025-11-15..2025-12-01): today's bare-equality join returns 1,057
 rows; the separator-agnostic, dedup-safe join returns 2,013 — essentially
 double. It needs the identical `timestampFormOnClause`-pair-plus-`COALESCE`
 treatment as the two fixed services above (never the naive `IN(...)`, for the
-same fan-out reason — `energy_renewable` alone has 2,441 conflicting `T`/space
-pairs), in both its hourly and aggregated branches. That is materially more
+same fan-out reason — `energy_renewable` alone has **26,400** conflicting
+`T`/space pairs, 98.9% of the 26,694 it has), in both its hourly and
+aggregated branches. That is materially more
 than "the same one line" this ticket was scoped for, and nothing in this
 client currently calls `/tso-forecast/accuracy/generation/:cc` (see
 "ForecastTab" above), so it was left unfixed here rather than grown into this
@@ -2519,11 +2541,17 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12, re-measured on `main` at `1ffbae5` in a clean worktree
-(ABL-309): **48 client test files / 640 tests** and **61 server test files / 988
-tests**, all passing, clean typecheck on both. Fewer tests passing than that
-means something broke. Both suites were run under Node 24 — see
+Green as of 2026-08-12, re-measured on `main` at `4977f8a` on a clean tree
+(ABL-329): **49 client test files / 657 tests** and **63 server test files /
+1026 tests**, all passing, clean typecheck on both. Fewer tests passing than
+that means something broke. Both suites were run under Node 24 — see
 "NODE_MODULE_VERSION mismatch" below for why the Node matters.
+
+(ABL-329 is a docs-only correction and adds no test of its own, so those two
+figures are `main`'s. They restate a baseline that read **48/640** and
+**61/988** at `1ffbae5`: ABL-309's own `lib/nativeAbi.test.ts` landed, and
+ABL-319 and ABL-325 added cases after it. Re-measured, never derived by
+summing the branches' separate claims — see the ABL-234 note below.)
 
 (The server half of that figure had drifted badly: it read **56 files / 863
 tests** until ABL-309 re-measured it, understating `main` by 5 files and 125
