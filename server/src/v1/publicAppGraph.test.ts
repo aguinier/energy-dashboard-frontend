@@ -47,6 +47,10 @@ const FORBIDDEN_PREFIXES: ReadonlyArray<{ prefix: string; why: string }> = [
   { prefix: 'services/opsStatusService', why: 'host telemetry' },
   { prefix: 'services/combinedOpsStatusService', why: 'raw exception text in a 200 body' },
   { prefix: 'services/peerOpsStatus', why: 'peer host names' },
+  { prefix: 'services/opsHistory', why: 'ops history: the same telemetry, over time' },
+  { prefix: 'services/opsSnapshot', why: 'ops snapshots; the scheduler holds a write connection' },
+  { prefix: 'services/ingest', why: 'ingest log and ingest freshness' },
+  { prefix: 'services/netPositionIngestService', why: 'ingest' },
   { prefix: 'services/forecastVintageArchiveScheduler', why: 'holds a write connection' },
   { prefix: 'services/coreNetPositionScheduler', why: 'holds a write connection' },
   { prefix: 'services/jaoCoreNetPositionCapture', why: 'ingest' },
@@ -86,6 +90,11 @@ describe.each(ENTRIES)('$label', ({ file }) => {
   });
 
   it('reaches only v1 modules', () => {
+    // The real catch-all, and the reason the table above can afford to be a
+    // readable inventory rather than an exhaustive one: a module added to
+    // `services/` next year is covered by this without anyone remembering to
+    // list it. The named cases exist to say *why* each is a leak, so a failure
+    // reads as a finding instead of as a rule.
     expect(graph.modules.filter((m) => !m.startsWith('v1/'))).toEqual([]);
   });
 });
