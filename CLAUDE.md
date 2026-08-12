@@ -2480,10 +2480,18 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
-ABL-288 + ABL-295 + ABL-287): **48 client test files / 640 tests** and **56 server test
-files / 863 tests**, all passing, clean typecheck on both. Fewer tests passing
-than that means something broke.
+Green as of 2026-08-12, re-measured on `main` at `1ffbae5` in a clean worktree
+(ABL-309): **48 client test files / 640 tests** and **61 server test files / 988
+tests**, all passing, clean typecheck on both. Fewer tests passing than that
+means something broke. Both suites were run under Node 24 — see
+"NODE_MODULE_VERSION mismatch" below for why the Node matters.
+
+(The server half of that figure had drifted badly: it read **56 files / 863
+tests** until ABL-309 re-measured it, understating `main` by 5 files and 125
+cases. ABL-309 itself then adds `lib/nativeAbi.test.ts`, +1 file / +15 cases, so
+that branch reads **62 files / 1003 tests**. A baseline is only a tripwire while
+it is current — an understated one quietly stops detecting the deletions it is
+written down to catch.)
 
 (ABL-287 added five server files — `lib/opsAlertRules.test.ts`,
 `lib/opsAlertEngine.test.ts`, `lib/opsAlertStateStore.test.ts`,
@@ -2570,28 +2578,54 @@ NODE_MODULE_VERSION 141.
 then nothing is broken in the code — the `node` first on your `PATH` is not
 the one `better-sqlite3` was compiled against in this checkout. On the able
 workstation `C:\Program Files\nodejs` (v25.6.1, ABI 141) shadows the nvm
-install, and `node_modules` is built for **v24.18.0** (ABI 137). Run the suite
-with the matching Node rather than rebuilding the native module, which would
-just move the breakage to whoever has the other one first on `PATH`:
+install. Run the suite with the matching Node rather than rebuilding the native
+module, which would just move the breakage to whoever has the other one first
+on `PATH`:
 
 ```bash
 export PATH="/c/Users/guill/AppData/Local/nvm/v24.18.0:$PATH"
-cd server && npx vitest run   # 56 files / 863 tests
+cd server && npx vitest run   # 61 files / 988 tests on main at 1ffbae5
 ```
+
+**Since ABL-309 the suite tells you this itself.** A vitest `globalSetup`
+(`server/vitest.config.ts:16`) opens an in-memory database before any test file
+loads; on an ABI mismatch it halts the run with a single error naming both ABI
+numbers, the Node to re-run under, and why not to `npm rebuild`. So you get one
+explanatory failure instead of ~24 red files with a `bindings.js` stack and no
+assertion named. `SKIP_NATIVE_ABI_PRECHECK=1` bypasses it if you deliberately
+want the ABI-independent tests under a mismatched Node.
+
+**Which Node is correct flips, so do not memorise a version — read the error.**
+The binary is whatever the last `npm rebuild` in *any* checkout produced: it was
+ABI 137 on the morning of 2026-08-12, ABI 141 by 15:35, and back to 137 by
+15:36. The guard is deliberately written to report the numbers it finds rather
+than to name a version (`parseAbiMismatch`, `server/src/lib/nativeAbi.ts:68`),
+because a guard that hardcoded "use Node 24" would itself become the next wrong
+instruction. `137` is Node 24 and `141` is Node 25; the error states both.
 
 This is a standing instruction, not a suggestion, and it was re-tested under
 ABL-287: `npm rebuild better-sqlite3` under the v25.6.1 on `PATH` does fix the
 suite for that Node — and immediately breaks it for anyone following the
 `export PATH` line above, because an ABI-141 binary cannot load in v24.18.0.
-The rebuild was reverted the same run and the module is built for **v24.18.0**.
-If you want the default `node` to work without the export, that is a real
-decision about a shared workstation and needs the CEO, not a `npm rebuild` in
-passing.
+That rebuild was reverted the same run — and it has since happened again, which
+is why the section above says to read the error rather than trust any version
+written here. `server/node_modules` is junctioned into every per-issue worktree,
+so one `npm rebuild` re-points the ABI for all of them at once. If you want the
+default `node` to work without the export, that is a real decision about a
+shared workstation and needs the CEO, not a `npm rebuild` in passing.
 
-Verified 2026-08-12: the same tree reports `24 failed | 20 passed` under
-v25.6.1 and `45 passed (45)` under v24.18.0. Every failure is the same
-`bindings.js` import error, and none of them names a test assertion — a real
-regression names one. Pure helpers are deliberately insulated from this:
+Verified 2026-08-12 on ABL-309, ABI-137 binary: under v24.18.0 the tree is
+`61 passed (61)` / 988 tests; under v25.6.1 the guard halts the run with its
+one-error message and no test file loads. Bypassing the guard on that same Node
+(`SKIP_NATIVE_ABI_PRECHECK=1`) reproduces what everyone saw before it:
+`24 failed | 38 passed (62)`, 81 tests failed — matching the counts ABL-309 was
+filed with. Every failure is the same `bindings.js` import error and none names
+a test assertion, which is how you tell it from a real regression: a real one
+names an assertion. `require('better-sqlite3')` alone
+does *not* detect this — the addon is not loaded until a `Database` is
+constructed, which is why the failures scatter across DB-touching files instead
+of landing in one obvious place, and why the guard constructs one. Pure helpers
+are deliberately insulated from this:
 `services/combinedOpsStatusService.test.ts:17` mocks `config/database.js` out,
 and `lib/opsStatusThresholds.ts` imports only *types* from the DB-touching
 modules (type imports erase at compile time), so both suites run under either
