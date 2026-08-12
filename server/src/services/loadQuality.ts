@@ -86,9 +86,15 @@ export function isMeasuredLoad(value: number | null | undefined): boolean {
  *
  * Takes the column so an aliased join can pass `e.load_mw`, mirroring
  * `rangeClause` in `utils/timestamp.ts`. Kept beside `isMeasuredLoad` rather
- * than inlined at each call site so the two cannot drift: there are five
- * `energy_load` query sites in `loadService.ts`, and a literal repeated five
- * times is a literal that gets fixed four times.
+ * than inlined at each call site so the two cannot drift: `loadService.ts`
+ * alone holds seven `energy_load` query sites, and a literal repeated seven
+ * times is a literal that gets fixed six times.
+ *
+ * That count read "five" here until ABL-262, which is the small version of the
+ * same problem — the enumeration in CLAUDE.md was wrong in the same way and at
+ * the same time, and a stale count is how `forecastService.ts` stayed off the
+ * list of sites anyone thought to check. CLAUDE.md now carries the full table
+ * and the grep that reproduces it.
  *
  * `> 0` also excludes SQL `NULL` (a `NULL` comparison is never true), which is
  * the wanted behaviour — an absent reading is not a measurement — and matches

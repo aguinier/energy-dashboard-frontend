@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
-import { buildFixtureDb, WINDOW_QS } from '../test/fixtureDb.js';
+import { buildFixtureDb, WINDOW_QS, NEXT_DAY_QS } from '../test/fixtureDb.js';
 
 const fixtureDb = buildFixtureDb();
 vi.mock('../config/database.js', () => ({ default: fixtureDb }));
@@ -122,5 +122,76 @@ describe('GET /api/forecasts/compare — actual-column mapping', () => {
     const noType = await get(`compare?country=DE&${WINDOW_QS}`);
     expect(noType.status).toBe(400);
     expect(noType.body.code).toBe('MISSING_FORECAST_TYPE');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ABL-262. This endpoint's actuals query was the last `energy_load` read in
+// `server/src` with no load-quality guard, so it handed placeholder `0.0` rows
+// back as measurements. Measured read-only against prod on 2026-08-12:
+// `?country=MK&type=load&start=2026-08-01T00:00:00Z&end=2026-08-03T00:00:00Z`
+// returned 24 actuals, all 24 of them exactly `0` MW, against MK's documented
+// 543-717 MW daily peak; ES returned 33 zeros in 193, BA 3 in 25, RO 3 in 97.
+//
+// Both directions are asserted, because the trap here is the fix and not the
+// defect: this query is generic over forecast type, and a blanket `> 0` would
+// delete a measured overnight solar zero, a still-air wind zero and a
+// zero-clearing price — real readings whose removal biases every renewable
+// metric upward.
+// ---------------------------------------------------------------------------
+
+describe('GET /api/forecasts/compare — impossible zero load actuals', () => {
+  it('withholds the placeholder hours and serves the real ones beside them', async () => {
+    // PT's NEXT_DAY load is 200 / 0 / 220 / 0 — the live MK/SI shape, zeros
+    // interleaved inside a single otherwise-healthy day. The two real hours
+    // survive; the day is not withheld wholesale.
+    const { status, body } = await get(`compare?country=PT&type=load&${NEXT_DAY_QS}`);
+
+    expect(status).toBe(200);
+    const data = body.data as Compare;
+    expect(data.actuals).toEqual([
+      { timestamp: '2026-07-02 00:00:00', value: 200 },
+      { timestamp: '2026-07-02 02:00:00', value: 220 },
+    ]);
+    expect(data.actuals.map((a) => a.value)).not.toContain(0);
+  });
+
+  it('returns no actuals at all for a day that is placeholders end to end', async () => {
+    // GR's NEXT_DAY load is exactly 0.0 at every hour — MK's shape, where a
+    // whole 24h window served as `0` MW. An empty series is the honest answer;
+    // a flat zero line is a confident claim that GR drew no power that day.
+    const { status, body } = await get(`compare?country=GR&type=load&${NEXT_DAY_QS}`);
+
+    expect(status).toBe(200);
+    expect((body.data as Compare).actuals).toEqual([]);
+  });
+
+  it('still serves a measured zero solar actual', async () => {
+    // BE's solar is a measured 0.0 at every hour of the window — overnight, and
+    // a real reading. A blanket `> 0` guard on this query empties this series.
+    const { body } = await get(`compare?country=BE&type=solar&${WINDOW_QS}`);
+
+    const data = body.data as Compare;
+    expect(data.actuals).toHaveLength(4);
+    expect(data.actuals.map((a) => a.value)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('still serves negative day-ahead price actuals', async () => {
+    // BE's window is a genuinely negative day-ahead day. Prices below zero are
+    // the strongest form of the same assertion: the guard must not reach `price`
+    // at all, or this whole series disappears.
+    const { body } = await get(`compare?country=BE&type=price&${WINDOW_QS}`);
+
+    const data = body.data as Compare;
+    expect(data.actuals.map((a) => a.value)).toEqual([-10, -20, -30, -40]);
+  });
+
+  it('leaves an unguarded load actual above zero exactly as it was', async () => {
+    // The guard must be a filter on impossible rows, not a change to the served
+    // numbers. DE's window is untouched by it.
+    const { body } = await get(`compare?country=DE&type=load&${WINDOW_QS}`);
+
+    const data = body.data as Compare;
+    expect(data.actuals.map((a) => a.value)).toEqual([1000, 1100, 1200, 1300]);
   });
 });

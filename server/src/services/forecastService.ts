@@ -2,6 +2,7 @@ import db from '../config/database.js';
 import { ForecastDataPoint, ForecastType, Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { resolveModelCandidates } from '../config/forecastModels.js';
+import { loadActualGuard } from './loadQuality.js';
 
 // There used to be a second normalizer here, `normalizeForForecastsTable`,
 // which kept the 'T' separator "for the forecasts table". It had the mirror of
@@ -229,6 +230,20 @@ export function getForecastWithActuals(
   const forecasts = forecastStmt.all(upperCode, forecastType, ...rangeArgs(range));
 
   // Get actuals
+  //
+  // `loadActualGuard` and not a bare `> 0`: this query is generic over forecast
+  // type, and a `0.0` is impossible only for `load`. It is completely ordinary
+  // for `solar` overnight, for `wind_*` in still air, and for a `price` hour
+  // that cleared at zero — BE's fixture day is negative throughout. A blanket
+  // floor here would delete real measurements and bias every renewable metric
+  // upward, which is the same defect pointing the other way.
+  //
+  // This site was the last unguarded `energy_load` read (ABL-262). It is the
+  // ABL-60 shape again: measured read-only against prod 2026-08-12, a
+  // `?country=MK&type=load` window over 2026-08-01..03 returned 24 actuals of
+  // which all 24 were exactly `0` MW, against MK's documented 543-717 MW daily
+  // peak — served as real measurements by a live public endpoint that the Load
+  // tab already fetches on every render.
   const actualStmt = db.prepare(`
     SELECT
       timestamp_utc as timestamp,
@@ -236,6 +251,7 @@ export function getForecastWithActuals(
     FROM ${mapping.table}
     WHERE country_code = ?
       AND ${rangeClause('timestamp_utc')}
+      ${loadActualGuard(forecastType, mapping.column)}
     ORDER BY timestamp_utc
   `);
   const actuals = actualStmt.all(upperCode, ...rangeArgs(range));
