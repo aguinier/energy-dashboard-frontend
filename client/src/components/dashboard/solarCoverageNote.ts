@@ -65,7 +65,13 @@ export function describeSolarCoverage(
   const hours = coverage.pairs.toLocaleString('en-GB');
 
   return {
-    headline: `Solar here is grid-metered output, not ${countryLabel}'s total solar generation.`,
+    // No country name in the headline, and no possessive. `countryLabel` is
+    // the raw `countries.country_name`, so the natural phrasing produces
+    // "not Netherlands's total solar generation" - and the article that would
+    // fix it ("the Netherlands", but not "the Germany") is not something the
+    // column tells us. The name appears in the detail below, in a position
+    // that does not need one.
+    headline: 'Solar here is grid-metered output, not this country\'s total solar generation.',
     detail:
       `Over the last ${coverage.referenceDays} days ENTSO-E's own day-ahead solar forecast ` +
       `for ${countryLabel} totalled ${coverage.ratio}x the solar actuals reported for the same ` +

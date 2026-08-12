@@ -56,12 +56,16 @@ describe('describeSolarCoverage', () => {
     expect(describeSolarCoverage(mix(undefined), 'Netherlands')).toBeNull();
   });
 
-  it('names the country and refuses the bare label', () => {
-    const note = describeSolarCoverage(mix(NL_COVERAGE), 'the Netherlands');
+  it('refuses the bare label and names the country where it reads naturally', () => {
+    // `countryLabel` is the raw country_name, so the headline avoids the
+    // possessive it cannot punctuate ("Netherlands's") and the detail carries
+    // the name instead.
+    const note = describeSolarCoverage(mix(NL_COVERAGE), 'Netherlands');
 
     expect(note).not.toBeNull();
     expect(note!.headline).toContain('grid-metered output');
-    expect(note!.headline).toContain('the Netherlands');
+    expect(note!.headline).not.toContain("Netherlands's");
+    expect(note!.detail).toContain('Netherlands');
     expect(note!.labelQualifier).toBe(SOLAR_PARTIAL_QUALIFIER);
   });
 
