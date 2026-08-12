@@ -436,6 +436,14 @@ export interface CombinedOpsStatus {
   derived: {
     local: OpsSideDerived;
     peer: OpsSideDerived;
+    /**
+     * Whether the lanes are on the same build (ABL-287). A cross-lane
+     * comparison, so it sits beside the per-side verdicts rather than inside
+     * either. `unknown` whenever there is nothing to compare — a side
+     * unreachable, or a side reporting no commit (a dev server) — which is why
+     * the banner keys on `'warn'` rather than on inequality.
+     */
+    commitDrift: ThresholdState;
   };
 }
 

@@ -20,6 +20,13 @@ services:
       # acceptance and vice versa. Unset → the status page reports "not
       # configured" rather than attempting a request.
       - OPS_PEER_URL=${OPS_PEER_URL:-}
+      # Ops alert engine (ABL-287): notifies on transition into warn/error and
+      # on recovery. The log is the only channel, so nothing here configures
+      # delivery. On unless explicitly false. Its last-notified state persists
+      # to ops-alert-state.json in the /data volume mounted below, which is how
+      # a container restart avoids re-announcing everything already reported.
+      - OPS_ALERTS_ENABLED=${OPS_ALERTS_ENABLED:-}
+      - OPS_ALERT_INTERVAL_MINUTES=${OPS_ALERT_INTERVAL_MINUTES:-}
     volumes:
       # DB volume is now read-write so POST /api/weather/snapshot can
       # insert. All existing GET routes use a separate readonly connection

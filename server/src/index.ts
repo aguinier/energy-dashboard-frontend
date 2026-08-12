@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { createApp, resolveClientDist } from './app.js';
 import { startForecastVintageArchiveScheduler } from './services/forecastVintageArchiveScheduler.js';
 import { startCoreNetPositionScheduler } from './services/coreNetPositionScheduler.js';
+import { startOpsAlertScheduler } from './services/opsAlertScheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3001;
@@ -47,5 +48,12 @@ startForecastVintageArchiveScheduler();
 // that means deploying this code changes nothing in prod until a separate,
 // coordinated step turns it on.
 startCoreNetPositionScheduler();
+
+// ABL-287: the scheduled check that turns the ops status page into a
+// monitoring tool — reads both lanes' KPIs every 5 minutes and logs a line
+// when one crosses into warn/error or recovers. On by default (the only
+// channel is logging, so there is no external side effect to opt into);
+// OPS_ALERTS_ENABLED=false turns it off. See services/opsAlertScheduler.ts.
+startOpsAlertScheduler();
 
 export default app;
