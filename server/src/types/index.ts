@@ -69,27 +69,37 @@ export interface RenewableData {
   total_renewable_mw?: number;
 }
 
+// Renewable generation by source, read from `energy_generation` since ABL-324
+// tranche 1 - not the frozen `energy_renewable`, which stored one instant
+// under several timestamp spellings (26,694 duplicate instants, measured
+// 2026-08-12) and carried `DEFAULT 0`.
+//
+// Every field is nullable *because* of that move. On the frozen table these
+// were `number`, and the queries wrapped each column in `COALESCE(x, 0)`, so
+// a type a country does not report reached the client as a confident `0 MW`.
+// On `energy_generation` an unreported type is NULL and stays NULL. `total`
+// is null only when all seven fields are - see services/renewableTotal.ts.
 export interface RenewableMix {
-  solar: number;
-  wind_onshore: number;
-  wind_offshore: number;
-  hydro: number;
-  biomass: number;
-  geothermal: number;
-  other: number;
-  total: number;
-  renewable_percentage?: number;
+  solar: number | null;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+  hydro: number | null;
+  biomass: number | null;
+  geothermal: number | null;
+  other: number | null;
+  total: number | null;
+  renewable_percentage?: number | null;
 }
 
 export interface RenewableTimeSeriesPoint {
   timestamp: string;
-  solar: number;
-  wind_onshore: number;
-  wind_offshore: number;
-  hydro: number;
-  biomass: number;
-  geothermal: number;
-  other: number;
+  solar: number | null;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+  hydro: number | null;
+  biomass: number | null;
+  geothermal: number | null;
+  other: number | null;
 }
 
 // Full A75 generation mix, sourced from `energy_generation` (the complete

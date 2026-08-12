@@ -1509,7 +1509,7 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `/dashboard/*` endpoints forced it. Neither is true any more: nothing in
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
-`server/src/types/index.ts:233`), every per-tab hook sends an explicit
+`server/src/types/index.ts:243`), every per-tab hook sends an explicit
 `start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
 `useDashboardData.ts:208`, and `useMapData` likewise at `:188`), and
 `migratePersisted` deletes a stored
@@ -1864,7 +1864,7 @@ an NTP step between two samples would otherwise scale every rate on the page.
 Two parsing traps are covered by `hostMetrics.test.ts`: a wide counter abuts
 its colon (`eth0:123456789012`) so the line splits on the first `:` not on
 whitespace, and transmit bytes are field 9, not field 2. Client-side, `network`
-is **optional, not merely nullable** (`client/src/types/index.ts:392`) — a peer on a build
+is **optional, not merely nullable** (`client/src/types/index.ts:463`) — a peer on a build
 older than ABL-290 sends no key at all, which `buildNetworkRows`
 (`client/src/lib/networkRows.ts`) renders as "not reported by this build",
 separately from `null` ("not measured on Windows"), `[]` ("no non-loopback
@@ -2142,12 +2142,76 @@ request to fill one of them.
 - **`energy_generation`** — the whole document. 21 `*_mw` columns, one per
   ENTSO-E production type. Prefer this for anything new.
 - **`energy_renewable`** — the older, narrower table: 8 renewable columns, with
-  pumped storage folded into `hydro_reservoir_mw`. **Frozen.** The dashboard,
-  the forecast job and several backfill scripts read it. It is derived from the
+  pumped storage folded into `hydro_reservoir_mw`. **Frozen.** The forecast job
+  and several backfill scripts read it; the dashboard is being moved off it
+  read site by read site (ABL-324). It is derived from the
   *pre-netting* flatten specifically so its values are unchanged; deriving it
   from `energy_generation` shifts `hydro_reservoir_mw` (measured 1520 → 1410)
   because of that folding. It is now redundant and worth retiring, but that is
   its own migration.
+
+  **It also stores one instant under several timestamp spellings, which is why
+  the read path is leaving it** (ABL-324, CEO-approved 2026-08-12). Measured on
+  the replica 2026-08-12: `energy_renewable` holds **26,694 duplicate
+  instants**, the overwhelming majority disagreeing on at least one value
+  column, against **0 across 3,178,270 rows** in `energy_generation` — which is
+  also 100% space-form (zero `T`-separated rows, and zero rows of any length
+  other than 19, so none of the trailing-offset rows either). A duplicate
+  instant is not cosmetic where a query `AVG()`s over a window: the two
+  disagreeing values were averaged into one chart point equal to neither.
+
+  Two costs come with each move, both signed off, and both must be surfaced
+  rather than absorbed:
+
+  - **Hydro reads lower**, because the two tables split it differently.
+    Measured on the replica, FR 2026-08-01..07: `energy_renewable`'s
+    `hydro_reservoir_mw` averages **2,014.3 MW** against `energy_generation`'s
+    **1,181.7 MW** (run-of-river agrees exactly, 2,326.1 MW on both sides).
+    This is a *different* measurement from the 1520 → 1410 figure above, which
+    is about re-deriving the frozen table itself.
+  - **`energy_generation` does not cover every hour `energy_renewable` does.**
+    Measured 2026-08-12, France: `energy_renewable` holds 2,208 rows across all
+    23 days of 2026-06-30..2026-07-22 while `energy_generation` holds 135
+    across **2** of them — full days on 06-30 and a partial 07-22, and nothing
+    at all for **07-01..07-21** (ABL-323, ABL-328). Those 21 days must render
+    as a gap, never as zero and never interpolated.
+
+  **`total_renewable_mw` has no counterpart in `energy_generation`** — it was a
+  stored computed column — so every move turns a column read into a sum, and a
+  sum is where "we do not know" quietly becomes a confident `0`. The reduction
+  is stated once, in `server/src/services/renewableTotal.ts` (pure, colocated
+  test): NULL when every component is NULL, the sum of the reported ones
+  otherwise, and a measured `0.0` is a value rather than a missing reading.
+  `generationService.RENEWABLE_MW_SUM` is generated from that module's column
+  list, so the renewable breakdown's `total` and the renewable share's
+  numerator — served side by side on one `/renewables/mix` object — cannot come
+  to define "renewable" differently.
+
+  **The `COALESCE(x, 0)` this removes was live, and Germany was the victim.**
+  Measured through a local server on the replica, 2026-08-12:
+  `/api/renewables/latest` reported DE with **`total_renewable = 0.0`**, and
+  `solar = 0.0`, and `wind_onshore = 0.0`. Germany's newest `energy_generation`
+  row (`2026-08-12 13:00:00`) is an all-NULL placeholder at the leading edge of
+  ingest — the A75 document for that interval has not been filled in yet — and
+  the row before it, at 12:45, carries **55,057.91 MW of solar alone**. The
+  frozen table stores that placeholder as literal `0.0` (it carries
+  `DEFAULT 0`), and the old query's `COALESCE` could not have told the
+  difference anyway. The endpoint now answers `null` for every field and for
+  the total: *the newest stored row reports nothing*, which is the true claim.
+  Exactly one country was in that state at that moment, but it is the ingest
+  edge, so it rotates.
+
+  **`getLatestRenewable`'s all-countries query needs its `CROSS JOIN`.** It is
+  an ordinary inner join whose ON clause is unchanged; the keyword only pins
+  `countries` (34 rows) as the outer loop. Allowed to reorder, SQLite drives
+  from `energy_generation` and runs the correlated `MAX()` subquery per row —
+  `SCAN r USING COVERING INDEX` across all 3,178,270 entries. Measured on the
+  replica 2026-08-12: **2.819s reordered vs 0.002s pinned**, same 34 rows;
+  end to end through the API, 1.97s vs 0.22s. `energy_generation` is roughly
+  four times the frozen table's size, so porting that query unchanged would
+  have left a live endpoint slower than it was before the move.
+  `routes/renewables.test.ts` asserts the plan rather than a duration, since
+  on a six-country fixture both shapes are instant.
 
 Three things to know before touching this:
 
@@ -2647,12 +2711,28 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
-ABL-288 + ABL-295 + ABL-287 + ABL-304 + ABL-311 + ABL-282 + ABL-300):
-**49 client test files / 644 tests**, all passing, and **66 server test files**
-of which **65 collected and passed, 1,114 tests, zero assertion failures**.
-Clean typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests
-passing than that means something broke.
+Green as of 2026-08-12, measured on this tree (ABL-351, on top of `main` at
+`87aaa1c`, which carries ABL-301): **49 client test files / 644 tests** and
+**74 server test files / 1,344 tests**, all passing, with a clean typecheck on
+both (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing than that means
+something broke.
+
+Both figures are a fresh run in this branch's own worktree, with the shared
+replica reachable. The **server figure moved a long way** from the
+`66 files / 1,114 tests` recorded here before, and the gap is merges rather
+than drift in any one branch: measured on unmodified `main` at `87aaa1c`
+immediately before this change, the server suite is **72 files / 1,310 tests**
+and the client suite **49 / 644**. So the 1,114 floor and the 1,148 "replica
+reachable" figure below both predate ABL-300/ABL-301 landing and should be read
+as history, not as a bar to measure against. ABL-351 adds +2 server files
+(`services/renewableTotal.test.ts`, `routes/renewables.test.ts`) and +34 server
+cases, and touches no client test.
+
+One thing that run confirms and that is worth recording, because it has been
+called flaky twice: **ABL-320's red client suite did not reproduce.** Under
+Node **v24.18.0** the client suite is 644/644 green in a fresh worktree. See
+the `storage.setItem` note below — the Node version on `PATH` decides this
+deterministically, and ABL-263 already root-caused it.
 
 Both figures are a fresh `npx vitest run` on the merged tree — neither is
 carried forward, and neither is a sum of the branch deltas below. The deltas
@@ -3121,7 +3201,14 @@ Two conventions, and they are for different layers.
 `dashboard/degenerateForecastNote.ts`, `config/forecastModels.ts`,
 `server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
 (which now classifies both the forecast and the actuals series),
-`server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
+`server/src/services/loadQuality.ts`,
+`server/src/services/renewableTotal.ts` (ABL-324 tranche 1 — the NULL-aware
+renewable total, plus the column mapping and the SQL builder that state the
+same rule on the database's side of the wire; the test imports no
+DB-touching module, so it runs without a database or a mock, and the
+assertion that `generationService.RENEWABLE_MW_SUM` really is built from its
+column list lives in `generationService.test.ts`, which already mocks that
+connection), `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
 `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
@@ -3156,7 +3243,7 @@ are both easy to break and neither is visible by reading.
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
 `tsoForecast`, `crossCountryComparison`, `netPosition`, `load`, `generation`,
-`prices`, `dataFreshness` and `opsStatus`: a real request in, the real
+`prices`, `renewables`, `dataFreshness` and `opsStatus`: a real request in, the real
 `ApiResponse<T>` envelope out. Two shared pieces:
 
 - `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its

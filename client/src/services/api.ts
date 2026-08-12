@@ -109,11 +109,14 @@ export async function fetchRenewableData(params: {
   end?: string;
   granularity?: Granularity;
 }): Promise<RenewableDataPoint[]> {
-  // Drives AbleStatRow's stat strip. GenerationTab's stacked chart used to
-  // read this too; it now reads fetchGenerationSeries (energy_generation, the
-  // full A75 document) so it can draw nuclear and fossil alongside the
-  // renewables — see ABL-44. Fetched unconditionally, so a 30d/90d/1y window
-  // here is a known-slow cold query.
+  // No current UI caller: this drove AbleStatRow's stat strip, which ABL-221
+  // deleted, and GenerationTab's stacked chart before that (it reads
+  // fetchGenerationSeries now, so it can draw nuclear and fossil alongside
+  // the renewables — ABL-44). Kept as a documented public endpoint.
+  //
+  // Served from energy_generation since ABL-324 tranche 1. Every field is
+  // nullable now, and a bucket with no rows is absent rather than zero — a
+  // caller plotting this must render both as gaps, not as 0 MW.
   const { data } = await api.get<ApiResponse<RenewableDataPoint[]>>('/renewables', {
     params,
     timeout: LONG_RANGE_TIMEOUT_MS,
@@ -125,14 +128,17 @@ export async function fetchRenewableMix(params: {
   country: string;
   start?: string;
   end?: string;
-}): Promise<RenewableMix> {
-  // GenerationTab now reads fetchGenerationMix (energy_generation, the full
-  // A75 document) instead - this energy_renewable-only endpoint has no
-  // current UI caller, kept for API compatibility. Its `renewable_percentage`
-  // field is generationService.getRenewableShare's figure (same definition
-  // the header stat, the map, and the Generation tab donut use), not a
-  // separate energy_renewable/energy_load join anymore - see routes/renewables.ts.
-  const { data } = await api.get<ApiResponse<RenewableMix>>('/renewables/mix', {
+}): Promise<RenewableMix | null> {
+  // GenerationTab reads fetchGenerationMix (the full A75 document) instead -
+  // this narrower breakdown has no current UI caller, kept as a documented
+  // public endpoint. Since ABL-324 tranche 1 it reads energy_generation too,
+  // so its `total` and its `renewable_percentage` (generationService.
+  // getRenewableShare's figure, the same one the map and the Generation tab
+  // donut use) are built from one column list - see routes/renewables.ts.
+  //
+  // Resolves to null when the window holds no rows for this country: an
+  // empty state, never a zero-filled mix.
+  const { data } = await api.get<ApiResponse<RenewableMix | null>>('/renewables/mix', {
     params,
     timeout: LONG_RANGE_TIMEOUT_MS,
   });

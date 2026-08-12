@@ -12,7 +12,7 @@ vi.mock('../config/database.js', () => ({ default: null }));
 
 const {
   getGenerationMix, GENERATION_MIX_SQL, getRenewableShare, RENEWABLE_SHARE_SQL,
-  getGenerationSeries, generationSeriesSql, GENERATION_GROUPS,
+  getGenerationSeries, generationSeriesSql, GENERATION_GROUPS, RENEWABLE_MW_SUM,
   getWindGenerationSeries, windGenerationSeriesSql,
 } = await import('./generationService.js');
 
@@ -258,6 +258,18 @@ describe('RENEWABLE_SHARE_SQL shape', () => {
 
   it('has no JOIN - the definition this replaces needed one (energy_renewable to energy_load), and the join was the whole performance problem', () => {
     expect(RENEWABLE_SHARE_SQL).not.toMatch(/JOIN/i);
+  });
+
+  it('builds the numerator from renewableTotal.RENEWABLE_MW_COLUMNS, and from nothing else', () => {
+    // ABL-324 tranche 1: the /renewables breakdown's seven fields and this
+    // numerator are served side by side on one /renewables/mix object, so
+    // they are generated from one column list. RENEWABLE_KEYS above is this
+    // file's independent mirror of that list; asserting against it here is
+    // what would fail if the shared constant drifted from the definition the
+    // Board signed off, rather than both moving together silently.
+    const inSum = [...RENEWABLE_MW_SUM.matchAll(/COALESCE\((\w+), 0\)/g)].map((m) => m[1]);
+    expect(inSum.sort()).toEqual([...RENEWABLE_KEYS].sort());
+    expect(RENEWABLE_MW_SUM).not.toMatch(/hydro_pumped_mw|energy_storage_mw/);
   });
 });
 
