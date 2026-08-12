@@ -2008,14 +2008,40 @@ change — filed as its own follow-up instead.
   no reader touched.
 
   **It captures nothing until this server is deployed and running with a
-  write connection.** Landing this branch on `main` changes no running
-  process; `forecast_vintage_archive` does not exist in production until
-  code built from it is deployed. Once it is, capture is automatic and
-  gated exactly like `POST /api/weather/snapshot` already is — on
-  `HELIO_WRITE_TOKEN` being set (`shouldScheduleForecastVintageArchive`,
+  write connection** — but that condition is now **met on prod, so query the
+  archive rather than assuming it is empty** (ABL-278). Landing this branch
+  on `main` changes no running process; `forecast_vintage_archive` does not
+  exist in production until code built from it is deployed. Once it is,
+  capture is automatic and gated exactly like `POST /api/weather/snapshot`
+  already is — on `HELIO_WRITE_TOKEN` being set
+  (`shouldScheduleForecastVintageArchive`,
   `forecastVintageArchiveScheduler.ts:50`), started from `index.ts` at
   server boot. If that variable is unset in production for some other
   reason, deploying this code still captures nothing until it is set.
+
+  Verified live on prod 2026-08-12: `HELIO_WRITE_TOKEN` is set, the container
+  logs "Forecast vintage archive scheduler: HELIO_WRITE_TOKEN is set;
+  capturing every 15m", and the table holds **13,858,301 rows** with
+  `first_seen_at` from `2026-08-11T15:24:21Z`. Incremental growth is ~100k
+  rows/day, most of it redundant: a refetch that carries an unchanged value
+  under a bumped `publication_timestamp_utc` is a new identity tuple, so it
+  lands as a new vintage row (see the IDENTITY / DEDUPE KEY note in
+  `forecastVintageArchiveService.ts`'s header). That is the design working as
+  specified, not a defect, but it is why "more than one vintage" must never
+  be read as "the value changed" — count `DISTINCT forecast_value`.
+
+  **What it has already proved (ABL-278).** ENTSO-E day-ahead forecasts are
+  revised, and the two TSO tables' overwrite really does destroy the
+  as-issued value: over 27,844 observed refetch events, **21.2% of
+  pre-delivery refetches and 1.8% of refetches in the first 24h after
+  delivery changed the stored value**, while 24-48h after (3,984 events) and
+  48h-7d after (19,890 events) changed **zero**. So the value freezes ~24-36h
+  past delivery and the remaining ~5 days of the rolling 7-day refetch window
+  are pure churn. TSO accuracy read from these tables is measured against the
+  revised value, not the as-issued one, and is optimistically biased —
+  measured at **11.3% relative** on target day 2026-08-12 (WAPE 2.0849% ->
+  1.8485%, n=389), a lower bound. See ABL-278 for the full evidence; the fix
+  is scoped separately.
 
   **Runs in a worker thread, never on Express's request-handling thread.**
   Measured against a full copy of the production-scale replica (2026-08-11):
