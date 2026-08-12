@@ -12,11 +12,20 @@ import type { NetPositionForecastIngestPayload } from '../types/index.js';
  * Forecasts are produced on the GPU box but must live in the canonical
  * database for either dashboard to show them.
  *
+ * Generalized under ABL-240 to accept an optional `forecast_type` -
+ * 'net_position' (the default, unchanged), 'wind_onshore' or 'wind_offshore'
+ * - rather than duplicating this route for the ABL-239 wind shadow-candidate
+ * backfill. The keying, auth gate and row limit are identical for every
+ * type; only which `forecasts.forecast_type` value the rows land under
+ * varies. Omitting the field preserves the exact pre-existing behavior, so
+ * the Chronos-2 job (which never sends it) needs no change.
+ *
  * Authentication: Bearer token (HELIO_WRITE_TOKEN on server), same as
  * POST /api/weather/snapshot.
  *
  * Request body:
  * {
+ *   "forecast_type": "net_position",
  *   "model": { "name": "chronos-2-V010", "version": "20260726_070628" },
  *   "generated_at": "2026-07-26 07:06:28.960696",
  *   "rows": [
@@ -37,13 +46,14 @@ import type { NetPositionForecastIngestPayload } from '../types/index.js';
  * duplicated forecast rows would silently corrupt later accuracy work.
  *
  * Errors:
- *   400 - invalid payload      401 - missing/invalid token
- *   413 - too many rows        503 - write token not configured
+ *   400 - invalid payload/forecast_type   401 - missing/invalid token
+ *   413 - too many rows                   503 - write token not configured
  */
 
 const router = Router();
 
 const MAX_ROWS = 5000;
+const ALLOWED_FORECAST_TYPES = new Set(['net_position', 'wind_onshore', 'wind_offshore']);
 
 router.post('/net-position', writeAuth, (req, res, next) => {
   try {
@@ -56,6 +66,12 @@ router.post('/net-position', writeAuth, (req, res, next) => {
       throw new AppError(
         'Missing required fields: model.name, generated_at, rows.',
         400, 'BAD_PAYLOAD',
+      );
+    }
+    if (body.forecast_type !== undefined && !ALLOWED_FORECAST_TYPES.has(body.forecast_type)) {
+      throw new AppError(
+        `Unknown forecast_type '${body.forecast_type}'. Allowed: ${[...ALLOWED_FORECAST_TYPES].join(', ')}.`,
+        400, 'UNKNOWN_FORECAST_TYPE',
       );
     }
     if (body.rows.length === 0) {

@@ -8,6 +8,7 @@ import type {
   RenewableMix,
   GenerationMix,
   GenerationSeriesPoint,
+  WindGenerationSeriesPoint,
   DashboardOverview,
   MapDataPoint,
   Granularity,
@@ -22,6 +23,7 @@ import type {
   TSOLoadForecastDataPoint,
   TSOForecastAccuracyDataPoint,
   TSOForecastAccuracyMetrics,
+  TSOGenerationForecastDataPoint,
   DataFreshness,
   MLAccuracyCoverage,
   MLForecastAccuracyMetrics,
@@ -167,6 +169,22 @@ export async function fetchGenerationSeries(params: {
   return unwrap(data, '/generation/series');
 }
 
+// Onshore/offshore wind actuals over time — split rather than combined into
+// fetchGenerationSeries' single `wind` family (ABL-235), so the wind
+// forecast tab can plot and compare each type against its own forecast.
+export async function fetchWindGenerationSeries(params: {
+  country: string;
+  start?: string;
+  end?: string;
+  granularity?: Granularity;
+}): Promise<WindGenerationSeriesPoint[]> {
+  const { data } = await api.get<ApiResponse<WindGenerationSeriesPoint[]>>('/generation/wind', {
+    params,
+    timeout: LONG_RANGE_TIMEOUT_MS,
+  });
+  return unwrap(data, '/generation/wind');
+}
+
 export async function fetchMapData(params: {
   metric?: MetricType;
   start?: string;
@@ -268,6 +286,19 @@ export async function fetchTSOLoadForecastAccuracy(params: {
     metrics: TSOForecastAccuracyMetrics;
   }>(endpoint, { params: queryParams });
   return { data: unwrap(data, endpoint), metrics: data.metrics };
+}
+
+/** Bundled solar/wind_onshore/wind_offshore day-ahead TSO forecast — the wind tab's TSO_D1 branch picks its own column out. */
+export async function fetchTSOGenerationForecast(params: {
+  countryCode: string;
+  start?: string;
+  end?: string;
+  granularity?: Granularity;
+}): Promise<TSOGenerationForecastDataPoint[]> {
+  const { countryCode, ...queryParams } = params;
+  const endpoint = `/tso-forecast/generation/${countryCode}`;
+  const { data } = await api.get<ApiResponse<TSOGenerationForecastDataPoint[]>>(endpoint, { params: queryParams });
+  return unwrap(data, endpoint);
 }
 
 export async function fetchTSOForecastMetrics(params: {

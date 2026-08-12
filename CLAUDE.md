@@ -56,6 +56,7 @@ energy-dashboard-frontend/
 │       │   ├── dashboard/            # Country-view composition
 │       │   │   ├── PriceTab.tsx, LoadTab.tsx, GenerationTab.tsx,
 │       │   │   │   NetPositionTab.tsx, ForecastTab.tsx  # One file per tab
+│       │   │   ├── WindTab.tsx           # Onshore + offshore share this one (ABL-235) — same chart, different column
 │       │   │   ├── AbleCard.tsx          # Card shell dashboard chart compositions wrap their charts in
 │       │   │   ├── ModelPicker.tsx       # Registry-driven forecast model selector (see below)
 │       │   │   ├── ForecastGapNotice.tsx # multi-select "<model> has no forecast here" + remove-from-comparison button
@@ -112,10 +113,13 @@ energy-dashboard-frontend/
         │   ├── crossCountryComparison.ts  # /cross-country/metrics, /metrics/:forecastType
         │   ├── netPosition.ts, netPositionIngest.ts  # Read + write for the Chronos net-position pipeline
         │   ├── dataFreshness.ts, countries.ts, weather.ts
+        │   ├── opsStatus.ts           # /ops/status — host/process KPIs + fleet freshness rollup (ABL-237)
         ├── services/                  # One service module per route group
         │   ├── freshness.ts           # Pure: is a stream live / stale / never held
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
-        │   └── degenerateForecast.ts  # Pure: collapsed-to-zero net position
+        │   ├── degenerateForecast.ts  # Pure: collapsed-to-zero net position
+        │   ├── freshnessRollup.ts     # Pure: fleet-wide worst-case freshness verdict
+        │   └── hostMetrics.ts         # Pure: disk/CPU readings, null when unmeasurable
         ├── config/
         │   ├── database.ts            # SQLite connection (ENERGY_DB_PATH)
         │   ├── writeDatabase.ts       # Separate writable handle, opened lazily —
@@ -185,7 +189,7 @@ repository.
 
 Three top-level views, switched via `currentView` in the store (`map` | `country` | `comparison`):
 - **`MapView`** — landing page, a Europe choropleth (`EuropeMap.tsx`) with a floating metric selector.
-- **`CountryDashboardView`** — four top-level country tabs: Price, Load, Generation and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:122`).
+- **`CountryDashboardView`** — six top-level country tabs: Price, Load, Generation, Wind onshore, Wind offshore (ABL-235) and Net position. Forecast-quality country detail is entered from the portfolio, not carried as a competing tab (`client/src/views/CountryDashboardView.tsx:131`).
 - **`ComparisonView`** — the Forecast quality portfolio home: a type-local ranking/map for the default `load` type leads the page, then disclosed error evidence, then the country × forecast-type matrix as the explicit all-types view (`client/src/views/ComparisonView.tsx:29`). (The portfolio used to lead with a "Forecast performance by variable" card grid, `ForecastPortfolio`/`portfolioRows.ts` — removed under ABL-166 at the CEO's request; the rest of the page, its nav entry, and the per-country `ForecastTab` were untouched.)
 
 ### 2. Forecast model selection
@@ -200,7 +204,7 @@ model must be listed there to be served at all.**
 `useForecastModels.ts`'s `resolveSelection` — `requestModelId` is set from an
 id the user actually chose and from nothing else, `useForecastModels.ts:62`).
 Leaving it off lets the server walk its candidate ladder
-(`resolveModelCandidates`, `forecastModels.ts:186-195`): production model
+(`resolveModelCandidates`, `forecastModels.ts:211-220`): production model
 first, then the other registered ml models, returning the first with rows for
 that country.
 
@@ -219,7 +223,7 @@ justifies — ordered rather than absolute preference — is unaffected.)
 
 **A pin is clearable, and "pinned" is not "shown" (ABL-16).** The server still
 honours an explicit request strictly — "if you asked for xgboost and it has
-nothing, you get nothing, not a silent substitution" (`forecastModels.ts:195`).
+nothing, you get nothing, not a silent substitution" (`forecastModels.ts:220`).
 That strictness is correct; what was wrong was that the client could only ever
 *add* a pin. Two things changed, both client-side:
 
@@ -613,8 +617,9 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `dashboard/generationSeries.test.ts` pins the ordering.
 
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
-  (`CountryDashboardView.tsx:60`, applied at `:117`) limits it to `price` and
-  `load`, the tabs whose chart reads a multi-select picker (ABL-204).
+  (`CountryDashboardView.tsx:68`, applied at `:127`) limits it to `price`,
+  `load`, `wind-onshore` and `wind-offshore` (ABL-235), the tabs whose chart
+  reads a multi-select picker (ABL-204).
   `net-position` isn't in that set either, but for the opposite reason: it has
   its own separate multi-select picker instead (`NetPositionModelPicker`,
   ABL-203), rendered by its own `activeChartTab === 'net-position'` branch
@@ -629,7 +634,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   plus one or more selected registered forecasts. `NetPositionModelPicker`
   (ABL-203) is a **multi-select** box, not a dropdown: Chronos-2 V010 (the
   production default) plus three labelled shadow candidates — Baseline V012,
-  XGBoost V014, Chronos-2 V016 (`forecastModels.ts:61-89`) — can be checked
+  XGBoost V014, Chronos-2 V016 (`forecastModels.ts:86-114`) — can be checked
   together, each drawn as its own coloured, labelled dashed line over one
   shared actuals series (`dashboard/netPositionModelColors.ts` for the
   palette, `lib/chartAdapters.ts`'s `adaptNetPositionMultiSeries` for the
@@ -784,7 +789,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `2025-09-30T21:00:00`. `describeDegenerateActual` returns `null` for
   `'no_actuals'` (`degenerateForecastNote.ts:70`), so `NetPositionTab` falls
   through the withheld-actuals branch to the `lastSeen` branch
-  (`NetPositionTab.tsx:227-251`) and renders "Greece stopped publishing a net
+  (`NetPositionTab.tsx:251-265`) and renders "Greece stopped publishing a net
   position on September 30, 2025." — consistent with reason 3 above, its
   forecast is untouched by the delete and still renders its own
   `degenerate_zero` note beside the empty actuals state.
@@ -1034,7 +1039,7 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `/dashboard/*` endpoints forced it. Neither is true any more: nothing in
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
-`server/src/types/index.ts:219`), every per-tab hook sends an explicit
+`server/src/types/index.ts:233`), every per-tab hook sends an explicit
 `start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
 `useDashboardData.ts:206`, and `useMapData` likewise at `:187`), and
 `migratePersisted` deletes a stored
@@ -1068,7 +1073,7 @@ selectedCountry: string;
 timePreset: TimePreset;
 timeAnchor: TimeAnchor;
 mapMetric: MetricType;
-activeChartTab: string;              // price|load|renewables|net-position|analytics
+activeChartTab: string;              // price|load|renewables|wind-onshore|wind-offshore|net-position|analytics
 selectedModelsByType: Record<string, string[]>;      // per forecast-type PINs; absent/empty = server ladder
 forecastHiddenByType: Record<string, boolean>;       // overlay switched off, per type; absent = shown
 comparisonCountries: string[];
@@ -1354,6 +1359,28 @@ The pill's age now comes from the server's `ageHours`, not from re-parsing
 time by V8, so on the ~90% of `energy_load` rows that use a space separator the
 header understated the age by the viewer's UTC offset — two hours in Brussels,
 always in the reassuring direction.
+
+**`GET /api/ops/status` (ABL-237) is a fleet-wide rollup, not a new source of
+truth.** Built as the foundation for a separate acceptance/prod status
+dashboard (ABL-236), it reuses this section's per-country classification
+rather than re-deriving it: `opsStatusService.ts`'s `getFleetFreshness` calls
+`getDataFreshness` (`dataFreshnessService.ts`) once per country from
+`countryService.getAllCountries()`, then `freshnessRollup.ts`'s
+`computeFreshnessRollup` reduces every (country, stream) pair to one worst-case
+verdict — `stale` outranks everything (the only actionable alarm of the four),
+`live` outranks the two non-alarm verdicts `ended`/`none`, and an empty fleet
+reads `none` rather than throwing. It also reports host/process KPIs
+(`hostMetrics.ts`): disk usage for the directory holding `ENERGY_DB_PATH` via
+`fs.statfsSync` (one code path for the Linux container and the Windows
+acceptance host, no extra dependency), process memory/uptime, and CPU load —
+`null` on Windows rather than `os.loadavg()`'s fabricated `[0, 0, 0]`, per this
+file's own rule that a metric we cannot measure is `null`, never invented.
+Provenance (`commit`/`runtime`/`db_path`) is `getHealthProvenance()` verbatim,
+the same values `/api/health` (`routes/index.ts:45`) reports — `/health`'s own
+response contract is unchanged. Unlike `/health`, this endpoint touches the
+database (the freshness rollup), so it is expected to fail during the
+twice-daily DB sync's write-lock blackout described above — a known window,
+not a defect (see "Acceptance blackout during Stage 2", `../WORKFLOWS.md`).
 
 ## Generation data
 
@@ -1793,8 +1820,8 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-11: **520 client tests / 41 files**, **461 server tests /
-30 files**, clean typecheck. Fewer passing than that means something broke.
+Green as of 2026-08-11: **520 client tests / 41 files**, **492 server tests /
+34 files**, clean typecheck. Fewer passing than that means something broke.
 (ABL-221's second pass — the user's "remove the whole banner, not just the
 mini graphs" follow-up comment — deleted `AbleStatRow.tsx` outright. The first
 pass, `6350836`, had only dropped its sparklines, which was not what "confusing
@@ -1806,7 +1833,18 @@ tests (`readingFreshness.test.ts`); no server file changed. Measured
 immediately before this change: 534 client tests / 42 files — already above
 the 488/39 this entry had recorded, for the same never-fully-reconciled-merges
 reason the ABL-214 note below names; this entry reconciles only against
-ABL-221's own delta, landing at 520/41, not the whole gap.)
+ABL-221's own delta, landing at 520/41, not the whole gap.
+
+ABL-237 (the `/api/ops/status` KPI endpoint, merged separately) added three
+server files — `services/hostMetrics.test.ts`, `services/freshnessRollup.test.ts`,
+`routes/opsStatus.test.ts`. ABL-240 (this merge — generalizing the net-position
+ingest path to wind shadow candidates) added one server file
+(`routes/netPositionIngest.test.ts`, 6 cases) and extended two others
+(`services/netPositionIngestService.test.ts` +5, `config/forecastModels.test.ts`
++1). The 492/34 server figure above is measured on this merged tree with a
+Node version matching the compiled `better-sqlite3` native module — see
+"NODE_MODULE_VERSION mismatch" below if `cd server && npx vitest run` throws
+that error instead of running.)
 (That server figure predates several since-merged branches already reflected
 in this checkout's history — e.g. ABL-190/ABL-221 — which is why a fresh run
 here shows more than 421/27 even before ABL-214's own tests; this entry was not
@@ -1920,7 +1958,12 @@ Two conventions, and they are for different layers.
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
 `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
 `lib/multiForecastSeries.ts`,
-`server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`.
+`server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`,
+`server/src/services/freshnessRollup.ts`, `server/src/services/hostMetrics.ts`
+(ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
+as optional params, specifically so `hostMetrics.test.ts` can exercise the
+graceful-degradation path — a throwing stat call, a mocked Windows platform —
+without a real disk or `os.loadavg()`).
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query
@@ -1930,8 +1973,8 @@ are both easy to break and neither is visible by reading.
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
 `tsoForecast`, `crossCountryComparison`, `netPosition`, `load`, `generation`,
-`prices` and `dataFreshness`: a real request in, the real `ApiResponse<T>`
-envelope out. Two shared pieces:
+`prices`, `dataFreshness` and `opsStatus`: a real request in, the real
+`ApiResponse<T>` envelope out. Two shared pieces:
 
 - `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its
   `CREATE TABLE` statements are copied verbatim from `energy_dashboard.db`
@@ -2027,8 +2070,8 @@ The second rule is the one that earns its keep: of the eight stale citations
 this check found on arrival, the first rule caught three and the second caught
 seven. It is deliberately narrow — skipped for bare `:NNN` continuations, which
 idiomatically point at a *use* site rather than at the declaration
-(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:60` and
-applied at `:117`), and skipped when the named symbol is not a top-level
+(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:68` and
+applied at `:127`), and skipped when the named symbol is not a top-level
 declaration (`ENERGY_DB_PATH` is only ever read off `process.env`, so a citation
 naming it is not judged). Both exclusions were needed to reach zero false
 positives across the whole file. A check that cries wolf gets disabled.
@@ -2265,7 +2308,7 @@ interface TSOForecastAccuracyMetrics {
   model at all — check `forecastModels.ts` before assuming a bug
 - Note `ModelPicker` does not render on the Generation, Forecast-accuracy or
   Net position tabs at all (`TABS_WITH_MODEL_PICKER`,
-  `CountryDashboardView.tsx:60`, applied at `:117`) — Net position instead
+  `CountryDashboardView.tsx:68`, applied at `:127`) — Net position instead
   gets its own separate multi-select `NetPositionModelPicker` — so there is no
   "picker that does nothing" to hit on any of the three
 - Check the API response has data for the selected country

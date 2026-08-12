@@ -13,6 +13,7 @@ vi.mock('../config/database.js', () => ({ default: null }));
 const {
   getGenerationMix, GENERATION_MIX_SQL, getRenewableShare, RENEWABLE_SHARE_SQL,
   getGenerationSeries, generationSeriesSql, GENERATION_GROUPS,
+  getWindGenerationSeries, windGenerationSeriesSql,
 } = await import('./generationService.js');
 
 // Mirrors the real energy_generation schema (Task 1 of the A75 plan),
@@ -565,6 +566,114 @@ describe('getGenerationSeries query plan', () => {
     for (const g of ['hourly', 'daily', 'weekly', 'monthly'] as const) {
       const plan = db
         .prepare(`EXPLAIN QUERY PLAN ${generationSeriesSql(g)}`)
+        .all('FR', ...rangeArgs(timestampRange('2026-07-29T12:00:00Z', '2026-07-29T14:00:00Z'))) as Array<{ detail: string }>;
+      const detail = plan.map((row) => row.detail).join('\n');
+
+      expect(detail).toMatch(/SEARCH energy_generation USING (COVERING )?INDEX idx_generation_country_time \(country_code=\? AND timestamp_utc>\? AND timestamp_utc<\?\)/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getWindGenerationSeries — onshore/offshore split for the wind forecast tab
+// (ABL-235). Same source table as getGenerationSeries, but wind_onshore_mw and
+// wind_offshore_mw are kept apart rather than summed into one `wind` family,
+// so each can be plotted against its own registered forecast models.
+// ---------------------------------------------------------------------------
+
+describe('windGenerationSeriesSql shape', () => {
+  it('does not wrap timestamp_utc in date()/strftime() inside WHERE', () => {
+    for (const g of ['hourly', 'daily', 'weekly', 'monthly'] as const) {
+      const where = windGenerationSeriesSql(g).split('WHERE')[1].split('GROUP BY')[0];
+      expect(where).not.toMatch(/date\(\s*timestamp_utc\s*\)/);
+      expect(where).not.toMatch(/strftime\(/);
+      expect(where).toMatch(/timestamp_utc BETWEEN \? AND \?/);
+    }
+  });
+
+  it('never wraps a value in COALESCE', () => {
+    expect(windGenerationSeriesSql('hourly')).not.toMatch(/COALESCE/i);
+  });
+});
+
+describe('getWindGenerationSeries', () => {
+  const W = ['2026-07-29T00:00:00Z', '2026-07-29T04:00:00Z'] as const;
+
+  it('keeps onshore and offshore apart rather than summing them', () => {
+    const db = buildDb();
+    insertRow(db, {
+      country_code: 'DE', timestamp_utc: '2026-07-29 01:00:00',
+      wind_onshore_mw: 200, wind_offshore_mw: 50,
+    });
+
+    const [point] = getWindGenerationSeries('DE', W[0], W[1], 'hourly', db);
+
+    expect(point).toEqual({
+      timestamp: '2026-07-29T01:00:00',
+      wind_onshore: 200,
+      wind_offshore: 50,
+    });
+  });
+
+  it('keeps a measured zero for one type distinguishable from an unreported sibling', () => {
+    // BE's real shape: wind_onshore measured 0.0, wind_offshore never reported.
+    const db = buildDb();
+    insertRow(db, { country_code: 'BE', timestamp_utc: '2026-07-29 01:00:00', wind_onshore_mw: 0 });
+
+    const [point] = getWindGenerationSeries('BE', W[0], W[1], 'hourly', db);
+
+    expect(point.wind_onshore).toBe(0);
+    expect(point.wind_onshore).not.toBeNull();
+    expect(point.wind_offshore).toBeNull();
+  });
+
+  it('reports a country that never sends either type as null, not zero', () => {
+    const db = buildDb();
+    insertRow(db, { country_code: 'PT', timestamp_utc: '2026-07-29 01:00:00' });
+
+    const [point] = getWindGenerationSeries('PT', W[0], W[1], 'hourly', db);
+
+    expect(point.wind_onshore).toBeNull();
+    expect(point.wind_offshore).toBeNull();
+  });
+
+  it('averages within a bucket, one column at a time', () => {
+    const db = buildDb();
+    insertRow(db, { country_code: 'DE', timestamp_utc: '2026-07-29 01:00:00', wind_onshore_mw: 100 });
+    insertRow(db, { country_code: 'DE', timestamp_utc: '2026-07-29 02:00:00', wind_onshore_mw: 300, wind_offshore_mw: 40 });
+
+    const [point] = getWindGenerationSeries('DE', W[0], W[1], 'daily', db);
+
+    expect(point.wind_onshore).toBe(200);
+    expect(point.wind_offshore).toBe(40);
+  });
+
+  it('returns [] when no rows fall in the window, rather than a series of zeros', () => {
+    const db = buildDb();
+    insertRow(db, { country_code: 'AT', timestamp_utc: '2026-06-01 01:00:00', wind_onshore_mw: 5 });
+
+    expect(getWindGenerationSeries('AT', W[0], W[1], 'hourly', db)).toEqual([]);
+  });
+
+  it('does not leak another country into a bucket', () => {
+    const db = buildDb();
+    insertRow(db, { country_code: 'FR', timestamp_utc: '2026-07-29 01:00:00', wind_onshore_mw: 700 });
+    insertRow(db, { country_code: 'DE', timestamp_utc: '2026-07-29 01:00:00', wind_onshore_mw: 300 });
+
+    const [point] = getWindGenerationSeries('FR', W[0], W[1], 'hourly', db);
+
+    expect(point.wind_onshore).toBe(700);
+  });
+});
+
+describe('getWindGenerationSeries query plan', () => {
+  it('uses the (country_code, timestamp_utc) index at every granularity', () => {
+    const db = buildDb();
+    insertRow(db, { country_code: 'FR', timestamp_utc: '2026-07-29 13:00:00', wind_onshore_mw: 100 });
+
+    for (const g of ['hourly', 'daily', 'weekly', 'monthly'] as const) {
+      const plan = db
+        .prepare(`EXPLAIN QUERY PLAN ${windGenerationSeriesSql(g)}`)
         .all('FR', ...rangeArgs(timestampRange('2026-07-29T12:00:00Z', '2026-07-29T14:00:00Z'))) as Array<{ detail: string }>;
       const detail = plan.map((row) => row.detail).join('\n');
 

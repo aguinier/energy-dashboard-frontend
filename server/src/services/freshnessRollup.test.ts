@@ -1,0 +1,90 @@
+import { describe, it, expect } from 'vitest';
+import { computeFreshnessRollup } from './freshnessRollup.js';
+import type { DataFreshness } from './dataFreshnessService.js';
+import type { FreshnessStatus } from '../types/index.js';
+
+function stream(status: FreshnessStatus, ageHours: number | null = null) {
+  return { latest: status === 'none' ? null : '2026-08-11 00:00:00', ageHours, status };
+}
+
+function freshness(status: FreshnessStatus): DataFreshness {
+  return {
+    load: stream(status),
+    price: stream(status),
+    generation: stream(status),
+    tsoLoadForecast: stream(status),
+    tsoGenerationForecast: stream(status),
+  };
+}
+
+describe('computeFreshnessRollup', () => {
+  it('reports live when every stream in the fleet is live', () => {
+    const rollup = computeFreshnessRollup({ DE: freshness('live'), FR: freshness('live') });
+    expect(rollup.status).toBe('live');
+    expect(rollup.countriesChecked).toBe(2);
+    expect(rollup.streamsChecked).toBe(10);
+    expect(rollup.counts).toEqual({ live: 10, stale: 0, ended: 0, none: 0 });
+    expect(rollup.staleCountries).toEqual([]);
+  });
+
+  it('lets a single stale stream in one country dominate an otherwise healthy fleet', () => {
+    const rollup = computeFreshnessRollup({
+      DE: freshness('live'),
+      BE: { ...freshness('live'), load: stream('stale', 20) },
+    });
+    expect(rollup.status).toBe('stale');
+    expect(rollup.staleCountries).toEqual(['BE']);
+    expect(rollup.counts.stale).toBe(1);
+  });
+
+  it('does not let a terminal "ended" stream outrank a healthy "live" one', () => {
+    // `ended` is documented furniture — a stream that stopped so long ago no
+    // ingest fix would still be chasing it. It must never mask a real `live`
+    // signal elsewhere in the fleet.
+    const rollup = computeFreshnessRollup({
+      DE: freshness('live'),
+      LU: freshness('ended'),
+    });
+    expect(rollup.status).toBe('live');
+  });
+
+  it('does not treat "none" (never held) as an alarm', () => {
+    const rollup = computeFreshnessRollup({ AT: freshness('none') });
+    expect(rollup.status).toBe('none');
+    expect(rollup.staleCountries).toEqual([]);
+  });
+
+  it('ranks "ended" above "none" without ever letting either outrank "stale"', () => {
+    const rollup = computeFreshnessRollup({
+      LU: freshness('ended'),
+      AT: freshness('none'),
+      BE: { ...freshness('none'), price: stream('stale', 40) },
+    });
+    expect(rollup.status).toBe('stale');
+  });
+
+  it('reports none with zero counts for an empty fleet, rather than throwing', () => {
+    const rollup = computeFreshnessRollup({});
+    expect(rollup.status).toBe('none');
+    expect(rollup.countriesChecked).toBe(0);
+    expect(rollup.streamsChecked).toBe(0);
+    expect(rollup.staleCountries).toEqual([]);
+  });
+
+  it('sorts multiple stale countries deterministically', () => {
+    const rollup = computeFreshnessRollup({
+      FR: { ...freshness('live'), price: stream('stale', 25) },
+      AT: { ...freshness('live'), load: stream('stale', 30) },
+    });
+    expect(rollup.staleCountries).toEqual(['AT', 'FR']);
+  });
+
+  it('counts every stream of a stale country, not just the one that triggered it', () => {
+    const rollup = computeFreshnessRollup({
+      BE: { ...freshness('live'), load: stream('stale', 20), generation: stream('stale', 22) },
+    });
+    expect(rollup.counts.stale).toBe(2);
+    expect(rollup.counts.live).toBe(3);
+    expect(rollup.staleCountries).toEqual(['BE']);
+  });
+});

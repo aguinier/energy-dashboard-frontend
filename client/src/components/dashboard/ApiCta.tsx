@@ -16,6 +16,8 @@ export function ApiCta() {
     generation: 'renewables',
     analytics: 'forecasts/load',
     forecast: 'forecasts/load',
+    'wind-onshore': 'generation/wind',
+    'wind-offshore': 'generation/wind',
   };
   const resource = tabToResource[activeChartTab] ?? activeChartTab;
 

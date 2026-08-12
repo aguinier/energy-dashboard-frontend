@@ -1,6 +1,6 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
-import { GenerationMix, GenerationSeriesPoint, Granularity } from '../types/index.js';
+import { GenerationMix, GenerationSeriesPoint, WindGenerationSeriesPoint, Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 
 /**
@@ -367,4 +367,50 @@ export function getGenerationSeries(
 
   const stmt = db.prepare(generationSeriesSql(granularity));
   return stmt.all(upperCode, ...rangeArgs(range)) as GenerationSeriesPoint[];
+}
+
+/**
+ * SQL for getWindGenerationSeries, exported for the same test-assertion
+ * convention as generationSeriesSql/GENERATION_MIX_SQL.
+ *
+ * A single AVG() per column, not `groupExpression`'s combined-family CASE —
+ * there is only ever one member per group here, so AVG()'s own null-skipping
+ * (NULL in, NULL out for an all-null bucket) already gives the right answer
+ * with no risk of one column's absence deleting the other's reading.
+ */
+export function windGenerationSeriesSql(granularity: Granularity): string {
+  const bucket = generationGroupByClause(granularity);
+  return `
+    SELECT
+      ${bucket} as timestamp,
+      ROUND(AVG(wind_onshore_mw), 2) as wind_onshore,
+      ROUND(AVG(wind_offshore_mw), 2) as wind_offshore
+    FROM energy_generation
+    WHERE country_code = ?
+      AND ${rangeClause('timestamp_utc')}
+    GROUP BY ${bucket}
+    ORDER BY timestamp
+  `;
+}
+
+/**
+ * Onshore/offshore wind generation actuals over time, split rather than
+ * combined into getGenerationSeries' single `wind` family (ABL-235) — the
+ * wind forecast tab needs each type plotted against its own registered
+ * forecast models, which the combined figure cannot support. Same source
+ * table, same null semantics as getGenerationSeries: a type this country does
+ * not report in a bucket is null, never 0.
+ */
+export function getWindGenerationSeries(
+  countryCode: string,
+  start: string,
+  end: string,
+  granularity: Granularity = 'hourly',
+  db: DatabaseType = defaultDb
+): WindGenerationSeriesPoint[] {
+  const upperCode = countryCode.toUpperCase();
+  const range = timestampRange(start, end);
+
+  const stmt = db.prepare(windGenerationSeriesSql(granularity));
+  return stmt.all(upperCode, ...rangeArgs(range)) as WindGenerationSeriesPoint[];
 }

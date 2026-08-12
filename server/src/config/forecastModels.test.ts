@@ -40,6 +40,22 @@ describe('forecast model registry', () => {
     }
   });
 
+  it('registers the ABL-195/ABL-239/ABL-240 wind retrain artifacts as shadow candidates without changing production', () => {
+    // Mirrors the net_position shadow-candidate pattern above: additive
+    // registry entries, current production model untouched.
+    const offshore = getTypeConfig('wind_offshore');
+    expect(offshore?.production).toBe('xgboost');
+    const offshoreShadow = offshore?.models.find((m) => m.id === 'xgboost-retrain-v1');
+    expect(offshoreShadow?.modelName).toBe('xgboost-retrain-v1');
+    expect(offshoreShadow?.label).toContain('shadow candidate');
+
+    const onshore = getTypeConfig('wind_onshore');
+    expect(onshore?.production).toBe('catboost');
+    const onshoreShadow = onshore?.models.find((m) => m.id === 'catboost-retrain-v1');
+    expect(onshoreShadow?.modelName).toBe('catboost-retrain-v1');
+    expect(onshoreShadow?.label).toContain('shadow candidate');
+  });
+
   it('excludes models that stopped writing months ago', () => {
     const all = Object.values(FORECAST_MODELS).flatMap((c) => c.models.map((m) => m.modelName));
     for (const stale of ['chronos-bolt-small', 'lightgbm', 'tso_raw', 'tso_corrected']) {

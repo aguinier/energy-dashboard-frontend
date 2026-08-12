@@ -14,6 +14,7 @@ import crossCountryComparisonRouter from './crossCountryComparison.js';
 import weatherRouter from './weather.js';
 import netPositionRouter from './netPosition.js';
 import netPositionIngestRouter from './netPositionIngest.js';
+import opsStatusRouter from './opsStatus.js';
 
 const router = Router();
 
@@ -34,6 +35,7 @@ router.use('/data-freshness', dataFreshnessRouter);
 router.use('/forecast-comparison', forecastComparisonRouter);
 router.use('/cross-country', crossCountryComparisonRouter);
 router.use('/weather', weatherRouter);
+router.use('/ops', opsStatusRouter);
 
 // Health check endpoint — includes provenance fields so an acceptance check can
 // prove it reached the container rather than a stray dev process on the same port.

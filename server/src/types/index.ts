@@ -157,6 +157,20 @@ export interface GenerationSeriesPoint {
   other: number | null;
 }
 
+/**
+ * Onshore/offshore wind actuals over time, kept separate rather than summed
+ * into GenerationSeriesPoint's combined `wind` family (ABL-235) - the wind
+ * forecast tab plots and compares each type independently against its own
+ * forecast, which a combined figure cannot support. Same NULL-vs-0 rule as
+ * every other `energy_generation` reader: null means this country did not
+ * report that type in this bucket, never a fabricated zero.
+ */
+export interface WindGenerationSeriesPoint {
+  timestamp: string;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+}
+
 // Dashboard types
 export interface DashboardOverview {
   currentLoad: number | null;
@@ -341,7 +355,17 @@ export interface NetPositionForecastIngestRow {
   quantiles?: Record<string, number>;
 }
 
+/**
+ * Which `forecasts` row this payload writes under. Optional and defaults to
+ * 'net_position' (ABL-240) — the external Chronos-2 job that has posted here
+ * since before this field existed never sends it, and must keep working
+ * unmodified. wind_onshore/wind_offshore were added for the ABL-239 backfill
+ * of ABL-195's retrained shadow-candidate artifacts.
+ */
+export type ForecastIngestType = 'net_position' | 'wind_onshore' | 'wind_offshore';
+
 export interface NetPositionForecastIngestPayload {
+  forecast_type?: ForecastIngestType;
   model: { name: string; version: string };
   generated_at: string;
   rows: NetPositionForecastIngestRow[];
