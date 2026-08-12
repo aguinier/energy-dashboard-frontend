@@ -43,6 +43,37 @@ export interface RenewableMix {
   renewable_percentage?: number | null;
 }
 
+/**
+ * Why the `solar` field below can, or cannot, carry an unqualified "Solar"
+ * label (ABL-325). Structural mirror of the server's `SolarCoverage`, which
+ * owns the rule and the thresholds - see `server/src/services/solarCoverage.ts`.
+ *
+ * `unknown` is a real verdict and is not `consistent`: it means the check
+ * could not run (too few paired hours, or a country that reports essentially
+ * no solar either side), so the label stands only because nothing contradicted
+ * it. The UI must render it as no caveat, never as a reassurance.
+ */
+export type SolarCoverageVerdict = 'consistent' | 'partial_subset' | 'unknown';
+
+export interface SolarCoverage {
+  verdict: SolarCoverageVerdict;
+  /** Paired hours the verdict rests on. */
+  pairs: number;
+  /** Summed MW of ENTSO-E's own day-ahead solar forecast over those hours. */
+  forecastSumMw: number;
+  /** Summed MW of the reported solar actuals over the same hours. */
+  actualSumMw: number;
+  /**
+   * `forecastSumMw / actualSumMw`, 1dp. Null when the actual sum is zero - the
+   * ratio does not exist. **Not a correction factor**: the day-ahead forecast
+   * is itself only what the TSO can see, so this is a lower bound on a
+   * discrepancy and must never be rendered as "solar is N times higher".
+   */
+  ratio: number | null;
+  /** Days of history the verdict was computed over. */
+  referenceDays: number;
+}
+
 // Full A75 generation mix, sourced server-side from `energy_generation` (the
 // complete ENTSO-E document) rather than the 8-column renewable-only
 // narrowing above. Every field is independently nullable: a production type
@@ -81,6 +112,13 @@ export interface GenerationMix {
   // country has no energy_generation rows yet, or total positive generation
   // is zero/negative.
   renewable_percentage: number | null;
+  // Whether `solar` above is this country's solar output or only the
+  // grid-metered part of it (ABL-325). Arrives in this payload rather than
+  // from a separate request specifically so the number and its caveat cannot
+  // be rendered apart. Optional on the wire so a client running against an
+  // older server degrades to "no verdict" rather than crashing; treat a
+  // missing value exactly like `unknown`.
+  solar_coverage?: SolarCoverage;
 }
 
 /**
