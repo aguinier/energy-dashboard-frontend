@@ -22,6 +22,13 @@
  *   1. Per-branch: `done` + not on the target = shipping gap.
  *   2. `main` itself: local `main` ahead of the target = not published.
  *
+ * Gate 1 asks git two questions per branch, not one: is the tip an ancestor of
+ * the target, and — when it is not — how many of its commits have no equivalent
+ * patch there (`git cherry`). A branch that was cherry-picked or rebased onto
+ * the target fails the first test and passes the second, and reporting it as a
+ * gap is a false alarm. See `unmergedWork.ts` for why that mattered enough to
+ * add: on 2026-08-12 three of the seven gaps this check reported were phantoms.
+ *
  * Gate 2 exists because gate 1 structurally cannot see the commonest form of
  * the defect. It keys on an issue identifier in the branch name, and `main` has
  * none, so a `main` twelve commits ahead of `origin/main` classified as
@@ -92,6 +99,28 @@ function git(...args: string[]): string {
   return execFileSync('git', args, { encoding: 'utf8' }).trim();
 }
 
+/**
+ * Commits on `tip` whose patch is not already on the target.
+ *
+ * `git cherry <target> <tip>` prints one line per commit: `+` when its patch is
+ * absent from the target, `-` when an equivalent patch is already there. Zero
+ * `+` lines means the branch's work shipped under different shas, which
+ * `unmergedWork.ts` reports as `rebased` rather than as a gap — three of the
+ * seven gaps this check reported on 2026-08-12 were that case.
+ *
+ * Returns null when the count cannot be taken (an unborn or corrupt ref, a
+ * `git cherry` that errors). Null is judged on ancestry alone, so a failure
+ * here can only over-report, never under-report.
+ */
+function novelCommitCount(tip: string): number | null {
+  try {
+    const out = execFileSync('git', ['cherry', TARGET, tip], { encoding: 'utf8' });
+    return out.split('\n').filter((line) => line.startsWith('+')).length;
+  } catch {
+    return null;
+  }
+}
+
 /** Local branches only. A remote-tracking ref is a copy of one, not extra work. */
 function localBranches(): BranchTip[] {
   const out = git('for-each-ref', '--format=%(refname:short)%09%(objectname:short)', 'refs/heads/');
@@ -100,7 +129,10 @@ function localBranches(): BranchTip[] {
     .filter(Boolean)
     .map((line) => {
       const [name, tip] = line.split('\t');
-      return { name, tip, merged: isAncestor(tip) };
+      const merged = isAncestor(tip);
+      // Only worth asking for a branch that failed the ancestry test — an
+      // ancestor is already the strongest possible answer.
+      return { name, tip, merged, novelCommits: merged ? null : novelCommitCount(tip) };
     })
     .filter((b) => b.name !== TARGET);
 }

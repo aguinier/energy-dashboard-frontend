@@ -30,6 +30,14 @@ const branch = (name: string, merged: boolean, tip = 'abc1234'): BranchTip => ({
   merged,
 });
 
+/** A branch that is not an ancestor but whose commits all landed elsewhere. */
+const rebasedBranch = (name: string, tip = 'abc1234'): BranchTip => ({
+  name,
+  tip,
+  merged: false,
+  novelCommits: 0,
+});
+
 describe('issueFromBranch', () => {
   it('reads the Paperclip execution-workspace shape', () => {
     expect(issueFromBranch('ABL-15-automate-the-claude-md-citation-check')).toBe('ABL-15');
@@ -116,6 +124,69 @@ describe('classifyBranch', () => {
   });
 });
 
+// The three false positives measured against this repo on 2026-08-12: a tip
+// that is not an ancestor, on a `done` issue, whose every commit is already on
+// origin/main under another sha. Ancestry alone called each of these a shipping
+// gap; patch identity clears them.
+describe('classifyBranch — patch identity, not just ancestry', () => {
+  it('clears a cherry-picked branch on a done issue instead of failing it', () => {
+    const f = classifyBranch(rebasedBranch('ABL-58-current-load', '3c42ec8'), BOARD);
+    expect(f).toMatchObject({
+      issue: 'ABL-58',
+      issueStatus: 'done',
+      verdict: 'rebased',
+      tip: '3c42ec8',
+    });
+    expect(shippingGaps([f])).toEqual([]);
+  });
+
+  it('still fails a branch with even one commit that did not land', () => {
+    const f = classifyBranch(
+      { name: 'ABL-58-current-load', tip: '74aba1a', merged: false, novelCommits: 1 },
+      BOARD,
+    );
+    expect(f.verdict).toBe('shipping-gap');
+  });
+
+  it('prefers ancestry: a merged branch reads merged whatever the count says', () => {
+    const f = classifyBranch(
+      { name: 'ABL-58-x', tip: 'abc1234', merged: true, novelCommits: 3 },
+      BOARD,
+    );
+    expect(f.verdict).toBe('merged');
+  });
+
+  it('clears a rebased branch whatever the issue status, since the work shipped', () => {
+    for (const name of ['ABL-76-five-issues', 'ABL-999-gone', 'claude/nervous-mcnulty-abf971']) {
+      expect(classifyBranch(rebasedBranch(name), BOARD).verdict, name).toBe('rebased');
+    }
+  });
+
+  // Fail-closed: an absent, null or nonsense count is "not measured", and an
+  // unmeasured branch must never read as an all-clear.
+  it('falls back to ancestry when the count is missing, null or nonsense', () => {
+    const cases: Array<number | null | undefined> = [undefined, null, -1, 1.5, Number.NaN];
+    for (const novelCommits of cases) {
+      const f = classifyBranch(
+        { name: 'ABL-58-current-load', tip: '74aba1a', merged: false, novelCommits },
+        BOARD,
+      );
+      expect(f.verdict, `novelCommits=${String(novelCommits)}`).toBe('shipping-gap');
+    }
+  });
+
+  // A squash merge collapses N commits into one whose patch matches none of
+  // them, so the branch still reads novel. Over-reporting is the safe direction
+  // and this is the test that pins it as deliberate rather than an oversight.
+  it('still reports a squash-merged branch, which is the safe direction', () => {
+    const f = classifyBranch(
+      { name: 'ABL-58-current-load', tip: '74aba1a', merged: false, novelCommits: 3 },
+      BOARD,
+    );
+    expect(f.verdict).toBe('shipping-gap');
+  });
+});
+
 describe('classifyBranches', () => {
   const branches = [
     branch('fix/abl-35-impossible-zero-load-actuals', true),
@@ -152,6 +223,32 @@ describe('classifyBranches', () => {
     );
     expect(shippingGaps(classifyBranches(merged, BOARD))).toEqual([]);
   });
+
+  it('keeps rebased branches but sorts them last, below every real finding', () => {
+    const out = classifyBranches(
+      [rebasedBranch('ABL-16-cherry-picked'), ...branches],
+      BOARD,
+    );
+    expect(out.at(-1)).toMatchObject({ branch: 'ABL-16-cherry-picked', verdict: 'rebased' });
+    expect(out.map((f) => f.branch)).toContain('ABL-16-cherry-picked');
+  });
+
+  // The measured 2026-08-12 shape: 7 gaps by ancestry, 4 of them real.
+  it('reports only the genuinely unpublished branches of a mixed set', () => {
+    const mixed: BranchTip[] = [
+      // Real: commits that exist nowhere else.
+      { name: 'ABL-58-real-gap', tip: 'bfb3411', merged: false, novelCommits: 1 },
+      { name: 'ABL-15-real-gap', tip: 'a8e8a88', merged: false, novelCommits: 2 },
+      // Phantom: cherry-picked, every patch already on the target.
+      rebasedBranch('ABL-16-phantom', '3c42ec8'),
+      rebasedBranch('ABL-38-phantom', '484b3e2'),
+      rebasedBranch('ABL-46-phantom', 'd84e97b'),
+    ];
+    expect(shippingGaps(classifyBranches(mixed, BOARD)).map((f) => f.branch)).toEqual([
+      'ABL-15-real-gap',
+      'ABL-58-real-gap',
+    ]);
+  });
 });
 
 describe('formatFindings', () => {
@@ -175,5 +272,17 @@ describe('formatFindings', () => {
     const out = formatFindings(classifyBranches([branch('ABL-76-x', false)], BOARD), 'main');
     expect(out).not.toContain('SHIPPING GAP');
     expect(out).toContain('in flight');
+  });
+
+  it('says a rebased branch is already there, and does not shout', () => {
+    const out = formatFindings(
+      classifyBranches([rebasedBranch('ABL-58-cherry-picked', '3c42ec8')], BOARD),
+      'origin/main',
+    );
+    expect(out).not.toContain('SHIPPING GAP');
+    expect(out).toContain('already on origin/main');
+    expect(out).toContain('ABL-58-cherry-picked');
+    expect(out).toContain('3c42ec8');
+    expect(out).toContain('Safe to delete');
   });
 });

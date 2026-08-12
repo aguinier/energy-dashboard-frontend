@@ -2592,26 +2592,34 @@ cd server && npx vitest run
 
 Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
 ABL-288 + ABL-295 + ABL-287 + ABL-304 + ABL-311 + ABL-282 + ABL-300):
-**49 client test files / 644 tests**, all passing, and **66 server test files**
-of which **65 collected and passed, 1,114 tests, zero assertion failures**.
+**49 client test files / 644 tests** and **66 server test files / 1,171 tests**
+(1,169 passing + 2 skipped), all files collected, zero assertion failures.
 Clean typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests
 passing than that means something broke.
 
-Both figures are a fresh `npx vitest run` on the merged tree — neither is
-carried forward, and neither is a sum of the branch deltas below. The deltas
-are recorded to explain the movement, not to be added up.
+The server figure is a fresh `npx vitest run` on this tree. The client figure is
+carried from the same merged tree's last measurement and **not** re-run here,
+which is sound only because this branch is server-only — `git status` lists no
+`client/` path. Neither is a sum of the branch deltas below; the deltas are
+recorded to explain the movement, not to be added up.
 
-**Read the server figure with its one caveat, which is environmental and not a
-regression.** The 66th file, `services/generationService.test.ts`, could not be
-*collected* during this measurement: it ends in an opportunistic `describe`
-against the read-only development replica at `C:/Code/able/data/energy_dashboard.db`,
-and that database was mid-refresh (a 3.6 GB rollback journal growing during the
-run), so the readonly open raised `SqliteError: database is locked` at import
-time. That is a locked shared database, not a failing assertion — no assertion
-failure appeared anywhere in the run, and the file plus its whole import chain
-is byte-identical to `origin/main`, so it cannot be attributed to any branch
-merged here. The file is written to skip when the replica is *absent*; a lock is
-not absence, which is why it throws rather than skipping.
+**The 66th file used to be a standing caveat, and ABL-311 fixed the cause.**
+`services/generationService.test.ts` ends in an opportunistic `describe` against
+the read-only development replica at `C:/Code/able/data/energy_dashboard.db`.
+Its guard tested only `fs.existsSync`, but the open itself runs at *module
+evaluation*, so whenever the twice-daily DB sync (ABL-220, ABL-249) held that
+file — measured 2026-08-12 with a 3.6 GB rollback journal — the readonly open
+raised `SqliteError: database is locked` and the throw became a **collection**
+error that took the whole file down. The cost was not the two opportunistic
+cases; it was the **46 fixture-backed cases beside them**, which touch no
+replica at all and silently stopped running for the length of every sync
+window. That is the worst shape a test outage can take: the run says "no tests"
+for the file rather than naming an assertion, so a reader checking `predone`
+sees a green suite that is quietly 46 cases short. The guard now catches — a
+lock is not absence, and neither is a corrupt header or a permissions error —
+and skips the opportunistic block while the rest of the file runs. That is
+where 1,114 became 1,169: +9 new `release/` cases from ABL-311 and +46
+recovered.
 
 That file contributes its replica-backed cases whenever the shared database is
 reachable, so a run against a free database reads **higher** than 1,114, and
@@ -2997,9 +3005,32 @@ ahead of `origin/main`**.
 
 `predone` runs **two gates**, and the second is the one ABL-311 added:
 
-1. **Per branch** — `done` + not an ancestor of the target = shipping gap.
+1. **Per branch** — `done` + the work not on the target = shipping gap.
 2. **`main` itself** — local `main` ahead of the target = **not published**
    (`release/publishState.ts`, pure, colocated test).
+
+**Gate 1 asks git two questions, not one, and the second is why it can be
+trusted.** Ancestry (`git merge-base --is-ancestor`) answers whether the *commit*
+reached the target — not whether the *work* did. Cherry-pick or rebase the same
+change onto `main` and the tip is no longer an ancestor while every line of it
+is already there. Run against this repo on 2026-08-12, ancestry alone reported
+**seven** shipping gaps of which **three were phantoms** — ABL-166 (`3c42ec8`),
+ABL-216 (`484b3e2`) and ABL-249 (`d84e97b`), each fully cherry-picked. So a
+branch that fails the ancestry test is then measured with `git cherry <target>
+<tip>`: zero `+` lines means every commit's patch is already on the target, and
+the branch is reported as `rebased` ("already on origin/main … safe to delete")
+rather than failed. Four real gaps survived that filter and the command still
+exited 1.
+
+This is the difference between a gate people run and a gate people learn to
+skim. It is also **fail-closed in the direction that matters**: a squash merge
+collapses N commits into one whose patch-id matches none of them, so a
+squash-merged branch still reads as novel and is still reported — over-reporting
+there is the safe error, and this repo merges with merge commits anyway. An
+unmeasurable count (`null`) falls back to ancestry alone rather than to an
+all-clear, because a signal that could not be gathered must never read as
+permission to ship. `release/unmergedWork.ts` holds the classification, pure,
+with the phantom-vs-real cases pinned in its colocated test.
 
 Gate 2 exists because gate 1 structurally could not see the common case. It
 reads an issue identifier out of the branch name, and `main` has none, so
