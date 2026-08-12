@@ -1342,7 +1342,7 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `/dashboard/*` endpoints forced it. Neither is true any more: nothing in
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
-`server/src/types/index.ts:233`), every per-tab hook sends an explicit
+`server/src/types/index.ts:244`), every per-tab hook sends an explicit
 `start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
 `useDashboardData.ts:208`, and `useMapData` likewise at `:188`), and
 `migratePersisted` deletes a stored
@@ -2001,6 +2001,45 @@ Three things to know before touching this:
   (`renewableService`'s join, plus inline `AVG/AVG` SQL in the header and the
   map), disagreeing with each other. Share-of-load is wrong here: a net
   exporter generates more than it consumes, so single rows read over 100%.
+- **"Actual generation" means *metered* generation, and for one country that
+  is not the same thing** (ABL-325). A75 reports what the TSO can meter, which
+  excludes behind-the-meter distributed generation. For almost everyone that
+  gap is negligible; for **NL solar it is the whole story** — the reported
+  series peaks at 428.8 MW against a Dutch fleet well over 20 GW, and renders
+  as 0.93% of NL's generation mix in high summer. See the next section.
+
+### Solar coverage: when the label cannot stand unqualified
+
+`getGenerationMix` attaches a `solar_coverage` verdict
+(`server/src/services/solarCoverage.ts`) to every mix it serves, and the
+Generation tab qualifies its Solar band, arc and row from it
+(`client/src/components/dashboard/solarCoverageNote.ts`).
+
+The test is **not** installed capacity, which this repo does not hold. It pairs
+our actuals against **ENTSO-E's own day-ahead solar forecast for the same
+country and hour**, which we already ingest into `energy_generation_forecast`.
+If both describe the same fleet their sums agree. Measured on the replica over
+2026-05-14..08-12, eighteen countries land between 0.95 and 1.29 (RO is the
+widest honest case); **NL sits at 17.0 across 8,693 consecutive hours**, which
+no forecast error produces. NL is the only `partial_subset` in Europe.
+
+Three rules this encodes, all of which cost a bug to learn:
+
+- **The ratio is never a correction factor.** The day-ahead forecast is itself
+  only what the TSO sees (NL's peaks at 7,871 MW, still far under the fleet),
+  so 17.0 is a lower bound on a discrepancy, not a route back to national
+  solar. `solarCoverageNote.test.ts` pins that the note never prints one.
+- **`unknown` is not `consistent`.** A country with no solar forecast to check
+  against (NO's sums to exactly 0.0 MW over 8,691 pairs) must not divide out to
+  a comfortable ratio of 0 and be pronounced sound on absent evidence.
+- **A dead-zero actual series is a different defect and is deliberately not
+  claimed here.** **BA's solar has read exactly 0.0 at every hour since
+  2026-04-13 06:00** — four months through the Balkan summer — while ENTSO-E
+  forecasts up to 244 MW and BA's wind and hydro report normally. That is a
+  feed emitting zeros (the ABL-35 species), not a metered subset; the
+  partial-coverage wording would be actively wrong about it, and the remedy is
+  to *withhold* the number rather than relabel it. `classifySolarCoverage`
+  returns `unknown` for it. Not yet fixed — filed separately.
 
 ## Timestamp storage: two separators in one column
 
