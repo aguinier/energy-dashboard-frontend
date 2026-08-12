@@ -128,14 +128,24 @@ describe.each(ENTRIES)('$label', ({ file }) => {
     expect(graph.modules.filter((m) => !m.startsWith('v1/'))).toEqual([]);
   });
 
-  it('reaches neither the keys CLI nor the in-memory test directory', () => {
-    // `keysCli.ts` holds the only read-write handle on the key store, and
-    // `memoryApiKeyDirectory.ts` is a fake that would authenticate against
-    // nothing. Both are real modules in `v1/`, so the "only v1 modules" rule
-    // above does not catch them — this is the line that keeps "test-only" and
-    // "operator-only" checked properties rather than comments.
-    expect(graph.modules.filter((m) => m.startsWith('v1/keys/keysCli'))).toEqual([]);
-    expect(graph.modules.filter((m) => m.startsWith('v1/keys/memoryApiKeyDirectory'))).toEqual([]);
+  it('reaches no operator-only or test-only module', () => {
+    // Four real modules in `v1/`, so the "only v1 modules" rule above does not
+    // catch them — this is the line that keeps "test-only" and "operator-only"
+    // checked properties rather than comments.
+    //
+    // - `keysCli.ts` holds the only read-write handle on the *key* rows.
+    // - `usageCli.ts` closes months and deletes request records; neither belongs
+    //   on a request path, and `usage:close-months` is irreversible.
+    // - the two `memory*` fakes would authenticate against nothing and meter
+    //   into an array that disappears with the process.
+    for (const operatorOnly of [
+      'v1/keys/keysCli',
+      'v1/keys/memoryApiKeyDirectory',
+      'v1/usage/usageCli',
+      'v1/usage/memoryUsageSink',
+    ]) {
+      expect(graph.modules.filter((m) => m.startsWith(operatorOnly))).toEqual([]);
+    }
   });
 });
 
@@ -155,6 +165,17 @@ describe('the exact public module graph', () => {
     // (`apiKeyStore.ts`, pure). Note what is *not* here: `sqliteApiKeyStore.ts`.
     // `publicApp.ts` imports only the `ApiKeyDirectory` **type**, which `tsc`
     // erases, so the composition still chooses no storage.
+    //
+    // **ABL-301 adds none**, which is worth a sentence because it is not what
+    // you would guess from the diff: `createPublicApp` now mounts a meter and
+    // requires one to be passed. It takes it as `import type { UsageMeter }`,
+    // and `tsc` erases a type-only import, so the composition names the *shape*
+    // of a meter exactly as it names the shape of a key store and reaches
+    // neither implementation. The whole of ABL-301's runtime graph — the meter,
+    // the store, the maintenance timer — hangs off `publicIndex.ts` below.
+    //
+    // The consequence worth keeping: the module that serves requests still has
+    // no metering code in it that could fail, and no database driver behind it.
     expect(graph.modules).toEqual([
       'v1/auth/apiKeyAuth.ts',
       'v1/keys/apiKeyStore.ts',
@@ -176,19 +197,21 @@ describe('the exact public module graph', () => {
     expect(graph.packages).toEqual(['compression', 'cors', 'express', 'helmet', 'node:crypto']);
   });
 
-  it('does not choose a key store, only name the shape of one', () => {
-    // The composition takes an `ApiKeyDirectory` and `publicIndex.ts` decides
-    // what implements it. That is what keeps a database driver out of the
-    // module that serves requests.
+  it('does not choose a key store or a usage store, only name the shape of each', () => {
+    // The composition takes an `ApiKeyDirectory` and a `UsageMeter`, and
+    // `publicIndex.ts` decides what implements them. That is what keeps a
+    // database driver out of the module that serves requests, even though this
+    // app now both authenticates and meters against one.
     expect(graph.packages).not.toContain('better-sqlite3');
     expect(graph.modules).not.toContain('v1/keys/sqliteApiKeyStore.ts');
+    expect(graph.modules).not.toContain('v1/usage/sqliteUsageStore.ts');
   });
 });
 
 describe('the entrypoint chooses the key store, and only there', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicIndex.ts'), SRC_ROOT);
 
-  it('is these ten modules and no others', () => {
+  it('is these fifteen modules and no others', () => {
     expect(graph.modules).toEqual([
       'v1/auth/apiKeyAuth.ts',
       'v1/keys/apiKeyStore.ts',
@@ -200,22 +223,56 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/publicIndex.ts',
       'v1/routes/index.ts',
       'v1/routes/root.ts',
+      'v1/usage/sqliteUsageStore.ts',
+      'v1/usage/usageMaintenance.ts',
+      'v1/usage/usageMeter.ts',
+      'v1/usage/usageShutdown.ts',
+      'v1/usage/usageStore.ts',
     ]);
   });
 
-  it('opens a database in exactly one module, and that module is the key store', () => {
-    // The assertion that replaces ABL-304's blanket ban on `better-sqlite3`,
-    // and it is the stricter of the two: "there is a database somewhere in
-    // here" would pass if a second module opened one, and this does not. If a
-    // future issue needs another store — ABL-301's usage tables are the obvious
-    // candidate — this fails and the new module gets named here on purpose.
+  it('opens a database in exactly two modules, and both are named here', () => {
+    // ABL-300 wrote this as "exactly one module, and that module is the key
+    // store", and predicted its own change in the next sentence: *"if a future
+    // issue needs another store — ABL-301's usage tables are the obvious
+    // candidate — this fails and the new module gets named here on purpose."*
+    // This is that issue, and this is the naming.
+    //
+    // Two rather than one, and the second is not a loosening:
+    //
+    // - Both open the **same file**, `API_KEYS_DB_PATH`, which
+    //   `resolveApiKeysDbPath` refuses to let be the 376 GiB energy database.
+    //   `sqliteUsageStore.ts` reuses that resolver rather than reading the
+    //   variable itself, so there is still exactly one decision about what the
+    //   path is and exactly one guard to keep true.
+    // - They open it with **different capabilities**. The key store handle is
+    //   readonly, so the serving process still cannot alter a key record;
+    //   the usage handle is read-write and can reach nothing but the three
+    //   usage tables. That split is the property worth having, and "one module"
+    //   was only ever a proxy for it.
+    //
+    // A *third* fails this test, which is the point. Naming them individually
+    // rather than asserting a count is deliberate: a count would pass if
+    // somebody deleted one and added another.
     const importers = graph.modules.filter((module) =>
       collectImportSpecifiers(fs.readFileSync(path.join(SRC_ROOT, module), 'utf8')).runtime.includes(
         'better-sqlite3'
       )
     );
 
-    expect(importers).toEqual(['v1/keys/sqliteApiKeyStore.ts']);
+    expect(importers).toEqual(['v1/keys/sqliteApiKeyStore.ts', 'v1/usage/sqliteUsageStore.ts']);
+  });
+
+  it('opens the usage store through the key store path resolver, not its own variable', () => {
+    // The one line that keeps the "never the energy database" guard singular.
+    // If `sqliteUsageStore.ts` ever read `API_KEYS_DB_PATH` itself, the guard
+    // would exist in one module and be bypassed in the other, and the metering
+    // writes — the highest-volume writes this surface will ever make — are the
+    // ones that must not land in a file we do not own.
+    const source = fs.readFileSync(path.join(SRC_ROOT, 'v1/usage/sqliteUsageStore.ts'), 'utf8');
+
+    expect(source).toContain('resolveApiKeysDbPath');
+    expect(source).not.toMatch(/env\.API_KEYS_DB_PATH/);
   });
 
   it('adds no package beyond the driver and two Node builtins', () => {

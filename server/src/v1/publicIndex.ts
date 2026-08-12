@@ -1,5 +1,9 @@
 import { createPublicApp } from './publicApp.js';
 import { openApiKeyDirectory } from './keys/sqliteApiKeyStore.js';
+import { openUsageStore } from './usage/sqliteUsageStore.js';
+import { createUsageMeter } from './usage/usageMeter.js';
+import { startUsageMaintenance } from './usage/usageMaintenance.js';
+import { shutDownUsage } from './usage/usageShutdown.js';
 
 /**
  * Entrypoint for the public process.
@@ -10,10 +14,29 @@ import { openApiKeyDirectory } from './keys/sqliteApiKeyStore.js';
  * the private surface stay exactly as it is — the reason ABL-293 §2f prices
  * this isolation at 2–3 days now against 3–4× that as a retrofit.
  *
- * It also starts **no schedulers**. `index.ts:41-49` starts the forecast
- * vintage archive and the JAO capture, both of which take a write connection.
- * Their absence here is the runtime half of "no write capability": there is no
- * timer in this process that could open one.
+ * ## Schedulers, and what changed here at ABL-301
+ *
+ * This file used to say it starts **no schedulers**, and that it therefore had
+ * no timer that could open a write connection. Half of that is still true and
+ * the half that changed is worth stating plainly rather than quietly editing.
+ *
+ * Still true: `index.ts:41-49` starts the forecast vintage archive and the JAO
+ * capture, both of which take a write connection **on the 376 GiB energy
+ * database**. Neither is started here, nothing in this process's import graph
+ * can reach `config/writeDatabase.ts`, and `publicAppGraph.test.ts` asserts that
+ * as a property of the module graph rather than as a claim in a comment.
+ *
+ * Changed: metering writes, so this process now holds a read-write handle — to
+ * the **key store file**, reaching nothing but the three usage tables, in a file
+ * `resolveApiKeysDbPath` refuses to let be the energy database. The maintenance
+ * timer that aggregates and applies retention runs against that same handle.
+ * "No write capability at all" was the old shape; "no write capability on data
+ * this process does not own" is the one that survives an API you can invoice
+ * for, and it is the property the graph test actually enforces.
+ *
+ * The key store handle is still opened **readonly**, so the serving process
+ * cannot alter a key record even now. Two handles on one file, and only one of
+ * them can write.
  *
  * ## Binding
  *
@@ -50,7 +73,17 @@ const PORT = Number(process.env.PUBLIC_PORT) || 3002;
 const HOST = process.env.PUBLIC_BIND_HOST || '127.0.0.1';
 
 const apiKeyDirectory = openApiKeyDirectory();
-const app = createPublicApp({ apiKeyDirectory });
+
+// Opened before `listen`, like the key store and for the same reason: a process
+// that binds a port and then cannot record what it served is a process quietly
+// giving the API away. `openUsageStore` requires the file to exist and to be a
+// real key store, so a path typo is a startup failure rather than a month of
+// metering into a database nobody looks in.
+const usageStore = openUsageStore();
+const usageMeter = createUsageMeter({ sink: usageStore });
+const usageMaintenance = startUsageMaintenance({ store: usageStore });
+
+const app = createPublicApp({ apiKeyDirectory, usageMeter });
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`
@@ -58,6 +91,7 @@ const server = app.listen(PORT, HOST, () => {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔒 Public composition: internal routes are absent, not filtered
 🔑 API-key auth: Authorization: Bearer able_<env>_<prefix>_<secret>
+📈 Usage metering: on — every authenticated request is counted per key
 🚀 Listening on http://${HOST}:${PORT}
 📊 API base URL: http://${HOST}:${PORT}/v1
 
@@ -66,14 +100,41 @@ Not on this surface, by composition: /api/*, /api/ops/*, /api/health,
 `);
 });
 
-// Close the readonly handle on the way out. `config/database.ts` registers the
-// same pair for the private app; doing it in the entrypoint rather than inside
-// the store module keeps the store a plain object with no global side effects,
+// Close the handles on the way out. `config/database.ts` registers the same
+// pair for the private app; doing it in the entrypoint rather than inside the
+// store module keeps the store a plain object with no global side effects,
 // which is what lets `sqliteApiKeyStore.test.ts` open and close a dozen of them
 // in one process.
+//
+// `server.close()` first, so requests still in flight get to finish and emit the
+// `close` event that puts them in the meter's buffer at all; then
+// `shutDownUsage`, which flushes that buffer, runs a final aggregation pass and
+// closes the store. The sequence lives in its own module because this one cannot
+// be imported by a test — it opens databases and binds a port at import time —
+// and "a clean shutdown loses nothing" is a billing claim that should be checked
+// rather than asserted. `usageShutdown.test.ts` checks it.
+//
+// **`SIGTERM` is listed but does not arrive on Windows.** Node accepts the
+// listener and the OS terminates the process outright, so a `taskkill` on this
+// platform loses whatever is buffered — at most one flush interval, under-count,
+// which is the documented and chosen direction. `SIGINT` (Ctrl-C) is emulated
+// and does arrive; on Linux both do. Verified against a running server rather
+// than assumed, which is also how the sequence below stopped being untested.
+//
+// What is deliberately *not* here: a handler for `uncaughtException`, `SIGKILL`
+// or a power cut. Those lose the buffer, they under-count by design, and that is
+// the direction this whole module errs in. See `usageMeter.ts`.
+let shuttingDown = false;
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
+    // Two Ctrl-Cs must not run the sequence twice. `meter.close()` is idempotent
+    // by itself, but the maintenance pass is not free and a second signal is
+    // usually somebody impatient rather than somebody with new information.
+    if (shuttingDown) return;
+    shuttingDown = true;
+
     server.close(() => {
+      shutDownUsage({ meter: usageMeter, maintenance: usageMaintenance, store: usageStore });
       apiKeyDirectory.close();
       process.exit(0);
     });
