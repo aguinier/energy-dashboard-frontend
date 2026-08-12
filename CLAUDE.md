@@ -62,12 +62,13 @@ energy-dashboard-frontend/
 │       │   │   ├── ForecastGapNotice.tsx # multi-select "<model> has no forecast here" + remove-from-comparison button
 │       │   │   ├── TimePicker.tsx        # categorised presets + window nav
 │       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
-│       │   │   ├── ForecastMetadataBadge.tsx  # ORPHANED — no importer (see State management)
+│       │   │   ├── ForecastVintageNote.tsx # "when was this forecast generated, by which
+│       │   │   │                         #   model" footnote under the ML line (Load/Price/Wind)
 │       │   │   ├── ModelComparisonPanel.tsx    # "Compare forecast models" table (ForecastTab)
 │       │   │   ├── generationSeries.ts   # The nine A75 families: grouping, palette,
 │       │   │   │                         #   stack order, series builder (GenerationTab)
-│       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts, modelComparison.ts
-│       │   │                                   # Pure helpers (each has a .test.ts)
+│       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts, modelComparison.ts,
+│       │   │       forecastVintage.ts          # Pure helpers (each has a .test.ts)
 │       │   ├── comparison/           # ComparisonView's heatmap/map/leaderboard/filter bar
 │       │   │   └── accuracyScale.ts, leaderboardRows.ts, mapFill.ts
 │       │   │                                   # Pure helpers (each has a .test.ts)
@@ -289,6 +290,19 @@ Omitting `model` leaves every one of these exactly as it was: unpinned, the
 latest run per target timestamp whichever model produced it. `meta.model` is
 then `null` — it does **not** name the production model, because the unpinned
 query really is model-agnostic.
+
+**"These" means the accuracy endpoints above — not `/forecasts`.** This has
+already been misread once (ABL-285 was filed on the premise that a `/forecasts`
+batch can mix models), so state it plainly: `getForecastData` walks the
+candidate ladder and **returns the first candidate that has rows**
+(`forecastService.ts:32-37`), and `queryForecasts` always applies
+`AND model_name = ?` (`:51`). One `/forecasts` response therefore carries
+**exactly one `model_name`**, pinned or not. What it *can* mix, because neither
+is pinned, is `model_version` and `generated_at` — the hourly branch takes
+`MAX(generated_at)` per target timestamp (`:80-88`), so one window spans as
+many runs as it has distinct target hours. The daily/weekly branch selects no
+`model_name`/`model_version` at all and averages `horizon_hours` (`:96-110`),
+so those columns are absent rather than wrong there.
 
 Because coverage is disjoint, "this model has no rows for this country" is a
 normal answer. `meta.coverage` on `/ml-accuracy` distinguishes `served` /
@@ -1285,13 +1299,15 @@ check which group it is in:
   queries (`useLoadChartData.ts:172`, `:213`; `usePriceChartData.ts:133`);
   `selectedMLHorizons` drives the multi-horizon fetch
   (`useLoadChartData.ts:131`, `:177`).
-- **Written, and read only by dead code.** `showForecast`. `setTimePreset`
-  still sets it `true` for future presets (`dashboardStore.ts:150`) and
-  `useLatestForecast` gates its query on it (`useDashboardData.ts:239`, `:248`)
-  — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
-  nothing, so it has no on-screen effect today.
-- **No reader at all.** `showTSOForecast`, `tsoForecastType`,
+- **No reader at all.** `showForecast`, `showTSOForecast`, `tsoForecastType`,
   `visibleRenewableTypes`, `sidebarOpen`, `comparisonCountries`.
+  `showForecast` is still *written* — `setTimePreset` sets it `true` for future
+  presets (`dashboardStore.ts:150`) — but ABL-285 deleted its last reader:
+  `useLatestForecast` gated its query on it, `ForecastMetadataBadge.tsx` was
+  that hook's only consumer and was imported by nothing, so the hook, its
+  `fetchLatestForecast` client and the badge all went in one diff. The
+  `GET /api/forecasts/latest` **route is untouched and still live** — only the
+  client's dead call path is gone.
 
 Careful with the name `showForecast`: `useLoadChartData`/`usePriceChartData`
 declare *local* consts of that name derived from the picker
@@ -2096,12 +2112,14 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12: **45 client test files / 590 tests** (570 passing in
+Green as of 2026-08-12: **46 client test files / 610 tests** (590 passing in
 this checkout — the other 20, in `dashboardStore.test.ts`/`windowLabel.test.ts`,
 fail on the pre-existing `storage.setItem is not a function` sandbox quirk the
 ABL-203 paragraph below already documents, not a regression; ABL-263 tracks
 them), **44 server test files / 620 tests**, all passing, clean typecheck.
 Fewer tests passing than that means something broke.
+(ABL-285 added `forecastVintage.test.ts` — +1 file / +20 tests, all passing;
+the 20 failures are the same 20, unchanged.)
 
 (Both figures are a fresh `npx vitest run` on ABL-238 merged with `origin/main`
 at `0871259` — what `main` becomes when this lands — not arithmetic on the two
