@@ -84,6 +84,35 @@ describe('GET /api/ops/status', () => {
     }
   });
 
+  it('reports network throughput as real counters or an honest null, never a zeroed shape', async () => {
+    const { body } = await api.get('ops/status');
+    const host = (body.data as any).host;
+
+    // `/proc/net/dev` exists on Linux only. Everywhere else the honest answer
+    // is `null` — a zero-filled interface list would render as a quiet network
+    // on the Windows acceptance host rather than as "not measured".
+    if (process.platform !== 'linux') {
+      expect(host.network).toBeNull();
+      return;
+    }
+
+    expect(Array.isArray(host.network)).toBe(true);
+    for (const iface of host.network) {
+      expect(typeof iface.name).toBe('string');
+      expect(iface.name).not.toBe('lo');
+      expect(iface.rxBytes).toBeGreaterThanOrEqual(0);
+      expect(iface.txBytes).toBeGreaterThanOrEqual(0);
+      // Rates are derived from two samples, so they are legitimately null on
+      // the first request; what they must never be is a number with no window
+      // to have measured it over.
+      if (iface.rxBytesPerSec !== null) {
+        expect(iface.sampleWindowMs).toBeGreaterThan(0);
+        expect(Number.isFinite(iface.rxBytesPerSec)).toBe(true);
+        expect(iface.rxBytesPerSec).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
   it('surfaces the fleet as stale, reusing dataFreshnessService rather than a stub', async () => {
     const { body } = await api.get('ops/status');
     const freshness = (body.data as any).freshness;
@@ -110,8 +139,10 @@ describe('GET /api/ops/status/combined', () => {
     expect(status).toBe(200);
 
     const data = body.data as Record<string, unknown>;
+    // `derived` is ABL-292's addition; every other key is ABL-238's contract,
+    // unchanged — this list is what proves the change was additive.
     expect(Object.keys(data).sort()).toEqual(
-      ['local', 'peer', 'peerConfigured', 'syncBlackout', 'timestamp'],
+      ['derived', 'local', 'peer', 'peerConfigured', 'syncBlackout', 'timestamp'],
     );
 
     const local = data.local as Record<string, unknown>;
@@ -122,6 +153,38 @@ describe('GET /api/ops/status/combined', () => {
     // state, distinct from "configured but unreachable".
     expect(data.peerConfigured).toBe(false);
     expect((data.peer as Record<string, unknown>).reachable).toBe(false);
+  });
+
+  /**
+   * ABL-292 — through the real route and the real fixture DB, not the injected
+   * stand-ins `combinedOpsStatusService.test.ts` uses. The fixture fleet is
+   * seeded stale, so this also pins the one derived verdict this environment
+   * can assert a value for without guessing at the host's real disk.
+   */
+  it('returns a derived verdict per KPI for both lanes', async () => {
+    const { body } = await api.get('ops/status/combined');
+    const derived = (body.data as any).derived;
+
+    expect(Object.keys(derived).sort()).toEqual(['local', 'peer']);
+    for (const side of ['local', 'peer'] as const) {
+      expect(Object.keys(derived[side]).sort()).toEqual(['disk', 'environment', 'freshness']);
+      for (const kpi of ['disk', 'environment', 'freshness'] as const) {
+        expect(['ok', 'warn', 'error', 'unknown']).toContain(derived[side][kpi]);
+      }
+    }
+
+    // The fixture fleet is stale (asserted above), so freshness must say so.
+    expect(derived.local.freshness).toBe('warn');
+
+    // Peer is unconfigured here: unmeasured KPIs read `unknown`, never `ok`.
+    expect(derived.peer.disk).toBe('unknown');
+    expect(derived.peer.freshness).toBe('unknown');
+    // Read against the blackout flag the same response reports rather than
+    // hardcoding `error`: this suite runs at whatever the wall clock says, and
+    // inside the ~07:00/~16:30 window an unreachable side is deliberately
+    // softened to `warn` (ABL-220). Asserting the pairing, not the hour, is
+    // what keeps this from failing twice a day.
+    expect(derived.peer.environment).toBe((body.data as any).syncBlackout.active ? 'warn' : 'error');
   });
 });
 

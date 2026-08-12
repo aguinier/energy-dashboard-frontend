@@ -232,14 +232,6 @@ export async function fetchMultiHorizonForecast(params: {
   return unwrap(data, '/forecasts/multi-horizon');
 }
 
-export async function fetchLatestForecast(params: {
-  country: string;
-  type?: ForecastType;
-}): Promise<ForecastDataPoint[]> {
-  const { data } = await api.get<ApiResponse<ForecastDataPoint[]>>('/forecasts/latest', { params });
-  return unwrap(data, '/forecasts/latest');
-}
-
 export async function fetchForecastComparison(params: {
   country: string;
   type: ForecastType;

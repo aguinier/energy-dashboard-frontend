@@ -27,6 +27,8 @@
  * reads `Date.now()`.
  */
 
+import { DISK_ERROR_RATIO } from './opsStatusThresholds.js';
+
 /** A disk reading: when it was taken, and used-percent of the filesystem at that moment. */
 export interface DiskPoint {
   atMs: number;
@@ -66,12 +68,13 @@ export interface DiskHeadroom {
 }
 
 /**
- * Mirrors `DISK_ERROR_RATIO` in `client/src/lib/opsStatusThresholds.ts:15` —
- * the ratio the status page already paints a side red at. The countdown and
- * the badge have to agree on what "full" means, or the page says the disk is
- * fine and that it crosses "full" tomorrow.
+ * The percent the status page already paints a side red at, expressed from the
+ * one constant that defines it (`DISK_ERROR_RATIO`, ABL-292) rather than
+ * restated as a literal. The countdown and the badge have to agree on what
+ * "full" means, or the page says the disk is fine and that it crosses "full"
+ * tomorrow — and a mirrored copy is exactly how that drift happens.
  */
-export const DISK_THRESHOLD_PERCENT = 90;
+export const DISK_THRESHOLD_PERCENT = DISK_ERROR_RATIO * 100;
 
 const MIN_POINTS = 4;
 const MIN_SPAN_HOURS = 12;

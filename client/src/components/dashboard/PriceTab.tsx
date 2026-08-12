@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { AbleCard } from './AbleCard';
 import { ForecastGapNotice } from './ForecastGapNotice';
+import { ForecastVintageNote } from './ForecastVintageNote';
 import { AbleLineChart } from '@/components/charts/AbleLineChart';
 import { AblePriceHeatmap } from '@/components/charts/AblePriceHeatmap';
 import { usePriceChartData } from '@/hooks/usePriceChartData';
@@ -110,16 +111,21 @@ function PriceDefaultView({
             Loading…
           </div>
         ) : (
-          <AbleLineChart
-            series={series}
-            nowIndex={nowIndex}
-            height={300}
-            formatAxis={(v) => v.toFixed(0)}
-            formatTooltip={(v) => `€${v.toFixed(1)}`}
-            unit="/MWh"
-            preset={timePreset}
-            label="Day-ahead price"
-          />
+          <>
+            <AbleLineChart
+              series={series}
+              nowIndex={nowIndex}
+              height={300}
+              formatAxis={(v) => v.toFixed(0)}
+              formatTooltip={(v) => `€${v.toFixed(1)}`}
+              unit="/MWh"
+              preset={timePreset}
+              label="Day-ahead price"
+            />
+            {/* Same expression the chart was built from, so the note is on
+                screen exactly when the dashed ML line is (ABL-285). */}
+            <ForecastVintageNote points={forecastData} chartWindow={todayWindow} />
+          </>
         )}
       </AbleCard>
 
