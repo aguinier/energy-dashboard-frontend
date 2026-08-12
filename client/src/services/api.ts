@@ -25,6 +25,7 @@ import type {
   TSOForecastAccuracyMetrics,
   TSOGenerationForecastDataPoint,
   DataFreshness,
+  IngestFreshness,
   MLAccuracyCoverage,
   MLForecastAccuracyMetrics,
   MLForecastAccuracyResult,
@@ -328,6 +329,20 @@ export async function fetchTSOForecastMetrics(params: {
 export async function fetchDataFreshness(countryCode: string): Promise<DataFreshness> {
   const endpoint = `/data-freshness/${countryCode}`;
   const { data } = await api.get<ApiResponse<DataFreshness>>(endpoint);
+  return unwrap(data, endpoint);
+}
+
+/**
+ * When each stream was last *refreshed* — read from `data_ingestion_log`.
+ *
+ * Deliberately a second request rather than more fields on the one above: that
+ * endpoint answers "how old is the newest row we hold" from the data tables,
+ * this one answers "when did we last go and look, and did anything arrive" from
+ * the pass log. See ABL-295.
+ */
+export async function fetchIngestFreshness(countryCode: string): Promise<IngestFreshness> {
+  const endpoint = `/data-freshness/${countryCode}/ingest`;
+  const { data } = await api.get<ApiResponse<IngestFreshness>>(endpoint);
   return unwrap(data, endpoint);
 }
 

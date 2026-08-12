@@ -320,6 +320,66 @@ export interface DataFreshness {
 }
 
 // ============================================================================
+// Ingest passes — "Last refreshed" (ABL-295)
+// ============================================================================
+// Mirrors server/src/services/ingestLog.ts. Sourced from `data_ingestion_log`,
+// NOT from `publication_timestamp_utc`: that column is stamped with our own
+// fetch time and drifts up to 39.1 days from the row carrying it, so no stream
+// in this database can honestly show an upstream production time. That is why
+// the copy is "Last refreshed" and never "Published" or "Generated".
+
+/** The streams the dashboard draws, as the server's `INGEST_PIPELINES` maps them. */
+export type IngestStreamKey =
+  | 'load'
+  | 'price'
+  | 'generation'
+  | 'tsoLoadForecast'
+  | 'tsoGenerationForecast'
+  | 'netPosition';
+
+/**
+ * How the last pass relates to the last pass that actually brought rows.
+ *
+ * Four separate claims. `checked_no_data` and `never_delivered` in particular
+ * are not the same thing — measured 2026-08-12, GB load has never had a pass
+ * return a row in 453 attempts, while AL generation last got one on 2026-06-30
+ * and is still checked four times a day.
+ */
+export type IngestDelivery =
+  | 'flowing'
+  | 'checked_no_data'
+  | 'never_delivered'
+  | 'not_logged';
+
+export interface StreamRefresh {
+  /** Newest completed pass. When we last went and looked. */
+  lastChecked: string | null;
+  /**
+   * Newest completed pass that wrote at least one row.
+   *
+   * Never fall back to `lastChecked` when this is null. And not a claim that
+   * the data got newer — the ingest upserts a rolling 7-day window, so a
+   * rewrite of a row we already held counts here. The freshness pill's
+   * `MAX(timestamp_utc)` verdict is what answers data age.
+   */
+  lastStoredRows: string | null;
+  delivery: IngestDelivery;
+  /** Which `pipeline_type` rows the server folded in. */
+  pipelines: string[];
+}
+
+export interface IngestFreshness {
+  load: StreamRefresh;
+  price: StreamRefresh;
+  generation: StreamRefresh;
+  tsoLoadForecast: StreamRefresh;
+  tsoGenerationForecast: StreamRefresh;
+  netPosition: StreamRefresh;
+  /** Earliest pass anywhere in the log — what bounds a `not_logged` verdict. */
+  logStartsAt: string | null;
+}
+
+// ============================================================================
 // Ops status (ABL-237 host/process KPIs, ABL-238 acceptance/prod comparison)
 // ============================================================================
 // Mirrors server/src/services/opsStatusService.ts, peerOpsStatus.ts and

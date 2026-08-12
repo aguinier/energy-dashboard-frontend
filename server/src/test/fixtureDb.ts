@@ -247,6 +247,24 @@ CREATE TABLE energy_generation_forecast (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(country_code, target_timestamp_utc, forecast_type)
 );
+
+CREATE TABLE data_ingestion_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline_type TEXT NOT NULL,
+    country_code TEXT,
+    start_time TIMESTAMP NOT NULL,
+    end_time TIMESTAMP,
+    status TEXT NOT NULL,
+    records_inserted INTEGER DEFAULT 0,
+    records_updated INTEGER DEFAULT 0,
+    records_failed INTEGER DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_ingestion_log_pipeline
+    ON data_ingestion_log(pipeline_type, start_time DESC);
+CREATE INDEX idx_ingestion_log_status ON data_ingestion_log(status);
 `;
 
 /** Every `*_mw` column on `energy_generation`, in table order. */
@@ -558,6 +576,100 @@ function seed(db: DatabaseType): void {
   );
   // BE solar day-ahead against the all-zero overnight actuals.
   HOURS.forEach((h) => generationForecast.run('BE', at(h), 3, 0, null, 3, 'day_ahead'));
+
+  seedIngestionLog(db);
+}
+
+/**
+ * `data_ingestion_log` — when each pipeline last ran, and what it brought back.
+ *
+ * ABL-295. Unlike every other age-sensitive fixture in this file, these rows can
+ * be fixed timestamps: `getIngestFreshness` returns the stamps verbatim and
+ * classifies on the ORDER of two of them, never on their distance from `now`.
+ * Nothing here changes verdict as the suite ages.
+ *
+ * The four delivery states are spread over the existing countries rather than
+ * inventing new ones, each landing on the country whose shape it already stands
+ * for:
+ *
+ * - `DE` — `flowing` everywhere. The ordinary case.
+ * - `GR` — `checked_no_data`: still checked four times a day, last actually
+ *   delivered before the window. That is GR's whole identity in this fixture,
+ *   and its real shape — measured 2026-08-12, GR's `net_position` was checked
+ *   at 00:40 and last brought a row on 2026-07-31.
+ * - `AT` — `never_delivered` on net position: passes on record, not one has
+ *   ever returned a row. Real and common, not an edge case: 14 of 36 zones are
+ *   in exactly this state (AL BA CH CY DK GB IT MD ME MK NO RS SE UA).
+ * - `BE` — `not_logged`, by carrying no rows at all. The log starts
+ *   2025-12-23 and cannot speak for anything before it.
+ *
+ * `FR`, `PT` and `LU` are deliberately left unlogged too; only `BE` is asserted
+ * on, so adding rows for the others later will not break a test.
+ */
+function seedIngestionLog(db: DatabaseType): void {
+  const pass = db.prepare(
+    `INSERT INTO data_ingestion_log
+       (pipeline_type, country_code, start_time, end_time, status,
+        records_inserted, records_updated, records_failed, error_message)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  // The log's real stamp format: Python `datetime.now(pytz.UTC).isoformat()`.
+  // Measured 2026-08-12, all 114,982 non-null `end_time` values are exactly
+  // this shape — 32 chars, microseconds, always `+00:00`. Copied verbatim
+  // because string ordering over this fixed width is what the service relies on.
+  const logAt = (day: number, minute: number): string =>
+    `2026-07-${String(day).padStart(2, '0')}T00:${String(minute).padStart(2, '0')}:15.882895+00:00`;
+
+  /** A pass that brought rows back. */
+  const delivered = (pipeline: string, cc: string, day: number, minute: number) =>
+    pass.run(pipeline, cc, logAt(day, minute), logAt(day, minute), 'completed', 24, 0, 0, null);
+
+  /** A completed pass that inserted and updated nothing — the trap. */
+  const empty = (pipeline: string, cc: string, day: number, minute: number) =>
+    pass.run(pipeline, cc, logAt(day, minute), logAt(day, minute), 'completed', 0, 0, 0, null);
+
+  const EVERY_STREAM = [
+    'load',
+    'price',
+    'renewable',
+    'load_forecast_day_ahead',
+    'wind_solar_forecast',
+    'net_position',
+  ];
+
+  // DE — delivered on the most recent pass for every stream.
+  EVERY_STREAM.forEach((p, i) => {
+    delivered(p, 'DE', 1, 30 + i);
+    delivered(p, 'DE', 2, 30 + i);
+  });
+  // DE's week-ahead load forecast has NEVER delivered while its day-ahead
+  // twin has. Both write `energy_load_forecast`, so the merged stream must
+  // still read `flowing` — the table was refreshed. Six of 36 countries have
+  // exactly this split in production (BA, GB, MD, MK, SI, UA).
+  empty('load_forecast_week_ahead', 'DE', 1, 41);
+  empty('load_forecast_week_ahead', 'DE', 2, 41);
+
+  // GR — checked on the newest pass, delivered only on the older one. This is
+  // the state that would read as "refreshed 2 minutes ago" if the two
+  // timestamps were ever collapsed into one.
+  delivered('load', 'GR', 1, 40);
+  empty('load', 'GR', 2, 40);
+  delivered('net_position', 'GR', 1, 40);
+  empty('net_position', 'GR', 2, 40);
+
+  // AT — the passes run and have never once returned a net position.
+  empty('net_position', 'AT', 1, 32);
+  empty('net_position', 'AT', 2, 32);
+
+  // A `failed` pass and an in-flight `running` one, both of which must be
+  // excluded from "last checked". `failed` is producible by the sibling writer
+  // (`status = "failed" if error_message else "completed"`,
+  // `../energy-data-gathering/src/db.py:1192`) though no production row has ever
+  // carried it; `running` has exactly one live row. Dated AFTER every DE pass
+  // above, so a service that counted either would visibly move DE's answer.
+  pass.run('load', 'DE', logAt(3, 30), logAt(3, 30), 'failed', 0, 0, 12, 'HTTP 503');
+  pass.run('price', 'DE', logAt(3, 31), null, 'running', 0, 0, 0, null);
 }
 
 /**

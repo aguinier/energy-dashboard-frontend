@@ -1228,7 +1228,7 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
 `server/src/types/index.ts:233`), every per-tab hook sends an explicit
 `start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
-`useDashboardData.ts:207`, and `useMapData` likewise at `:187`), and
+`useDashboardData.ts:208`, and `useMapData` likewise at `:188`), and
 `migratePersisted` deletes a stored
 `timeRange` outright (`store/migrate.ts:106`). `timePreset` is the single field
 describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
@@ -1287,7 +1287,7 @@ check which group it is in:
   (`useLoadChartData.ts:131`, `:177`).
 - **Written, and read only by dead code.** `showForecast`. `setTimePreset`
   still sets it `true` for future presets (`dashboardStore.ts:150`) and
-  `useLatestForecast` gates its query on it (`useDashboardData.ts:239`, `:248`)
+  `useLatestForecast` gates its query on it (`useDashboardData.ts:240`, `:249`)
   — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
   nothing, so it has no on-screen effect today.
 - **No reader at all.** `showTSOForecast`, `tsoForecastType`,
@@ -1599,6 +1599,85 @@ and does not size it. The window was previously misdiagnosed as a code/container
 (ABL-220's writeup) and the status page is built specifically not to repeat
 that mistake. No visitor-counter KPI and no external alerting/paging are in
 scope here — see the issue for why.
+
+### 7b. "Last refreshed" per stream — when did the ingest last run?
+
+`GET /api/data-freshness/:cc/ingest` (ABL-295, follow-up A from ABL-286's
+provenance audit) answers a **different question** from the endpoint above, from
+a **different source**, and the two must not be merged. Section 7 asks *how old
+is the newest row we hold*, from `MAX(timestamp_utc)` on the data tables. This
+asks *when did we last go and look, and did the pass write anything*, from
+`data_ingestion_log` — which nothing in this repo read until now
+(`grep -rn data_ingestion_log server/src client/src` returned nothing).
+
+**Why not `publication_timestamp_utc`.** Because it is not a publication time —
+see "Data the database does not have". ENTSO-E builds documents on request, so
+that column dates our fetch; the audit measured 80.4% of `energy_load` rows
+carrying a stamp over a day newer than the row holding it, max drift 39.1 days.
+So the label is **"Last refreshed"**, never "Published" or "Generated": every
+word on screen describes our pipeline, not the producer.
+
+**The two values, and why collapsing them would be an incident.** A `completed`
+pass does not mean rows were written. Measured on the replica 2026-08-12
+(matching the issue's prod figures exactly): 2,886 of 16,335 `price` passes
+stored nothing, `load` 1,367 of 16,301, `load_forecast_week_ahead` 4,119 of
+16,298, `net_position` 1,267 of 2,668. Per (country, stream) it is worse than a
+rounding error — it is the permanent state of whole streams:
+
+- `net_position` — **14 of 36 zones have never had one pass store a row** (AL BA
+  CH CY DK GB IT MD ME MK NO RS SE UA); GR and IE last did on 2026-07-31.
+- `load` — GB and UA never have, matching their dead series.
+- `renewable` — AL last did on 2026-06-30 (Albania publishes no A75 at all).
+- `load_forecast_week_ahead` — ME last did 2026-05-24; BA GB MD MK SI UA never.
+
+Every one of those was "checked" during the 00:30–00:48 UTC pass that morning.
+Showing only the check would tell a GB user their load was refreshed today.
+
+**`lastStoredRows` is NOT "the data got newer", and the field is named for
+that.** `records_inserted` counts rows *written*, and the ingest upserts a
+rolling 7-day window, so `INSERT OR REPLACE` counts a rewrite. AL load proves
+it live: frozen at `2026-08-06 21:45` since its upstream stall, still storing
+660 → 636 → … → 180 rows a pass as the window slides past. See the
+`data_ingestion_log` bullet under "Data the database does not have" for the full
+measurement. The client caption says so and points at the pill for data age.
+
+- `services/ingestLog.ts` — pure, colocated test. The pipeline→stream map, the
+  four-state `classifyDelivery`, and `mergePipelinePasses`.
+- `services/ingestFreshnessService.ts` — one grouped read. **No `INDEXED BY`
+  hint on purpose**: SQLite picks the barely-selective `idx_ingestion_log_status`
+  and scans, which measured **38 ms** for FR across all seven pipelines against
+  **133 ms** when forced onto `idx_ingestion_log_pipeline`, whose row lookups are
+  random. The better-looking index is 3.5x slower here.
+- Client: `layout/lastRefreshed.ts` (pure, colocated test) owns every word;
+  `layout/LastRefreshedPanel.tsx` renders it in a popover behind the header
+  pill, and `useIngestFreshness(open)` is gated so nothing is fetched until a
+  reader opens it.
+
+Four states, four different claims — `classifyDelivery`, and none may be
+collapsed into another: `flowing` (the latest pass stored rows), `checked_no_data`
+(we have run since the last write and got nothing), `never_delivered` (passes on
+record, not one has ever written — there is no timestamp to show, so the copy
+says "Never" rather than falling back to the check time), and `not_logged` (no
+pass on record, which says the log cannot answer, not that the pipeline never
+ran — hence `logStartsAt` beside the streams, the log only begins 2025-12-23).
+
+**A multi-pipeline stream takes the best per-pipeline verdict, never the two
+maxima compared against each other.** `tsoLoadForecast` is written by both
+`load_forecast_day_ahead` and `load_forecast_week_ahead`, and D+7 finishes ~1s
+after D+1 in every cycle (FR 2026-08-12: `00:39:16.351083` then
+`00:39:17.291833`). Six countries (BA GB MD MK SI UA) have a D+7 that has never
+stored a row while their D+1 is healthy — so `max(lastChecked)` is always D+7's
+and `max(lastStoredRows)` always D+1's, one second earlier, and classifying those
+two against each other would report `checked_no_data` **forever** on a table
+refreshed four times a day. Reporting a healthy stream as stalled is the same
+false claim as the reverse.
+
+Scope: the six streams the dashboard draws. `crossborder_flows` and the two
+weather pipelines are logged but unrendered, and weather is keyed by bidding
+zone (`DK1`/`DK2`) where every ENTSO-E pipeline uses plain `DK`. A `failed`
+status is producible by the writer
+(`../energy-data-gathering/src/db.py:1192`) but has never occurred — 114,982
+`completed`, 1 `running` — and is counted as neither a check nor a write.
 
 ## Generation data
 
@@ -1967,7 +2046,27 @@ change — filed as its own follow-up instead.
   at `2026-08-06 21:45` → ABL-84). that table
   records an `INSERT OR REPLACE` rowcount, so rewriting rows that already
   existed logs as inserts and a healthy ingest looks identical to a five-day
-  upstream stall. (ABL-60 turned the "is this stream current" half of this into
+  upstream stall.
+
+  **Re-confirmed by direct measurement under ABL-295, and it is AL load.**
+  Measured on the replica 2026-08-12: AL's `energy_load`
+  `MAX(timestamp_utc)` has been frozen at `2026-08-06 21:45` since the stall
+  above, and *every* pass since reports rows stored — 660, 636, 608, 588, 564,
+  ... 180, falling monotonically as the rolling 7-day window slides forward
+  past the frozen data. So a non-zero `records_inserted` is proof the pipeline
+  ran and wrote, and proof of nothing else. (`records_updated`, which would
+  separate a rewrite from a genuine insert, is never set: 0 of 114,983 rows
+  carry a non-zero value against 99,138 for `records_inserted`.)
+
+  ABL-295 now **does** read this table — see "Last refreshed per stream" below
+  — and is built around exactly this limit rather than in spite of it: it
+  reports when a pass ran and when a pass last stored rows, names the field
+  `lastStoredRows` rather than `lastNewData`, and its on-screen caption sends
+  the reader to the freshness pill for data age. Reading it as a currency
+  signal is still wrong; reading it as "did the pipeline run, and did it get
+  anything" is what it is for.
+
+  (ABL-60 turned the "is this stream current" half of this into
   a served verdict — see "Data freshness" above. That answers *whether* a stream
   is behind; this bullet is why a given zone being behind is usually not a bug
   to file. The 18h threshold is sized from the measurement above — ME at ~9.2h
@@ -2096,12 +2195,35 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12: **45 client test files / 590 tests** (570 passing in
-this checkout — the other 20, in `dashboardStore.test.ts`/`windowLabel.test.ts`,
-fail on the pre-existing `storage.setItem is not a function` sandbox quirk the
-ABL-203 paragraph below already documents, not a regression; ABL-263 tracks
-them), **44 server test files / 620 tests**, all passing, clean typecheck.
-Fewer tests passing than that means something broke.
+Green as of 2026-08-12: **46 client test files / 599 tests** and **45 server
+test files / 646 tests**, all passing, clean typecheck. Fewer tests passing
+than that means something broke.
+
+**Run them under nvm4w Node 24.18.0, not the `C:\Program Files\nodejs` install.**
+Measured on the ABL-295 worktree: under Node 24.18.0 both suites are fully
+green as stated above. The `storage.setItem is not a function` failures that
+earlier entries here describe as a "pre-existing sandbox quirk" affecting ~20
+client tests (`dashboardStore.test.ts`/`windowLabel.test.ts`, tracked by
+ABL-263) did **not** reproduce at all on that runtime — they are a symptom of
+the second, shadowing Node install, not of the tests. Do not re-diagnose them
+as a regression, and do not "fix" the tests to accommodate them.
+
+(A fresh git worktree has no `node_modules`. `npm install` under npm 11.16
+skips install scripts by default — it prints an `allow-scripts` warning and
+leaves `better-sqlite3` without its native binary and `esbuild` without its
+platform binary, so both suites fail to start. Run each package's script
+directly (`node install.js` in `node_modules/esbuild` and
+`node_modules/vite/node_modules/esbuild`) rather than `npm approve-scripts`,
+which writes an `allowScripts` field into `package.json` and dirties the tree.
+`better-sqlite3@11.10.0`, which the server pins, has no Node 24 prebuild — copy
+`build/Release/better_sqlite3.node` from the primary checkout, which carries a
+working build of the same version.)
+
+The previous figures here were **45 client files / 590 tests** and **44 server
+files / 620 tests**. ABL-295 adds +1 client file / +9 cases
+(`components/layout/lastRefreshed.test.ts`) and +1 server file / +26 cases
+(`services/ingestLog.test.ts`, 15, plus 11 new cases in the existing
+`routes/dataFreshness.test.ts`).
 
 (Both figures are a fresh `npx vitest run` on ABL-238 merged with `origin/main`
 at `0871259` — what `main` becomes when this lands — not arithmetic on the two
@@ -2321,7 +2443,13 @@ asserted through the component),
 (ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
 as optional params, specifically so `hostMetrics.test.ts` can exercise the
 graceful-degradation path — a throwing stat call, a mocked Windows platform —
-without a real disk or `os.loadavg()`).
+without a real disk or `os.loadavg()`),
+`server/src/services/ingestLog.ts` and
+`client/src/components/layout/lastRefreshed.ts` (ABL-295 — the pipeline→stream
+map and delivery classification on one side, every user-facing word on the
+other; the client half is pure so the copy can be pinned without a clock or a
+DOM, which is what stops a "Last refreshed" time appearing for a stream that
+has never received one).
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query

@@ -384,3 +384,69 @@ export interface FreshnessStream {
   ageHours: number | null;
   status: FreshnessStatus;
 }
+
+// Ingest passes — when did we last go and look, and did anything arrive?
+// Sourced from `data_ingestion_log`, NOT from `publication_timestamp_utc`,
+// which records our own fetch time and drifts up to 39.1 days from the row it
+// stamps (ABL-286's audit). See `services/ingestLog.ts` for the whole argument.
+
+/** The streams the dashboard draws, as `INGEST_PIPELINES` maps them. */
+export type IngestStreamKey =
+  | 'load'
+  | 'price'
+  | 'generation'
+  | 'tsoLoadForecast'
+  | 'tsoGenerationForecast'
+  | 'netPosition';
+
+/**
+ * The relationship between the last pass and the last pass that brought rows.
+ * Four distinct claims — see `classifyDelivery` for why none may be collapsed
+ * into another.
+ */
+export type IngestDelivery =
+  | 'flowing'
+  | 'checked_no_data'
+  | 'never_delivered'
+  | 'not_logged';
+
+/** One `pipeline_type`'s two timestamps, before merging into a stream. */
+export interface PipelinePass {
+  pipelineType: string;
+  lastChecked: string | null;
+  lastStoredRows: string | null;
+}
+
+export interface StreamRefresh {
+  /** Newest `end_time` over completed passes. When we last went and looked. */
+  lastChecked: string | null;
+  /**
+   * Newest `end_time` over completed passes that wrote at least one row.
+   *
+   * Never substitute `lastChecked` for this — that is the defect the endpoint
+   * exists to prevent. And do NOT read it as "the data got newer": the ingest
+   * upserts a rolling 7-day window, so a rewrite of a row we already held
+   * counts. AL load has been frozen at `2026-08-06 21:45` since its upstream
+   * stall while still storing hundreds of rows a pass. See
+   * `services/ingestLog.ts`.
+   */
+  lastStoredRows: string | null;
+  delivery: IngestDelivery;
+  /** Which `pipeline_type` rows were folded in, so the answer is auditable. */
+  pipelines: string[];
+}
+
+export interface IngestFreshness {
+  load: StreamRefresh;
+  price: StreamRefresh;
+  generation: StreamRefresh;
+  tsoLoadForecast: StreamRefresh;
+  tsoGenerationForecast: StreamRefresh;
+  netPosition: StreamRefresh;
+  /**
+   * The earliest pass anywhere in the log. `not_logged` means "the log cannot
+   * answer", and without this a reader cannot tell that from "never ran" —
+   * the log itself only starts 2025-12-23. `null` if the log is empty.
+   */
+  logStartsAt: string | null;
+}
