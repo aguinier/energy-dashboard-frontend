@@ -422,22 +422,73 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `0.0` needs no calibration to be disprovable while any cutoff above it is a
     number nobody has justified. That grey zone is deliberately still served.
 
-  `measuredLoadClause()` is applied at every `energy_load` read site —
-  `loadService.ts` (5), `dashboardService.ts` (4: current load, peak demand,
-  the map choropleth, the timeseries daily average) and
-  `dataFreshnessService.ts` (1). That last one was the hole, closed by ABL-60:
-  the freshness endpoint dated the *pipeline's health* from a raw
-  `MAX(timestamp_utc)`, so a placeholder could certify the ingest as current.
-  Measured on the replica 2026-08-07, SI's raw MAX was `2026-08-07 00:15` with
-  `load_mw = 0` against a guarded MAX of `00:00`. `loadActualGuard()` covers
-  the accuracy joins, which are generic over forecast type and so must apply it
-  **only** to `load`: a `0.0` is ordinary for solar overnight, for still wind,
-  and for a zero-clearing price, and a blanket `> 0` there would delete real
-  measurements and bias every renewable metric upward. That path was affected
-  too — joining the 543 rows to the forecast tables, ES 104 and SI 8 pair with a
-  stored ML load forecast and MK 72 / ES 46 / ME 25 / PL 25 / MD 9 / AL 4 / NL 2
-  / RS 1 / SI 1 pair with a TSO one, each scoring a 100% error against a number
-  nobody took, with SI's and MK's inside the default 30-day window.
+  Every `energy_load` read site in `server/src` applies one of the two
+  helpers, with a single documented exception. The enumeration was wrong twice
+  before — it claimed completeness while a hole was open, both times — so it is
+  written here as counted read sites, verifiable with
+  `grep -rn "FROM energy_load\b" server/src`:
+
+  | module | `energy_load` reads | helper |
+  |---|---:|---|
+  | `loadService.ts:21` `:38` `:57` `:75` `:86` `:111` `:146` | 7 | `measuredLoadClause()` |
+  | `dashboardService.ts:78` `:100` `:177` `:300` | 4 | `measuredLoadClause()` |
+  | `tsoForecastService.ts:199` `:239` | 2 | `measuredLoadClause()` |
+  | `countryService.ts:51` | 1 | `measuredLoadClause()` |
+  | `dataFreshnessService.ts:35` | 1 | `measuredLoadClause()` |
+  | `crossCountryMetricsService.ts:140-150` | 4 aliases | `loadActualGuard()` ×3 |
+  | `mlForecastService.ts:235` `:279` | 2 | `loadActualGuard()` |
+  | `forecastService.ts:251` | 1 | `loadActualGuard()` |
+  | `countryService.ts:114` | 1 | **none, deliberately** |
+
+  `dashboardService.ts`'s four are current load, peak demand, the map
+  choropleth and the timeseries daily average.
+  `crossCountryMetricsService.ts` joins the table under four aliases and needs
+  only three guards: `s`/`s2` are guarded in their join clauses and the
+  `a`/`a2` pair is guarded once in the `WHERE`, through the `COALESCE` that
+  merges them (`crossCountryMetricsService.ts:117,156`).
+
+  The unguarded one is `getCountriesWithData` — a `SELECT DISTINCT` over a
+  three-table `UNION` that answers *is this code worth offering in a picker*,
+  not *what did we measure*. It returns no value a chart can render, and
+  guarding only its load leg would make the `UNION` incoherent, since
+  `energy_renewable`'s zeros are genuinely ambiguous (see the "Known gap"
+  below) and a zero-clearing `energy_price` hour is a real measurement. It also
+  changes nothing: every one of the 11 countries carrying placeholder zeros
+  holds tens of thousands of genuine rows beside them.
+
+  **Two sites have been the hole, and both were `MAX(timestamp_utc)`.**
+  `dataFreshnessService.ts` (ABL-60) dated the *pipeline's health* from a raw
+  `MAX`, so a placeholder could certify the ingest as current — measured on the
+  replica 2026-08-07, SI's raw MAX was `2026-08-07 00:15` with `load_mw = 0`
+  against a guarded MAX of `00:00`. `countryService.ts`'s `getCountrySummary`
+  (ABL-262) was the same defect one endpoint over: `/api/countries/:code/summary`
+  dated its `to` from a raw `MAX` and sized `records` from a raw `COUNT`, so it
+  reported coverage through hours holding a `0.0`. Both aggregates are guarded
+  now, together rather than separately — `records` gates whether the block
+  renders at all, so counting placeholders would let a country whose every
+  stored load row is a placeholder report a confident span we never measured.
+
+  `loadActualGuard()` covers the accuracy joins and the comparison endpoint,
+  which are generic over forecast type and so must apply the rule **only** to
+  `load`: a `0.0` is ordinary for solar overnight, for still wind, and for a
+  zero-clearing price, and a blanket `> 0` there would delete real measurements
+  and bias every renewable metric upward. That path was affected too — joining
+  the 543 rows to the forecast tables, ES 104 and SI 8 pair with a stored ML
+  load forecast and MK 72 / ES 46 / ME 25 / PL 25 / MD 9 / AL 4 / NL 2 / RS 1 /
+  SI 1 pair with a TSO one, each scoring a 100% error against a number nobody
+  took, with SI's and MK's inside the default 30-day window.
+
+  `forecastService.ts`'s `getForecastWithActuals` — behind
+  `GET /api/forecasts/compare` — was the last unguarded read, closed by
+  ABL-262. It served the placeholders straight through as actuals: measured
+  read-only against prod 2026-08-12, `?country=MK&type=load` over
+  2026-08-01..03 returned 24 actuals of which all 24 were exactly `0` MW,
+  against MK's 543-717 MW daily peak (ES 33 zeros of 193, BA 3 of 25, RO 3 of
+  97). Nothing rendered it — `useLoadChartData.ts` fetches it on every Load tab
+  render and re-exports it as `comparisonData`, but no component reads that yet
+  — so this was a live public endpoint one binding away from a chart, not a
+  visible regression. Note the query params are `start`/`end`; `startDate`/
+  `endDate` are silently ignored and the route falls back to the last 7 days.
 
   Known gap, filed separately: `energy_renewable` has the same signature and is
   **not** guarded, because there the rule is genuinely ambiguous — AT is exactly
@@ -1969,6 +2020,18 @@ immediately before this change: 534 client tests / 42 files — already above
 the 488/39 this entry had recorded, for the same never-fully-reconciled-merges
 reason the ABL-214 note below names; this entry reconciles only against
 ABL-221's own delta, landing at 520/41, not the whole gap.
+
+ABL-262 (the `/api/forecasts/compare` load guard) added one server file
+(`routes/countries.test.ts`, 6 cases) and extended `routes/forecast.test.ts`
+by 5, for **+11 server tests / +1 server file**. The headline figure above is
+deliberately *not* restated from that run's measurement: the shared checkout
+held three runs' uncommitted work at the time (ABL-238's ops-status page,
+ABL-244's backfill guard — which also drops in a `server/vitest.config.ts`
+broadening discovery to `../scripts/**/*.test.ts` — and this one), so the
+543/38 it measured in `server/src` is not attributable to any single merge.
+Prefer a stated delta over an absolute measured on a contaminated tree; if you
+see a server figure far above 492/34, that is the backlog of unreconciled
+merges this section already documents, not a regression.
 
 ABL-237 (the `/api/ops/status` KPI endpoint, merged separately) added three
 server files — `services/hostMetrics.test.ts`, `services/freshnessRollup.test.ts`,
