@@ -36,7 +36,10 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
  *   measured 0.0 while `wind_onshore_mw` is NULL: zero and unknown side by side
  *   in one row, which must stay distinguishable on the wire.
  * - `BE` — negative day-ahead prices, and a window whose solar actuals are all a
- *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null.
+ *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null. Also the
+ *   only country with a `wind_offshore` forecast, against DE which has none
+ *   (ABL-319) — the pair that pins serving as data-driven rather than
+ *   country-gated.
  * - `PT` — rows exist but every generation column is NULL (a country reporting
  *   nothing). Must read as "no data", never 0%. On the day after WINDOW it also
  *   carries MK's and SI's live `energy_load` shape: impossible exact-`0.0`
@@ -491,6 +494,28 @@ function seed(db: DatabaseType): void {
   // null and WAPE is null — never a flawless 0%.
   HOURS.forEach((h) =>
     forecast.run('BE', 'solar', atT(h), GENERATED_AT, 12, 5, 'catboost', 'v1')
+  );
+
+  // BE wind_offshore, xgboost — the SERVED half of the ABL-319 natural
+  // experiment, and the only country here that has an offshore model at all.
+  //
+  // Its partner case is DE, which has offshore *generation* but no
+  // `wind_offshore` forecast row anywhere in this database — deliberately not
+  // written, because that absence IS the fixture. Measured on the replica
+  // 2026-08-12, that is production exactly: `wind_offshore` forecasts exist for
+  // BE (33,024 rows) and FR (32,664) and no one else, while DE reports 662-701
+  // MW of real offshore generation every hour. DE has a `models/DE/wind_offshore`
+  // directory, but no promoted top-level `model.joblib` in it, so
+  // `Forecaster.load` raises FileNotFoundError and `forecast_daily.py` counts
+  // the pair as skipped rather than writing rows.
+  //
+  // Nothing on the serving side knows any of that, and the pair pins it: the
+  // country that has rows serves, the country that does not degrades to an
+  // empty series rather than erroring or drawing a zero line. When ABL-316
+  // trains ~40 new per-country generation models, this is the behaviour that
+  // has to make them appear without a code change.
+  HOURS.forEach((h, i) =>
+    forecast.run('BE', 'wind_offshore', atT(h), GENERATED_AT, 12, 700 + i * 10, 'xgboost', 'v1')
   );
 
   // FR hydro_total and renewable, catboost. These are the two forecast types
