@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { AbleCard } from './AbleCard';
 import { ForecastGapNotice } from './ForecastGapNotice';
+import { ForecastVintageNote } from './ForecastVintageNote';
 import { AbleLineChart } from '@/components/charts/AbleLineChart';
 import { AblePriceHeatmap } from '@/components/charts/AblePriceHeatmap';
 import { useLoadChartData } from '@/hooks/useLoadChartData';
@@ -138,15 +139,23 @@ function LoadDefaultView({
             Loading…
           </div>
         ) : (
-          <AbleLineChart
-            series={series}
-            nowIndex={nowIndex}
-            height={300}
-            formatAxis={formatGwAxis}
-            formatTooltip={formatMwOrGw}
-            preset={timePreset}
-            label="Electricity load"
-          />
+          <>
+            <AbleLineChart
+              series={series}
+              nowIndex={nowIndex}
+              height={300}
+              formatAxis={formatGwAxis}
+              formatTooltip={formatMwOrGw}
+              preset={timePreset}
+              label="Electricity load"
+            />
+            {/* Same expression the chart was built from, so the note is on
+                screen exactly when the dashed ML line is (ABL-285). */}
+            <ForecastVintageNote
+              points={useMl ? forecastData : undefined}
+              chartWindow={todayWindow}
+            />
+          </>
         )}
       </AbleCard>
 
