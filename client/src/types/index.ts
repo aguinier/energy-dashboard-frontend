@@ -414,6 +414,20 @@ export interface ProcessMetrics {
   };
 }
 
+/**
+ * One interface's counters and derived rates (ABL-290). The `BytesPerSec` pair
+ * is `null` until the server has two samples to difference, and again whenever
+ * a counter resets under it — never a fabricated rate.
+ */
+export interface NetworkInterfaceThroughput {
+  name: string;
+  rxBytes: number;
+  txBytes: number;
+  rxBytesPerSec: number | null;
+  txBytesPerSec: number | null;
+  sampleWindowMs: number | null;
+}
+
 /** Fleet-wide worst-case rollup over every country's `DataFreshness` — see `freshnessRollup.ts`. */
 export interface FreshnessRollup {
   status: FreshnessStatus;
@@ -430,6 +444,12 @@ export interface OpsStatus {
     platform: string;
     disk: DiskUsage | null;
     cpuLoad: CpuLoad | null;
+    /**
+     * `null` on a platform with no counters to read; **absent** when the peer
+     * runs a build older than ABL-290. The two are rendered differently and
+     * neither is zero — see `lib/networkRows.ts`.
+     */
+    network?: NetworkInterfaceThroughput[] | null;
   };
   process: ProcessMetrics;
   freshness: FreshnessRollup;
@@ -446,12 +466,111 @@ export interface SyncBlackoutStatus {
   label: string | null;
 }
 
+/**
+ * The server's warn/error verdict for one KPI (ABL-292).
+ *
+ * This union used to be the client's own `lib/opsStatusThresholds.ts`, which
+ * also owned `DISK_WARN_RATIO`/`DISK_ERROR_RATIO`. The thresholds now live in
+ * `server/src/lib/opsStatusThresholds.ts` — a scheduled alert job (ABL-287)
+ * cannot import browser code, and two copies of a threshold is how a page
+ * reads "fine" while a pager reads "critical". Only the type is mirrored here,
+ * the same way every other type in this block mirrors a server response;
+ * nothing on the client decides where a threshold sits any more.
+ */
+export type ThresholdState = 'ok' | 'warn' | 'error' | 'unknown';
+
+/** Per-KPI verdicts for one lane, plus the worst-wins roll-up the badge renders. */
+export interface OpsSideDerived {
+  environment: ThresholdState;
+  disk: ThresholdState;
+  freshness: ThresholdState;
+}
+
 export interface CombinedOpsStatus {
   timestamp: string;
   local: OpsSideStatus;
   peer: OpsSideStatus;
   peerConfigured: boolean;
   syncBlackout: SyncBlackoutStatus;
+  /** Server-derived state for both lanes (ABL-292) — see `ThresholdState`. */
+  derived: {
+    local: OpsSideDerived;
+    peer: OpsSideDerived;
+  };
+}
+
+// ----------------------------------------------------------------------------
+// Ops status history (ABL-288)
+// ----------------------------------------------------------------------------
+// Mirrors server/src/services/opsSnapshot.ts, opsHistoryService.ts and
+// lib/diskHeadroom.ts. Snapshots of the combined reading, stored on a timer,
+// so the page can show a trend and a disk projection rather than only "now".
+
+/**
+ * One side of one stored reading. Every metric is `| null`, and `null` means
+ * that reading did not contain it — the side was unreachable, or the host
+ * could not measure it. It never means zero.
+ */
+export interface OpsSideSnapshot {
+  reachable: boolean;
+  latencyMs: number | null;
+  diskUsedBytes: number | null;
+  diskTotalBytes: number | null;
+  rssBytes: number | null;
+  uptimeSeconds: number | null;
+  freshnessStatus: FreshnessStatus | null;
+  staleCountryCount: number | null;
+  commit: string | null;
+}
+
+export interface OpsSnapshot {
+  /** ISO-8601 UTC instant the reading was taken. */
+  t: string;
+  local: OpsSideSnapshot;
+  peer: OpsSideSnapshot;
+}
+
+/** Why a headroom projection is absent — the page states this rather than showing a number. */
+export type DiskHeadroomReason =
+  | 'ok'
+  | 'no_readings'
+  | 'insufficient_history'
+  | 'insufficient_span'
+  | 'not_rising'
+  | 'noisy_fit'
+  | 'already_breached'
+  | 'beyond_horizon';
+
+export interface DiskHeadroomBasis {
+  points: number;
+  spanHours: number;
+  slopePercentPerDay: number;
+  r2: number;
+  currentPercent: number;
+}
+
+export interface DiskHeadroom {
+  thresholdPercent: number;
+  /** Days until the threshold is crossed, or `null` — see `reason`. */
+  days: number | null;
+  reason: DiskHeadroomReason;
+  basis: DiskHeadroomBasis | null;
+}
+
+export interface OpsStatusHistory {
+  timestamp: string;
+  /** Hours actually served — the request's `hours` clamped to retention. */
+  windowHours: number;
+  snapshots: OpsSnapshot[];
+  headroom: { local: DiskHeadroom; peer: DiskHeadroom };
+  storage: {
+    captureEnabled: boolean;
+    intervalMinutes: number;
+    retentionDays: number;
+    storedSnapshots: number;
+    skippedLines: number;
+    error: string | null;
+  };
 }
 
 // ============================================================================

@@ -48,6 +48,22 @@ export function formatPercentage(value: number | null | undefined): string {
   return `${value.toFixed(1)}%`;
 }
 
+/**
+ * Byte sizes for the ops status page. Moved here from `OpsStatusView` when
+ * ABL-290 gave it a second caller (`networkRows.ts`) — one shared unit ladder
+ * rather than two that can drift apart.
+ *
+ * The `exp` floor at 0 matters for that new caller: byte *rates* are
+ * fractional, and `Math.log(0.4) / Math.log(1024)` is negative, which without
+ * the clamp indexes past the front of `units` and renders "409.6 undefined".
+ */
+export function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const exp = Math.min(Math.max(Math.floor(Math.log(bytes) / Math.log(1024)), 0), units.length - 1);
+  return `${(bytes / 1024 ** exp).toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
+}
+
 export function formatDate(dateString: string | null | undefined, formatStr: string = 'MMM d, yyyy'): string {
   if (!dateString) return '-';
   try {

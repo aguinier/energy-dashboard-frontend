@@ -62,12 +62,13 @@ energy-dashboard-frontend/
 │       │   │   ├── ForecastGapNotice.tsx # multi-select "<model> has no forecast here" + remove-from-comparison button
 │       │   │   ├── TimePicker.tsx        # categorised presets + window nav
 │       │   │   ├── CountryBreadcrumb.tsx, SourceTable.tsx, ApiCta.tsx
-│       │   │   ├── ForecastMetadataBadge.tsx  # ORPHANED — no importer (see State management)
+│       │   │   ├── ForecastVintageNote.tsx # "when was this forecast generated, by which
+│       │   │   │                         #   model" footnote under the ML line (Load/Price/Wind)
 │       │   │   ├── ModelComparisonPanel.tsx    # "Compare forecast models" table (ForecastTab)
 │       │   │   ├── generationSeries.ts   # The nine A75 families: grouping, palette,
 │       │   │   │                         #   stack order, series builder (GenerationTab)
-│       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts, modelComparison.ts
-│       │   │                                   # Pure helpers (each has a .test.ts)
+│       │   │   └── horizonBars.ts, sourceRows.ts, windowLabel.ts, modelComparison.ts,
+│       │   │       forecastVintage.ts          # Pure helpers (each has a .test.ts)
 │       │   ├── comparison/           # ComparisonView's heatmap/map/leaderboard/filter bar
 │       │   │   └── accuracyScale.ts, leaderboardRows.ts, mapFill.ts
 │       │   │                                   # Pure helpers (each has a .test.ts)
@@ -115,17 +116,22 @@ energy-dashboard-frontend/
         │   ├── coreNetPosition.ts     # Minimal, provisional read for the JAO Core
         │   │                          #   net position archive (ABL-230)
         │   ├── dataFreshness.ts, countries.ts, weather.ts
-        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined (ABL-237, ABL-238)
+        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined, /ops/status/history
+        │   │                          #   (ABL-237, ABL-238; `derived` warn/error verdicts
+        │   │                          #   added by ABL-292, history by ABL-288)
         ├── services/                  # One service module per route group
         │   ├── freshness.ts           # Pure: is a stream live / stale / never held
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
         │   ├── degenerateForecast.ts  # Pure: collapsed-to-zero net position
         │   ├── freshnessRollup.ts     # Pure: fleet-wide worst-case freshness verdict
-        │   ├── hostMetrics.ts         # Pure: disk/CPU readings, null when unmeasurable
+        │   ├── hostMetrics.ts         # Pure: disk/CPU/network readings, null when unmeasurable
         │   ├── forecastVintageArchiveService.ts, forecastVintageArchiveScheduler.ts
         │   │                          # Append-only forecast-vintage capture (ABL-184)
         │   ├── peerOpsStatus.ts       # Fetches the peer environment's /api/ops/status (OPS_PEER_URL)
         │   ├── combinedOpsStatusService.ts  # Merges local + peer for the ABL-238 status page
+        │   ├── opsSnapshot.ts, opsSnapshotStore.ts, opsSnapshotScheduler.ts,
+        │   │   opsHistoryService.ts   # Append-only JSONL ops-status snapshots (ABL-288) —
+        │   │                          #   a file next to the DB, never a table in it
         │   └── coreNetPositionService.ts, jaoCoreNetPositionCapture.ts,
         │       coreNetPositionScheduler.ts
         │                              # JAO Core CCR net position capture (ABL-230) —
@@ -134,7 +140,10 @@ energy-dashboard-frontend/
         │                              #   captureCoreNetPositionWorker.ts — each
         │                              #   scheduler's writable-connection thread
         ├── lib/
-        │   └── syncBlackoutWindow.ts  # Pure: is `now` inside the ABL-220 DB-sync lock window
+        │   ├── syncBlackoutWindow.ts  # Pure: is `now` inside the ABL-220 DB-sync lock window
+        │   └── opsStatusThresholds.ts # Pure: the ONLY home of the ops warn/error
+        │                              #   thresholds — client and alert engine both
+        │                              #   consume the verdict, never the cutoff (ABL-292)
         ├── config/
         │   ├── database.ts            # SQLite connection (ENERGY_DB_PATH)
         │   ├── writeDatabase.ts       # Separate writable handle, opened lazily —
@@ -289,6 +298,19 @@ Omitting `model` leaves every one of these exactly as it was: unpinned, the
 latest run per target timestamp whichever model produced it. `meta.model` is
 then `null` — it does **not** name the production model, because the unpinned
 query really is model-agnostic.
+
+**"These" means the accuracy endpoints above — not `/forecasts`.** This has
+already been misread once (ABL-285 was filed on the premise that a `/forecasts`
+batch can mix models), so state it plainly: `getForecastData` walks the
+candidate ladder and **returns the first candidate that has rows**
+(`forecastService.ts:32-37`), and `queryForecasts` always applies
+`AND model_name = ?` (`:52`). One `/forecasts` response therefore carries
+**exactly one `model_name`**, pinned or not. What it *can* mix, because neither
+is pinned, is `model_version` and `generated_at` — the hourly branch takes
+`MAX(generated_at)` per target timestamp (`:80-88`), so one window spans as
+many runs as it has distinct target hours. The daily/weekly branch selects no
+`model_name`/`model_version` at all and averages `horizon_hours` (`:98-113`),
+so those columns are absent rather than wrong there.
 
 Because coverage is disjoint, "this model has no rows for this country" is a
 normal answer. `meta.coverage` on `/ml-accuracy` distinguishes `served` /
@@ -1166,8 +1188,8 @@ Adding a preset means touching six places. All six now fail loudly:
   (`store/migrate.ts:25`), whose keys `VALID_TIME_PRESETS` derives from.
 - A `const unhandled: never = preset` in the `default` branch, so the new value
   is reported as not assignable to `never`: `getDateRangeForPreset`
-  (`useDashboardData.ts:117`) and `getGranularityForPreset`
-  (`useDashboardData.ts:158`).
+  (`useDashboardData.ts:116`) and `getGranularityForPreset`
+  (`useDashboardData.ts:157`).
 - The sixth — giving the preset a **control** — cannot be typed: a preset with
   no button is unreachable, not ill-typed, which is how four of them sat in the
   union until ABL-12. It is a **test** failure instead:
@@ -1285,13 +1307,15 @@ check which group it is in:
   queries (`useLoadChartData.ts:172`, `:213`; `usePriceChartData.ts:133`);
   `selectedMLHorizons` drives the multi-horizon fetch
   (`useLoadChartData.ts:131`, `:177`).
-- **Written, and read only by dead code.** `showForecast`. `setTimePreset`
-  still sets it `true` for future presets (`dashboardStore.ts:150`) and
-  `useLatestForecast` gates its query on it (`useDashboardData.ts:240`, `:249`)
-  — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
-  nothing, so it has no on-screen effect today.
-- **No reader at all.** `showTSOForecast`, `tsoForecastType`,
+- **No reader at all.** `showForecast`, `showTSOForecast`, `tsoForecastType`,
   `visibleRenewableTypes`, `sidebarOpen`, `comparisonCountries`.
+  `showForecast` is still *written* — `setTimePreset` sets it `true` for future
+  presets (`dashboardStore.ts:150`) — but ABL-285 deleted its last reader:
+  `useLatestForecast` gated its query on it, `ForecastMetadataBadge.tsx` was
+  that hook's only consumer and was imported by nothing, so the hook, its
+  `fetchLatestForecast` client and the badge all went in one diff. The
+  `GET /api/forecasts/latest` **route is untouched and still live** — only the
+  client's dead call path is gone.
 
 Careful with the name `showForecast`: `useLoadChartData`/`usePriceChartData`
 declare *local* consts of that name derived from the picker
@@ -1563,6 +1587,29 @@ reads `none` rather than throwing. It also reports host/process KPIs
 acceptance host, no extra dependency), process memory/uptime, and CPU load —
 `null` on Windows rather than `os.loadavg()`'s fabricated `[0, 0, 0]`, per this
 file's own rule that a metric we cannot measure is `null`, never invented.
+
+**Per-interface network throughput (ABL-290) is the one KPI whose value needs
+two readings**, and it carries four distinct absences that must not collapse
+into one. `getNetworkThroughput` (`hostMetrics.ts:227`) parses `/proc/net/dev`
+— Linux-only, so the Windows acceptance host gets `null`, the same honest gap
+`cpuLoad` reports — and banks each read in process-lifetime state, so the ops
+page's poll supplies the second sample. Cumulative `rxBytes`/`txBytes` are real
+from the first call; the derived `rxBytesPerSec`/`txBytesPerSec` are `null`
+until there is a window to divide by, and `null` again whenever a counter goes
+backwards (interface bounce, container restart, 32-bit wrap) — the bytes
+actually moved are then unknowable, and a wrap-correction would invent an
+enormous one. The clock is `performance.now()`, deliberately not `Date.now()`:
+an NTP step between two samples would otherwise scale every rate on the page.
+Two parsing traps are covered by `hostMetrics.test.ts`: a wide counter abuts
+its colon (`eth0:123456789012`) so the line splits on the first `:` not on
+whitespace, and transmit bytes are field 9, not field 2. Client-side, `network`
+is **optional, not merely nullable** (`client/src/types/index.ts:392`) — a peer on a build
+older than ABL-290 sends no key at all, which `buildNetworkRows`
+(`client/src/lib/networkRows.ts`) renders as "not reported by this build",
+separately from `null` ("not measured on Windows"), `[]` ("no non-loopback
+interfaces"), and a listed interface whose rate is still `—`. A rate under
+1 B/s renders `<1 B/s`, never a rounded-down `0 B/s`; an exact zero is a
+measured zero and does read `0 B/s`.
 Provenance (`commit`/`runtime`/`db_path`) is `getHealthProvenance()` verbatim,
 the same values `/api/health` (`routes/index.ts:50`) reports — `/health`'s own
 response contract is unchanged. Unlike `/health`, this endpoint touches the
@@ -1678,6 +1725,94 @@ zone (`DK1`/`DK2`) where every ENTSO-E pipeline uses plain `DK`. A `failed`
 status is producible by the writer
 (`../energy-data-gathering/src/db.py:1192`) but has never occurred — 114,982
 `completed`, 1 `running` — and is counted as neither a check nor a write.
+**The ops warn/error thresholds live in exactly one module:
+`server/src/lib/opsStatusThresholds.ts` (ABL-292).** They started out in
+`client/src/lib/opsStatusThresholds.ts`, which meant the only thing in the
+system that could turn a KPI into a verdict was a browser — and ABL-287's
+alert engine is a scheduled server-side job. `/api/ops/status/combined` now
+returns a `derived` key alongside the raw numbers:
+`{ local: { environment, disk, freshness }, peer: { … } }`, each a
+`'ok' | 'warn' | 'error' | 'unknown'`. `deriveSideState` runs off whatever the
+endpoint reports for each side, so both lanes are covered by construction —
+prod's `peer` is acceptance and acceptance's `peer` is prod. Disk is
+`DISK_WARN_RATIO` = 0.75 (`server/src/lib/opsStatusThresholds.ts:44`) and
+`DISK_ERROR_RATIO` = 0.9 (`:45`); freshness reuses the `freshnessRollup.ts`
+severity ranking, where `stale` is the only alarm.
+The client no longer derives anything — `OpsStatusView.tsx` renders
+`data.derived` and mirrors only the `ThresholdState` union into
+`client/src/types/index.ts`, the same way it mirrors every other server
+response type. **Do not reintroduce a client-side copy of a threshold**: two
+copies that drift is how a page reads "fine" while a pager reads "critical",
+and there is no second place left to change one.
+
+Two rules this endpoint holds to, both load-bearing:
+
+- **`derived` is additive.** `local`, `peer`, `peerConfigured`, `syncBlackout`
+  and `timestamp` keep the exact ABL-238 shape, and the verdict is a sibling
+  key rather than a field grafted into either side — `SideStatus` stays the one
+  type `peerOpsStatus.ts` can build straight from a peer's raw
+  `/api/ops/status`, which is why that single-side endpoint has **no** `derived`
+  key of its own. `routes/opsStatus.test.ts` pins the full top-level key set on
+  both endpoints; that test failing is the intended alarm for a reshape.
+- **An unreachable side reports `'unknown'` per KPI, not `'error'`.** We did not
+  measure its disk at 100% — we did not measure it at all, and an alert rule
+  keyed on `disk === 'error'` must not fire on a peer that merely timed out.
+  Unreachability is expressed in `environment`, which is also the field that
+  carries the ABL-220 blackout downgrade (`error` -> `warn` inside the window).
+  Anything asserting on `environment` for an unreachable side must read
+  `syncBlackout.active` rather than assume `error`, or it fails twice a day.
+
+**`GET /api/ops/status/history` (ABL-288) is the trend half of that page**, and
+it is the one ops route that does **not** touch the database. A scheduler
+(`startOpsSnapshotScheduler`, `server/src/services/opsSnapshotScheduler.ts:114`)
+records a narrow projection of the combined reading — `toOpsSnapshot`
+(`server/src/services/opsSnapshot.ts:67`) keeps disk/RSS/uptime/freshness and
+drops the stale-country list and per-stream counts — into an append-only JSONL
+file every `OPS_SNAPSHOT_INTERVAL_MINUTES` (default 15), kept
+`OPS_SNAPSHOT_RETENTION_DAYS` (default 14). **It is a file, not a table**: the
+shared SQLite database belongs to `energy-data-gathering` and adding a table to
+it is out of bounds, and the deployed Windows acceptance host cannot open a WAL
+connection on its bind-mounted filesystem at all, while a plain append to that
+same mount works. The default path sits next to the database
+(`resolveSnapshotConfig`, `server/src/services/opsSnapshotStore.ts:68`) — so
+**deploying this makes a new `ops-status-snapshots.jsonl` appear in `/data`**,
+alongside the database, never inside it. Unlike the two DB-writing schedulers
+this one is **on by default**: it writes only its own file, and a trend that
+needs a deploy-time flag flipped before it starts accumulating is a trend
+nobody has when they first need it. `OPS_SNAPSHOT_ENABLED=false` turns capture
+off; reads are still served.
+
+The `days` figure is a **projection, not a measurement**, and
+`computeDiskHeadroom` (`server/src/lib/diskHeadroom.ts:142`) is written to
+refuse far more often than it answers — a least-squares fit of used-percent
+against time that returns `days: null` with a machine-readable `reason` for
+seven distinct refusals: fewer than four readings, a span under 12 hours, a
+flat or falling disk (`not_rising` — not "never", not a huge number), R² under
+0.5 (`noisy_fit`), already at the threshold (`already_breached` — the alarm is
+the current reading, not a countdown), and a crossing past a year
+(`beyond_horizon`, because extrapolating years from days of history is
+fabrication with a decimal point on it). It projects off the last **measured**
+percent, never the fitted value at that instant. `basis` (readings, span,
+slope, R², current percent) is returned even for the refusals, and the page
+renders it, so a projection built on 42 readings with R²=0.97 and a refusal
+built on three readings are told apart by the reader rather than trusted.
+`DISK_THRESHOLD_PERCENT` (`server/src/lib/diskHeadroom.ts:77`) is not a number
+of its own — it is `DISK_ERROR_RATIO * 100`, imported from the single
+thresholds module above. The countdown and the badge cannot drift because
+there is only one constant to change; were it mirrored, the page would say a
+disk is fine and that it crosses "full" tomorrow.
+
+Every one of those refusals is a *sentence*, not a blank cell: `describeHeadroom`
+(`client/src/lib/opsHistorySeries.ts:74`) maps all eight reasons to prose, and
+`describeStorage` (`:126`) separates "capture is switched off" from "nothing
+captured yet" from "the store could not be read" — three states that all render
+as an empty chart and have three different fixes. A side that was unreachable,
+or reported no disk, is a **hole in the line, never a zero**: `diskSeries`
+(`:39`) emits `null` and the chart splits its stroke with `drawableRuns`, the
+same rule the forecast lines follow. `hours` is clamped to what is actually
+retained and the served window echoed back as `windowHours`, so a client asking
+for 90 days of a 14-day file is told it got 14 rather than handed 14 days
+labelled 90.
 
 ## Generation data
 
@@ -2195,35 +2330,103 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12: **46 client test files / 599 tests** and **45 server
-test files / 646 tests**, all passing, clean typecheck. Fewer tests passing
+Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
+ABL-288 + ABL-295): **48 client test files / 640 tests** and **51 server test
+files / 761 tests**, all passing, clean typecheck on both. Fewer tests passing
 than that means something broke.
 
-**Run them under nvm4w Node 24.18.0, not the `C:\Program Files\nodejs` install.**
-Measured on the ABL-295 worktree: under Node 24.18.0 both suites are fully
-green as stated above. The `storage.setItem is not a function` failures that
-earlier entries here describe as a "pre-existing sandbox quirk" affecting ~20
-client tests (`dashboardStore.test.ts`/`windowLabel.test.ts`, tracked by
-ABL-263) did **not** reproduce at all on that runtime — they are a symptom of
-the second, shadowing Node install, not of the tests. Do not re-diagnose them
-as a regression, and do not "fix" the tests to accommodate them.
+(ABL-295 added `services/ingestLog.test.ts` (+1 server file / 15 cases) and 11
+more cases in the existing `routes/dataFreshness.test.ts`, plus
+`components/layout/lastRefreshed.test.ts` (+1 client file / 9 cases). Measured
+fresh on the merge, not summed: the branch alone reported 45/646 and 46/599
+before merging `main`, and neither of those figures survives here — which is
+the ABL-234 rule below in action.
 
-(A fresh git worktree has no `node_modules`. `npm install` under npm 11.16
-skips install scripts by default — it prints an `allow-scripts` warning and
-leaves `better-sqlite3` without its native binary and `esbuild` without its
-platform binary, so both suites fail to start. Run each package's script
-directly (`node install.js` in `node_modules/esbuild` and
-`node_modules/vite/node_modules/esbuild`) rather than `npm approve-scripts`,
-which writes an `allowScripts` field into `package.json` and dirties the tree.
-`better-sqlite3@11.10.0`, which the server pins, has no Node 24 prebuild — copy
-`build/Release/better_sqlite3.node` from the primary checkout, which carries a
-working build of the same version.)
+One environment note ABL-295 hit that the NODE_MODULE_VERSION section below
+does not cover: **a fresh git worktree has no `node_modules`, and `npm install`
+under npm 11.16 does not run install scripts.** It prints an `allow-scripts`
+warning and leaves `better-sqlite3` without its native binary and `esbuild`
+without its platform binary, so both suites fail to start before any test runs.
+Run each package's script directly — `node install.js` in `node_modules/esbuild`
+and `node_modules/vite/node_modules/esbuild` — rather than
+`npm approve-scripts`, which writes an `allowScripts` field into `package.json`
+and dirties the tree. `better-sqlite3@11.10.0`, which the server pins, has no
+Node 24 prebuild at all; copy `build/Release/better_sqlite3.node` from the
+primary checkout, which carries a working build of the same version.
 
-The previous figures here were **45 client files / 590 tests** and **44 server
-files / 620 tests**. ABL-295 adds +1 client file / +9 cases
-(`components/layout/lastRefreshed.test.ts`) and +1 server file / +26 cases
-(`services/ingestLog.test.ts`, 15, plus 11 new cases in the existing
-`routes/dataFreshness.test.ts`).
+Also: **`core.autocrlf=true` here, and some committed files carry CRLF in the
+object anyway** — `client/src/types/index.ts` is one. Editing such a file with
+a tool that rewrites it LF-only (`sed -i`) turns a 60-line addition into a
+1,468-line whole-file diff and a guaranteed merge conflict. If `git diff --stat`
+shows a file you barely touched rewritten end to end, that is the cause; restore
+its CRLF and stage with `git -c core.autocrlf=false add <path>`.)
+
+(ABL-285 added `forecastVintage.test.ts`, +1 client file / +20 tests. ABL-292
+then deleted the client's `lib/opsStatusThresholds.*`, -1 file / -15 tests, and
+added `server/src/lib/opsStatusThresholds.test.ts`, +1 server file / +31 tests
+counting the derived-state cases in `services/combinedOpsStatusService.test.ts`
+and `routes/opsStatus.test.ts`. ABL-288 then added +5 server files
+(`lib/diskHeadroom.test.ts`, `services/opsSnapshot.test.ts`,
+`services/opsSnapshotStore.test.ts`, `services/opsSnapshotScheduler.test.ts`,
+`services/opsHistoryService.test.ts`) and +1 client file
+(`lib/opsHistorySeries.test.ts`). The figure above is a fresh run on the merge,
+not those deltas summed — see the ABL-234 note below on why a count is only
+true of the tree it was measured on.)
+
+`src/docs/claudeMdCitations.test.ts` is what keeps the `file:line` references
+in this document honest: it resolves every one of them and fails if a citation
+lands on the wrong line. It caught this merge shifting
+`computeDiskHeadroom` by two lines. If you move code that this file cites,
+that suite tells you before a reader is misled — so run the server suite after
+editing either.
+
+Two measurement notes worth having before you diagnose a "failure":
+
+- **Measure on a clean tree, and only count files you wrote.** A count taken in
+  the primary checkout while another run's untracked files are on disk is
+  inflated by them. This bit twice on 2026-08-12: a 46/610 client figure was
+  recorded here from a tree carrying a concurrent run's in-flight work, and the
+  45/590 figure before it likewise. Run `git status` first; if it is not clean,
+  measure in a worktree instead (`git worktree add`, then junction or install
+  `node_modules`) — that is how ABL-292's numbers were taken.
+- **The `storage.setItem is not a function` failures did not reproduce.**
+  Earlier entries recorded 20 failing in
+  `dashboardStore.test.ts`/`windowLabel.test.ts`; on 2026-08-12 every client
+  test passed in a clean worktree, before and after ABL-292. That quirk is
+  documented as intermittent (ABL-203 below, tracked by ABL-263) — treat it as
+  environmental and re-check on unmodified `main` before attributing it to a
+  branch, exactly as that paragraph says. It is **not** confirmed fixed.
+
+### NODE_MODULE_VERSION mismatch
+
+If `cd server && npx vitest run` fails ~24 files at *import* time with
+
+```
+The module '…/better_sqlite3.node' was compiled against a different Node.js
+version using NODE_MODULE_VERSION 137. This version of Node.js requires
+NODE_MODULE_VERSION 141.
+```
+
+then nothing is broken in the code — the `node` first on your `PATH` is not
+the one `better-sqlite3` was compiled against in this checkout. On the able
+workstation `C:\Program Files\nodejs` (v25.6.1, ABI 141) shadows the nvm
+install, and `node_modules` is built for **v24.18.0** (ABI 137). Run the suite
+with the matching Node rather than rebuilding the native module, which would
+just move the breakage to whoever has the other one first on `PATH`:
+
+```bash
+export PATH="/c/Users/guill/AppData/Local/nvm/v24.18.0:$PATH"
+cd server && npx vitest run   # 45 files / 651 tests
+```
+
+Verified 2026-08-12: the same tree reports `24 failed | 20 passed` under
+v25.6.1 and `45 passed (45)` under v24.18.0. Every failure is the same
+`bindings.js` import error, and none of them names a test assertion — a real
+regression names one. Pure helpers are deliberately insulated from this:
+`services/combinedOpsStatusService.test.ts:17` mocks `config/database.js` out,
+and `lib/opsStatusThresholds.ts` imports only *types* from the DB-touching
+modules (type imports erase at compile time), so both suites run under either
+Node. Prefer that shape for new logic.
 
 (Both figures are a fresh `npx vitest run` on ABL-238 merged with `origin/main`
 at `0871259` — what `main` becomes when this lands — not arithmetic on the two
@@ -2234,7 +2437,8 @@ establishes those 20 as `main`'s rather than this branch's. ABL-238 adds +2
 server files / +16 cases (`services/peerOpsStatus.test.ts`,
 `services/combinedOpsStatusService.test.ts`, and new cases in the existing
 `routes/opsStatus.test.ts`) and +1 client file / +15 cases
-(`lib/opsStatusThresholds.test.ts`).)
+(`lib/opsStatusThresholds.test.ts` — since deleted by ABL-292, which moved that
+derivation and its cases to `server/src/lib/opsStatusThresholds.test.ts`).)
 
 (`main` arrived here already claiming 41/602 while measuring 42/604: ABL-234
 counted correctly, but ABL-266 landed afterwards and
@@ -2317,8 +2521,10 @@ ingest path to wind shadow candidates) added one server file
 (`services/netPositionIngestService.test.ts` +5, `config/forecastModels.test.ts`
 +1). The 492/34 server figure above is measured on this merged tree with a
 Node version matching the compiled `better-sqlite3` native module — see
-"NODE_MODULE_VERSION mismatch" below if `cd server && npx vitest run` throws
-that error instead of running.)
+"NODE_MODULE_VERSION mismatch" above if `cd server && npx vitest run` throws
+that error instead of running. That section pointed at nothing until ABL-292
+wrote it: it was cited here and in
+`services/combinedOpsStatusService.test.ts` for weeks as if it existed.)
 (That server figure predates several since-merged branches already reflected
 in this checkout's history — e.g. ABL-190/ABL-221 — which is why a fresh run
 here shows more than 421/27 even before ABL-214's own tests; this entry was not
