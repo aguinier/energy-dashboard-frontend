@@ -406,12 +406,37 @@ export interface SyncBlackoutStatus {
   label: string | null;
 }
 
+/**
+ * The server's warn/error verdict for one KPI (ABL-292).
+ *
+ * This union used to be the client's own `lib/opsStatusThresholds.ts`, which
+ * also owned `DISK_WARN_RATIO`/`DISK_ERROR_RATIO`. The thresholds now live in
+ * `server/src/lib/opsStatusThresholds.ts` — a scheduled alert job (ABL-287)
+ * cannot import browser code, and two copies of a threshold is how a page
+ * reads "fine" while a pager reads "critical". Only the type is mirrored here,
+ * the same way every other type in this block mirrors a server response;
+ * nothing on the client decides where a threshold sits any more.
+ */
+export type ThresholdState = 'ok' | 'warn' | 'error' | 'unknown';
+
+/** Per-KPI verdicts for one lane, plus the worst-wins roll-up the badge renders. */
+export interface OpsSideDerived {
+  environment: ThresholdState;
+  disk: ThresholdState;
+  freshness: ThresholdState;
+}
+
 export interface CombinedOpsStatus {
   timestamp: string;
   local: OpsSideStatus;
   peer: OpsSideStatus;
   peerConfigured: boolean;
   syncBlackout: SyncBlackoutStatus;
+  /** Server-derived state for both lanes (ABL-292) — see `ThresholdState`. */
+  derived: {
+    local: OpsSideDerived;
+    peer: OpsSideDerived;
+  };
 }
 
 // ============================================================================

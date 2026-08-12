@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { AbleCard } from './AbleCard';
 import { ForecastGapNotice } from './ForecastGapNotice';
+import { ForecastVintageNote } from './ForecastVintageNote';
 import { AbleLineChart } from '@/components/charts/AbleLineChart';
 import { useWindChartData } from '@/hooks/useWindChartData';
 import type { WindModelQuery, WindType } from '@/hooks/useWindChartData';
@@ -138,15 +139,23 @@ function WindDefaultView({
             Loading…
           </div>
         ) : (
-          <AbleLineChart
-            series={series}
-            nowIndex={nowIndex}
-            height={300}
-            formatAxis={formatGwAxis}
-            formatTooltip={formatMwOrGw}
-            preset={timePreset}
-            label={title}
-          />
+          <>
+            <AbleLineChart
+              series={series}
+              nowIndex={nowIndex}
+              height={300}
+              formatAxis={formatGwAxis}
+              formatTooltip={formatMwOrGw}
+              preset={timePreset}
+              label={title}
+            />
+            {/* Same expression the chart was built from, so the note is on
+                screen exactly when the dashed ML line is (ABL-285). */}
+            <ForecastVintageNote
+              points={useMl ? forecastData : undefined}
+              chartWindow={todayWindow}
+            />
+          </>
         )}
       </AbleCard>
     </div>

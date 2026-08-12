@@ -1,6 +1,20 @@
 import { getOpsStatus, type OpsStatus } from './opsStatusService.js';
 import { fetchPeerOpsStatus, type SideStatus } from './peerOpsStatus.js';
 import { checkSyncBlackoutWindow, type BlackoutStatus } from '../lib/syncBlackoutWindow.js';
+import { deriveSideState, type OpsSideDerived } from '../lib/opsStatusThresholds.js';
+
+/**
+ * The warn/error verdicts for both lanes (ABL-292). Strictly additive to this
+ * payload: `local`, `peer`, `peerConfigured` and `syncBlackout` keep the exact
+ * shape ABL-238's deployed `/ops-status` page reads, and the verdict lands in a
+ * new sibling key rather than being grafted into either side — anything still
+ * on the old shape sees no difference, and `SideStatus` stays the one type
+ * `peerOpsStatus.ts` can build straight from a peer's `/api/ops/status`.
+ */
+export interface CombinedOpsStatusDerived {
+  local: OpsSideDerived;
+  peer: OpsSideDerived;
+}
 
 export interface CombinedOpsStatus {
   timestamp: string;
@@ -17,6 +31,15 @@ export interface CombinedOpsStatus {
    * `syncBlackoutWindow.ts`.
    */
   syncBlackout: BlackoutStatus;
+  /**
+   * Per-KPI and overall warn/error state for each lane, derived server-side
+   * (ABL-292) so the alert engine (ABL-287) and the trend view (ABL-288) read
+   * the same verdict the `/ops-status` page renders, against one copy of the
+   * thresholds (`lib/opsStatusThresholds.ts`). Both lanes are covered by
+   * construction: the derivation runs off whatever this endpoint reports for
+   * each side, and the local side is the peer side on the other environment.
+   */
+  derived: CombinedOpsStatusDerived;
 }
 
 /**
@@ -70,11 +93,17 @@ export async function getCombinedOpsStatus(
     fetchPeer(peerUrl),
   ]);
 
+  const syncBlackout = checkSyncBlackoutWindow(now);
+
   return {
     timestamp: now.toISOString(),
     local,
     peer,
     peerConfigured: Boolean(peerUrl),
-    syncBlackout: checkSyncBlackoutWindow(now),
+    syncBlackout,
+    derived: {
+      local: deriveSideState(local, syncBlackout.active),
+      peer: deriveSideState(peer, syncBlackout.active),
+    },
   };
 }

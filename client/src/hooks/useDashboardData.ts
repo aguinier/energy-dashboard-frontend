@@ -3,7 +3,6 @@ import {
   fetchMapData,
   fetchGenerationMix,
   fetchGenerationSeries,
-  fetchLatestForecast,
   fetchDataFreshness,
   fetchForecastComparisonSummary,
   fetchCrossCountryMetrics,
@@ -11,7 +10,7 @@ import {
 import { useDashboardStore } from '@/store/dashboardStore';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { getTodayBrussels, getNextDayBrussels } from '@/lib/timezone';
-import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType } from '@/types';
+import type { TimePreset, TimeAnchor, Granularity, MetricType } from '@/types';
 
 // ============================================================================
 // New time navigation functions
@@ -232,20 +231,6 @@ export function useGenerationSeries() {
         end: end.toISOString(),
         granularity,
       }),
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
-export function useLatestForecast(forecastType?: ForecastType) {
-  const { selectedCountry, showForecast } = useDashboardStore();
-
-  return useQuery({
-    queryKey: ['forecast', 'latest', selectedCountry, forecastType],
-    queryFn: () => fetchLatestForecast({
-      country: selectedCountry,
-      type: forecastType,
-    }),
-    enabled: showForecast,
     staleTime: REFRESH_INTERVALS.dashboard,
   });
 }
