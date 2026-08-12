@@ -2565,9 +2565,12 @@ Two measurement notes worth having before you diagnose a "failure":
   `node_modules`) — that is how ABL-292's numbers were taken.
 - **The `storage.setItem is not a function` failures are not intermittent —
   they are the Node version on your `PATH`, deterministically** (ABL-311).
-  Earlier entries recorded 20 failures in
+  Earlier entries here recorded 20 failures in
   `dashboardStore.test.ts`/`windowLabel.test.ts`, then recorded them as having
-  "not reproduced", and ABL-263 tracked the quirk as flaky. It is not flaky.
+  "not reproduced", and called the quirk intermittent. It is not intermittent —
+  and the drift was in *this document*: **ABL-263 had already root-caused it
+  exactly**, down to the `--localstorage-file` warning, and is open with that
+  diagnosis. Do not re-investigate it; read that issue.
   **Node v25.6.1 defines a global `localStorage` object whose `setItem` is
   `undefined`** unless `--localstorage-file` is passed; the store's
   `createJSONStorage(() => localStorage)` gets that truthy-but-hollow object and
