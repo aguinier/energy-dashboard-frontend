@@ -165,7 +165,15 @@ describe('GET /api/ops/status/combined', () => {
     const { body } = await api.get('ops/status/combined');
     const derived = (body.data as any).derived;
 
-    expect(Object.keys(derived).sort()).toEqual(['local', 'peer']);
+    // `commitDrift` joined the per-side verdicts under ABL-287 — it is a
+    // cross-lane comparison, so it sits beside `local`/`peer` rather than
+    // inside either.
+    expect(Object.keys(derived).sort()).toEqual(['commitDrift', 'local', 'peer']);
+    expect(['ok', 'warn', 'error', 'unknown']).toContain(derived.commitDrift);
+    // Peer is unconfigured in this process, so there is no second commit to
+    // compare against — `unknown`, never `ok`.
+    expect(derived.commitDrift).toBe('unknown');
+
     for (const side of ['local', 'peer'] as const) {
       expect(Object.keys(derived[side]).sort()).toEqual(['disk', 'environment', 'freshness']);
       for (const kpi of ['disk', 'environment', 'freshness'] as const) {

@@ -1644,8 +1644,9 @@ per-window `padAfterMin` (`server/src/lib/syncBlackoutWindow.ts:61`), widened
 to 60 min by ABL-249 after a 34m07s run on 2026-08-12; this page consumes it
 and does not size it. The window was previously misdiagnosed as a code/container defect
 (ABL-220's writeup) and the status page is built specifically not to repeat
-that mistake. No visitor-counter KPI and no external alerting/paging are in
-scope here — see the issue for why.
+that mistake. No visitor-counter KPI was in scope there; alerting arrived
+separately under ABL-287, below, and is still not paging — the log is the only
+channel.
 
 ### 7b. "Last refreshed" per stream — when did the ingest last run?
 
@@ -1731,8 +1732,13 @@ status is producible by the writer
 system that could turn a KPI into a verdict was a browser — and ABL-287's
 alert engine is a scheduled server-side job. `/api/ops/status/combined` now
 returns a `derived` key alongside the raw numbers:
-`{ local: { environment, disk, freshness }, peer: { … } }`, each a
-`'ok' | 'warn' | 'error' | 'unknown'`. `deriveSideState` runs off whatever the
+`{ local: { environment, disk, freshness }, peer: { … }, commitDrift }`, each a
+`'ok' | 'warn' | 'error' | 'unknown'`. `commitDrift` (added by ABL-287) is the
+one verdict that is a *comparison* rather than a property of either side, which
+is why it sits beside the two lanes instead of inside them; it is `'warn'` at
+most, never `'error'` — two lanes on different builds is normal for the minutes
+between deploying one and the other, and paging on it would page on every
+rollout. `deriveSideState` runs off whatever the
 endpoint reports for each side, so both lanes are covered by construction —
 prod's `peer` is acceptance and acceptance's `peer` is prod. Disk is
 `DISK_WARN_RATIO` = 0.75 (`server/src/lib/opsStatusThresholds.ts:44`) and
@@ -1761,6 +1767,56 @@ Two rules this endpoint holds to, both load-bearing:
   carries the ABL-220 blackout downgrade (`error` -> `warn` inside the window).
   Anything asserting on `environment` for an unreachable side must read
   `syncBlackout.active` rather than assume `error`, or it fails twice a day.
+
+**The alert engine (ABL-287) turns those verdicts into notifications.**
+`services/opsAlertScheduler.ts` evaluates every 5 minutes
+(`OPS_ALERT_INTERVAL_MINUTES`), on by default (`OPS_ALERTS_ENABLED=false` opts
+out). It calls `getCombinedOpsStatus()` **in-process** rather than fetching our
+own port — a loopback would add failure modes (bound interface, port, proxy)
+unrelated to the health being reported, and would break exactly when the server
+is unwell. It imports that service *dynamically* for the reason
+`forecastVintageArchiveScheduler.ts:4-8` documents: a static import would open a
+`better-sqlite3` handle merely by importing the scheduler.
+
+Four properties, each with tests, none of them optional:
+
+- **Alert on transition, not on level.** `lib/opsAlertEngine.ts` is pure and
+  compares each KPI against the state it *last told a human*, so a disk sitting
+  at 91% notifies once, not every five minutes. Fires on breach, escalation
+  (`warn`->`error`), improvement (`error`->`warn`) and recovery.
+- **First run fires.** `unknown -> warn|error` is a firing transition. An engine
+  that only fired on a change *from* `ok` would boot into an already-breached
+  world and stay silent forever — live on 2026-08-12 that was acceptance disk at
+  85.11% and stale freshness on both lanes.
+- **Unknown is held, never recorded.** An unmeasured KPI is not a recovery and
+  not a breach, and it must not overwrite the stored state — otherwise a
+  measurement flicker (`warn` -> unmeasured -> `warn`) re-fires under the
+  first-run rule.
+- **The blackout holds the DB-backed KPIs.** Inside the ABL-220 window,
+  reachability and freshness are held — no breach *and* no false recovery. Disk
+  and commit drift do not touch the database and are not held; a disk filling up
+  at 07:00 is still a disk filling up.
+
+**The last-notified record is not ABL-288's snapshot store, deliberately.**
+`lib/opsAlertStateStore.ts` keeps one small JSON object
+(`OPS_ALERT_STATE_PATH`, default `ops-alert-state.json` beside
+`ENERGY_DB_PATH`): per KPI, the last state we announced. Do **not** replace it
+by re-deriving state from stored readings — move `DISK_ERROR_RATIO` from 0.90 to
+0.85 and a stored 87% reading re-derives from `ok` to `error`, so the engine
+compares `error` against a previous that is now *also* `error`, sees no
+transition, and the threshold change suppresses the very alert it was made to
+produce. What we told someone is a historical fact and is stored as one. Nothing
+in that module throws: its input is an arbitrary file on a host we do not
+control, and a monitoring job that dies on its own state file is worse than one
+that forgets.
+
+**Delivery is logging-only, by Board decision (2026-08-12).** `AlertChannel` in
+`services/opsAlertChannel.ts` is a two-method interface with one implementation.
+There is no SMTP config, no credentials and no stubbed credential handling in
+this repo — email is a separate issue for when credentials exist, and is one
+adapter behind that interface. A delivery failure is caught, logged, and the
+transition is deliberately **not** recorded, so the next tick retries rather
+than marking a breach "already reported" that nobody received.
 
 **`GET /api/ops/status/history` (ABL-288) is the trend half of that page**, and
 it is the one ops route that does **not** touch the database. A scheduler
@@ -2331,9 +2387,19 @@ cd server && npx vitest run
 ```
 
 Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
-ABL-288 + ABL-295): **48 client test files / 640 tests** and **51 server test
-files / 761 tests**, all passing, clean typecheck on both. Fewer tests passing
+ABL-288 + ABL-295 + ABL-287): **48 client test files / 640 tests** and **56 server test
+files / 863 tests**, all passing, clean typecheck on both. Fewer tests passing
 than that means something broke.
+
+(ABL-287 added five server files — `lib/opsAlertRules.test.ts`,
+`lib/opsAlertEngine.test.ts`, `lib/opsAlertStateStore.test.ts`,
+`services/opsAlertChannel.test.ts`, `services/opsAlertScheduler.test.ts`, 102
+cases between them — plus a `commitDrift` assertion in the existing
+`routes/opsStatus.test.ts` and an allowlist entry in
+`src/docs/claudeMdCitations.ts`. It added no client test: its client change is a
+mirrored type and a banner that now reads the server's verdict. Measured fresh
+on the merge with `main` (ABL-288 + ABL-295), not summed — the branch alone read
+50/770 before that merge, and that figure does not survive here.)
 
 (ABL-295 added `services/ingestLog.test.ts` (+1 server file / 15 cases) and 11
 more cases in the existing `routes/dataFreshness.test.ts`, plus
@@ -2416,8 +2482,17 @@ just move the breakage to whoever has the other one first on `PATH`:
 
 ```bash
 export PATH="/c/Users/guill/AppData/Local/nvm/v24.18.0:$PATH"
-cd server && npx vitest run   # 45 files / 651 tests
+cd server && npx vitest run   # 56 files / 863 tests
 ```
+
+This is a standing instruction, not a suggestion, and it was re-tested under
+ABL-287: `npm rebuild better-sqlite3` under the v25.6.1 on `PATH` does fix the
+suite for that Node — and immediately breaks it for anyone following the
+`export PATH` line above, because an ABI-141 binary cannot load in v24.18.0.
+The rebuild was reverted the same run and the module is built for **v24.18.0**.
+If you want the default `node` to work without the export, that is a real
+decision about a shared workstation and needs the CEO, not a `npm rebuild` in
+passing.
 
 Verified 2026-08-12: the same tree reports `24 failed | 20 passed` under
 v25.6.1 and `45 passed (45)` under v24.18.0. Every failure is the same

@@ -1,7 +1,12 @@
 import { getOpsStatus, type OpsStatus } from './opsStatusService.js';
 import { fetchPeerOpsStatus, type SideStatus } from './peerOpsStatus.js';
 import { checkSyncBlackoutWindow, type BlackoutStatus } from '../lib/syncBlackoutWindow.js';
-import { deriveSideState, type OpsSideDerived } from '../lib/opsStatusThresholds.js';
+import {
+  deriveSideState,
+  deriveCommitDriftState,
+  type OpsSideDerived,
+  type ThresholdState,
+} from '../lib/opsStatusThresholds.js';
 
 /**
  * The warn/error verdicts for both lanes (ABL-292). Strictly additive to this
@@ -14,6 +19,12 @@ import { deriveSideState, type OpsSideDerived } from '../lib/opsStatusThresholds
 export interface CombinedOpsStatusDerived {
   local: OpsSideDerived;
   peer: OpsSideDerived;
+  /**
+   * Whether the two lanes are on the same build (ABL-287). A cross-lane
+   * comparison, so it sits beside the per-side verdicts rather than inside
+   * either — see `deriveCommitDriftState`.
+   */
+  commitDrift: ThresholdState;
 }
 
 export interface CombinedOpsStatus {
@@ -104,6 +115,7 @@ export async function getCombinedOpsStatus(
     derived: {
       local: deriveSideState(local, syncBlackout.active),
       peer: deriveSideState(peer, syncBlackout.active),
+      commitDrift: deriveCommitDriftState(local, peer),
     },
   };
 }

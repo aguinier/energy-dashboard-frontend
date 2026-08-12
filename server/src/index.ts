@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { createApp, resolveClientDist } from './app.js';
 import { startForecastVintageArchiveScheduler } from './services/forecastVintageArchiveScheduler.js';
 import { startCoreNetPositionScheduler } from './services/coreNetPositionScheduler.js';
+import { startOpsAlertScheduler } from './services/opsAlertScheduler.js';
 import { startOpsSnapshotScheduler } from './services/opsSnapshotScheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -55,5 +56,17 @@ startCoreNetPositionScheduler();
 // JSONL file — never the shared database — so it is on by default; see
 // services/opsSnapshotStore.ts. A capture that fails is logged and dropped.
 startOpsSnapshotScheduler();
+
+// ABL-287: the scheduled check that turns the ops status page into a
+// monitoring tool — reads both lanes' KPIs every 5 minutes and logs a line
+// when one crosses into warn/error or recovers. On by default (the only
+// channel is logging, so there is no external side effect to opt into);
+// OPS_ALERTS_ENABLED=false turns it off. See services/opsAlertScheduler.ts.
+//
+// Independent of the snapshot capture above: that store holds the *readings*,
+// this one holds only what was last announced. Neither reads the other — see
+// lib/opsAlertStateStore.ts for why re-deriving alert state from stored
+// readings would let a threshold change suppress its own alert.
+startOpsAlertScheduler();
 
 export default app;
