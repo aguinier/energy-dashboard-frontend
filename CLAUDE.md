@@ -1492,19 +1492,56 @@ COALESCE shape below is therefore still load-bearing for CH/PL/SI and for all
 of `energy_price` — do not simplify it back to a single join on the theory
 that ABL-215 "closed" the conflict question.
 
+**ABL-256 executed on 2026-08-12 and closed the rest — every non-conflicting
+`energy_load` T-row, format only, zero `load_mw` values changed anywhere.**
+Two blocks ABL-215 explicitly left untouched, because neither carried a
+provenance question: **142,767 orphan T-rows with no space-form counterpart at
+all** (AL 103,960, GB 24,792, plus 22 smaller countries — all written in one
+batch at `2025-11-25 10:18:1x`, the same historical cutover moment, ~8.5
+months before AL's unrelated 2026-08-06 upstream stall, ABL-84/ABL-152 — that
+stall is unaffected, this touched no row from it) had their separator
+rewritten in place, id-addressed
+(`UPDATE energy_load SET timestamp_utc = REPLACE(timestamp_utc,'T',' ')
+WHERE id = ?`, `load_mw` never named in the statement); and **30,066
+agreeing-duplicate T-rows**, where the T-row and its space-row twin already
+held byte-identical `load_mw` (20,562 across the 23 ABL-215 countries, plus a
+newly-found 9,504 across 5 more — GB, PL, ES, CH, UA — that were never in
+conflict and so were never inside ABL-215's scope either way), had the
+redundant T-row deleted; the surviving space-row was never written to. Board
+accepted the proposal outright, folding in the 9,504-row third block.
+Executed under the identical ABL-181/ABL-210 procedure: fresh re-enumeration
+immediately before writing (confirmed the 172,833-row total to the exact row,
+zero drift since the proposal), ingest paused only for the transaction's
+duration (5.5s), a single transaction with pre-image backup tables
+(`energy_load_orphan_backup_abl256`, `energy_load_agreeing_backup_abl256`)
+row-count-verified before either statement ran, and independent post-commit
+re-verification (20/20 spot checks on each block; `energy_price` and every
+other table confirmed byte-for-byte unchanged). `energy_load` dropped from
+182,329 to exactly **9,496** T-separator rows — CH 1,783 / PL 5,853 / SI
+1,860, precisely the still-open conflicts ABL-215 could not resolve — and
+gained zero new orphans, since every rewritten row already had no space-form
+counterpart to collide with. `energy_load`'s own row count dropped by exactly
+30,066 (the deletes, from 2,679,772 to 2,649,706); nothing else in the table
+or the database changed.
+
 `timestampFormOnClause` (`server/src/utils/timestamp.ts:140`) is instead
 always used as **two separate LEFT JOINs** — one matching the space form, one
 matching the `T` form, on two different aliases — `COALESCE`d together
 preferring space. That changes nothing for any country-hour that already
 matched before this fix (a space-form row, unconditionally preferred, exactly
 like the one-sided-`REPLACE` join it replaces) and only adds coverage for an
-hour where a `T` row is the *only* one that exists (142,767 of `energy_load`'s
-279,880 `T` rows, measured 2026-08-11) — the genuinely dropped case ABL-214
-exists to fix. Two separate LEFT JOINs can never fan out the way one `IN(...)`
-join can: each side matches at most one physical row (verified 2026-08-11 —
-zero exact `(country_code, timestamp_utc)` string duplicates in `energy_load`,
-`energy_price` or `energy_renewable`), so their combination is at most one row,
-not up to two.
+hour where a `T` row is the *only* one that exists — **142,767 of
+`energy_load`'s then-279,880 `T` rows, measured 2026-08-11**, is now a
+historical figure: ABL-256 rewrote every one of those specific rows to space
+form, so none of them are `T`-only (or `T` at all) any more, and the shape's
+remaining `energy_load` role is purely the space-preferred tie-break over
+CH/PL/SI's 9,496 still-conflicting pairs, not an orphan rescue. The orphan-
+rescue case is still live and unmeasured-since-2026-08-11 for `energy_price`
+and `energy_renewable`, which ABL-256 did not touch. Two separate LEFT JOINs
+can never fan out the way one `IN(...)` join can: each side matches at most
+one physical row (verified 2026-08-11 — zero exact `(country_code,
+timestamp_utc)` string duplicates in `energy_load`, `energy_price` or
+`energy_renewable`), so their combination is at most one row, not up to two.
 
 **Currently a no-op against live data — measured, not assumed.** The
 `energy_price` FR 741-of-860 figure this section used to cite no longer
