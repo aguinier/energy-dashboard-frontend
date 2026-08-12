@@ -83,6 +83,45 @@ describe('adaptWindSeries', () => {
     expect(onshore.series[0].forecast).toBe(300);
     expect(offshore.series[0].forecast).toBe(80);
   });
+
+  // ABL-319. The client half of the serving-readiness probe. Germany reports
+  // real offshore generation (662-701 MW/hour on the replica, 2026-08-12) but
+  // has no `wind_offshore` model, so `/api/forecasts` answers 200 with an empty
+  // array — and the Offshore tab still renders, because tab visibility is not
+  // gated on forecast coverage.
+  //
+  // That is the exact shape every country ABL-316 has not yet trained will be
+  // in, so what the chart does with it is the thing to pin: the actuals line
+  // draws and the forecast stays absent. A 0 here is the incident this
+  // dashboard exists to prevent — a flat zero-MW offshore forecast under
+  // Germany is plausible enough to read as a real prediction.
+  it('leaves the forecast absent, not zero, when a country has actuals but no model', () => {
+    const { series } = adaptWindSeries({
+      windData,
+      windType: 'wind_offshore',
+      mlForecast: [],
+    });
+
+    expect(series.map((p) => p.value)).toEqual([50, 60]);
+    for (const p of series) {
+      expect(p.forecast).toBeNull();
+      expect(p.forecast).not.toBe(0);
+    }
+  });
+
+  it('draws the forecast line for a country that does have a model', () => {
+    // The paired direction: the same adapter, the same window, rows present.
+    const { series } = adaptWindSeries({
+      windData,
+      windType: 'wind_offshore',
+      mlForecast: [
+        { timestamp: '2026-08-04T10:00:00', value: 55, type: 'wind_offshore' },
+        { timestamp: '2026-08-04T11:00:00', value: 65, type: 'wind_offshore' },
+      ] as Parameters<typeof adaptWindSeries>[0]['mlForecast'],
+    });
+
+    expect(series.map((p) => p.forecast)).toEqual([55, 65]);
+  });
 });
 
 describe('adaptNetPositionSeries', () => {
