@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { TimePreset, TimeAnchor, MetricType, TSOForecastType, AppView } from '@/types';
+import type { NetPositionScope } from '@/lib/netPositionScope';
 import { DEFAULT_COUNTRY, PRESET_SHIFT_HOURS } from '@/lib/constants';
 import { migratePersisted, PERSIST_VERSION } from './migrate';
 
@@ -30,6 +31,14 @@ interface DashboardState {
   // Map metric
   mapMetric: MetricType;
   setMapMetric: (metric: MetricType) => void;
+
+  // Which borders the net position views count (ABL-234). ONE setting drives
+  // both the map's `net_position` metric and the country Net position tab, on
+  // purpose: they draw the same quantity, and letting them disagree is how a
+  // user reads a Core figure on one screen against an all-coupled figure on
+  // the other and concludes the data contradicts itself.
+  netPositionScope: NetPositionScope;
+  setNetPositionScope: (scope: NetPositionScope) => void;
 
   // Countries for comparison
   comparisonCountries: string[];
@@ -215,6 +224,10 @@ export const useDashboardStore = create<DashboardState>()(
       mapMetric: 'load',
       setMapMetric: (metric) => set({ mapMetric: metric }),
 
+      // All coupled borders is the pre-ABL-234 view, unchanged.
+      netPositionScope: 'all_coupled',
+      setNetPositionScope: (scope) => set({ netPositionScope: scope }),
+
       // Comparison countries
       comparisonCountries: ['DE', 'FR'],
       addComparisonCountry: (country) =>
@@ -360,6 +373,7 @@ export const useDashboardStore = create<DashboardState>()(
         timePreset: state.timePreset,
         timeAnchor: state.timeAnchor,
         mapMetric: state.mapMetric,
+        netPositionScope: state.netPositionScope,
         activeChartTab: state.activeChartTab,
         selectedModelsByType: state.selectedModelsByType,
         forecastHiddenByType: state.forecastHiddenByType,

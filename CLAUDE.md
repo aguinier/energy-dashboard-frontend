@@ -679,7 +679,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     `dashboard/generationSeries.test.ts` pins the ordering.
 
   No `ModelPicker` renders here — `TABS_WITH_MODEL_PICKER`
-  (`CountryDashboardView.tsx:68`, applied at `:127`) limits it to `price`,
+  (`CountryDashboardView.tsx:69`, applied at `:129`) limits it to `price`,
   `load`, `wind-onshore` and `wind-offshore` (ABL-235), the tabs whose chart
   reads a multi-select picker (ABL-204).
   `net-position` isn't in that set either, but for the opposite reason: it has
@@ -734,17 +734,129 @@ for the stacked mix — which feeds an `Able*` chart primitive.
 
   `lib/netPositionScope.ts` is the pure helper stating the scope, colocated
   with `netPositionScope.test.ts`. `netPositionTabDisclosure`
-  (`netPositionScope.ts:50`) renders under this card's title
+  (`netPositionScope.ts:144`) renders under this card's title
   (`NetPositionTab.tsx:218`) and appends the Core caveat only for the 12 Core
-  CCR country codes (`isCoreCcrCountry`, `netPositionScope.ts:30`);
-  `NET_POSITION_MAP_DISCLOSURE` (`netPositionScope.ts:42`) renders in the map
-  legend for the same metric (`EuropeMap.tsx:373`), and `MAP_METRICS`'s
-  `net_position.legendLabel` (`lib/constants.ts:41`) states the scope in the
-  legend heading itself. Ingesting the Core series and offering a toggle
-  between the two numbers is a separate, larger change — a new external
-  source (JAO's Core publication tool), a new table, and a prod database
-  write — and is pending a Board decision (ABL-219); this entry only states
-  what is already on screen, and changes no query and no stored value.
+  CCR country codes (`isCoreCcrCountry`, `netPositionScope.ts:55`);
+  `NET_POSITION_MAP_DISCLOSURE` (`netPositionScope.ts:94`) is the map legend's
+  all-coupled disclosure, and `MAP_METRICS`'s `net_position.legendLabel`
+  (`lib/constants.ts:41`) was its legend heading.
+
+  **Both numbers are now on screen, behind one toggle (ABL-234).** ABL-222
+  stated which figure was drawn; ABL-230 ingested the other one; this is the
+  switch between them. `netPositionScope` — `'all_coupled'` (the default, and
+  the pre-ABL-234 behaviour byte for byte) or `'core'` — is a single persisted
+  store field driving **both** surfaces, deliberately: they draw the same
+  quantity, and letting the map and the tab disagree is how a reader concludes
+  the data contradicts itself. `NetPositionScopeToggle.tsx` is the control (a
+  two-option segmented `role="radiogroup"`, matching `MapMetricSelector`'s
+  visuals rather than `ModelPicker`'s popover — the options are mutually
+  exclusive and both always apply). It renders beneath the metric selector on
+  the map, and only for `net_position`; and after `TimePicker` on the country
+  tab.
+
+  Every string that names a scope is now a **function of the scope**, in
+  `netPositionScope.ts` — `netPositionLegendLabel`,
+  `netPositionMapDisclosure`, `netPositionHatchLegendLabel`, and
+  `netPositionTabDisclosure(countryCode, scope)`. That last one keeps ABL-222's
+  property in both branches: it describes the borders the *currently selected*
+  view covers, then names the other figure as a different number rather than a
+  correction. A sentence about the view the reader just left would be worse
+  than not having the toggle.
+
+  **The measurement, re-taken live on 2026-08-12 for the hour 2026-08-09 08:00
+  UTC** (JAO's four 15-minute intervals averaged to the hour, against that
+  hour's `net_position` row):
+
+  | zone | Core | all coupled | |
+  |---|---:|---:|---|
+  | **FR** | **−368.9** | **+1,494.575** | **disagree in sign** |
+  | DE | 9,423.875 | 9,423.875 | identical |
+  | NL | 1,695.15 | 1,695.15 | identical |
+
+  **Verify on France, never on Germany.** DE's and NL's every coupled border
+  is either inside the Core domain or modelled as a virtual hub within it, so
+  their two figures coincide *exactly* — a toggle wired to the wrong table
+  would pass on either. Verified end to end through a running server against a
+  scratch database holding real rows from both sources (2026-08-09
+  06:00–10:00Z): FR Core mean **−1,000.6 MW (importing)** vs all-coupled
+  **+783.7 MW (exporting)**.
+
+  **Server side, all additive — `/net-position` and `/dashboard/map` are
+  untouched**, so the default view issues exactly the queries it did before.
+  `routes/coreNetPosition.ts` grew `GET /core-net-position/map?start=&end=`
+  (declared *before* `/:countryCode`, since `'map'` is a country-code-shaped
+  string) and gave `GET /core-net-position/:countryCode` a real contract:
+  `{ actual, meta: { country_code, bidding_zone, in_core, coverage,
+  last_seen } }`. **An empty array always carries the reason it is empty** —
+  `CoreNetPositionCoverage` is `served` / `no_data` / `out_of_core` /
+  `not_captured`, and those are four different claims, not one. `out_of_core`
+  in particular is *not* missing data: we hold a perfectly good all-coupled
+  figure for Spain, and calling that a gap would be this repo's recurring
+  defect in words instead of numbers. Returning a bare `[]` for all four would
+  have pushed the judgement into the client, which would then have had to keep
+  its own copy of the 12-zone list to recover it.
+
+  **The Core series is NOT guarded by `classifyActualSeries`, and that
+  asymmetry is a decision.** The 1 MW degenerate-zero floor is sized from a
+  measurement over 26,882 `net_position` country-days and exists because
+  entsoe-py's sparse-document forward-fill manufactured a year of exact-`0.0`
+  GR rows. Neither half transfers: `parseJaoCoreNetPositionResponse` skips a
+  missing or non-numeric hub rather than carrying a value forward, and nothing
+  has been captured yet to size a Core threshold against. Importing the number
+  unmeasured would be exactly the uncalibrated cutoff `METRIC_THRESHOLDS` was
+  removed for, and a genuinely balanced Core zone would vanish. If a
+  fabrication mode ever appears in `core_net_position`, size a threshold
+  against it *then*.
+
+  **Client side.** `useCoreNetPositionData.ts` holds both queries, each gated
+  on the Core view actually being selected. The map switches source in
+  `EuropeMap` via `map/netPositionMapScope.ts` (pure, colocated test —
+  `<Geographies>` fetches its topojson and renders no shapes under
+  `renderToString`, the same reason `comparison/mapFill.ts` is a pure module).
+  It returns `ranked` / `no_data` / `out_of_core`; the last two **share the
+  `NoDataHatch` texture on purpose** — both mean "not on the scale", and a
+  second texture would weaken the first — so the hover sentence
+  (`NON_CORE_MAP_NOTICE`) is what carries the difference, and it says *not
+  applicable*, never *not measured*. An out-of-scope shape takes a tab stop
+  with `role="img"` so a keyboard user can reach that sentence too. **LU is
+  never `out_of_core`**: it shares DE_LU, and the map emits it with DE's value
+  rather than a hole, because a hole there would claim Luxembourg is outside
+  the Core region.
+
+  The tab's Core branch is `CoreNetPositionView` (in `NetPositionTab.tsx`),
+  **actuals only** — nothing in this dashboard forecasts the Core figure, no
+  registry entry produces one, so `NetPositionModelPicker` does not render in
+  Core view rather than sitting there unable to change the chart (the
+  "renders and does nothing" state ABL-44 removed from the Generation tab).
+  `coreNetPositionNote.ts` prints which of the three empty states applies.
+
+  **`lib/coreNetPositionSeries.ts` averages JAO's quarter-hours into the
+  chart's hourly grid, and must not be replaced by `adaptNetPositionSeries`.**
+  That adapter writes each point into its hour bin unconditionally, so four
+  quarters in one bin leave the **last** one standing. Measured on the real
+  response for FR 2026-08-09 08:00 UTC — quarters −114.9, −624.8, +174.8,
+  −910.7 — last-write-wins draws −910.7 against a true hourly mean of −368.9,
+  and the 08:30 quarter alone would have coloured France an *exporter*.
+  Averaging is also what makes the two toggle states comparable at all: it is
+  why DE's four quarters reproduce its all-coupled hourly value to the digit.
+
+  Two deliberate, reasoned narrowings of ABL-231's design spec, recorded
+  rather than silently applied: the legend shows **one** hatch key with
+  widened wording ("no data / outside Core region") instead of two keys
+  sharing one texture with different meanings — a legend that renders the same
+  mark twice does not disambiguate, and the per-country hover does; and
+  `NetPositionModelPicker` was left untouched rather than restyled to match
+  the new toggle, being already-shipped, board-reviewed work outside this
+  change's scope (the same call ABL-204 made about it).
+
+  **The toggle ships useful only once the capture is enabled.** ABL-230's
+  ingest is gated on `JAO_CORE_NET_POSITION_ENABLED` **and**
+  `HELIO_WRITE_TOKEN`, neither of which this change sets, so on a deployment
+  today `core_net_position` does not exist and Core view is empty everywhere.
+  That is why `not_captured` is a distinct coverage word with its own copy
+  ("a capture that has not been switched on, not an outage at JAO") rather
+  than a silent blank — but it does mean turning the capture on is a real
+  follow-up step, not a formality.
 
   Handles
   a zone going silent upstream as an explicit "stopped publishing on <date>"
@@ -851,7 +963,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `2025-09-30T21:00:00`. `describeDegenerateActual` returns `null` for
   `'no_actuals'` (`degenerateForecastNote.ts:70`), so `NetPositionTab` falls
   through the withheld-actuals branch to the `lastSeen` branch
-  (`NetPositionTab.tsx:251-265`) and renders "Greece stopped publishing a net
+  (`NetPositionTab.tsx:270-284`) and renders "Greece stopped publishing a net
   position on September 30, 2025." — consistent with reason 3 above, its
   forecast is untouched by the delete and still renders its own
   `degenerate_zero` note beside the empty actuals state.
@@ -1047,7 +1159,7 @@ Adding a preset means touching six places. All six now fail loudly:
 - Keyed `Record<TimePreset, …>`, so the missing key is named directly:
   `PRESET_SHIFT_HOURS` (`lib/constants.ts:20`), `WINDOW_LABEL`
   (`dashboard/windowLabel.ts:23`), and `ANCHOR_FOR_PRESET`
-  (`store/migrate.ts:21`), whose keys `VALID_TIME_PRESETS` derives from.
+  (`store/migrate.ts:25`), whose keys `VALID_TIME_PRESETS` derives from.
 - A `const unhandled: never = preset` in the `default` branch, so the new value
   is reported as not assignable to `never`: `getDateRangeForPreset`
   (`useDashboardData.ts:117`) and `getGranularityForPreset`
@@ -1070,27 +1182,36 @@ so it cannot drift from the union.
 
 Zustand store (`dashboardStore.ts`) with `persist` to localStorage
 (`energy-dashboard-storage`). **The persisted shape is versioned:**
-`PERSIST_VERSION` in `store/migrate.ts` (currently `9`, `migrate.ts:3`), bumped
+`PERSIST_VERSION` in `store/migrate.ts` (currently `10`, `migrate.ts:7`), bumped
 with a matching clause in `migratePersisted()` whenever a persisted field's
 shape or meaning changes. `migratePersisted` must never throw: `state` is an
 arbitrary, possibly years-old localStorage blob. Skipping this step leaves
 returning users on a shape the current code doesn't understand — previously a
 blank tab panel or a view nobody chose.
 
-It is **not** a per-version switch. `migrate.ts:51` short-circuits only on
+It is **not** a per-version switch. `migrate.ts:55` short-circuits only on
 `fromVersion >= PERSIST_VERSION`; below that, *every* clause runs for *any*
 older blob, so each clause must be safe to apply to a blob that never had the
 field. The clauses today coerce an unknown `currentView` / `activeChartTab` /
-`timePreset` back to a valid value (`migrate.ts:130` for the last), remap a
-stored `comparisonMetric: 'mape'` to `'wape'` (`:88`), **delete** three dead
-keys — `layers` (`:82`), `timeRange` (`:102`), `analyticsConfig` (`:114`) —
+`timePreset` back to a valid value (`migrate.ts:134` for the last), remap a
+stored `comparisonMetric: 'mape'` to `'wape'` (`:92`), **delete** three dead
+keys — `layers` (`:86`), `timeRange` (`:106`), `analyticsConfig` (`:118`) —
 and split `selectedModelByType`'s pin/hidden conflation into
-`forecastHiddenByType`, dropping every stored pin (`:155-163`, ABL-16), then
+`forecastHiddenByType`, dropping every stored pin (`:159-168`, ABL-16), then
 convert that single pin per type into a one-element list under the renamed
-`selectedModelsByType` (`:183-192`, ABL-203/v9) — the shape net position's
+`selectedModelsByType` (`:187-196`, ABL-203/v9) — the shape net position's
 multi-select picker needs to hold several pins at once, with a returning
 user's one stored pin carrying forward as their starting selection rather
-than being dropped.
+than being dropped, and finally coerce an unrecognised `netPositionScope` back
+to `'all_coupled'` (`:215-217`, ABL-234/v10). That last clause has nothing to
+carry forward — no older field encoded the border scope — so refusing an
+out-of-union value is its whole job, and it is not ceremony: the two scopes
+can disagree in **sign** (FR, 2026-08-09 08:00 UTC: Core −368.9 MW importing
+vs all-coupled +1,494.6 MW exporting), so a stray string must not leave a
+reader on a chart whose legend names a scope the query did not use. It coerces
+to `'all_coupled'` rather than `'core'` because that is both the pre-existing
+default and the only view guaranteed to hold data — Core capture is off by
+default in a deployment.
 Note `layers` is deleted, not folded into `showForecast`/`showTSOForecast` as
 an earlier version did — that folding unconditionally overwrote `showForecast`
 with `false` on every migration, clobbering a value the current code had
@@ -1103,9 +1224,9 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
 `server/src/types/index.ts:233`), every per-tab hook sends an explicit
 `start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
-`useDashboardData.ts:206`, and `useMapData` likewise at `:187`), and
+`useDashboardData.ts:207`, and `useMapData` likewise at `:187`), and
 `migratePersisted` deletes a stored
-`timeRange` outright (`store/migrate.ts:102`). `timePreset` is the single field
+`timeRange` outright (`store/migrate.ts:106`). `timePreset` is the single field
 describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
 field for `ComparisonView`, is unrelated and does still exist.)
 
@@ -1120,7 +1241,7 @@ drop `timeRange` without a backend change first" — had already been removed
 when it was written.
 
 Note `timePreset` is validated on migration against `VALID_TIME_PRESETS`
-(`store/migrate.ts:33`, checked at `:130`) and `timeAnchor` is re-derived from
+(`store/migrate.ts:37`, checked at `:134`) and `timeAnchor` is re-derived from
 it (`:135`), because the two persist separately and only `setTimePreset` keeps
 them in step. `VALID_TIME_PRESETS` is no longer a hand-maintained literal — it
 is `Object.keys(ANCHOR_FOR_PRESET)`, and `ANCHOR_FOR_PRESET` is keyed
@@ -1135,6 +1256,7 @@ selectedCountry: string;
 timePreset: TimePreset;
 timeAnchor: TimeAnchor;
 mapMetric: MetricType;
+netPositionScope: NetPositionScope;                  // 'all_coupled' | 'core' — ABL-234, drives map AND tab
 activeChartTab: string;              // price|load|renewables|wind-onshore|wind-offshore|net-position|analytics
 selectedModelsByType: Record<string, string[]>;      // per forecast-type PINs; absent/empty = server ladder
 forecastHiddenByType: Record<string, boolean>;       // overlay switched off, per type; absent = shown
@@ -1161,7 +1283,7 @@ check which group it is in:
   (`useLoadChartData.ts:131`, `:177`).
 - **Written, and read only by dead code.** `showForecast`. `setTimePreset`
   still sets it `true` for future presets (`dashboardStore.ts:150`) and
-  `useLatestForecast` gates its query on it (`useDashboardData.ts:236`, `:245`)
+  `useLatestForecast` gates its query on it (`useDashboardData.ts:239`, `:248`)
   — but that hook's only consumer, `ForecastMetadataBadge.tsx`, is imported by
   nothing, so it has no on-screen effect today.
 - **No reader at all.** `showTSOForecast`, `tsoForecastType`,
@@ -1438,7 +1560,7 @@ acceptance host, no extra dependency), process memory/uptime, and CPU load —
 `null` on Windows rather than `os.loadavg()`'s fabricated `[0, 0, 0]`, per this
 file's own rule that a metric we cannot measure is `null`, never invented.
 Provenance (`commit`/`runtime`/`db_path`) is `getHealthProvenance()` verbatim,
-the same values `/api/health` (`routes/index.ts:49`) reports — `/health`'s own
+the same values `/api/health` (`routes/index.ts:50`) reports — `/health`'s own
 response contract is unchanged. Unlike `/health`, this endpoint touches the
 database (the freshness rollup), so it is expected to fail during the
 twice-daily DB sync's write-lock blackout described above — a known window,
@@ -1926,14 +2048,12 @@ change — filed as its own follow-up instead.
   until both are set, which is a deliberate follow-up step coordinated with
   the CEO, not part of this issue.
 
-  A minimal, explicitly provisional read exists — `GET
-  /api/core-net-position/:countryCode?start=&end=`
-  (`routes/coreNetPosition.ts`) — so the ingest is testable end to end. It is
-  not the client-facing contract: the toggle UI is a separate, still-blocked
-  issue that owns the real endpoint shape (units, whether it rides alongside
-  `/net-position` or stands alone, how a Core-less country like GB/CH
-  responds) and should revise or replace this route rather than treat it as
-  fixed.
+  ABL-230 shipped a deliberately provisional read (`{ points }`, one route) on
+  the note that the follow-up UI issue owned the real contract. **ABL-234 made
+  that revision** — `routes/coreNetPosition.ts` now serves a per-zone series
+  whose empty array always names *which* kind of empty it is, plus a `/map`
+  route — see "NetPositionTab" above for the shape and for the toggle that
+  consumes it. This section stays the reference for the ingest half.
 
 ## Testing
 
@@ -1942,12 +2062,37 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12: **41 client test files / 523 tests** (503 passing in
+Green as of 2026-08-12: **44 client test files / 575 tests** (555 passing in
 this checkout — the other 20, in `dashboardStore.test.ts`/`windowLabel.test.ts`,
 fail on the pre-existing `storage.setItem is not a function` sandbox quirk the
-ABL-203 paragraph below already documents, not a regression), **39 server
-tests files / 563 tests**, all passing, clean typecheck. Fewer server tests
-passing than that means something broke.
+ABL-203 paragraph below already documents, not a regression), **41 server
+test files / 602 tests**, all passing, clean typecheck. Fewer tests passing
+than that means something broke.
+
+(That server figure is measured on ABL-234 merged with `origin/main`, which is
+what `main` becomes when this lands — not on ABL-234's own 39/585. The extra
+2 files / 17 cases are `main`'s, not this change's: ABL-244 added
+`scripts/backfillModelGuard.test.ts` **and** `server/vitest.config.ts`, whose
+`include: ['src/**/*.test.ts', '../scripts/**/*.test.ts']` is what makes the
+repo-root scripts discoverable at all, and ABL-262 added
+`server/src/routes/countries.test.ts`. Both `main` and this branch were
+separately claiming 39 files here — `main` at 563 cases, this branch at 585 —
+so neither side's number survived the merge, and the two edits did not
+conflict textually because they touched the same claim from different
+directions.)
+
+(ABL-234 added the Core / all-coupled-borders scope toggle. Client: 3 new
+files — `lib/coreNetPositionSeries.test.ts`, `components/map/
+netPositionMapScope.test.ts`, `components/dashboard/coreNetPositionNote.test.ts`
+— plus new cases in `lib/netPositionScope.test.ts` (scope-aware copy) and
+`store/migrate.test.ts` (the v10 clause). Server: no new file; 22 new cases
+across `services/coreNetPositionService.test.ts` and a rewritten
+`routes/coreNetPosition.test.ts`, which now asserts the revised contract
+instead of ABL-230's provisional `{ points }` shape. Every net-position value
+in both fixtures is real — the Core figures were fetched live from JAO on
+2026-08-12 and the all-coupled ones read from the replica — specifically so
+the France sign-disagreement case and the DE-LU false negative are pinned by
+measurement rather than by invented numbers.)
 (ABL-230 added the JAO Core net position ingest, server-only: 4 new files
 (`services/coreNetPositionService.test.ts`, `services/
 jaoCoreNetPositionCapture.test.ts`, `services/coreNetPositionScheduler.test.ts`,
@@ -1958,7 +2103,7 @@ to ABL-230 itself: `docs/claudeMdCitations.test.ts` had flagged the
 landing on a blank line at its old line numbers, 158 through 173 — ordinary
 line drift from an earlier, unrelated change — corrected to the actual
 `lastSeen` branch that citation was always describing, now
-`NetPositionTab.tsx:251-265` (verified: the same "stopped publishing a net
+`NetPositionTab.tsx:270-284` (verified: the same "stopped publishing a net
 position" ternary this section's own prose quotes). This branch was rebased
 onto `main` 2026-08-12 after ABL-221's second pass, ABL-237 and ABL-240 landed
 there (492 server tests / 34 files, 520 client tests / 41 files, per the
@@ -2122,6 +2267,12 @@ Two conventions, and they are for different layers.
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
 `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
 `lib/multiForecastSeries.ts`,
+`lib/netPositionScope.ts`, `lib/coreNetPositionSeries.ts`,
+`components/map/netPositionMapScope.ts`,
+`components/dashboard/coreNetPositionNote.ts` (ABL-234 — the last two exist as
+pure modules for the reason `comparison/mapFill.ts` does: `<Geographies>`
+fetches its topojson, so the map's Core/out-of-scope decision cannot be
+asserted through the component),
 `server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`,
 `server/src/services/freshnessRollup.ts`, `server/src/services/hostMetrics.ts`
 (ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
@@ -2234,8 +2385,8 @@ The second rule is the one that earns its keep: of the eight stale citations
 this check found on arrival, the first rule caught three and the second caught
 seven. It is deliberately narrow — skipped for bare `:NNN` continuations, which
 idiomatically point at a *use* site rather than at the declaration
-(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:68` and
-applied at `:127`), and skipped when the named symbol is not a top-level
+(`TABS_WITH_MODEL_PICKER` is declared at `CountryDashboardView.tsx:69` and
+applied at `:129`), and skipped when the named symbol is not a top-level
 declaration (`ENERGY_DB_PATH` is only ever read off `process.env`, so a citation
 naming it is not judged). Both exclusions were needed to reach zero false
 positives across the whole file. A check that cries wolf gets disabled.
@@ -2472,7 +2623,7 @@ interface TSOForecastAccuracyMetrics {
   model at all — check `forecastModels.ts` before assuming a bug
 - Note `ModelPicker` does not render on the Generation, Forecast-accuracy or
   Net position tabs at all (`TABS_WITH_MODEL_PICKER`,
-  `CountryDashboardView.tsx:68`, applied at `:127`) — Net position instead
+  `CountryDashboardView.tsx:69`, applied at `:129`) — Net position instead
   gets its own separate multi-select `NetPositionModelPicker` — so there is no
   "picker that does nothing" to hit on any of the three
 - Check the API response has data for the selected country

@@ -31,8 +31,9 @@ router.use('/forecasts', forecastRouter);
 // same /forecasts prefix, before nothing else claims POST /net-position.
 router.use('/forecasts', netPositionIngestRouter);
 router.use('/net-position', netPositionRouter);
-// Minimal, provisional read for the JAO Core net position archive (ABL-230) —
-// see routes/coreNetPosition.ts for why this is not the client-facing shape.
+// Read path for the JAO Core net position archive — ingested by ABL-230,
+// given its client-facing shape (per-zone series + `/map`, each empty array
+// carrying the reason it is empty) by ABL-234's scope toggle.
 router.use('/core-net-position', coreNetPositionRouter);
 router.use('/tso-forecast', tsoForecastRouter);
 router.use('/data-freshness', dataFreshnessRouter);

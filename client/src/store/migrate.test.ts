@@ -219,6 +219,50 @@ describe('migratePersisted', () => {
     expect(migratePersisted(s, PERSIST_VERSION)).toEqual(s);
   });
 
+  // v10 (ABL-234) — netPositionScope joins partialize. The two scopes can
+  // disagree in SIGN (France 2026-08-09 08:00 UTC: Core -368.9 MW importing
+  // vs all-coupled +1,494.6 MW exporting), so an unrecognised persisted value
+  // must never survive to a chart whose legend then names a scope the query
+  // did not use.
+  describe('validates the net position scope (v10)', () => {
+    it('defaults a blob that predates the field', () => {
+      expect(migratePersisted({ currentView: 'map' }, 9).netPositionScope).toBe('all_coupled');
+    });
+
+    it('keeps a legitimately stored scope', () => {
+      expect(migratePersisted({ netPositionScope: 'core' }, 9).netPositionScope).toBe('core');
+      expect(migratePersisted({ netPositionScope: 'all_coupled' }, 9).netPositionScope).toBe(
+        'all_coupled',
+      );
+    });
+
+    it.each([
+      ['an unknown string', 'ac'],
+      ['the wrong case', 'Core'],
+      ['an empty string', ''],
+      ['null', null],
+      ['a number', 3],
+      ['an object', { scope: 'core' }],
+      ['an array', ['core']],
+    ])('coerces %s to all_coupled', (_label, value) => {
+      expect(migratePersisted({ netPositionScope: value }, 9).netPositionScope).toBe('all_coupled');
+    });
+
+    it('coerces to the view that always has data, not to Core', () => {
+      // Core capture is off by default in a deployment (see
+      // server/src/services/coreNetPositionScheduler.ts), so all_coupled is
+      // also the only choice guaranteed to render something.
+      expect(migratePersisted({ netPositionScope: 'core-ish' }, 0).netPositionScope).toBe(
+        'all_coupled',
+      );
+    });
+
+    it('leaves a blob already at the current version untouched', () => {
+      const s = { netPositionScope: 'core' };
+      expect(migratePersisted(s, PERSIST_VERSION)).toEqual(s);
+    });
+  });
+
   // activeChartTab validation — an invalid persisted value renders a
   // completely blank tab panel (no chart, no message). Real values read off
   // the TabsTrigger elements in CountryDashboardView.tsx: `renewables` and
