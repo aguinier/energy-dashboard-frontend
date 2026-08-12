@@ -320,6 +320,81 @@ export interface DataFreshness {
 }
 
 // ============================================================================
+// Ops status (ABL-237 host/process KPIs, ABL-238 acceptance/prod comparison)
+// ============================================================================
+// Mirrors server/src/services/opsStatusService.ts, peerOpsStatus.ts and
+// combinedOpsStatusService.ts. The internal /ops-status page (OpsStatusView)
+// is the only reader.
+
+export interface HealthProvenance {
+  commit: string | null;
+  runtime: 'container' | 'dev';
+  db_path: string;
+}
+
+export interface DiskUsage {
+  totalBytes: number;
+  freeBytes: number;
+  usedBytes: number;
+}
+
+export interface CpuLoad {
+  load1: number;
+  load5: number;
+  load15: number;
+}
+
+export interface ProcessMetrics {
+  uptimeSeconds: number;
+  memory: {
+    rssBytes: number;
+    heapUsedBytes: number;
+    heapTotalBytes: number;
+    externalBytes: number;
+  };
+}
+
+/** Fleet-wide worst-case rollup over every country's `DataFreshness` — see `freshnessRollup.ts`. */
+export interface FreshnessRollup {
+  status: FreshnessStatus;
+  countriesChecked: number;
+  streamsChecked: number;
+  counts: Record<FreshnessStatus, number>;
+  staleCountries: string[];
+}
+
+export interface OpsStatus {
+  timestamp: string;
+  provenance: HealthProvenance;
+  host: {
+    platform: string;
+    disk: DiskUsage | null;
+    cpuLoad: CpuLoad | null;
+  };
+  process: ProcessMetrics;
+  freshness: FreshnessRollup;
+}
+
+/** One environment's status, or why it could not be reached — never a thrown error. */
+export type OpsSideStatus =
+  | { reachable: true; latencyMs: number; status: OpsStatus }
+  | { reachable: false; latencyMs: number | null; error: string };
+
+/** ABL-220's twice-daily DB-sync write-lock window — see `syncBlackoutWindow.ts`. */
+export interface SyncBlackoutStatus {
+  active: boolean;
+  label: string | null;
+}
+
+export interface CombinedOpsStatus {
+  timestamp: string;
+  local: OpsSideStatus;
+  peer: OpsSideStatus;
+  peerConfigured: boolean;
+  syncBlackout: SyncBlackoutStatus;
+}
+
+// ============================================================================
 // Data Layers
 // ============================================================================
 // The unified `LayersState`/`ForecastLayer`/`AvailableLayers` trio that used

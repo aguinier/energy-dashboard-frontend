@@ -15,6 +15,11 @@ services:
       # HELIO_WRITE_TOKEN enables POST /api/weather/snapshot (heliocast
       # writes per-submission weather snapshots). Unset → writes return 503.
       - HELIO_WRITE_TOKEN=${HELIO_WRITE_TOKEN:-}
+      # OPS_PEER_URL: the OTHER environment's base URL, for GET
+      # /api/ops/status/combined (ABL-238). Prod's docker/.env points at
+      # acceptance and vice versa. Unset → the status page reports "not
+      # configured" rather than attempting a request.
+      - OPS_PEER_URL=${OPS_PEER_URL:-}
     volumes:
       # DB volume is now read-write so POST /api/weather/snapshot can
       # insert. All existing GET routes use a separate readonly connection

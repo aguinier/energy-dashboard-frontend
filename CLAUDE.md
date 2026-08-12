@@ -115,7 +115,7 @@ energy-dashboard-frontend/
         │   ├── coreNetPosition.ts     # Minimal, provisional read for the JAO Core
         │   │                          #   net position archive (ABL-230)
         │   ├── dataFreshness.ts, countries.ts, weather.ts
-        │   ├── opsStatus.ts           # /ops/status — host/process KPIs + fleet freshness rollup (ABL-237)
+        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined (ABL-237, ABL-238)
         ├── services/                  # One service module per route group
         │   ├── freshness.ts           # Pure: is a stream live / stale / never held
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
@@ -124,6 +124,8 @@ energy-dashboard-frontend/
         │   ├── hostMetrics.ts         # Pure: disk/CPU readings, null when unmeasurable
         │   ├── forecastVintageArchiveService.ts, forecastVintageArchiveScheduler.ts
         │   │                          # Append-only forecast-vintage capture (ABL-184)
+        │   ├── peerOpsStatus.ts       # Fetches the peer environment's /api/ops/status (OPS_PEER_URL)
+        │   ├── combinedOpsStatusService.ts  # Merges local + peer for the ABL-238 status page
         │   └── coreNetPositionService.ts, jaoCoreNetPositionCapture.ts,
         │       coreNetPositionScheduler.ts
         │                              # JAO Core CCR net position capture (ABL-230) —
@@ -131,6 +133,8 @@ energy-dashboard-frontend/
         ├── workers/                   # captureForecastVintagesWorker.ts,
         │                              #   captureCoreNetPositionWorker.ts — each
         │                              #   scheduler's writable-connection thread
+        ├── lib/
+        │   └── syncBlackoutWindow.ts  # Pure: is `now` inside the ABL-220 DB-sync lock window
         ├── config/
         │   ├── database.ts            # SQLite connection (ENERGY_DB_PATH)
         │   ├── writeDatabase.ts       # Separate writable handle, opened lazily —
@@ -1392,6 +1396,36 @@ response contract is unchanged. Unlike `/health`, this endpoint touches the
 database (the freshness rollup), so it is expected to fail during the
 twice-daily DB sync's write-lock blackout described above — a known window,
 not a defect (see "Acceptance blackout during Stage 2", `../WORKFLOWS.md`).
+
+**`GET /api/ops/status/combined` (ABL-238) is the acceptance/prod status
+page's data source** — the internal `/ops-status` route, not in the main nav
+(`App.tsx` checks `window.location.pathname` directly rather than going
+through the persisted `currentView` store, so visiting it never changes what a
+normal user's next visit lands on). It fetches the peer environment's own
+`/api/ops/status` server-side (`peerOpsStatus.ts`) rather than having the
+browser call both origins directly — a cross-origin browser fetch from prod's
+page straight to acceptance's API (or vice versa) would hit CORS, and this
+also keeps the peer's LAN IP out of the client bundle. The peer's base URL is
+`OPS_PEER_URL` (`server/.env.example`, `docker/.env.example`,
+`docker-compose.yml`) — prod's points at acceptance and acceptance's points at
+prod; deliberately not hardcoded, since the same built image runs as either
+side. `combinedOpsStatusService.ts`'s `getCombinedOpsStatus` wraps **both**
+sides — the local call to `getOpsStatus()` and the peer HTTP fetch — in the
+same `{ reachable, ... }` shape, so a DB lock on this side during the sync
+blackout degrades this side alone, never blanks the peer's KPIs, and never
+500s the whole combined payload; `peerConfigured: false` (unset `OPS_PEER_URL`)
+is reported distinctly from `peer.reachable: false` (configured but not
+answering), so the page can say "not set up" instead of "down". `syncBlackout`
+(`lib/syncBlackoutWindow.ts`, ABL-220) tells the client to render an
+unreachable side as a known-state annotation rather than a red alarm when the
+timestamp falls in the ~07:00 / ~16:30 local sync window. That module owns the
+pad sizing and its justification — 2 min before the scheduled minute and a
+per-window `padAfterMin` (`server/src/lib/syncBlackoutWindow.ts:61`), widened
+to 60 min by ABL-249 after a 34m07s run on 2026-08-12; this page consumes it
+and does not size it. The window was previously misdiagnosed as a code/container defect
+(ABL-220's writeup) and the status page is built specifically not to repeat
+that mistake. No visitor-counter KPI and no external alerting/paging are in
+scope here — see the issue for why.
 
 ## Generation data
 

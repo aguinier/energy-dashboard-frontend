@@ -10,6 +10,7 @@ import { shouldRetryQuery } from '@/lib/queryRetry';
 const MapView = lazy(() => import('@/views/MapView').then(m => ({ default: m.MapView })));
 const CountryDashboardView = lazy(() => import('@/views/CountryDashboardView').then(m => ({ default: m.CountryDashboardView })));
 const ComparisonView = lazy(() => import('@/views/ComparisonView'));
+const OpsStatusView = lazy(() => import('@/views/OpsStatusView'));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -77,6 +78,20 @@ function AppContent() {
     root.classList.remove('light', 'dark');
     root.classList.add(effectiveTheme);
   }, [theme]);
+
+  // Internal acceptance/prod status comparison (ABL-238). Reached only by
+  // visiting /ops-status directly — deliberately outside `currentView`'s
+  // persisted store and AbleHeader's nav, so it stays off the main-nav
+  // surface entirely rather than something a normal visit could land on.
+  if (window.location.pathname === '/ops-status') {
+    return (
+      <main className="flex h-screen flex-1 flex-col overflow-hidden bg-background text-foreground">
+        <Suspense fallback={<ViewSkeleton />}>
+          <OpsStatusView />
+        </Suspense>
+      </main>
+    );
+  }
 
   return (
     <div className="flex h-screen w-full flex-col bg-background text-foreground">

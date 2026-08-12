@@ -33,6 +33,7 @@ import type {
   CrossCountryMetricsEntry,
   NetPositionResponse,
   ForecastModelRegistry,
+  CombinedOpsStatus,
 } from '@/types';
 import { unwrap } from './unwrap';
 
@@ -479,6 +480,20 @@ export async function fetchNetPosition(params: {
 export async function fetchForecastModels(): Promise<ForecastModelRegistry> {
   const { data } = await api.get<ApiResponse<ForecastModelRegistry>>('/forecasts/models');
   return unwrap(data, '/forecasts/models');
+}
+
+// ============================================================================
+// Ops status (ABL-238) — internal acceptance/prod comparison page
+// ============================================================================
+
+/**
+ * This environment's KPIs plus the peer's, merged server-side
+ * (`combinedOpsStatusService.ts`) — the peer is fetched from Node, not the
+ * browser, so this never makes a cross-origin request itself.
+ */
+export async function fetchOpsStatus(): Promise<CombinedOpsStatus> {
+  const { data } = await api.get<ApiResponse<CombinedOpsStatus>>('/ops/status/combined');
+  return unwrap(data, '/ops/status/combined');
 }
 
 export default api;
