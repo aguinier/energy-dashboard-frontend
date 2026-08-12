@@ -121,7 +121,7 @@ energy-dashboard-frontend/
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
         │   ├── degenerateForecast.ts  # Pure: collapsed-to-zero net position
         │   ├── freshnessRollup.ts     # Pure: fleet-wide worst-case freshness verdict
-        │   ├── hostMetrics.ts         # Pure: disk/CPU readings, null when unmeasurable
+        │   ├── hostMetrics.ts         # Pure: disk/CPU/network readings, null when unmeasurable
         │   ├── forecastVintageArchiveService.ts, forecastVintageArchiveScheduler.ts
         │   │                          # Append-only forecast-vintage capture (ABL-184)
         │   ├── peerOpsStatus.ts       # Fetches the peer environment's /api/ops/status (OPS_PEER_URL)
@@ -1563,6 +1563,29 @@ reads `none` rather than throwing. It also reports host/process KPIs
 acceptance host, no extra dependency), process memory/uptime, and CPU load —
 `null` on Windows rather than `os.loadavg()`'s fabricated `[0, 0, 0]`, per this
 file's own rule that a metric we cannot measure is `null`, never invented.
+
+**Per-interface network throughput (ABL-290) is the one KPI whose value needs
+two readings**, and it carries four distinct absences that must not collapse
+into one. `getNetworkThroughput` (`hostMetrics.ts:227`) parses `/proc/net/dev`
+— Linux-only, so the Windows acceptance host gets `null`, the same honest gap
+`cpuLoad` reports — and banks each read in process-lifetime state, so the ops
+page's poll supplies the second sample. Cumulative `rxBytes`/`txBytes` are real
+from the first call; the derived `rxBytesPerSec`/`txBytesPerSec` are `null`
+until there is a window to divide by, and `null` again whenever a counter goes
+backwards (interface bounce, container restart, 32-bit wrap) — the bytes
+actually moved are then unknowable, and a wrap-correction would invent an
+enormous one. The clock is `performance.now()`, deliberately not `Date.now()`:
+an NTP step between two samples would otherwise scale every rate on the page.
+Two parsing traps are covered by `hostMetrics.test.ts`: a wide counter abuts
+its colon (`eth0:123456789012`) so the line splits on the first `:` not on
+whitespace, and transmit bytes are field 9, not field 2. Client-side, `network`
+is **optional, not merely nullable** (`types/index.ts:392`) — a peer on a build
+older than ABL-290 sends no key at all, which `buildNetworkRows`
+(`client/src/lib/networkRows.ts`) renders as "not reported by this build",
+separately from `null` ("not measured on Windows"), `[]` ("no non-loopback
+interfaces"), and a listed interface whose rate is still `—`. A rate under
+1 B/s renders `<1 B/s`, never a rounded-down `0 B/s`; an exact zero is a
+measured zero and does read `0 B/s`.
 Provenance (`commit`/`runtime`/`db_path`) is `getHealthProvenance()` verbatim,
 the same values `/api/health` (`routes/index.ts:50`) reports — `/health`'s own
 response contract is unchanged. Unlike `/health`, this endpoint touches the
