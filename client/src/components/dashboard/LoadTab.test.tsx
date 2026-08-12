@@ -10,10 +10,11 @@
 // and no selection could take effect. Nothing caught that, because the only
 // thing that changed was which props reached the chart.
 //
-// So these assert exactly that: which series values reach AbleLineChart for a
-// given picker selection. The chart primitives are stubbed to expose their
-// inputs — recharts renders nothing at jsdom's zero-width viewport, and the
-// bug was in prop derivation, not in drawing.
+// Architecture note (post-ABL-204): checking any model in the multi-select
+// picker sets selectedModelsByType and routes to LoadSelectionView; the
+// single-model AbleLineChart path only activates when no model is pinned
+// (modelSelection.length === 0). Tests that guard explicit ML/TSO selection
+// therefore verify LoadSelectionView's entries, not AbleLineChart series.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
@@ -21,6 +22,23 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { LoadTab } from './LoadTab';
 import { useDashboardStore } from '@/store/dashboardStore';
+
+// Ensure a functional localStorage is present before the zustand persist
+// middleware initialises (which happens at dashboardStore module import time).
+// jsdom 30 + vitest worker threads may expose localStorage without a proper
+// Storage prototype in some configurations, so we normalise it here.
+vi.hoisted(() => {
+  const store: Record<string, string> = {};
+  const mock = {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => { store[key] = value; },
+    removeItem: (key: string) => { delete store[key]; },
+    clear: () => { Object.keys(store).forEach(k => delete store[k]); },
+    get length() { return Object.keys(store).length; },
+    key: (i: number) => Object.keys(store)[i] ?? null,
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: mock, writable: true });
+});
 
 // vi.mock factories run before the module body, so shared fixtures have to be
 // hoisted alongside them rather than declared as ordinary consts below.
@@ -92,13 +110,26 @@ vi.mock('@/services/api', () => ({
   })),
 }));
 
+// The AbleLineChart mock exposes two data attributes so both rendering paths
+// are testable:
+//   data-forecast-values  — `series[].forecast` values (single-model path via
+//                           adaptLoadSeries; empty for the multi-model path)
+//   data-forecast-series-ids — `forecastSeries[].id` values (multi-model path
+//                              via buildMultiForecastSeries; empty for single)
 vi.mock('@/components/charts/AbleLineChart', () => ({
-  AbleLineChart: ({ series }: { series: Array<{ forecast: number | null }> }) => (
+  AbleLineChart: ({
+    series,
+    forecastSeries,
+  }: {
+    series: Array<{ forecast: number | null }>;
+    forecastSeries?: Array<{ id: string }>;
+  }) => (
     <div
       data-testid="line-chart"
       data-forecast-values={JSON.stringify(
         series.filter((p) => p.forecast != null).map((p) => p.forecast),
       )}
+      data-forecast-series-ids={JSON.stringify((forecastSeries ?? []).map((s) => s.id))}
     />
   ),
 }));
@@ -117,22 +148,35 @@ function renderLoadTab() {
   return render(<LoadTab />, { wrapper });
 }
 
-/** The forecast values the tab actually handed to the chart. */
+/** The forecast values the tab handed to AbleLineChart (single-model path). */
 async function forecastValuesOnChart(): Promise<number[]> {
   const chart = await screen.findByTestId('line-chart');
   return JSON.parse(chart.getAttribute('data-forecast-values') ?? '[]');
 }
 
+/** The forecastSeries ids handed to AbleLineChart (multi-model path). */
+async function forecastSeriesIdsOnChart(): Promise<string[]> {
+  // There may be multiple line-chart elements (one per model entry in
+  // LoadSelectionView). Use findAllByTestId and take the first non-empty hit.
+  const charts = await screen.findAllByTestId('line-chart');
+  for (const chart of charts) {
+    const ids = JSON.parse(chart.getAttribute('data-forecast-series-ids') ?? '[]') as string[];
+    if (ids.length > 0) return ids;
+  }
+  return [];
+}
+
 describe('LoadTab forecast overlay', () => {
   beforeEach(() => {
-    // The store is a module singleton with a persist middleware, so state and
-    // its localStorage backing both leak between tests unless reset.
-    localStorage.clear();
+    // The store is a module singleton with a persist middleware. The middleware
+    // only reads localStorage at initialization (module import), not between
+    // tests, so setting state directly is sufficient to isolate tests.
     useDashboardStore.setState({
       selectedCountry: 'BE',
       timePreset: '24h',
       timeOffset: 0,
-      selectedModelByType: {},
+      selectedModelsByType: {},
+      forecastHiddenByType: {},
       showComparisonMode: false,
       showTSOComparisonMode: false,
     });
@@ -143,28 +187,31 @@ describe('LoadTab forecast overlay', () => {
   });
 
   it('draws the ML forecast when the picker selects an ml model', async () => {
-    useDashboardStore.setState({ selectedModelByType: { load: 'xgboost' } });
+    // Pinning a model routes to LoadSelectionView (multi-model path). The
+    // forecast reaches AbleLineChart via forecastSeries, not series[].forecast.
+    useDashboardStore.setState({ selectedModelsByType: { load: ['xgboost'] } });
 
     renderLoadTab();
 
-    expect(await forecastValuesOnChart()).toContain(fx.ML_VALUE);
-    expect(await screen.findByText(/dashed = able-ml forecast/)).toBeTruthy();
+    const ids = await forecastSeriesIdsOnChart();
+    expect(ids).toContain('xgboost');
   });
 
   it('draws the TSO forecast when the picker selects a tso model', async () => {
-    useDashboardStore.setState({ selectedModelByType: { load: 'tso-d1' } });
+    // Pinning a TSO model also routes to LoadSelectionView. The entry id must
+    // be 'tso-d1' and must not include an ML model.
+    useDashboardStore.setState({ selectedModelsByType: { load: ['tso-d1'] } });
 
     renderLoadTab();
 
-    const values = await forecastValuesOnChart();
-    expect(values).toContain(fx.TSO_VALUE);
-    // Selecting TSO must swap the source, not add to it.
-    expect(values).not.toContain(fx.ML_VALUE);
-    expect(await screen.findByText(/dashed = ENTSO-E TSO forecast/)).toBeTruthy();
+    const ids = await forecastSeriesIdsOnChart();
+    expect(ids).toContain('tso-d1');
+    expect(ids).not.toContain('xgboost');
+    expect(ids).not.toContain('catboost');
   });
 
   it('falls back to the production model when the user has picked nothing', async () => {
-    // Default state: `selectedModelByType` is empty. The type's production
+    // Default state: `selectedModelsByType` is empty. The type's production
     // model (catboost, an ml model) applies, so the overlay still draws.
     renderLoadTab();
 
@@ -172,8 +219,8 @@ describe('LoadTab forecast overlay', () => {
   });
 
   it('draws no forecast when the picker hides it', async () => {
-    // null is the picker's "hidden", distinct from undefined ("no preference").
-    useDashboardStore.setState({ selectedModelByType: { load: null } });
+    // forecastHiddenByType is the "hidden" signal — separate from selection.
+    useDashboardStore.setState({ forecastHiddenByType: { load: true } });
 
     renderLoadTab();
 
