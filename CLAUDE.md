@@ -2096,24 +2096,33 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12: **44 client test files / 575 tests** (555 passing in
+Green as of 2026-08-12: **45 client test files / 590 tests** (570 passing in
 this checkout — the other 20, in `dashboardStore.test.ts`/`windowLabel.test.ts`,
 fail on the pre-existing `storage.setItem is not a function` sandbox quirk the
-ABL-203 paragraph below already documents, not a regression), **41 server
-test files / 602 tests**, all passing, clean typecheck. Fewer tests passing
-than that means something broke.
+ABL-203 paragraph below already documents, not a regression; ABL-263 tracks
+them), **44 server test files / 620 tests**, all passing, clean typecheck.
+Fewer tests passing than that means something broke.
 
-(That server figure is measured on ABL-234 merged with `origin/main`, which is
-what `main` becomes when this lands — not on ABL-234's own 39/585. The extra
-2 files / 17 cases are `main`'s, not this change's: ABL-244 added
-`scripts/backfillModelGuard.test.ts` **and** `server/vitest.config.ts`, whose
-`include: ['src/**/*.test.ts', '../scripts/**/*.test.ts']` is what makes the
-repo-root scripts discoverable at all, and ABL-262 added
-`server/src/routes/countries.test.ts`. Both `main` and this branch were
-separately claiming 39 files here — `main` at 563 cases, this branch at 585 —
-so neither side's number survived the merge, and the two edits did not
-conflict textually because they touched the same claim from different
-directions.)
+(Both figures are a fresh `npx vitest run` on ABL-238 merged with `origin/main`
+at `0871259` — what `main` becomes when this lands — not arithmetic on the two
+branches' separate claims. Measured on a detached `origin/main` immediately
+beforehand: **42 server files / 604 tests** and **44 client files / 575 tests**,
+555 passing with the same 20 failing and no ABL-238 file on disk, which is what
+establishes those 20 as `main`'s rather than this branch's. ABL-238 adds +2
+server files / +16 cases (`services/peerOpsStatus.test.ts`,
+`services/combinedOpsStatusService.test.ts`, and new cases in the existing
+`routes/opsStatus.test.ts`) and +1 client file / +15 cases
+(`lib/opsStatusThresholds.test.ts`).)
+
+(`main` arrived here already claiming 41/602 while measuring 42/604: ABL-234
+counted correctly, but ABL-266 landed afterwards and
+`server/src/release/checkUnmergedWork.test.ts` is exactly the missing +1 file /
++2 cases. A count is only true of the tree it was measured on — re-measure it,
+never re-derive it from two branches' claims. The server file count includes
+the repo-root `scripts/backfillModelGuard.test.ts` (43 files under `server/`
+plus that one): ABL-244 added it together with `server/vitest.config.ts:11`,
+whose `include: ['src/**/*.test.ts', '../scripts/**/*.test.ts']` is what makes
+repo-root scripts discoverable from the server suite at all.)
 
 (ABL-234 added the Core / all-coupled-borders scope toggle. Client: 3 new
 files — `lib/coreNetPositionSeries.test.ts`, `components/map/
