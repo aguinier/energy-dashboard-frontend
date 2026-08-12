@@ -113,8 +113,13 @@ export function rangeArgs(range: TimestampRange): [string, string, string, strin
  * imprecise: `energy_load` alone has **137,113** country-hours where a 'T'-form
  * row and a space-form row BOTH exist, and **107,047** of those pairs hold
  * CONFLICTING values (measured 2026-08-11) — `energy_price` (16,896 pairs, 2
- * conflicting) and `energy_renewable` (26,694 pairs, 2,441 conflicting) carry
- * the same shape. An `IN(...)` join matches both rows whenever both exist, so
+ * conflicting) and `energy_renewable` (26,694 pairs, **26,400** conflicting —
+ * 98.9%, re-measured 2026-08-12 over the whole table, pairing length-19 rows
+ * on (country_code, instant) and comparing `total_renewable_mw`; this line
+ * read 2,441 until ABL-329, which understated it ~10x) carry the same shape,
+ * and none of `energy_renewable`'s 26,400 is a NULL-against-a-value mismatch:
+ * every one is two non-NULL, genuinely different readings. An `IN(...)` join
+ * matches both rows whenever both exist, so
  * it would silently double-count that hour and, on a conflicting pair, hand an
  * accuracy metric both the right-looking value and the wrong one as if they
  * were two independent observations — trading ABL-214's silent-drop defect for
