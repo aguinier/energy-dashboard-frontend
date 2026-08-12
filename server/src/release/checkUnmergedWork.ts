@@ -17,6 +17,20 @@
  * them it still runs and lists unmerged branches, but it cannot tell a shipping
  * gap from in-flight work, so it reports and exits 0 rather than guessing.
  *
+ * Two gates run, and the second does not depend on the board (ABL-311):
+ *
+ *   1. Per-branch: `done` + not on the target = shipping gap.
+ *   2. `main` itself: local `main` ahead of the target = not published.
+ *
+ * Gate 2 exists because gate 1 structurally cannot see the commonest form of
+ * the defect. It keys on an issue identifier in the branch name, and `main` has
+ * none, so a `main` twelve commits ahead of `origin/main` classified as
+ * `unattributed` — "reported, not failed" — and the check exited 0. That is
+ * exactly what happened on 2026-08-12 with five issues reading `done`. Gate 2
+ * also survives the branch being deleted after merge, and a commit made
+ * straight to `main`, neither of which leaves a tip for gate 1 to classify.
+ * See `publishState.ts` for the classification and its tests.
+ *
  * The target defaults to `origin/main`, not local `main` (ABL-190). The repo
  * workflow ends feature work by merging to local `main`, so a target of local
  * `main` makes a branch that is merged-but-never-pushed look shipped — that is
@@ -33,6 +47,12 @@ import {
   shippingGaps,
   type BranchTip,
 } from './unmergedWork.js';
+import {
+  classifyPublishState,
+  formatPublishState,
+  isPublishGap,
+  type PublishCounts,
+} from './publishState.js';
 
 const TARGET_OVERRIDE = process.env.CHECK_UNMERGED_TARGET;
 const TARGET = TARGET_OVERRIDE ?? 'origin/main';
@@ -85,6 +105,28 @@ function localBranches(): BranchTip[] {
     .filter((b) => b.name !== TARGET);
 }
 
+/**
+ * Ahead/behind for local `main` against the target, from the one command that
+ * reports both — `git rev-list --left-right --count <target>...main` prints
+ * "<only-on-target>\t<only-on-main>", so behind is left and ahead is right.
+ * Two separate counts could disagree with each other if the refs moved between
+ * them; this cannot.
+ *
+ * Returns null when there is no local `main` to compare, which
+ * `classifyPublishState` reports rather than fails.
+ */
+function publishCounts(): PublishCounts | null {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', 'main^{commit}'], { stdio: 'ignore' });
+  } catch {
+    return null;
+  }
+  const [behind, ahead] = git('rev-list', '--left-right', '--count', `${TARGET}...main`)
+    .split(/\s+/)
+    .map(Number);
+  return { ahead, behind };
+}
+
 function isAncestor(tip: string): boolean {
   try {
     execFileSync('git', ['merge-base', '--is-ancestor', tip, TARGET], { stdio: 'ignore' });
@@ -116,6 +158,15 @@ async function boardStatuses(): Promise<Map<string, string> | null> {
 
 async function main(): Promise<number> {
   ensureTargetIsFresh();
+
+  // Gate 2 first, and unconditionally: it needs nothing but git, so it is the
+  // one answer this command can always give. Every early return below has to
+  // carry it, which is why it is a variable and not a `return` here.
+  const counts = publishCounts();
+  const publishVerdict = classifyPublishState(counts);
+  console.log(formatPublishState(publishVerdict, counts, TARGET));
+  const publishGap = isPublishGap(publishVerdict);
+
   const branches = localBranches();
 
   let statuses: Map<string, string> | null = null;
@@ -136,13 +187,18 @@ async function main(): Promise<number> {
         'Board status unavailable (set PAPERCLIP_API_URL / PAPERCLIP_API_KEY / ' +
         'PAPERCLIP_COMPANY_ID), so none of them could be judged.',
     );
-    return 0;
+    return publishGap ? 1 : 0;
   }
 
   const gaps = shippingGaps(findings);
   if (gaps.length === 0) {
-    console.log(`\nNo shipping gaps: every issue marked done is on ${TARGET}.`);
-    return 0;
+    if (!publishGap) {
+      console.log(
+        `\nNo shipping gaps: every issue marked done is on ${TARGET}, ` +
+          `and main is published.`,
+      );
+    }
+    return publishGap ? 1 : 0;
   }
   console.log(
     `\n${gaps.length} issue(s) marked done with work that is not on ${TARGET}. ` +

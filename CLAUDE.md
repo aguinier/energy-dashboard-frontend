@@ -2481,9 +2481,23 @@ cd server && npx vitest run
 ```
 
 Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
-ABL-288 + ABL-295 + ABL-287): **48 client test files / 640 tests** and **56 server test
-files / 863 tests**, all passing, clean typecheck on both. Fewer tests passing
-than that means something broke.
+ABL-288 + ABL-295 + ABL-287 + ABL-304 + ABL-311): **48 client test files / 640
+tests** and **62 server test files / 1002 tests** (1001 passing + 1 skipped),
+all passing, clean typecheck on both. Fewer tests passing than that means
+something broke.
+
+(ABL-311 re-measured this, and the correction is large. The previous entry read
+56 server files / 863 tests, which was taken before PR #17 (ABL-304) merged as
+`c3f0dac` and so predated its +5 files / +125 tests: 56 + 5 = 61, 863 + 125 =
+988 measured on unmodified `origin/main` at `1ffbae5`. ABL-311 then adds
+`release/publishState.test.ts`, +1 file / +14 tests, giving 62 / 1002. The
+client figure was already correct — ABL-304 and ABL-311 are both server-only.
+
+Measured in a throwaway clone at `1ffbae5` with `node_modules` junctioned from
+the primary checkout and run under **v24.18.0**, because the primary checkout
+was held by a concurrent run the whole time — see the two measurement notes
+below for why a count taken in a shared tree is not trustworthy, and the
+`storage.setItem` note for why the Node version is not optional.)
 
 (ABL-287 added five server files — `lib/opsAlertRules.test.ts`,
 `lib/opsAlertEngine.test.ts`, `lib/opsAlertStateStore.test.ts`,
@@ -2549,13 +2563,21 @@ Two measurement notes worth having before you diagnose a "failure":
   45/590 figure before it likewise. Run `git status` first; if it is not clean,
   measure in a worktree instead (`git worktree add`, then junction or install
   `node_modules`) — that is how ABL-292's numbers were taken.
-- **The `storage.setItem is not a function` failures did not reproduce.**
-  Earlier entries recorded 20 failing in
-  `dashboardStore.test.ts`/`windowLabel.test.ts`; on 2026-08-12 every client
-  test passed in a clean worktree, before and after ABL-292. That quirk is
-  documented as intermittent (ABL-203 below, tracked by ABL-263) — treat it as
-  environmental and re-check on unmodified `main` before attributing it to a
-  branch, exactly as that paragraph says. It is **not** confirmed fixed.
+- **The `storage.setItem is not a function` failures are not intermittent —
+  they are the Node version on your `PATH`, deterministically** (ABL-311).
+  Earlier entries recorded 20 failures in
+  `dashboardStore.test.ts`/`windowLabel.test.ts`, then recorded them as having
+  "not reproduced", and ABL-263 tracked the quirk as flaky. It is not flaky.
+  **Node v25.6.1 defines a global `localStorage` object whose `setItem` is
+  `undefined`** unless `--localstorage-file` is passed; the store's
+  `createJSONStorage(() => localStorage)` gets that truthy-but-hollow object and
+  zustand calls straight through to a missing method. Under **v24.18.0**
+  `typeof localStorage === 'undefined'`, zustand's persist middleware takes its
+  no-storage path, and all 640 client tests pass. Verified both ways on the same
+  tree at `1ffbae5`, and again 60 commits back at `cb83944` with identical
+  results — so it never depended on a branch. This is the **same root cause as
+  the NODE_MODULE_VERSION section below**: `C:\Program Files\nodejs` (v25.6.1)
+  shadowing the nvm v24.18.0 install. One `export PATH` fixes both suites.
 
 ### NODE_MODULE_VERSION mismatch
 
@@ -2576,8 +2598,13 @@ just move the breakage to whoever has the other one first on `PATH`:
 
 ```bash
 export PATH="/c/Users/guill/AppData/Local/nvm/v24.18.0:$PATH"
-cd server && npx vitest run   # 56 files / 863 tests
+cd server && npx vitest run   # 62 files / 1002 tests
 ```
+
+That `export` fixes the client suite too, for a different mechanism with the
+same cause — see the `storage.setItem` note above. Set it once per shell and
+run both suites. (`/c/nvm4w/nodejs2/nodejs` is the nvm4w "current" symlink and
+also resolves to v24.18.0; either path works, the versioned one is stable.)
 
 This is a standing instruction, not a suggestion, and it was re-tested under
 ABL-287: `npm rebuild better-sqlite3` under the v25.6.1 on `PATH` does fix the
@@ -2773,8 +2800,58 @@ server-side actually arrived, and added `release/unmergedWork.test.ts`.)
 ### Before you mark an issue `done`
 
 ```bash
-cd server && npm run check:unmerged
+npm run predone            # from the repo root; = npm run check:unmerged -w server
 ```
+
+**Publishing to `origin/main` is the last step of `done`, not an optional
+one.** Prod is built from the remote. Work that is merged to local `main` and
+not pushed has not shipped, however green its tests are and whatever the board
+says. This has now recurred five times — ABL-79, ABL-98, ABL-136,
+ABL-189/190/196, ABL-262/265, and on 2026-08-12 five issues (ABL-285, ABL-292,
+ABL-288, ABL-290, ABL-295) all read `done` while local `main` sat **12 commits
+ahead of `origin/main`**.
+
+`predone` runs **two gates**, and the second is the one ABL-311 added:
+
+1. **Per branch** — `done` + not an ancestor of the target = shipping gap.
+2. **`main` itself** — local `main` ahead of the target = **not published**
+   (`release/publishState.ts`, pure, colocated test).
+
+Gate 2 exists because gate 1 structurally could not see the common case. It
+reads an issue identifier out of the branch name, and `main` has none, so
+`issueFromBranch('main')` returns null and the verdict was `unattributed` —
+"reported, not failed". A `main` twelve commits ahead printed one grey line and
+the command exited **0**. Verified on a synthetic repo in the ABL-311 run: the
+pre-ABL-311 checker exits 0 on a merged-but-unpushed `main`, the current one
+exits 1. Gate 2 also survives the two shapes that leave gate 1 no tip at all —
+deleting the feature branch after merging, and committing straight to `main`.
+
+Gate 2 is deliberately **board-independent**: it asks git a question git can
+always answer. A gate that needs a reachable network in order to fail is a gate
+that fails open, and gate 1 does exit 0 when the board is unreachable.
+
+So: `git push origin main` — then re-run `predone` and see `0 ahead, 0 behind`
+— *then* mark the issue `done`. If the push is not yours to make, say so on the
+issue and leave the status `in_review`, not `done`.
+
+#### PR or direct push?
+
+Both are legitimate; the split is by *what the change touches*, not by who is
+awake. Inferring the convention from whatever the last agent did is what left
+the push step belonging to nobody (ABL-311).
+
+- **Open a PR** for changes to shared contracts and anything security-sensitive:
+  the database layer and query shapes, the public `/v1` surface, auth or
+  credential handling, `energy_renewable`, ingest-adjacent code, and any schema
+  or dependency change. These get a second reader before they reach prod.
+- **Push direct to `origin/main`** for everything else once it is green on both
+  suites and `predone` passes: a tab, a chart, a pure helper, a route that reads
+  existing tables, docs, tooling and tests. Requiring a CEO merge on every issue
+  would make an hourly heartbeat the bottleneck on all work, which costs more
+  than the stranding it prevents.
+
+Either way the branch-per-concern rule stands, and either way the issue is not
+`done` until the work is an ancestor of `origin/main`.
 
 **A commit on a branch is not shipping.** ABL-76 found five issues marked `done`
 whose branch was created, committed, and never merged — three of them absent
@@ -2786,9 +2863,10 @@ neither is.
 The check joins `git merge-base --is-ancestor <tip> main` to the board's issue
 status and fails only on `done` + unmerged (`release/unmergedWork.ts`, pure,
 colocated test). In-flight, blocked and in-review branches are listed but never
-failed — the whole point is a check nobody wants to disable. It needs
+failed — the whole point is a check nobody wants to disable. **Gate 1** needs
 `PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` / `PAPERCLIP_COMPANY_ID`; without them
-it lists unmerged branches and exits 0 rather than guessing.
+it lists unmerged branches and exits 0 rather than guessing. **Gate 2 still
+fails without any of them** — that is the point of keeping it board-independent.
 
 It is deliberately **not** in the vitest suite: a test that failed whenever an
 unmerged branch existed would be red on every working branch every day. Run it
@@ -2814,6 +2892,9 @@ pure modules for the reason `comparison/mapFill.ts` does: `<Geographies>`
 fetches its topojson, so the map's Core/out-of-scope decision cannot be
 asserted through the component),
 `server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`,
+`server/src/release/publishState.ts` (ABL-311 — the caller hands it two
+integers from one `git rev-list --left-right --count`, so every publish verdict
+is asserted without a repo, a remote or a network),
 `server/src/services/freshnessRollup.ts`, `server/src/services/hostMetrics.ts`
 (ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
 as optional params, specifically so `hostMetrics.test.ts` can exercise the
