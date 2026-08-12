@@ -208,6 +208,35 @@ function readLookup(row: Record<string, unknown>): ApiKeyLookup {
   return { key: readKey(unprefix('k_')), account: readAccount(unprefix('a_')) };
 }
 
+/**
+ * Whether a failed key insert is a collision worth re-drawing for, rather than
+ * an error the caller must see.
+ *
+ * Matched on `err.code` rather than on the message text, so a wording change in
+ * a future `better-sqlite3` cannot quietly turn "retry the draw" into "500 at
+ * the customer". **Both** constants are needed and the pair is the whole point:
+ * a row here can collide on two different columns, and SQLite reports them
+ * under different codes —
+ *
+ * - `id` is the `PRIMARY KEY`, and reports `SQLITE_CONSTRAINT_PRIMARYKEY`;
+ * - `key_prefix` is `UNIQUE`, and reports `SQLITE_CONSTRAINT_UNIQUE`.
+ *
+ * Testing only the obvious `SQLITE_CONSTRAINT_UNIQUE` would therefore be
+ * *narrower* than the message match it replaces, and would turn a retryable
+ * `id` collision into a customer-visible 500 at the least convenient moment.
+ * Both codes were confirmed against better-sqlite3 11 rather than assumed
+ * (2026-08-12); `sqliteApiKeyStore.test.ts` pins them so this stays true.
+ */
+const RETRYABLE_INSERT_CODES: readonly string[] = [
+  'SQLITE_CONSTRAINT_PRIMARYKEY',
+  'SQLITE_CONSTRAINT_UNIQUE',
+];
+
+export function isRetryableCollision(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && RETRYABLE_INSERT_CODES.includes(code);
+}
+
 function makeDirectory(db: DatabaseType): ApiKeyDirectory {
   const lookup = db.prepare(LOOKUP_SQL);
   return {
@@ -365,7 +394,7 @@ export function openApiKeyAdminStore(env: NodeJS.ProcessEnv = process.env): ApiK
         );
         return { record, key: minted.key };
       } catch (err) {
-        if (!String((err as Error).message).includes('UNIQUE')) throw err;
+        if (!isRetryableCollision(err)) throw err;
       }
     }
     throw new Error('Could not mint a unique key prefix after 5 attempts.');

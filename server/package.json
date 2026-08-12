@@ -10,6 +10,7 @@
     "start": "node dist/index.js",
     "start:public": "node dist/v1/publicIndex.js",
     "keys": "tsx --env-file-if-exists=.env.public src/v1/keys/keysCli.ts",
+    "usage": "tsx --env-file-if-exists=.env.public src/v1/usage/usageCli.ts",
     "test": "vitest run",
     "check:unmerged": "tsx src/release/checkUnmergedWork.ts"
   },
