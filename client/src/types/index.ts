@@ -320,6 +320,66 @@ export interface DataFreshness {
 }
 
 // ============================================================================
+// Ingest passes — "Last refreshed" (ABL-295)
+// ============================================================================
+// Mirrors server/src/services/ingestLog.ts. Sourced from `data_ingestion_log`,
+// NOT from `publication_timestamp_utc`: that column is stamped with our own
+// fetch time and drifts up to 39.1 days from the row carrying it, so no stream
+// in this database can honestly show an upstream production time. That is why
+// the copy is "Last refreshed" and never "Published" or "Generated".
+
+/** The streams the dashboard draws, as the server's `INGEST_PIPELINES` maps them. */
+export type IngestStreamKey =
+  | 'load'
+  | 'price'
+  | 'generation'
+  | 'tsoLoadForecast'
+  | 'tsoGenerationForecast'
+  | 'netPosition';
+
+/**
+ * How the last pass relates to the last pass that actually brought rows.
+ *
+ * Four separate claims. `checked_no_data` and `never_delivered` in particular
+ * are not the same thing — measured 2026-08-12, GB load has never had a pass
+ * return a row in 453 attempts, while AL generation last got one on 2026-06-30
+ * and is still checked four times a day.
+ */
+export type IngestDelivery =
+  | 'flowing'
+  | 'checked_no_data'
+  | 'never_delivered'
+  | 'not_logged';
+
+export interface StreamRefresh {
+  /** Newest completed pass. When we last went and looked. */
+  lastChecked: string | null;
+  /**
+   * Newest completed pass that wrote at least one row.
+   *
+   * Never fall back to `lastChecked` when this is null. And not a claim that
+   * the data got newer — the ingest upserts a rolling 7-day window, so a
+   * rewrite of a row we already held counts here. The freshness pill's
+   * `MAX(timestamp_utc)` verdict is what answers data age.
+   */
+  lastStoredRows: string | null;
+  delivery: IngestDelivery;
+  /** Which `pipeline_type` rows the server folded in. */
+  pipelines: string[];
+}
+
+export interface IngestFreshness {
+  load: StreamRefresh;
+  price: StreamRefresh;
+  generation: StreamRefresh;
+  tsoLoadForecast: StreamRefresh;
+  tsoGenerationForecast: StreamRefresh;
+  netPosition: StreamRefresh;
+  /** Earliest pass anywhere in the log — what bounds a `not_logged` verdict. */
+  logStartsAt: string | null;
+}
+
+// ============================================================================
 // Ops status (ABL-237 host/process KPIs, ABL-238 acceptance/prod comparison)
 // ============================================================================
 // Mirrors server/src/services/opsStatusService.ts, peerOpsStatus.ts and
@@ -444,6 +504,80 @@ export interface CombinedOpsStatus {
      * the banner keys on `'warn'` rather than on inequality.
      */
     commitDrift: ThresholdState;
+  };
+}
+
+// ----------------------------------------------------------------------------
+// Ops status history (ABL-288)
+// ----------------------------------------------------------------------------
+// Mirrors server/src/services/opsSnapshot.ts, opsHistoryService.ts and
+// lib/diskHeadroom.ts. Snapshots of the combined reading, stored on a timer,
+// so the page can show a trend and a disk projection rather than only "now".
+
+/**
+ * One side of one stored reading. Every metric is `| null`, and `null` means
+ * that reading did not contain it — the side was unreachable, or the host
+ * could not measure it. It never means zero.
+ */
+export interface OpsSideSnapshot {
+  reachable: boolean;
+  latencyMs: number | null;
+  diskUsedBytes: number | null;
+  diskTotalBytes: number | null;
+  rssBytes: number | null;
+  uptimeSeconds: number | null;
+  freshnessStatus: FreshnessStatus | null;
+  staleCountryCount: number | null;
+  commit: string | null;
+}
+
+export interface OpsSnapshot {
+  /** ISO-8601 UTC instant the reading was taken. */
+  t: string;
+  local: OpsSideSnapshot;
+  peer: OpsSideSnapshot;
+}
+
+/** Why a headroom projection is absent — the page states this rather than showing a number. */
+export type DiskHeadroomReason =
+  | 'ok'
+  | 'no_readings'
+  | 'insufficient_history'
+  | 'insufficient_span'
+  | 'not_rising'
+  | 'noisy_fit'
+  | 'already_breached'
+  | 'beyond_horizon';
+
+export interface DiskHeadroomBasis {
+  points: number;
+  spanHours: number;
+  slopePercentPerDay: number;
+  r2: number;
+  currentPercent: number;
+}
+
+export interface DiskHeadroom {
+  thresholdPercent: number;
+  /** Days until the threshold is crossed, or `null` — see `reason`. */
+  days: number | null;
+  reason: DiskHeadroomReason;
+  basis: DiskHeadroomBasis | null;
+}
+
+export interface OpsStatusHistory {
+  timestamp: string;
+  /** Hours actually served — the request's `hours` clamped to retention. */
+  windowHours: number;
+  snapshots: OpsSnapshot[];
+  headroom: { local: DiskHeadroom; peer: DiskHeadroom };
+  storage: {
+    captureEnabled: boolean;
+    intervalMinutes: number;
+    retentionDays: number;
+    storedSnapshots: number;
+    skippedLines: number;
+    error: string | null;
   };
 }
 

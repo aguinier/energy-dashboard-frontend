@@ -116,8 +116,9 @@ energy-dashboard-frontend/
         │   ├── coreNetPosition.ts     # Minimal, provisional read for the JAO Core
         │   │                          #   net position archive (ABL-230)
         │   ├── dataFreshness.ts, countries.ts, weather.ts
-        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined (ABL-237, ABL-238;
-        │   │                          #   `derived` warn/error verdicts added by ABL-292)
+        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined, /ops/status/history
+        │   │                          #   (ABL-237, ABL-238; `derived` warn/error verdicts
+        │   │                          #   added by ABL-292, history by ABL-288)
         ├── services/                  # One service module per route group
         │   ├── freshness.ts           # Pure: is a stream live / stale / never held
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
@@ -128,6 +129,9 @@ energy-dashboard-frontend/
         │   │                          # Append-only forecast-vintage capture (ABL-184)
         │   ├── peerOpsStatus.ts       # Fetches the peer environment's /api/ops/status (OPS_PEER_URL)
         │   ├── combinedOpsStatusService.ts  # Merges local + peer for the ABL-238 status page
+        │   ├── opsSnapshot.ts, opsSnapshotStore.ts, opsSnapshotScheduler.ts,
+        │   │   opsHistoryService.ts   # Append-only JSONL ops-status snapshots (ABL-288) —
+        │   │                          #   a file next to the DB, never a table in it
         │   └── coreNetPositionService.ts, jaoCoreNetPositionCapture.ts,
         │       coreNetPositionScheduler.ts
         │                              # JAO Core CCR net position capture (ABL-230) —
@@ -1184,8 +1188,8 @@ Adding a preset means touching six places. All six now fail loudly:
   (`store/migrate.ts:25`), whose keys `VALID_TIME_PRESETS` derives from.
 - A `const unhandled: never = preset` in the `default` branch, so the new value
   is reported as not assignable to `never`: `getDateRangeForPreset`
-  (`useDashboardData.ts:115`) and `getGranularityForPreset`
-  (`useDashboardData.ts:156`).
+  (`useDashboardData.ts:116`) and `getGranularityForPreset`
+  (`useDashboardData.ts:157`).
 - The sixth — giving the preset a **control** — cannot be typed: a preset with
   no button is unreachable, not ill-typed, which is how four of them sat in the
   union until ABL-12. It is a **test** failure instead:
@@ -1246,7 +1250,7 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
 `server/src/types/index.ts:233`), every per-tab hook sends an explicit
 `start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
-`useDashboardData.ts:207`, and `useMapData` likewise at `:187`), and
+`useDashboardData.ts:208`, and `useMapData` likewise at `:188`), and
 `migratePersisted` deletes a stored
 `timeRange` outright (`store/migrate.ts:106`). `timePreset` is the single field
 describing the window. (`comparisonTimeRange`, a separate `'7d'|'30d'|'90d'`
@@ -1644,6 +1648,84 @@ that mistake. No visitor-counter KPI was in scope there; alerting arrived
 separately under ABL-287, below, and is still not paging — the log is the only
 channel.
 
+### 7b. "Last refreshed" per stream — when did the ingest last run?
+
+`GET /api/data-freshness/:cc/ingest` (ABL-295, follow-up A from ABL-286's
+provenance audit) answers a **different question** from the endpoint above, from
+a **different source**, and the two must not be merged. Section 7 asks *how old
+is the newest row we hold*, from `MAX(timestamp_utc)` on the data tables. This
+asks *when did we last go and look, and did the pass write anything*, from
+`data_ingestion_log` — which nothing in this repo read until now
+(`grep -rn data_ingestion_log server/src client/src` returned nothing).
+
+**Why not `publication_timestamp_utc`.** Because it is not a publication time —
+see "Data the database does not have". ENTSO-E builds documents on request, so
+that column dates our fetch; the audit measured 80.4% of `energy_load` rows
+carrying a stamp over a day newer than the row holding it, max drift 39.1 days.
+So the label is **"Last refreshed"**, never "Published" or "Generated": every
+word on screen describes our pipeline, not the producer.
+
+**The two values, and why collapsing them would be an incident.** A `completed`
+pass does not mean rows were written. Measured on the replica 2026-08-12
+(matching the issue's prod figures exactly): 2,886 of 16,335 `price` passes
+stored nothing, `load` 1,367 of 16,301, `load_forecast_week_ahead` 4,119 of
+16,298, `net_position` 1,267 of 2,668. Per (country, stream) it is worse than a
+rounding error — it is the permanent state of whole streams:
+
+- `net_position` — **14 of 36 zones have never had one pass store a row** (AL BA
+  CH CY DK GB IT MD ME MK NO RS SE UA); GR and IE last did on 2026-07-31.
+- `load` — GB and UA never have, matching their dead series.
+- `renewable` — AL last did on 2026-06-30 (Albania publishes no A75 at all).
+- `load_forecast_week_ahead` — ME last did 2026-05-24; BA GB MD MK SI UA never.
+
+Every one of those was "checked" during the 00:30–00:48 UTC pass that morning.
+Showing only the check would tell a GB user their load was refreshed today.
+
+**`lastStoredRows` is NOT "the data got newer", and the field is named for
+that.** `records_inserted` counts rows *written*, and the ingest upserts a
+rolling 7-day window, so `INSERT OR REPLACE` counts a rewrite. AL load proves
+it live: frozen at `2026-08-06 21:45` since its upstream stall, still storing
+660 → 636 → … → 180 rows a pass as the window slides past. See the
+`data_ingestion_log` bullet under "Data the database does not have" for the full
+measurement. The client caption says so and points at the pill for data age.
+
+- `services/ingestLog.ts` — pure, colocated test. The pipeline→stream map, the
+  four-state `classifyDelivery`, and `mergePipelinePasses`.
+- `services/ingestFreshnessService.ts` — one grouped read. **No `INDEXED BY`
+  hint on purpose**: SQLite picks the barely-selective `idx_ingestion_log_status`
+  and scans, which measured **38 ms** for FR across all seven pipelines against
+  **133 ms** when forced onto `idx_ingestion_log_pipeline`, whose row lookups are
+  random. The better-looking index is 3.5x slower here.
+- Client: `layout/lastRefreshed.ts` (pure, colocated test) owns every word;
+  `layout/LastRefreshedPanel.tsx` renders it in a popover behind the header
+  pill, and `useIngestFreshness(open)` is gated so nothing is fetched until a
+  reader opens it.
+
+Four states, four different claims — `classifyDelivery`, and none may be
+collapsed into another: `flowing` (the latest pass stored rows), `checked_no_data`
+(we have run since the last write and got nothing), `never_delivered` (passes on
+record, not one has ever written — there is no timestamp to show, so the copy
+says "Never" rather than falling back to the check time), and `not_logged` (no
+pass on record, which says the log cannot answer, not that the pipeline never
+ran — hence `logStartsAt` beside the streams, the log only begins 2025-12-23).
+
+**A multi-pipeline stream takes the best per-pipeline verdict, never the two
+maxima compared against each other.** `tsoLoadForecast` is written by both
+`load_forecast_day_ahead` and `load_forecast_week_ahead`, and D+7 finishes ~1s
+after D+1 in every cycle (FR 2026-08-12: `00:39:16.351083` then
+`00:39:17.291833`). Six countries (BA GB MD MK SI UA) have a D+7 that has never
+stored a row while their D+1 is healthy — so `max(lastChecked)` is always D+7's
+and `max(lastStoredRows)` always D+1's, one second earlier, and classifying those
+two against each other would report `checked_no_data` **forever** on a table
+refreshed four times a day. Reporting a healthy stream as stalled is the same
+false claim as the reverse.
+
+Scope: the six streams the dashboard draws. `crossborder_flows` and the two
+weather pipelines are logged but unrendered, and weather is keyed by bidding
+zone (`DK1`/`DK2`) where every ENTSO-E pipeline uses plain `DK`. A `failed`
+status is producible by the writer
+(`../energy-data-gathering/src/db.py:1192`) but has never occurred — 114,982
+`completed`, 1 `running` — and is counted as neither a check nor a write.
 **The ops warn/error thresholds live in exactly one module:
 `server/src/lib/opsStatusThresholds.ts` (ABL-292).** They started out in
 `client/src/lib/opsStatusThresholds.ts`, which meant the only thing in the
@@ -1735,6 +1817,58 @@ this repo — email is a separate issue for when credentials exist, and is one
 adapter behind that interface. A delivery failure is caught, logged, and the
 transition is deliberately **not** recorded, so the next tick retries rather
 than marking a breach "already reported" that nobody received.
+
+**`GET /api/ops/status/history` (ABL-288) is the trend half of that page**, and
+it is the one ops route that does **not** touch the database. A scheduler
+(`startOpsSnapshotScheduler`, `server/src/services/opsSnapshotScheduler.ts:114`)
+records a narrow projection of the combined reading — `toOpsSnapshot`
+(`server/src/services/opsSnapshot.ts:67`) keeps disk/RSS/uptime/freshness and
+drops the stale-country list and per-stream counts — into an append-only JSONL
+file every `OPS_SNAPSHOT_INTERVAL_MINUTES` (default 15), kept
+`OPS_SNAPSHOT_RETENTION_DAYS` (default 14). **It is a file, not a table**: the
+shared SQLite database belongs to `energy-data-gathering` and adding a table to
+it is out of bounds, and the deployed Windows acceptance host cannot open a WAL
+connection on its bind-mounted filesystem at all, while a plain append to that
+same mount works. The default path sits next to the database
+(`resolveSnapshotConfig`, `server/src/services/opsSnapshotStore.ts:68`) — so
+**deploying this makes a new `ops-status-snapshots.jsonl` appear in `/data`**,
+alongside the database, never inside it. Unlike the two DB-writing schedulers
+this one is **on by default**: it writes only its own file, and a trend that
+needs a deploy-time flag flipped before it starts accumulating is a trend
+nobody has when they first need it. `OPS_SNAPSHOT_ENABLED=false` turns capture
+off; reads are still served.
+
+The `days` figure is a **projection, not a measurement**, and
+`computeDiskHeadroom` (`server/src/lib/diskHeadroom.ts:142`) is written to
+refuse far more often than it answers — a least-squares fit of used-percent
+against time that returns `days: null` with a machine-readable `reason` for
+seven distinct refusals: fewer than four readings, a span under 12 hours, a
+flat or falling disk (`not_rising` — not "never", not a huge number), R² under
+0.5 (`noisy_fit`), already at the threshold (`already_breached` — the alarm is
+the current reading, not a countdown), and a crossing past a year
+(`beyond_horizon`, because extrapolating years from days of history is
+fabrication with a decimal point on it). It projects off the last **measured**
+percent, never the fitted value at that instant. `basis` (readings, span,
+slope, R², current percent) is returned even for the refusals, and the page
+renders it, so a projection built on 42 readings with R²=0.97 and a refusal
+built on three readings are told apart by the reader rather than trusted.
+`DISK_THRESHOLD_PERCENT` (`server/src/lib/diskHeadroom.ts:77`) is not a number
+of its own — it is `DISK_ERROR_RATIO * 100`, imported from the single
+thresholds module above. The countdown and the badge cannot drift because
+there is only one constant to change; were it mirrored, the page would say a
+disk is fine and that it crosses "full" tomorrow.
+
+Every one of those refusals is a *sentence*, not a blank cell: `describeHeadroom`
+(`client/src/lib/opsHistorySeries.ts:74`) maps all eight reasons to prose, and
+`describeStorage` (`:126`) separates "capture is switched off" from "nothing
+captured yet" from "the store could not be read" — three states that all render
+as an empty chart and have three different fixes. A side that was unreachable,
+or reported no disk, is a **hole in the line, never a zero**: `diskSeries`
+(`:39`) emits `null` and the chart splits its stroke with `drawableRuns`, the
+same rule the forecast lines follow. `hours` is clamped to what is actually
+retained and the served window echoed back as `windowHours`, so a client asking
+for 90 days of a 14-day file is told it got 14 rather than handed 14 days
+labelled 90.
 
 ## Generation data
 
@@ -2103,7 +2237,27 @@ change — filed as its own follow-up instead.
   at `2026-08-06 21:45` → ABL-84). that table
   records an `INSERT OR REPLACE` rowcount, so rewriting rows that already
   existed logs as inserts and a healthy ingest looks identical to a five-day
-  upstream stall. (ABL-60 turned the "is this stream current" half of this into
+  upstream stall.
+
+  **Re-confirmed by direct measurement under ABL-295, and it is AL load.**
+  Measured on the replica 2026-08-12: AL's `energy_load`
+  `MAX(timestamp_utc)` has been frozen at `2026-08-06 21:45` since the stall
+  above, and *every* pass since reports rows stored — 660, 636, 608, 588, 564,
+  ... 180, falling monotonically as the rolling 7-day window slides forward
+  past the frozen data. So a non-zero `records_inserted` is proof the pipeline
+  ran and wrote, and proof of nothing else. (`records_updated`, which would
+  separate a rewrite from a genuine insert, is never set: 0 of 114,983 rows
+  carry a non-zero value against 99,138 for `records_inserted`.)
+
+  ABL-295 now **does** read this table — see "Last refreshed per stream" below
+  — and is built around exactly this limit rather than in spite of it: it
+  reports when a pass ran and when a pass last stored rows, names the field
+  `lastStoredRows` rather than `lastNewData`, and its on-screen caption sends
+  the reader to the freshness pill for data age. Reading it as a currency
+  signal is still wrong; reading it as "did the pipeline run, and did it get
+  anything" is what it is for.
+
+  (ABL-60 turned the "is this stream current" half of this into
   a served verdict — see "Data freshness" above. That answers *whether* a stream
   is behind; this bullet is why a given zone being behind is usually not a bug
   to file. The 18h threshold is sized from the measurement above — ME at ~9.2h
@@ -2233,26 +2387,64 @@ cd server && npx vitest run
 ```
 
 Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
-ABL-290 + ABL-287): **46 client test files / 608 tests** and **50 server test
-files / 770 tests**, all passing, clean typecheck on both. Fewer tests passing
+ABL-288 + ABL-295 + ABL-287): **48 client test files / 640 tests** and **56 server test
+files / 863 tests**, all passing, clean typecheck on both. Fewer tests passing
 than that means something broke.
 
 (ABL-287 added five server files — `lib/opsAlertRules.test.ts`,
 `lib/opsAlertEngine.test.ts`, `lib/opsAlertStateStore.test.ts`,
-`services/opsAlertChannel.test.ts`, `services/opsAlertScheduler.test.ts` — 102
-tests between them, and extended `routes/opsStatus.test.ts`'s derived-key
-assertion for `commitDrift`. It touched one client file's types and one
-component, adding no client test. The client delta from 598 to 608 and the
-server delta beyond ABL-287's own 102 are ABL-290's, merged into `main` at
-`26e975b` between ABL-292 and this work.)
+`services/opsAlertChannel.test.ts`, `services/opsAlertScheduler.test.ts`, 102
+cases between them — plus a `commitDrift` assertion in the existing
+`routes/opsStatus.test.ts` and an allowlist entry in
+`src/docs/claudeMdCitations.ts`. It added no client test: its client change is a
+mirrored type and a banner that now reads the server's verdict. Measured fresh
+on the merge with `main` (ABL-288 + ABL-295), not summed — the branch alone read
+50/770 before that merge, and that figure does not survive here.)
 
-(Earlier: ABL-285 added `forecastVintage.test.ts`, +1 client file / +20 tests.
-ABL-292 then deleted the client's `lib/opsStatusThresholds.*`, -1 file / -15
-tests, and added `server/src/lib/opsStatusThresholds.test.ts`, +1 server file /
-+31 tests counting the derived-state cases in
-`services/combinedOpsStatusService.test.ts` and `routes/opsStatus.test.ts`. The
-figures above are a fresh run on the merge, not those deltas summed — see the
-ABL-234 note below on why a count is only true of the tree it was measured on.)
+(ABL-295 added `services/ingestLog.test.ts` (+1 server file / 15 cases) and 11
+more cases in the existing `routes/dataFreshness.test.ts`, plus
+`components/layout/lastRefreshed.test.ts` (+1 client file / 9 cases). Measured
+fresh on the merge, not summed: the branch alone reported 45/646 and 46/599
+before merging `main`, and neither of those figures survives here — which is
+the ABL-234 rule below in action.
+
+One environment note ABL-295 hit that the NODE_MODULE_VERSION section below
+does not cover: **a fresh git worktree has no `node_modules`, and `npm install`
+under npm 11.16 does not run install scripts.** It prints an `allow-scripts`
+warning and leaves `better-sqlite3` without its native binary and `esbuild`
+without its platform binary, so both suites fail to start before any test runs.
+Run each package's script directly — `node install.js` in `node_modules/esbuild`
+and `node_modules/vite/node_modules/esbuild` — rather than
+`npm approve-scripts`, which writes an `allowScripts` field into `package.json`
+and dirties the tree. `better-sqlite3@11.10.0`, which the server pins, has no
+Node 24 prebuild at all; copy `build/Release/better_sqlite3.node` from the
+primary checkout, which carries a working build of the same version.
+
+Also: **`core.autocrlf=true` here, and some committed files carry CRLF in the
+object anyway** — `client/src/types/index.ts` is one. Editing such a file with
+a tool that rewrites it LF-only (`sed -i`) turns a 60-line addition into a
+1,468-line whole-file diff and a guaranteed merge conflict. If `git diff --stat`
+shows a file you barely touched rewritten end to end, that is the cause; restore
+its CRLF and stage with `git -c core.autocrlf=false add <path>`.)
+
+(ABL-285 added `forecastVintage.test.ts`, +1 client file / +20 tests. ABL-292
+then deleted the client's `lib/opsStatusThresholds.*`, -1 file / -15 tests, and
+added `server/src/lib/opsStatusThresholds.test.ts`, +1 server file / +31 tests
+counting the derived-state cases in `services/combinedOpsStatusService.test.ts`
+and `routes/opsStatus.test.ts`. ABL-288 then added +5 server files
+(`lib/diskHeadroom.test.ts`, `services/opsSnapshot.test.ts`,
+`services/opsSnapshotStore.test.ts`, `services/opsSnapshotScheduler.test.ts`,
+`services/opsHistoryService.test.ts`) and +1 client file
+(`lib/opsHistorySeries.test.ts`). The figure above is a fresh run on the merge,
+not those deltas summed — see the ABL-234 note below on why a count is only
+true of the tree it was measured on.)
+
+`src/docs/claudeMdCitations.test.ts` is what keeps the `file:line` references
+in this document honest: it resolves every one of them and fails if a citation
+lands on the wrong line. It caught this merge shifting
+`computeDiskHeadroom` by two lines. If you move code that this file cites,
+that suite tells you before a reader is misled — so run the server suite after
+editing either.
 
 Two measurement notes worth having before you diagnose a "failure":
 
@@ -2290,7 +2482,7 @@ just move the breakage to whoever has the other one first on `PATH`:
 
 ```bash
 export PATH="/c/Users/guill/AppData/Local/nvm/v24.18.0:$PATH"
-cd server && npx vitest run   # 50 files / 770 tests
+cd server && npx vitest run   # 56 files / 863 tests
 ```
 
 This is a standing instruction, not a suggestion, and it was re-tested under
@@ -2532,7 +2724,13 @@ asserted through the component),
 (ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
 as optional params, specifically so `hostMetrics.test.ts` can exercise the
 graceful-degradation path — a throwing stat call, a mocked Windows platform —
-without a real disk or `os.loadavg()`).
+without a real disk or `os.loadavg()`),
+`server/src/services/ingestLog.ts` and
+`client/src/components/layout/lastRefreshed.ts` (ABL-295 — the pipeline→stream
+map and delivery classification on one side, every user-facing word on the
+other; the client half is pure so the copy can be pinned without a clock or a
+DOM, which is what stops a "Last refreshed" time appearing for a stream that
+has never received one).
 Logic is extracted into a pure function
 specifically so it can be tested this way. `timestamp.test.ts` also drives a
 throwaway in-memory SQLite holding both separator forms, and asserts the query

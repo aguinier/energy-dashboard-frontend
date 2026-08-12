@@ -25,6 +25,7 @@ import type {
   TSOForecastAccuracyMetrics,
   TSOGenerationForecastDataPoint,
   DataFreshness,
+  IngestFreshness,
   MLAccuracyCoverage,
   MLForecastAccuracyMetrics,
   MLForecastAccuracyResult,
@@ -35,6 +36,7 @@ import type {
   CoreNetPositionResponse,
   ForecastModelRegistry,
   CombinedOpsStatus,
+  OpsStatusHistory,
 } from '@/types';
 import { unwrap } from './unwrap';
 
@@ -323,6 +325,20 @@ export async function fetchDataFreshness(countryCode: string): Promise<DataFresh
   return unwrap(data, endpoint);
 }
 
+/**
+ * When each stream was last *refreshed* — read from `data_ingestion_log`.
+ *
+ * Deliberately a second request rather than more fields on the one above: that
+ * endpoint answers "how old is the newest row we hold" from the data tables,
+ * this one answers "when did we last go and look, and did anything arrive" from
+ * the pass log. See ABL-295.
+ */
+export async function fetchIngestFreshness(countryCode: string): Promise<IngestFreshness> {
+  const endpoint = `/data-freshness/${countryCode}/ingest`;
+  const { data } = await api.get<ApiResponse<IngestFreshness>>(endpoint);
+  return unwrap(data, endpoint);
+}
+
 // Combined initial data endpoint - reduces round trips for country view
 export async function fetchInitialCountryData(params: {
   country: string;
@@ -521,6 +537,21 @@ export async function fetchForecastModels(): Promise<ForecastModelRegistry> {
 export async function fetchOpsStatus(): Promise<CombinedOpsStatus> {
   const { data } = await api.get<ApiResponse<CombinedOpsStatus>>('/ops/status/combined');
   return unwrap(data, '/ops/status/combined');
+}
+
+/**
+ * The stored snapshots of that same combined reading, plus the disk headroom
+ * projection derived from them (ABL-288).
+ *
+ * `hours` is a request, not a guarantee: the server clamps it to what it
+ * actually retains and echoes the served window back as `windowHours`. Read
+ * that, not this argument, when labelling the chart.
+ */
+export async function fetchOpsStatusHistory(hours: number): Promise<OpsStatusHistory> {
+  const { data } = await api.get<ApiResponse<OpsStatusHistory>>('/ops/status/history', {
+    params: { hours },
+  });
+  return unwrap(data, '/ops/status/history');
 }
 
 export default api;
