@@ -175,6 +175,7 @@ describe('what reaches the disk', () => {
     const bytes = bytesOnDisk();
     expect(bytes).not.toContain('usage_events');
     expect(bytes).not.toContain('usage_rollup');
+    expect(bytes).not.toContain('usage_month_close');
   });
 
   it('has no last_used_at, which would be a write on every request', () => {

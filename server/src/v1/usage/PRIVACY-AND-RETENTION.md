@@ -84,7 +84,7 @@ store of whatever the caller sent.
 |---|---|---|
 | **90 days** | `client_ip` and `user_agent` are set to NULL, `pii_scrubbed_at` is stamped | `usage_events` |
 | **13 months** | The de-identified row is deleted outright | `usage_events` |
-| **never** | — | `usage_rollup` |
+| **never** | — | `usage_rollup`, `usage_month_close` |
 
 It runs two ways, and both are the same code path (`runUsageMaintenance`):
 
@@ -108,7 +108,9 @@ Three properties worth knowing before you touch it:
    storage reasons.
 3. **`usage_rollup` is out of scope on purpose.** Accounting law requires the
    figures an invoice was based on for roughly seven years, and the raw rows are
-   gone at thirteen months. See §4.
+   gone at thirteen months. See §4. `usage_month_close` is out of scope for the
+   same reason and one more: deleting a month's closure record would make that
+   month look open again, and the next late event for it would be billed.
 
 ### Checking it is actually happening
 
@@ -147,6 +149,23 @@ So:
 - **A closed month is final.** An event that arrives for it afterwards increments
   `late_requests` / `late_billable_requests`, where an investigator can see it,
   and never changes a figure that may already have been invoiced.
+
+Finality is enforced against `usage_month_close`, a record that a **month** is
+closed, and deliberately not against `usage_rollup.closed_at` alone. The two say
+the same thing about every row that exists when the month closes, and differ for
+the one case that made an invoiced figure grow afterwards: the first event of a
+month arriving on a key with no row in it, after that month closed. Such a row
+has nothing to conflict against, so it was created *open* with its request in the
+billable columns, and `late_requests` stayed at zero — which is what made it
+quiet. It is now born closed with its counts in `late_*`, and the two tests named
+"never re-bills a closed month…" hold both halves.
+
+One residual, stated rather than left to be found later: a month in which **no**
+key had any traffic is never closed, because closing walks the months present in
+`usage_rollup`. A late event for such a month is therefore billable in it. That
+is the right outcome today — no invoice was raised from an empty month, so there
+is no figure for a late event to contradict — but if invoices are ever raised for
+zero-usage months, close every elapsed month rather than only the populated ones.
 
 Invoice from a **closed** month. `usage:month` warns when a month is still open,
 because an open month can legitimately give two different answers a day apart.

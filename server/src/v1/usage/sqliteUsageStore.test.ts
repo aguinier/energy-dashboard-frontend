@@ -123,6 +123,14 @@ function monthOf(yearMonth: string) {
   return store.monthlyUsage(yearMonth);
 }
 
+/**
+ * The month's billable total across every key — the figure an invoice is
+ * raised from, rather than whatever one row happens to hold.
+ */
+function billableIn(yearMonth: string): number {
+  return monthOf(yearMonth).reduce((total, row) => total + row.billableRequests, 0);
+}
+
 function raw(): Database.Database {
   return new Database(dbPath, { readonly: true });
 }
@@ -476,6 +484,78 @@ describe('closing a month — explicit, idempotent, and final', () => {
 
     expect(monthOf('2026-07')[0].closedAt).not.toBeNull();
     expect(monthOf('2026-08')[0].closedAt).toBeNull();
+  });
+
+  /**
+   * The same guarantee as the test above, for the case that used to break it.
+   *
+   * The `late_*` columns are maintained by the `ON CONFLICT … DO UPDATE` arm of
+   * the rollup, so before `usage_month_close` existed they only fired for an
+   * (account, key, month) that already had a row. A late event on a key with no
+   * traffic in that month took the INSERT arm, found nothing to conflict with,
+   * and was written as an *open* row with its request in the billable columns —
+   * so the month's total grew by one billable request after the invoice for it
+   * had been sent, and `lateRequests` stayed at zero.
+   *
+   * Asserted on the total across the month's rows rather than on `[0]`, because
+   * this is the figure an invoice is raised from and the bug was invisible in
+   * any single row.
+   */
+  it('never re-bills a closed month for a late event on a key with no row in it', () => {
+    store.writeEvents([event(), event()]);
+    store.rollUp();
+    store.closeMonths(AFTER_JULY);
+    const invoiced = billableIn('2026-07');
+    expect(invoiced).toBe(2);
+
+    store.writeEvents([
+      event({
+        requestId: 'req_late_second_key',
+        keyId: secondKeyId,
+        receivedAt: '2026-07-20T00:00:00.000Z',
+      }),
+    ]);
+    store.rollUp();
+
+    expect(billableIn('2026-07')).toBe(invoiced);
+
+    // The row is created rather than dropped — an event nobody can account for
+    // is worse than one counted where an investigator will find it — and it is
+    // born closed, so it can never be read as a month still accruing.
+    const late = monthOf('2026-07').find((row) => row.keyId === secondKeyId);
+    expect(late).toBeDefined();
+    expect(late?.closedAt).not.toBeNull();
+    expect(late?.requests).toBe(0);
+    expect(late?.billableRequests).toBe(0);
+    expect(late?.lateRequests).toBe(1);
+    expect(late?.lateBillableRequests).toBe(1);
+  });
+
+  it('still treats a month as closed for a new key after a restart', () => {
+    store.writeEvents([event()]);
+    store.rollUp();
+    store.closeMonths(AFTER_JULY);
+    store.close();
+
+    // Closure has to survive the process, not just the object: it is recorded
+    // in the file, so a restarted store judges a late event the same way.
+    store = openUsageStore({
+      env: { API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv,
+      policy: { piiDays: 90, eventMonths: 13, monthCloseGraceDays: 2 },
+    });
+    store.writeEvents([
+      event({
+        requestId: 'req_late_after_restart',
+        keyId: secondKeyId,
+        receivedAt: '2026-07-25T00:00:00.000Z',
+      }),
+    ]);
+    store.rollUp();
+
+    expect(billableIn('2026-07')).toBe(1);
+    const late = monthOf('2026-07').find((row) => row.keyId === secondKeyId);
+    expect(late?.closedAt).not.toBeNull();
+    expect(late?.lateBillableRequests).toBe(1);
   });
 });
 

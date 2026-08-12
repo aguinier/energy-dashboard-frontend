@@ -40,7 +40,9 @@ import type { RetentionOutcome, UsageAdminStore } from './usageStore.js';
  * must never be pruned for storage reasons.** There is no general-purpose row
  * reaper here and there should never be one. `usage_rollup` is likewise never
  * deleted from — those rows are the seven-year invoice record and outlive the
- * events they were computed from, which is the entire reason they exist.
+ * events they were computed from, which is the entire reason they exist. Nor is
+ * `usage_month_close`: deleting a month's closure record would make that month
+ * read as open again, and the next late event for it would be billed.
  */
 
 export interface RollUpSummary {

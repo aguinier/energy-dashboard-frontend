@@ -169,6 +169,32 @@ CREATE TABLE IF NOT EXISTS usage_rollup_state (
   rolled_through_event_id INTEGER NOT NULL,
   updated_at              TEXT NOT NULL
 );
+
+-- Which billing months are closed, as a property of the *month* rather than of
+-- any row in usage_rollup.
+--
+-- This table exists because the obvious design — closure recorded only as
+-- usage_rollup.closed_at — is right for every row that exists at the moment the
+-- month closes and silently wrong for every row that does not. The late_*
+-- columns are maintained by the ON CONFLICT ... DO UPDATE arm of ROLL_UP, so
+-- they only ever fire for an (account, key, month) that already has a row. A
+-- late event on a key with no traffic that month takes the INSERT arm instead
+-- and, with nothing to conflict against, was born with closed_at = NULL and its
+-- requests in the *billable* columns. The month's invoice figure then grew
+-- after the invoice was sent.
+--
+-- That is the over-count this module is written to make impossible, and it was
+-- reachable: a key issued mid-month whose first traffic is a replayed batch, a
+-- process whose buffered events flush after a long stall, an operator replaying
+-- a dead-letter file, or a clock that was wrong. Rare is not the same as
+-- unreachable, and the failure is discovered by a customer reading an invoice.
+--
+-- With this table the closed state is known before the row exists, so a row
+-- created for a closed month is born closed with its counts in late_*.
+CREATE TABLE IF NOT EXISTS usage_month_close (
+  year_month TEXT PRIMARY KEY,
+  closed_at  TEXT NOT NULL
+);
 `;
 
 /**
@@ -224,10 +250,24 @@ SELECT request_id, COUNT(*) OVER () AS prior_count
  * `INSERT … SELECT`, SQLite's parser cannot otherwise tell the upsert clause
  * from a continuation of the SELECT.
  *
- * Every `DO UPDATE` assignment is guarded on `closed_at IS NULL`. A month that
- * has been closed is final — late events increment the two `late_*` columns
- * instead, where they are visible to whoever investigates rather than silently
- * folded into a figure that has already been invoiced.
+ * ## Where a month's counts are routed, and why the join decides it
+ *
+ * A closed month is final. Events that arrive for it afterwards are counted in
+ * the two `late_*` columns, where somebody investigating a dispute can see
+ * them, and are never folded into a figure that has already been invoiced.
+ *
+ * The routing is decided by the `LEFT JOIN` against `usage_month_close` — the
+ * month's own closed state — and **not** by `usage_rollup.closed_at`, which is
+ * the state of a row that may not exist yet. Those two are the same thing for
+ * every row present when the month closed, and differ for exactly the case that
+ * used to over-count: the first event of a month arriving on a key that has no
+ * row in it, after that month closed. See the `usage_month_close` comment.
+ *
+ * The aggregate is a subquery so the join is against one row per group rather
+ * than per event, and so `DO UPDATE` can add `excluded.*` unconditionally: the
+ * SELECT has already put each count in the column it belongs in. Only
+ * `first_event_at`/`last_event_at` still test the row's own `closed_at`, to
+ * hold the window of a closed month fixed at what was invoiced.
  */
 const ROLL_UP = `
 INSERT INTO usage_rollup (
@@ -235,30 +275,41 @@ INSERT INTO usage_rollup (
   rows_returned, response_bytes, first_event_at, last_event_at,
   closed_at, late_requests, late_billable_requests
 )
-SELECT account_id,
-       key_id,
-       substr(received_at, 1, 7),
-       COUNT(*),
-       SUM(billable),
-       COALESCE(SUM(row_count), 0),
-       COALESCE(SUM(response_bytes), 0),
-       MIN(received_at),
-       MAX(received_at),
-       NULL,
-       0,
-       0
-  FROM usage_events
- WHERE id > ? AND id <= ?
- GROUP BY account_id, key_id, substr(received_at, 1, 7)
+SELECT g.account_id,
+       g.key_id,
+       g.year_month,
+       CASE WHEN c.closed_at IS NULL THEN g.requests ELSE 0 END,
+       CASE WHEN c.closed_at IS NULL THEN g.billable_requests ELSE 0 END,
+       CASE WHEN c.closed_at IS NULL THEN g.rows_returned ELSE 0 END,
+       CASE WHEN c.closed_at IS NULL THEN g.response_bytes ELSE 0 END,
+       g.first_event_at,
+       g.last_event_at,
+       -- Born closed when the month already is, so the row can never be read as
+       -- an open month that is still accruing.
+       c.closed_at,
+       CASE WHEN c.closed_at IS NULL THEN 0 ELSE g.requests END,
+       CASE WHEN c.closed_at IS NULL THEN 0 ELSE g.billable_requests END
+  FROM (
+    SELECT account_id,
+           key_id,
+           substr(received_at, 1, 7)          AS year_month,
+           COUNT(*)                           AS requests,
+           SUM(billable)                      AS billable_requests,
+           COALESCE(SUM(row_count), 0)        AS rows_returned,
+           COALESCE(SUM(response_bytes), 0)   AS response_bytes,
+           MIN(received_at)                   AS first_event_at,
+           MAX(received_at)                   AS last_event_at
+      FROM usage_events
+     WHERE id > ? AND id <= ?
+     GROUP BY account_id, key_id, substr(received_at, 1, 7)
+  ) g
+  LEFT JOIN usage_month_close c ON c.year_month = g.year_month
+ WHERE true
 ON CONFLICT(account_id, key_id, year_month) DO UPDATE SET
-  requests = usage_rollup.requests
-    + CASE WHEN usage_rollup.closed_at IS NULL THEN excluded.requests ELSE 0 END,
-  billable_requests = usage_rollup.billable_requests
-    + CASE WHEN usage_rollup.closed_at IS NULL THEN excluded.billable_requests ELSE 0 END,
-  rows_returned = usage_rollup.rows_returned
-    + CASE WHEN usage_rollup.closed_at IS NULL THEN excluded.rows_returned ELSE 0 END,
-  response_bytes = usage_rollup.response_bytes
-    + CASE WHEN usage_rollup.closed_at IS NULL THEN excluded.response_bytes ELSE 0 END,
+  requests = usage_rollup.requests + excluded.requests,
+  billable_requests = usage_rollup.billable_requests + excluded.billable_requests,
+  rows_returned = usage_rollup.rows_returned + excluded.rows_returned,
+  response_bytes = usage_rollup.response_bytes + excluded.response_bytes,
   first_event_at = CASE
     WHEN usage_rollup.closed_at IS NULL
     THEN MIN(usage_rollup.first_event_at, excluded.first_event_at)
@@ -267,10 +318,9 @@ ON CONFLICT(account_id, key_id, year_month) DO UPDATE SET
     WHEN usage_rollup.closed_at IS NULL
     THEN MAX(usage_rollup.last_event_at, excluded.last_event_at)
     ELSE usage_rollup.last_event_at END,
-  late_requests = usage_rollup.late_requests
-    + CASE WHEN usage_rollup.closed_at IS NULL THEN 0 ELSE excluded.requests END,
-  late_billable_requests = usage_rollup.late_billable_requests
-    + CASE WHEN usage_rollup.closed_at IS NULL THEN 0 ELSE excluded.billable_requests END
+  late_requests = usage_rollup.late_requests + excluded.late_requests,
+  late_billable_requests =
+    usage_rollup.late_billable_requests + excluded.late_billable_requests
 `;
 
 function readRollup(row: Record<string, unknown>): UsageRollupRow {
@@ -499,6 +549,19 @@ export function openUsageStore({
         continue;
       }
 
+      // Both writes, in this one transaction. The rows record what was
+      // invoiced; the month record is what a *later* row for this month is
+      // judged against, and a row created after this point is born closed
+      // because of it. Splitting them would reintroduce the over-count in the
+      // window between the two statements.
+      //
+      // `DO NOTHING` rather than an overwrite: a month closes once, and the
+      // timestamp of that first closing is the one an invoice was raised
+      // against.
+      db.prepare(
+        `INSERT INTO usage_month_close (year_month, closed_at) VALUES (?, ?)
+         ON CONFLICT(year_month) DO NOTHING`
+      ).run(yearMonth, nowIso);
       db.prepare(
         'UPDATE usage_rollup SET closed_at = ? WHERE year_month = ? AND closed_at IS NULL'
       ).run(nowIso, yearMonth);
