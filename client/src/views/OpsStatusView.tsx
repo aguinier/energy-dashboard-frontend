@@ -1,9 +1,14 @@
 import { AlertTriangle, CheckCircle2, Clock, HelpCircle, XCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useOpsStatus } from '@/hooks/useOpsStatus';
-import { deriveEnvironmentState, type ThresholdState } from '@/lib/opsStatusThresholds';
 import { formatTimeAgo } from '@/lib/formatters';
-import type { CombinedOpsStatus, FreshnessRollup, OpsSideStatus } from '@/types';
+import type {
+  CombinedOpsStatus,
+  FreshnessRollup,
+  OpsSideDerived,
+  OpsSideStatus,
+  ThresholdState,
+} from '@/types';
 
 /**
  * Internal acceptance/prod status comparison (ABL-238). Reachable only by
@@ -15,6 +20,13 @@ import type { CombinedOpsStatus, FreshnessRollup, OpsSideStatus } from '@/types'
  * this side, a locked local DB during the ABL-220 sync blackout must never
  * blank the peer's) lives server-side in `combinedOpsStatusService.ts`. This
  * component only renders the `{ local, peer }` shape it already produces.
+ *
+ * As of ABL-292 the same is true of the warn/error verdicts: this view no
+ * longer derives them. `data.derived` arrives from the server, computed in
+ * `server/src/lib/opsStatusThresholds.ts`, so the badge here, ABL-287's alert
+ * engine and ABL-288's trend view cannot disagree about what 85% disk means.
+ * Everything below is presentation — labels, icons, colours — and the moment
+ * something here starts deciding a threshold again, that is the bug.
  */
 export default function OpsStatusView() {
   const { data, isLoading, isError, refetch, isFetching } = useOpsStatus();
@@ -40,11 +52,11 @@ export default function OpsStatusView() {
             {shouldShowBlackoutBanner(data) && <BlackoutBanner label={data.syncBlackout.label} />}
             <CommitDriftBanner local={data.local} peer={data.peer} />
             <div className="grid gap-4 md:grid-cols-2">
-              <EnvironmentCard title="This environment" side={data.local} blackoutActive={data.syncBlackout.active} />
+              <EnvironmentCard title="This environment" side={data.local} derived={data.derived.local} />
               <EnvironmentCard
                 title="Peer environment"
                 side={data.peer}
-                blackoutActive={data.syncBlackout.active}
+                derived={data.derived.peer}
                 peerConfigured={data.peerConfigured}
               />
             </div>
@@ -102,16 +114,17 @@ function CommitDriftBanner({ local, peer }: { local: OpsSideStatus; peer: OpsSid
 function EnvironmentCard({
   title,
   side,
-  blackoutActive,
+  derived,
   peerConfigured,
 }: {
   title: string;
   side: OpsSideStatus;
-  blackoutActive: boolean;
+  /** The server's verdict for this lane (ABL-292) — never recomputed here. */
+  derived: OpsSideDerived;
   /** Only meaningful for the peer card — `undefined` for the local card, which is always configured. */
   peerConfigured?: boolean;
 }) {
-  const state = deriveEnvironmentState(side, blackoutActive);
+  const state = derived.environment;
   const notConfigured = peerConfigured === false;
 
   if (!side.reachable) {
@@ -155,10 +168,11 @@ function EnvironmentCard({
           label="Commit"
           value={status.provenance.commit ? status.provenance.commit.slice(0, 7) : `— (${status.provenance.runtime})`}
         />
-        <Row label="Freshness" value={describeFreshnessRollup(status.freshness)} />
+        <Row label="Freshness" value={describeFreshnessRollup(status.freshness)} state={derived.freshness} />
         <Row
           label="Disk"
           value={disk ? `${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)} (${diskPercent}%)` : 'not measured'}
+          state={derived.disk}
         />
         <Row label="Memory (RSS)" value={formatBytes(status.process.memory.rssBytes)} />
         <Row label="Uptime" value={formatUptime(status.process.uptimeSeconds)} />
@@ -171,14 +185,29 @@ function EnvironmentCard({
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+/**
+ * `state` tints only the two KPIs the server actually derives a verdict for
+ * (ABL-292's `derived.disk` / `derived.freshness`). The rows without one —
+ * latency, commit, memory, uptime, CPU load — stay neutral rather than
+ * borrowing the card's overall colour: there is no threshold behind them, and
+ * colouring a number implies a judgement we have not made about it.
+ */
+function Row({ label, value, state }: { label: string; value: string; state?: ThresholdState }) {
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="text-meta text-ink-dim">{label}</span>
-      <span className="font-mono-num text-body text-foreground">{value}</span>
+      <span className={`font-mono-num text-body ${state ? ROW_VALUE_CLASS[state] : 'text-foreground'}`}>{value}</span>
     </div>
   );
 }
+
+const ROW_VALUE_CLASS: Record<ThresholdState, string> = {
+  ok: 'text-foreground',
+  warn: 'text-amber-700 dark:text-amber-400',
+  error: 'text-dirty',
+  // Unmeasured reads as muted, never as a healthy value.
+  unknown: 'text-ink-faint',
+};
 
 const STATE_LABEL: Record<ThresholdState, string> = {
   ok: 'OK',
