@@ -115,7 +115,8 @@ energy-dashboard-frontend/
         │   ├── coreNetPosition.ts     # Minimal, provisional read for the JAO Core
         │   │                          #   net position archive (ABL-230)
         │   ├── dataFreshness.ts, countries.ts, weather.ts
-        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined (ABL-237, ABL-238)
+        │   ├── opsStatus.ts           # /ops/status, /ops/status/combined, /ops/status/history
+        │   │                          #   (ABL-237, ABL-238, ABL-288)
         ├── services/                  # One service module per route group
         │   ├── freshness.ts           # Pure: is a stream live / stale / never held
         │   ├── loadQuality.ts         # Pure: the impossible-zero load rule
@@ -126,6 +127,9 @@ energy-dashboard-frontend/
         │   │                          # Append-only forecast-vintage capture (ABL-184)
         │   ├── peerOpsStatus.ts       # Fetches the peer environment's /api/ops/status (OPS_PEER_URL)
         │   ├── combinedOpsStatusService.ts  # Merges local + peer for the ABL-238 status page
+        │   ├── opsSnapshot.ts, opsSnapshotStore.ts, opsSnapshotScheduler.ts,
+        │   │   opsHistoryService.ts   # Append-only JSONL ops-status snapshots (ABL-288) —
+        │   │                          #   a file next to the DB, never a table in it
         │   └── coreNetPositionService.ts, jaoCoreNetPositionCapture.ts,
         │       coreNetPositionScheduler.ts
         │                              # JAO Core CCR net position capture (ABL-230) —
@@ -1600,6 +1604,57 @@ and does not size it. The window was previously misdiagnosed as a code/container
 that mistake. No visitor-counter KPI and no external alerting/paging are in
 scope here — see the issue for why.
 
+**`GET /api/ops/status/history` (ABL-288) is the trend half of that page**, and
+it is the one ops route that does **not** touch the database. A scheduler
+(`startOpsSnapshotScheduler`, `server/src/services/opsSnapshotScheduler.ts:114`)
+records a narrow projection of the combined reading — `toOpsSnapshot`
+(`server/src/services/opsSnapshot.ts:67`) keeps disk/RSS/uptime/freshness and
+drops the stale-country list and per-stream counts — into an append-only JSONL
+file every `OPS_SNAPSHOT_INTERVAL_MINUTES` (default 15), kept
+`OPS_SNAPSHOT_RETENTION_DAYS` (default 14). **It is a file, not a table**: the
+shared SQLite database belongs to `energy-data-gathering` and adding a table to
+it is out of bounds, and the deployed Windows acceptance host cannot open a WAL
+connection on its bind-mounted filesystem at all, while a plain append to that
+same mount works. The default path sits next to the database
+(`resolveSnapshotConfig`, `server/src/services/opsSnapshotStore.ts:68`) — so
+**deploying this makes a new `ops-status-snapshots.jsonl` appear in `/data`**,
+alongside the database, never inside it. Unlike the two DB-writing schedulers
+this one is **on by default**: it writes only its own file, and a trend that
+needs a deploy-time flag flipped before it starts accumulating is a trend
+nobody has when they first need it. `OPS_SNAPSHOT_ENABLED=false` turns capture
+off; reads are still served.
+
+The `days` figure is a **projection, not a measurement**, and
+`computeDiskHeadroom` (`server/src/lib/diskHeadroom.ts:139`) is written to
+refuse far more often than it answers — a least-squares fit of used-percent
+against time that returns `days: null` with a machine-readable `reason` for
+seven distinct refusals: fewer than four readings, a span under 12 hours, a
+flat or falling disk (`not_rising` — not "never", not a huge number), R² under
+0.5 (`noisy_fit`), already at the threshold (`already_breached` — the alarm is
+the current reading, not a countdown), and a crossing past a year
+(`beyond_horizon`, because extrapolating years from days of history is
+fabrication with a decimal point on it). It projects off the last **measured**
+percent, never the fitted value at that instant. `basis` (readings, span,
+slope, R², current percent) is returned even for the refusals, and the page
+renders it, so a projection built on 42 readings with R²=0.97 and a refusal
+built on three readings are told apart by the reader rather than trusted.
+`DISK_THRESHOLD_PERCENT` (`server/src/lib/diskHeadroom.ts:74`) is 90 and
+deliberately mirrors `DISK_ERROR_RATIO`
+(`client/src/lib/opsStatusThresholds.ts:15`) — if those two drift, the page
+says a disk is fine and that it crosses "full" tomorrow.
+
+Every one of those refusals is a *sentence*, not a blank cell: `describeHeadroom`
+(`client/src/lib/opsHistorySeries.ts:74`) maps all eight reasons to prose, and
+`describeStorage` (`:126`) separates "capture is switched off" from "nothing
+captured yet" from "the store could not be read" — three states that all render
+as an empty chart and have three different fixes. A side that was unreachable,
+or reported no disk, is a **hole in the line, never a zero**: `diskSeries`
+(`:39`) emits `null` and the chart splits its stroke with `drawableRuns`, the
+same rule the forecast lines follow. `hours` is clamped to what is actually
+retained and the served window echoed back as `windowHours`, so a client asking
+for 90 days of a 14-day file is told it got 14 rather than handed 14 days
+labelled 90.
+
 ## Generation data
 
 Two tables, both written from **one** A75 fetch per country per window
@@ -2096,12 +2151,65 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12: **45 client test files / 590 tests** (570 passing in
-this checkout — the other 20, in `dashboardStore.test.ts`/`windowLabel.test.ts`,
-fail on the pre-existing `storage.setItem is not a function` sandbox quirk the
-ABL-203 paragraph below already documents, not a regression; ABL-263 tracks
-them), **44 server test files / 620 tests**, all passing, clean typecheck.
-Fewer tests passing than that means something broke.
+Green as of 2026-08-12: **46 client test files / 613 tests**, **49 server test
+files / 687 tests**, all passing, clean typecheck. Fewer tests passing than
+that means something broke.
+
+(Measured on ABL-288's branch — a dedicated `git worktree` off `206238d`, so
+nothing else's uncommitted work was on the tree, which is why this one *is*
+restated as an absolute rather than only as a delta. ABL-288 adds +5 server
+files / +67 cases (`lib/diskHeadroom.test.ts` 13, `services/opsSnapshot.test.ts`
+7, `services/opsSnapshotStore.test.ts` 21, `services/opsSnapshotScheduler.test.ts`
+9, `services/opsHistoryService.test.ts` 11, plus +6 cases in the existing
+`routes/opsStatus.test.ts`, 7→13) and +1 client file / +23 cases
+(`lib/opsHistorySeries.test.ts`). Those deltas reconcile exactly against the
+44/620 and 45/590 recorded here before it, which is the first time in several
+entries the arithmetic has closed — worth preserving by measuring in a worktree
+rather than on the shared checkout.)
+
+(All 613 client tests passed in that worktree: the ~20 `storage.setItem is not
+a function` failures in `dashboardStore.test.ts`/`windowLabel.test.ts` that the
+ABL-203 paragraph below documents, and that ABL-263 tracks, did **not** appear
+there. That quirk is intermittent and checkout-dependent — do not read its
+absence as a fix, and do not read its presence as a regression.)
+
+### NODE_MODULE_VERSION mismatch
+
+If `cd server && npx vitest run` fails ~24 files with
+
+```
+The module '...better-sqlite3\build\Release\better_sqlite3.node'
+was compiled against a different Node.js version using
+NODE_MODULE_VERSION 137. This version of Node.js requires
+NODE_MODULE_VERSION 141.
+```
+
+that is **the environment, not your branch**. This workstation's default `node`
+on `PATH` is v25.6.1 (ABI 141); the checked-in `better_sqlite3.node` was built
+2026-08-05 against Node 24 (ABI 137) and nobody has rebuilt it since the
+upgrade. Only suites that open a database fail; pure-helper suites pass either
+way, which is what makes this easy to misread as a partial regression in
+whatever you happen to be working on.
+
+**Run the suite under Node 24 instead of rebuilding.** nvm has it installed:
+
+```bash
+export PATH="/c/Users/guill/AppData/Local/nvm/v24.18.0:$PATH"
+cd server && npx vitest run    # 49 files / 687 tests, all passing
+```
+
+Do **not** reach for `npm rebuild better-sqlite3` here. `server/node_modules` in
+every `git worktree` of this repo is a **symlink to the primary checkout's**
+(`ls -ld server/node_modules` shows it), so a rebuild mutates the dependency
+tree that every concurrently-running agent is executing against, and leaves the
+native module broken for all of them while it runs. Switching `PATH` for one
+shell costs nothing and touches nothing shared. Rebuilding is a deliberate,
+announced, one-at-a-time maintenance action, not a step in a test run.
+
+This entry was written on ABL-288 after the note above pointed at a
+"NODE_MODULE_VERSION mismatch" section that did not exist anywhere in this
+file — the cross-reference had outlived its target, so every agent hitting the
+error rediscovered the workaround from scratch.
 
 (Both figures are a fresh `npx vitest run` on ABL-238 merged with `origin/main`
 at `0871259` — what `main` becomes when this lands — not arithmetic on the two
@@ -2195,7 +2303,7 @@ ingest path to wind shadow candidates) added one server file
 (`services/netPositionIngestService.test.ts` +5, `config/forecastModels.test.ts`
 +1). The 492/34 server figure above is measured on this merged tree with a
 Node version matching the compiled `better-sqlite3` native module — see
-"NODE_MODULE_VERSION mismatch" below if `cd server && npx vitest run` throws
+"NODE_MODULE_VERSION mismatch" above if `cd server && npx vitest run` throws
 that error instead of running.)
 (That server figure predates several since-merged branches already reflected
 in this checkout's history — e.g. ABL-190/ABL-221 — which is why a fresh run

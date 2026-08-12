@@ -35,6 +35,7 @@ import type {
   CoreNetPositionResponse,
   ForecastModelRegistry,
   CombinedOpsStatus,
+  OpsStatusHistory,
 } from '@/types';
 import { unwrap } from './unwrap';
 
@@ -529,6 +530,21 @@ export async function fetchForecastModels(): Promise<ForecastModelRegistry> {
 export async function fetchOpsStatus(): Promise<CombinedOpsStatus> {
   const { data } = await api.get<ApiResponse<CombinedOpsStatus>>('/ops/status/combined');
   return unwrap(data, '/ops/status/combined');
+}
+
+/**
+ * The stored snapshots of that same combined reading, plus the disk headroom
+ * projection derived from them (ABL-288).
+ *
+ * `hours` is a request, not a guarantee: the server clamps it to what it
+ * actually retains and echoes the served window back as `windowHours`. Read
+ * that, not this argument, when labelling the chart.
+ */
+export async function fetchOpsStatusHistory(hours: number): Promise<OpsStatusHistory> {
+  const { data } = await api.get<ApiResponse<OpsStatusHistory>>('/ops/status/history', {
+    params: { hours },
+  });
+  return unwrap(data, '/ops/status/history');
 }
 
 export default api;
