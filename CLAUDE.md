@@ -1597,8 +1597,63 @@ per-window `padAfterMin` (`server/src/lib/syncBlackoutWindow.ts:61`), widened
 to 60 min by ABL-249 after a 34m07s run on 2026-08-12; this page consumes it
 and does not size it. The window was previously misdiagnosed as a code/container defect
 (ABL-220's writeup) and the status page is built specifically not to repeat
-that mistake. No visitor-counter KPI and no external alerting/paging are in
-scope here — see the issue for why.
+that mistake. No external alerting/paging is in scope here — see the issue for
+why. (This paragraph also said "no visitor-counter KPI" until ABL-289 added
+one; that clause is now wrong and the section below replaces it.)
+
+**`visitors` on `/api/ops/status` (ABL-289) counts requests, in four lanes, in
+memory, and never claims to be more than that.** The scope is "how many people
+use this once it is published", and the trap is that both environments already
+sit under constant self-inflicted traffic: the docker healthcheck, the peer
+poll `peerOpsStatus.ts` fires at the *other* side every time somebody has
+`/ops-status` open, and this page's own 30s refetch. A plain request count
+reads in the thousands on a box nobody visited — the confidently-wrong-number
+failure mode, applied to a vanity metric.
+
+So `lib/classifyRequest.ts` (pure, table-tested) puts every request in exactly
+one lane before it is counted, and `middleware/requestCounter.ts`
+(`app.ts`, mounted after CORS and ahead of both the API router and the static
+mount, so it sees SPA document loads and assets too) records it:
+
+- `page` — an SPA document load. `index.html` is served `no-store`, so this is
+  one per visit or hard refresh, and it is the closest measurable proxy for
+  "somebody opened the dashboard".
+- `api` — a data call made for a visitor.
+- `asset` — hashed JS/CSS, fonts, images. Separate because one page load fans
+  out into a dozen; folded into `page` they would multiply the headline figure
+  by a cache-dependent factor.
+- `automated` — `/api/health`, `/api/ops/*`, every non-GET/HEAD method (the
+  only writes here are the token-gated heliocast and net-position ingests), and
+  recognised bot/CLI user agents. **A request with no `User-Agent` counts as
+  automated**: every mainstream browser sends one, and guessing "visitor"
+  inflates in the direction that flatters.
+
+Three constraints shape the storage, and all three are visible in the payload:
+
+1. **It is in-memory, per process.** The energy DB is opened readonly and is
+   `energy-data-gathering`'s to shape, so a counter table there is a schema
+   change this repo may not make, and a counter file in the mounted `/data`
+   volume is the same trespass by another route. A restart therefore zeroes it.
+   That is survivable *only* because `countingSince`, `windowDaysCovered` and
+   `windowComplete` ride along and the page renders them: `buildTrafficBlock`
+   (`client/src/lib/opsTrafficRows.ts`) prints "12 so far", never "12 in 7d",
+   until the process has actually observed seven days.
+2. **Buckets are UTC days**, not local, so they do not shift under DST or under
+   which box is reporting.
+3. **`distinctClientsToday` is an estimate and is named like one.** It counts
+   distinct `sha256(per-process salt, ip, user-agent)` — one household behind
+   NAT reads as one, one person on two devices reads as two. The salt is random
+   per process and never persisted, so nothing here survives a restart or reads
+   back into an address. Past `DISTINCT_CLIENT_CAP` (20,000/day) it reports
+   `null`, not the cap: a counter frozen at its ceiling while traffic keeps
+   arriving is a wrong number, and unknown is the honest one.
+
+The field is **optional on the client type** (`client/src/types/index.ts`) on
+purpose. The peer half of `/api/ops/status/combined` is whatever build is
+deployed on the other box, and every build before ABL-289 answers with no
+`visitors` key; `buildTrafficBlock` returns `null` for that and the card says
+"not reported by this build" rather than rendering the absence as zeros — which
+would be a confident claim that nobody visited prod.
 
 ## Generation data
 
@@ -2096,14 +2151,43 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12: **45 client test files / 590 tests** (570 passing in
-this checkout — the other 20, in `dashboardStore.test.ts`/`windowLabel.test.ts`,
-fail on the pre-existing `storage.setItem is not a function` sandbox quirk the
-ABL-203 paragraph below already documents, not a regression; ABL-263 tracks
-them), **44 server test files / 620 tests**, all passing, clean typecheck.
-Fewer tests passing than that means something broke.
+Green as of 2026-08-12 (ABL-289): **46 client test files / 601 tests** and
+**46 server test files / 677 tests**, all passing, clean typecheck. Fewer tests
+passing than that means something broke.
 
-(Both figures are a fresh `npx vitest run` on ABL-238 merged with `origin/main`
+**Run the suite on Node 24, not on whatever `node` resolves to.** This
+workstation's default is Node 25 (`NODE_MODULE_VERSION` 141) while
+`server/node_modules/better-sqlite3` is prebuilt for Node 24 (137), so every
+server test file that opens the fixture DB fails to *import* with "compiled
+against a different Node.js version". Measured 2026-08-12 on an unmodified
+tree: **24 of 46 server files, 81 cases, failing for that reason alone.**
+`nvm use 24.18.0` first, or run the binary directly:
+
+```bash
+PATH="$HOME/AppData/Local/nvm/v24.18.0:$PATH" node ../node_modules/vitest/vitest.mjs run
+```
+
+`npm rebuild better-sqlite3` also clears it, and then breaks the next agent who
+is on 24. Check `node -v` before concluding you broke 81 tests.
+
+(ABL-289's own delta: **+1 client file / +11 cases**
+(`lib/opsTrafficRows.test.ts`) and **+2 server files / +57 cases**
+(`lib/classifyRequest.test.ts`, `services/visitorCounters.test.ts`, plus new
+cases in `app.test.ts` and `routes/opsStatus.test.ts`). Measured in a dedicated
+worktree rather than in the primary checkout, deliberately: two other runs were
+writing to that tree at the time and one had already dropped an untracked test
+file into `client/src/components/dashboard/`, which inflated the client count
+by a file and 18 cases belonging to neither change. Measure a count against a
+tree that holds only the change it describes — see "Shared checkout" below.)
+
+The 20 `storage.setItem is not a function` failures in
+`dashboardStore.test.ts`/`windowLabel.test.ts` the previous baseline recorded
+(ABL-263; the ABL-203 paragraph below documents the quirk) did **not**
+reproduce on this run — all 601 client tests passed. It is environment-
+dependent, not a standing expectation. Re-measure; do not assume either count.
+
+(Historical, for the ABL-238 figures this paragraph replaced: both were a fresh
+`npx vitest run` on ABL-238 merged with `origin/main`
 at `0871259` — what `main` becomes when this lands — not arithmetic on the two
 branches' separate claims. Measured on a detached `origin/main` immediately
 beforehand: **42 server files / 604 tests** and **44 client files / 575 tests**,
@@ -2776,7 +2860,7 @@ interface TSOForecastAccuracyMetrics {
   we never set (observed: `Server: gunicorn`), you are not talking to our server.
   An unmatched `/api` route from our Express app is a JSON
   `{ success, error, code }` envelope with no `Server` header; that response
-  contract is pinned in `server/src/app.test.ts:117`.
+  contract is pinned in `server/src/app.test.ts:118`.
 - Diagnose the listener collision with the port-owner and Docker checks in
   [`../WORKFLOWS.md`](../WORKFLOWS.md), **API proxy on CAT**. On CAT, an
   unrelated service owns loopback `localhost:3001` even while the dashboard

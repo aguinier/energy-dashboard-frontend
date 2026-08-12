@@ -2,8 +2,9 @@ import { AlertTriangle, CheckCircle2, Clock, HelpCircle, XCircle } from 'lucide-
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useOpsStatus } from '@/hooks/useOpsStatus';
 import { deriveEnvironmentState, type ThresholdState } from '@/lib/opsStatusThresholds';
+import { buildTrafficBlock } from '@/lib/opsTrafficRows';
 import { formatTimeAgo } from '@/lib/formatters';
-import type { CombinedOpsStatus, FreshnessRollup, OpsSideStatus } from '@/types';
+import type { CombinedOpsStatus, FreshnessRollup, OpsSideStatus, VisitorCounters } from '@/types';
 
 /**
  * Internal acceptance/prod status comparison (ABL-238). Reachable only by
@@ -51,6 +52,7 @@ export default function OpsStatusView() {
             <p className="text-micro text-ink-faint">
               As of {formatTimeAgo(data.timestamp)}{isFetching ? ' · refreshing…' : ''}
             </p>
+            <TrafficFootnote />
           </div>
         )}
       </div>
@@ -166,8 +168,66 @@ function EnvironmentCard({
         {status.freshness.staleCountries.length > 0 && (
           <p className="pt-1 text-meta text-ink-dim">Stale: {status.freshness.staleCountries.join(', ')}</p>
         )}
+        <TrafficSection visitors={status.visitors} />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Request counts for this side, split so the constant health/peer polling does
+ * not read as visits (ABL-289).
+ *
+ * Every number here is what *this process* has counted since it started — the
+ * energy database is readonly and owned by the sibling data module, so there is
+ * nowhere to persist a counter to. That is why the header carries "since …" and
+ * why an incomplete window says "so far" rather than "in 7d": all the honesty
+ * lives in `buildTrafficBlock`, and this component only lays it out.
+ */
+function TrafficSection({ visitors }: { visitors: VisitorCounters | undefined }) {
+  const block = buildTrafficBlock(visitors);
+
+  if (!block) {
+    // A peer on a build from before ABL-289. Saying so beats rendering zeros.
+    return (
+      <div className="mt-1 border-t border-border pt-2.5">
+        <p className="text-micro text-ink-faint">Traffic counters not reported by this build.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-1 space-y-2.5 border-t border-border pt-2.5">
+      <p className="text-micro uppercase tracking-wide text-ink-faint">
+        Traffic · since {block.since}
+        {block.partialWindow ? ' · partial week' : ''}
+      </p>
+      {block.rows.map((row) => (
+        <div key={row.label} className="flex items-center justify-between gap-4" title={row.detail}>
+          <span className="text-meta text-ink-dim">{row.label}</span>
+          <span className="font-mono-num text-body text-foreground">{row.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * What the traffic lanes mean, on the page rather than only in a `title`
+ * tooltip. Without it "Page views 12 today" invites the reading that 12 is a
+ * durable, all-time-ish figure; it is 12 since this process started.
+ */
+function TrafficFootnote() {
+  return (
+    <p className="max-w-2xl text-micro leading-relaxed text-ink-faint">
+      Traffic counters (ABL-289) are per process and held in memory — a restart or redeploy resets
+      them, and the "since" stamp above each block is the count's real scope. <em>Automated</em>{' '}
+      collects <code className="font-mono-num">/api/health</code>,{' '}
+      <code className="font-mono-num">/api/ops/*</code> (this page's own 30s refetch and the peer
+      poll), the token-gated ingest writes, and recognised bot/CLI user agents, so that the
+      self-inflicted traffic both environments sit under does not read as visits.{' '}
+      <em>Distinct clients</em> is an estimate from a hashed ip+user-agent, not a headcount.
+    </p>
   );
 }
 
