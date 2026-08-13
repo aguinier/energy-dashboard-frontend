@@ -38,7 +38,7 @@ Runs client and server together (`concurrently`). The server needs a local
 
 **1. `Cannot find package '@babel/core'` is usually a stale process, not a broken tree.**
 
-Symptom: `npm run dev` serves 200 on `:5173`, but every request for `client/src/main.tsx` 500s with
+Symptom: `npm run dev` serves 200 on `localhost:5173`, but every request for `client/src/main.tsx` 500s with
 `[plugin:vite:react-babel] Cannot find package '@babel/core' imported from …@vitejs/plugin-react/dist/index.js`,
 and the page is blank behind Vite's red error overlay.
 
