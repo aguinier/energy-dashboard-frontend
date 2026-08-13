@@ -1638,7 +1638,7 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `/dashboard/*` endpoints forced it. Neither is true any more: nothing in
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
-`server/src/types/index.ts:244`), every per-tab hook sends an explicit
+`server/src/types/index.ts:254`), every per-tab hook sends an explicit
 `start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
 `useDashboardData.ts:208`, and `useMapData` likewise at `:188`), and
 `migratePersisted` deletes a stored
@@ -1993,7 +1993,7 @@ an NTP step between two samples would otherwise scale every rate on the page.
 Two parsing traps are covered by `hostMetrics.test.ts`: a wide counter abuts
 its colon (`eth0:123456789012`) so the line splits on the first `:` not on
 whitespace, and transmit bytes are field 9, not field 2. Client-side, `network`
-is **optional, not merely nullable** (`client/src/types/index.ts:502`) — a peer on a build
+is **optional, not merely nullable** (`client/src/types/index.ts:513`) — a peer on a build
 older than ABL-290 sends no key at all, which `buildNetworkRows`
 (`client/src/lib/networkRows.ts`) renders as "not reported by this build",
 separately from `null` ("not measured on Windows"), `[]` ("no non-loopback
@@ -2271,12 +2271,76 @@ request to fill one of them.
 - **`energy_generation`** — the whole document. 21 `*_mw` columns, one per
   ENTSO-E production type. Prefer this for anything new.
 - **`energy_renewable`** — the older, narrower table: 8 renewable columns, with
-  pumped storage folded into `hydro_reservoir_mw`. **Frozen.** The dashboard,
-  the forecast job and several backfill scripts read it. It is derived from the
+  pumped storage folded into `hydro_reservoir_mw`. **Frozen.** The forecast job
+  and several backfill scripts read it; the dashboard is being moved off it
+  read site by read site (ABL-324). It is derived from the
   *pre-netting* flatten specifically so its values are unchanged; deriving it
   from `energy_generation` shifts `hydro_reservoir_mw` (measured 1520 → 1410)
   because of that folding. It is now redundant and worth retiring, but that is
   its own migration.
+
+  **It also stores one instant under several timestamp spellings, which is why
+  the read path is leaving it** (ABL-324, CEO-approved 2026-08-12). Measured on
+  the replica 2026-08-12: `energy_renewable` holds **26,694 duplicate
+  instants**, the overwhelming majority disagreeing on at least one value
+  column, against **0 across 3,178,270 rows** in `energy_generation` — which is
+  also 100% space-form (zero `T`-separated rows, and zero rows of any length
+  other than 19, so none of the trailing-offset rows either). A duplicate
+  instant is not cosmetic where a query `AVG()`s over a window: the two
+  disagreeing values were averaged into one chart point equal to neither.
+
+  Two costs come with each move, both signed off, and both must be surfaced
+  rather than absorbed:
+
+  - **Hydro reads lower**, because the two tables split it differently.
+    Measured on the replica, FR 2026-08-01..07: `energy_renewable`'s
+    `hydro_reservoir_mw` averages **2,014.3 MW** against `energy_generation`'s
+    **1,181.7 MW** (run-of-river agrees exactly, 2,326.1 MW on both sides).
+    This is a *different* measurement from the 1520 → 1410 figure above, which
+    is about re-deriving the frozen table itself.
+  - **`energy_generation` does not cover every hour `energy_renewable` does.**
+    Measured 2026-08-12, France: `energy_renewable` holds 2,208 rows across all
+    23 days of 2026-06-30..2026-07-22 while `energy_generation` holds 135
+    across **2** of them — full days on 06-30 and a partial 07-22, and nothing
+    at all for **07-01..07-21** (ABL-323, ABL-328). Those 21 days must render
+    as a gap, never as zero and never interpolated.
+
+  **`total_renewable_mw` has no counterpart in `energy_generation`** — it was a
+  stored computed column — so every move turns a column read into a sum, and a
+  sum is where "we do not know" quietly becomes a confident `0`. The reduction
+  is stated once, in `server/src/services/renewableTotal.ts` (pure, colocated
+  test): NULL when every component is NULL, the sum of the reported ones
+  otherwise, and a measured `0.0` is a value rather than a missing reading.
+  `generationService.RENEWABLE_MW_SUM` is generated from that module's column
+  list, so the renewable breakdown's `total` and the renewable share's
+  numerator — served side by side on one `/renewables/mix` object — cannot come
+  to define "renewable" differently.
+
+  **The `COALESCE(x, 0)` this removes was live, and Germany was the victim.**
+  Measured through a local server on the replica, 2026-08-12:
+  `/api/renewables/latest` reported DE with **`total_renewable = 0.0`**, and
+  `solar = 0.0`, and `wind_onshore = 0.0`. Germany's newest `energy_generation`
+  row (`2026-08-12 13:00:00`) is an all-NULL placeholder at the leading edge of
+  ingest — the A75 document for that interval has not been filled in yet — and
+  the row before it, at 12:45, carries **55,057.91 MW of solar alone**. The
+  frozen table stores that placeholder as literal `0.0` (it carries
+  `DEFAULT 0`), and the old query's `COALESCE` could not have told the
+  difference anyway. The endpoint now answers `null` for every field and for
+  the total: *the newest stored row reports nothing*, which is the true claim.
+  Exactly one country was in that state at that moment, but it is the ingest
+  edge, so it rotates.
+
+  **`getLatestRenewable`'s all-countries query needs its `CROSS JOIN`.** It is
+  an ordinary inner join whose ON clause is unchanged; the keyword only pins
+  `countries` (34 rows) as the outer loop. Allowed to reorder, SQLite drives
+  from `energy_generation` and runs the correlated `MAX()` subquery per row —
+  `SCAN r USING COVERING INDEX` across all 3,178,270 entries. Measured on the
+  replica 2026-08-12: **2.819s reordered vs 0.002s pinned**, same 34 rows;
+  end to end through the API, 1.97s vs 0.22s. `energy_generation` is roughly
+  four times the frozen table's size, so porting that query unchanged would
+  have left a live endpoint slower than it was before the move.
+  `routes/renewables.test.ts` asserts the plan rather than a duration, since
+  on a six-country fixture both shapes are instant.
 
 Three things to know before touching this:
 
@@ -2892,13 +2956,20 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-13, measured on `main` at the ABL-317 publish merge —
-`origin/main`'s `/v1` line (ABL-300, ABL-301, ABL-304, ABL-311, ABL-282) joined
-to local `main` (ABL-309, ABL-319, ABL-325, ABL-329) and the three Group B
-branches (ABL-276/277/278, ABL-257, ABL-282's flat config): **50 client test
-files / 666 tests** and **75 server test files / 1,367 tests**, all passing,
-zero skipped, clean typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0).
-Fewer tests passing than that means something broke.
+Green as of 2026-08-13, measured on ABL-351 merged with `main` at the ABL-317
+publish merge — `origin/main`'s `/v1` line (ABL-300, ABL-301, ABL-304, ABL-311,
+ABL-282) joined to local `main` (ABL-309, ABL-319, ABL-325, ABL-329) and the
+three Group B branches (ABL-276/277/278, ABL-257, ABL-282's flat config), plus
+ABL-324 tranche 1: **50 client test files / 666 tests** and **77 server test
+files / 1,401 tests**, all passing, zero skipped, clean typecheck on both
+(`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing than that means
+something broke.
+
+ABL-351 is the last of those and adds +2 server files
+(`services/renewableTotal.test.ts`, `routes/renewables.test.ts`) and +34 server
+cases over the 75 / 1,367 that `main` measured immediately before it; it touches
+no client test, which is why the client figure is unmoved. Recorded as a delta
+to explain the movement — not as arithmetic to trust in place of a fresh run.
 
 **Neither input figure survived, and neither was added up.** Local `main` read
 49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
@@ -3429,6 +3500,13 @@ Two conventions, and they are for different layers.
 `server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
 (which now classifies both the forecast and the actuals series),
 `server/src/services/loadQuality.ts`,
+`server/src/services/renewableTotal.ts` (ABL-324 tranche 1 — the NULL-aware
+renewable total, plus the column mapping and the SQL builder that state the
+same rule on the database's side of the wire; the test imports no
+DB-touching module, so it runs without a database or a mock, and the
+assertion that `generationService.RENEWABLE_MW_SUM` really is built from its
+column list lives in `generationService.test.ts`, which already mocks that
+connection),
 `server/src/services/loadForecastBasis.ts`, `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
@@ -3464,7 +3542,7 @@ are both easy to break and neither is visible by reading.
 **Routes get an end-to-end test against a fixture database.**
 `server/src/routes/*.test.ts` for `dashboard`, `forecast`, `forecastComparison`,
 `tsoForecast`, `crossCountryComparison`, `netPosition`, `load`, `generation`,
-`prices`, `dataFreshness` and `opsStatus`: a real request in, the real
+`prices`, `renewables`, `dataFreshness` and `opsStatus`: a real request in, the real
 `ApiResponse<T>` envelope out. Two shared pieces:
 
 - `server/src/test/fixtureDb.ts` — an **in-memory** SQLite database. Its
@@ -3581,7 +3659,18 @@ Notes for when it fails:
 - The working tree is the source of truth, so editing this file and running the
   suite tells you straight away. Set `CLAUDE_MD_CITATIONS_REF=HEAD` to check a
   committed snapshot instead — worth doing in the primary checkout, where another
-  run's half-finished edit to a cited file shifts lines under you.
+  run's half-finished edit to a cited file shifts lines under you. Any ref works,
+  so `CLAUDE_MD_CITATIONS_REF=main` answers "is this failure mine, or did I
+  inherit it?" without stashing anything.
+- **Do not write a port as a backticked `` `:NNN` ``.** That is the bare
+  continuation form above, so the checker looks for a file named before it,
+  finds none, and fails. Write "port 5173", or attach it to a host. This is not
+  hypothetical: ABL-367 shipped ``serves 200 on `:5173` `` to `main` and took the
+  whole server suite red until ABL-351 merged, because a citation failure looks
+  like a docs nit and a red baseline is how a real regression gets waved through.
+  The checker was deliberately **not** loosened to tolerate port-shaped text —
+  bare `:NNN` is a supported citation form used ~30 times in this file, and
+  widening it to keep one port legal would blind it to every genuine orphan.
 
 What it does **not** catch: a citation that lands on plausible but unrelated
 code, where the prose names no symbol. Line numbers stay in the doc because they
