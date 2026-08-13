@@ -3659,7 +3659,18 @@ Notes for when it fails:
 - The working tree is the source of truth, so editing this file and running the
   suite tells you straight away. Set `CLAUDE_MD_CITATIONS_REF=HEAD` to check a
   committed snapshot instead — worth doing in the primary checkout, where another
-  run's half-finished edit to a cited file shifts lines under you.
+  run's half-finished edit to a cited file shifts lines under you. Any ref works,
+  so `CLAUDE_MD_CITATIONS_REF=main` answers "is this failure mine, or did I
+  inherit it?" without stashing anything.
+- **Do not write a port as a backticked `` `:NNN` ``.** That is the bare
+  continuation form above, so the checker looks for a file named before it,
+  finds none, and fails. Write "port 5173", or attach it to a host. This is not
+  hypothetical: ABL-367 shipped ``serves 200 on `:5173` `` to `main` and took the
+  whole server suite red until ABL-351 merged, because a citation failure looks
+  like a docs nit and a red baseline is how a real regression gets waved through.
+  The checker was deliberately **not** loosened to tolerate port-shaped text —
+  bare `:NNN` is a supported citation form used ~30 times in this file, and
+  widening it to keep one port legal would blind it to every genuine orphan.
 
 What it does **not** catch: a citation that lands on plausible but unrelated
 code, where the prose names no symbol. Line numbers stay in the doc because they
