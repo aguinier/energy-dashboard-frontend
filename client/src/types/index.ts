@@ -20,26 +20,37 @@ export interface PriceDataPoint {
   price: number;
 }
 
+// Renewable generation by source. Served from `energy_generation` since
+// ABL-324 tranche 1, not the frozen `energy_renewable`. Every field is
+// independently nullable for the same reason GenerationMix's are: a
+// production type this country does not report reaches the client as `null`,
+// never a fabricated `0`. It is a real change - the frozen table carried
+// `DEFAULT 0` and the old queries wrapped every column in `COALESCE(x, 0)`,
+// so these used to arrive as a confident `0 MW`. Do not render a null as a
+// zero; render it as a gap.
 export interface RenewableDataPoint {
   timestamp: string;
-  solar: number;
-  wind_onshore: number;
-  wind_offshore: number;
-  hydro: number;
-  biomass: number;
-  geothermal: number;
-  other: number;
+  solar: number | null;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+  hydro: number | null;
+  biomass: number | null;
+  geothermal: number | null;
+  other: number | null;
 }
 
+// `total` is null only when all seven fields are null - the sum of whichever
+// were reported otherwise, and `0` when every reported value is a measured
+// zero. The whole object is null when the window holds no rows at all.
 export interface RenewableMix {
-  solar: number;
-  wind_onshore: number;
-  wind_offshore: number;
-  hydro: number;
-  biomass: number;
-  geothermal: number;
-  other: number;
-  total: number;
+  solar: number | null;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+  hydro: number | null;
+  biomass: number | null;
+  geothermal: number | null;
+  other: number | null;
+  total: number | null;
   renewable_percentage?: number | null;
 }
 

@@ -2,6 +2,7 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
 import { GenerationMix, GenerationSeriesPoint, WindGenerationSeriesPoint, Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
+import { RENEWABLE_MW_COLUMNS, nullAwareSumSql, WINDOW_AVERAGE } from './renewableTotal.js';
 import { getSolarCoverage } from './solarCoverage.js';
 
 /**
@@ -127,11 +128,21 @@ export function getGenerationMix(
  * routinely negative (charging), and even when positive (discharging) it is
  * energy that was generated - and counted - elsewhere already; counting it
  * again as "renewable output" would double-count it.
+ *
+ * The column list is `renewableTotal.RENEWABLE_MW_COLUMNS` - the same one the
+ * `/renewables` breakdown's seven fields are built from (ABL-324 tranche 1),
+ * so this numerator and that breakdown's `total` cannot come to disagree
+ * about which columns are renewable. They are served side by side on one
+ * `/renewables/mix` object, where two definitions would be visible.
+ *
+ * COALESCE-to-0 rather than `renewableTotal`'s NULL-aware CASE, and the
+ * difference is deliberate: this fragment is a *numerator inside a ratio of
+ * window sums*, where an unreported type must contribute nothing. A NULL here
+ * would poison the whole window's SUM, and a NULL share is already produced
+ * where it belongs - by `row_count` and the `NULLIF` on the denominator.
  */
 export const RENEWABLE_MW_SUM = `(
-        COALESCE(solar_mw, 0) + COALESCE(wind_onshore_mw, 0) + COALESCE(wind_offshore_mw, 0) +
-        COALESCE(hydro_run_mw, 0) + COALESCE(hydro_reservoir_mw, 0) + COALESCE(biomass_mw, 0) +
-        COALESCE(geothermal_mw, 0) + COALESCE(marine_mw, 0) + COALESCE(other_renewable_mw, 0)
+        ${RENEWABLE_MW_COLUMNS.map((c) => `COALESCE(${c}, 0)`).join(' + ')}
       )`;
 
 /**
@@ -290,24 +301,28 @@ export const GENERATION_GROUPS: Record<string, readonly string[]> = {
  * Over a single bucket spanning the whole window this returns bit-for-bit
  * what `buildSourceRows` computes from `getGenerationMix`, which is the
  * property that keeps the trend chart and the donut from disagreeing.
+ *
+ * The construction now lives in `renewableTotal.nullAwareSumSql`, which
+ * emits byte-identical text - ABL-324 tranche 1 needed the same reduction for
+ * the `/renewables` breakdown, and two hand-written copies of a rule this
+ * subtle is how they drift.
  */
 function groupExpression(alias: string, columns: readonly string[]): string {
-  const allNull = columns.map((c) => `AVG(${c}) IS NULL`).join(' AND ');
-  const sum = columns.map((c) => `COALESCE(AVG(${c}), 0)`).join(' + ');
-  return `CASE WHEN ${allNull} THEN NULL ELSE ROUND(${sum}, 2) END as ${alias}`;
+  return nullAwareSumSql(columns, alias, WINDOW_AVERAGE);
 }
 
 /**
- * Bucket key for a granularity. Mirrors renewableService's private clause of
- * the same shape, including the `REPLACE(..., ' ', 'T')` on the hourly branch
- * that hands the client an ISO-separated timestamp.
+ * Bucket key for a granularity. Shared with renewableService, which used to
+ * keep a private clause of the same shape, including the
+ * `REPLACE(..., ' ', 'T')` on the hourly branch that hands the client an
+ * ISO-separated timestamp.
  *
  * `date()`/`strftime()` appear only in GROUP BY, never in WHERE - grouping
  * through a function is fine, filtering or joining through one is what
  * defeats the (country_code, timestamp_utc) index (see RENEWABLE_SHARE_SQL's
  * note, and the 51s scar in renewableService).
  */
-function generationGroupByClause(granularity: Granularity): string {
+export function generationGroupByClause(granularity: Granularity): string {
   switch (granularity) {
     case 'daily':
       return 'date(timestamp_utc)';

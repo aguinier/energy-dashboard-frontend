@@ -6,6 +6,7 @@ import { FORBIDDEN_PUBLIC_ENV } from './publicEnv.js';
 import { createMemoryApiKeyDirectory } from './keys/memoryApiKeyDirectory.js';
 import { createMemoryUsageSink, type MemoryUsageSink } from './usage/memoryUsageSink.js';
 import { createUsageMeter, type UsageMeter } from './usage/usageMeter.js';
+import { createMemoryDataContext, createMemoryEnergySource } from './data/memoryEnergySource.js';
 
 /**
  * What the public composition does, from the outside.
@@ -96,13 +97,38 @@ function meter(): { meter: UsageMeter; sink: MemoryUsageSink } {
 
 const mounted = meter();
 
+/**
+ * A data context, for the third time and the third reason (ABL-303): an app
+ * without one would have no product in it.
+ *
+ * In-memory and **deliberately empty of rows**. This file's job is the isolation
+ * claim — that the internal surface is absent and that everything under `/v1`
+ * needs a key — and both are answered by the *routing*, not by the data. An
+ * empty database keeps that separation: a 401 here is about the gate, and a 200
+ * with `coverage: "out_of_scope"` is about the gate too. What the endpoints
+ * actually return, against seeded rows, is `data/*.test.ts` and
+ * `routes/*.test.ts`.
+ *
+ * It is still a real SQLite handle rather than a stub, so if the composition
+ * ever reached the *energy* database that would show up as a finding here rather
+ * than being mocked away.
+ */
+function dataContext() {
+  const source = createMemoryEnergySource();
+  return createMemoryDataContext(source);
+}
+
 beforeAll(async () => {
   for (const name of FORBIDDEN_PUBLIC_ENV) {
     savedEnv.set(name, process.env[name]);
     delete process.env[name];
   }
   api = await listen(
-    createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: mounted.meter })
+    createPublicApp({
+      apiKeyDirectory: seeded.directory,
+      usageMeter: mounted.meter,
+      data: dataContext(),
+    })
   );
 });
 
@@ -200,19 +226,41 @@ describe('the public composition does answer /v1', () => {
   });
 
   it('404s an unknown path under /v1 with the public envelope, once authenticated', async () => {
-    const res = await probe(api.origin, '/v1/observations/load', { headers: AUTH });
+    // This used to probe `/v1/observations/load`, which ABL-303 implemented —
+    // so it now answers 400 (`zone` is required) rather than 404, and the test
+    // moved to a path that is genuinely not a resource. Worth keeping the note:
+    // the assertion is about the *not-found envelope*, and pointing it at a real
+    // route would have quietly turned it into an assertion about parameter
+    // validation the first time somebody made the two agree.
+    const res = await probe(api.origin, '/v1/observations/net-position', { headers: AUTH });
 
     expect(res.status).toBe(404);
     expect(res.json()).toEqual({ error: { code: 'not_found', message: 'No such resource.' } });
   });
 
-  it('401s that same path without a key, so the surface cannot be enumerated', async () => {
-    // ABL-300. The gate is mounted between the discovery root and `v1Routes`,
-    // so it covers *paths* rather than routes: an unauthenticated caller
+  it('has no net-position resource at all, authenticated or not', async () => {
+    // Board decision 2 is open, so net position is out of `/v1` — and it is out
+    // by *construction*: there is no route, no `net_position` stream in
+    // `data/series.ts`, and no `net_position` type in `data/models.ts`. The
+    // 404 above is what that absence looks like from outside; this names why it
+    // must stay absent even though ABL-298 closed with JAO authorisation held.
+    const forecast = await probe(api.origin, '/v1/forecasts?zone=DE&type=net_position&from=2026-08-01&to=2026-08-02', {
+      headers: AUTH,
+    });
+
+    expect(forecast.status).toBe(400);
+    expect(forecast.json().error.code).toBe('invalid_type');
+    // The message lists what *is* offered, and net_position is not in it.
+    expect(forecast.json().error.message).not.toContain('net_position');
+  });
+
+  it('401s an unimplemented path without a key, so the surface cannot be enumerated', async () => {
+    // ABL-300. The gate is mounted between the discovery root and the resource
+    // router, so it covers *paths* rather than routes: an unauthenticated caller
     // cannot tell an unimplemented resource from an implemented one, and a
-    // route ABL-303 adds is authenticated whether or not its author thought
+    // route ABL-303 added is authenticated whether or not its author thought
     // about it.
-    const res = await probe(api.origin, '/v1/observations/load');
+    const res = await probe(api.origin, '/v1/observations/net-position');
 
     expect(res.status).toBe(401);
     expect(res.json()).toEqual({
@@ -250,6 +298,7 @@ describe('hardened HTTP configuration', () => {
       createPublicApp({
         apiKeyDirectory: seeded.directory,
         usageMeter: meter().meter,
+        data: dataContext(),
         env: { PUBLIC_CORS_ORIGINS: 'https://docs.example.com, https://app.example.com' },
       })
     );
@@ -284,16 +333,16 @@ describe('hardened HTTP configuration', () => {
 
 describe('the public app refuses a process holding write or ops capability', () => {
   it.each([...FORBIDDEN_PUBLIC_ENV])('refuses to build when %s is set', (name) => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, data: dataContext(), env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
   });
 
   it('never puts the value in the message', () => {
     // An error message is the one place a secret reliably reaches a log file.
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, data: dataContext(), env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
       /HELIO_WRITE_TOKEN/
     );
     try {
-      createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
+      createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, data: dataContext(), env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
       expect.unreachable('should have thrown');
     } catch (err) {
       expect((err as Error).message).not.toContain('super-secret-value');
@@ -301,7 +350,7 @@ describe('the public app refuses a process holding write or ops capability', () 
   });
 
   it('builds when the environment is clean', () => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, env: {} })).not.toThrow();
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, data: dataContext(), env: {} })).not.toThrow();
   });
 });
 

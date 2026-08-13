@@ -4,6 +4,10 @@ import { openUsageStore } from './usage/sqliteUsageStore.js';
 import { createUsageMeter } from './usage/usageMeter.js';
 import { startUsageMaintenance } from './usage/usageMaintenance.js';
 import { shutDownUsage } from './usage/usageShutdown.js';
+import { openEnergyDatabase } from './data/sqliteEnergySource.js';
+import { createFreshnessMap } from './data/freshnessMap.js';
+import { createCatalogRepo } from './data/catalogRepo.js';
+import { resolvePublicBaseUrl } from './data/links.js';
 
 /**
  * Entrypoint for the public process.
@@ -83,7 +87,39 @@ const usageStore = openUsageStore();
 const usageMeter = createUsageMeter({ sink: usageStore });
 const usageMaintenance = startUsageMaintenance({ store: usageStore });
 
-const app = createPublicApp({ apiKeyDirectory, usageMeter });
+// The energy database, and the two memoized maps built over it (ABL-303).
+//
+// Opened before `listen` for the third time and the third reason: the key store
+// so an unconfigured process cannot answer `key_invalid` to every customer, the
+// usage store so it cannot give the API away unmetered, and this one so a bad
+// `ENERGY_DB_PATH` is a startup failure rather than a 500 on the first paid
+// request. `fileMustExist` makes a typo fail here rather than creating an empty
+// database and serving `coverage: "out_of_scope"` for every zone on earth.
+//
+// `createFreshnessMap` builds its first snapshot **synchronously**, which is
+// deliberate: a process that starts serving before the map exists would answer
+// its first minute of requests with `status: "none"` fleet-wide — telling every
+// early customer that every zone had stopped publishing. The build is ~180 ms
+// against the local replica, paid once, before the port is bound.
+const energySource = openEnergyDatabase();
+const freshness = createFreshnessMap({ source: energySource });
+const catalog = createCatalogRepo({ source: energySource });
+// Same argument, applied to the model catalogue: its first build is the one
+// that pays for a cold page cache, and paying it inside a request blocks the
+// process for whoever happened to arrive first after a restart.
+catalog.warm();
+
+// Configuration, never `req.get('host')` — trap 1 from the ABL-291 brief. Unset
+// is the safe and current state: `links.next` then comes back relative, which is
+// correct against whatever origin the client already used and cannot bake a
+// `192.168.x` address into a subscriber's stored URL.
+const publicBaseUrl = resolvePublicBaseUrl(process.env);
+
+const app = createPublicApp({
+  apiKeyDirectory,
+  usageMeter,
+  data: { source: energySource, freshness, catalog, publicBaseUrl, now: () => new Date() },
+});
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`
@@ -94,6 +130,7 @@ const server = app.listen(PORT, HOST, () => {
 📈 Usage metering: on — every authenticated request is counted per key
 🚀 Listening on http://${HOST}:${PORT}
 📊 API base URL: http://${HOST}:${PORT}/v1
+🔗 Pagination links: ${publicBaseUrl ?? 'relative (PUBLIC_BASE_URL unset)'}
 
 Not on this surface, by composition: /api/*, /api/ops/*, /api/health,
 /api/dashboard/*, /api/weather/*, and every write/ingest route.
@@ -136,6 +173,11 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     server.close(() => {
       shutDownUsage({ meter: usageMeter, maintenance: usageMaintenance, store: usageStore });
       apiKeyDirectory.close();
+      // Nothing is buffered behind these two — the map is a read cache and the
+      // handle is readonly — so closing them loses no data and is only about
+      // not leaving a file handle and a timer behind.
+      freshness.close();
+      energySource.close();
       process.exit(0);
     });
   });

@@ -84,6 +84,42 @@ const FORBIDDEN_PREFIXES: ReadonlyArray<{ prefix: string; why: string }> = [
   { prefix: 'release/', why: 'git state: branch names and unmerged-work status' },
 ];
 
+/**
+ * Shared modules the public graph may reach, and nothing else outside `v1/`.
+ *
+ * ABL-304 wrote the rule as "reaches only `v1/` modules", and predicted its own
+ * revision in the sentence next to the exact-module pin: *"an edge added here is
+ * the moment the isolation stops being free."* ABL-303 is that moment, and the
+ * three edges below are paid for deliberately rather than waived.
+ *
+ * Each one holds a rule that **must not exist in two places**, and each has a
+ * scar behind it:
+ *
+ * - `utils/timestamp.ts` — the two-separator window predicate. A space-form
+ *   upper bound silently drops the whole end day (ABL-21, a lost day of
+ *   forecasts) and a `T`-form one over-reads. ABL-293 §2a says every `/v1` query
+ *   must use this helper "without exception"; a second copy under `v1/` would be
+ *   a second thing to get right, and the first one was got wrong once already.
+ * - `services/loadQuality.ts` — `load_mw > 0`. 543 stored zeros across 11 zones
+ *   are the ingest writing a placeholder; MK reads `0.0` for whole days against
+ *   a real 543-717 MW peak. A public API serving one as a measurement is the
+ *   dashboard's `0 MW` header defect sold to a customer.
+ * - `services/freshness.ts` — the measured/day-ahead classifier split. ABL-293
+ *   §2g says to reuse it "verbatim" precisely so that `/v1` and the dashboard
+ *   cannot reach different conclusions about the same zone.
+ *
+ * The exception is narrow and **checked rather than asserted**: the test below
+ * requires each of them to be a *leaf* — to import nothing at runtime at all. A
+ * leaf cannot become a path to `config/database.ts` later without failing this
+ * file, which is the property that makes the allowance safe rather than the
+ * start of a slope. Anything else outside `v1/` still fails.
+ */
+const SHARED_LEAVES = [
+  'utils/timestamp.ts',
+  'services/freshness.ts',
+  'services/loadQuality.ts',
+] as const;
+
 /** Both entry points: the factory, and the process that actually runs. */
 const ENTRIES = [
   { label: 'createPublicApp', file: 'publicApp.ts' },
@@ -119,13 +155,29 @@ describe.each(ENTRIES)('$label', ({ file }) => {
     expect(graph.modules.filter((m) => m.startsWith('config/'))).toEqual([]);
   });
 
-  it('reaches only v1 modules', () => {
+  it('reaches only v1 modules and the three named shared leaves', () => {
     // The real catch-all, and the reason the table above can afford to be a
     // readable inventory rather than an exhaustive one: a module added to
     // `services/` next year is covered by this without anyone remembering to
     // list it. The named cases exist to say *why* each is a leak, so a failure
     // reads as a finding instead of as a rule.
-    expect(graph.modules.filter((m) => !m.startsWith('v1/'))).toEqual([]);
+    //
+    // ABL-303 narrows "only v1" to "only v1, plus three modules named in
+    // SHARED_LEAVES" — see the note there for what each one buys and why the
+    // leaf requirement below is what keeps the exception from widening.
+    const outside = graph.modules.filter((m) => !m.startsWith('v1/'));
+    expect(outside.sort()).toEqual([...SHARED_LEAVES].sort());
+  });
+
+  it.each(SHARED_LEAVES)('%s is a leaf — it imports nothing at runtime', (leaf) => {
+    // The load-bearing half of the allowance. A shared module that imports
+    // nothing cannot become a path into `config/`, `services/opsStatus*` or a
+    // scheduler holding a write handle; one that imports something can, one edit
+    // at a time and without anyone noticing, because the module would already be
+    // on the allowlist. Checking emptiness rather than checking what it imports
+    // means this test needs no update when the leaf's *contents* change.
+    const source = fs.readFileSync(path.join(SRC_ROOT, leaf), 'utf8');
+    expect(collectImportSpecifiers(source).runtime).toEqual([]);
   });
 
   it('reaches no operator-only or test-only module', () => {
@@ -138,11 +190,16 @@ describe.each(ENTRIES)('$label', ({ file }) => {
     //   on a request path, and `usage:close-months` is irreversible.
     // - the two `memory*` fakes would authenticate against nothing and meter
     //   into an array that disappears with the process.
+    // - `memoryEnergySource.ts` (ABL-303) is a real SQLite database seeded by a
+    //   test. On a serving path it would answer a customer's question with a
+    //   fixture — the same class of mistake as the other two, with the failure
+    //   pointed at the data rather than at the auth.
     for (const operatorOnly of [
       'v1/keys/keysCli',
       'v1/keys/memoryApiKeyDirectory',
       'v1/usage/usageCli',
       'v1/usage/memoryUsageSink',
+      'v1/data/memoryEnergySource',
     ]) {
       expect(graph.modules.filter((m) => m.startsWith(operatorOnly))).toEqual([]);
     }
@@ -152,7 +209,7 @@ describe.each(ENTRIES)('$label', ({ file }) => {
 describe('the exact public module graph', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicApp.ts'), SRC_ROOT);
 
-  it('is these eight modules and no others', () => {
+  it('is these twenty-five modules and no others', () => {
     // Pinned as an exact set on purpose. Any new edge out of the public app —
     // to a shared service, a middleware, the database config — shows up here as
     // a failing diff and gets justified in review rather than noticed later.
@@ -176,14 +233,46 @@ describe('the exact public module graph', () => {
     //
     // The consequence worth keeping: the module that serves requests still has
     // no metering code in it that could fail, and no database driver behind it.
+    //
+    // **ABL-303 adds seventeen** — eight endpoints' worth of routing and the
+    // contract kernel behind them — and this is the diff where the list stops
+    // being short enough to eyeball, so what to look for when it changes again:
+    //
+    // - Everything new is under `v1/data/` or `v1/routes/`, plus the three
+    //   `SHARED_LEAVES`. Nothing else outside `v1/` appears, and `config/` still
+    //   does not.
+    // - `v1/data/energySource.ts` and `v1/data/context.ts` are **absent**, and
+    //   that absence is the point: both are imported as types only, so `tsc`
+    //   erases them. The app names the shape of a data source and of the maps
+    //   built over it; `publicIndex.ts` picks the implementations.
+    // - `v1/data/sqliteEnergySource.ts` is absent for the same reason
+    //   `sqliteApiKeyStore.ts` is. The module that serves requests still opens
+    //   no database.
     expect(graph.modules).toEqual([
+      'services/freshness.ts',
+      'services/loadQuality.ts',
+      'utils/timestamp.ts',
       'v1/auth/apiKeyAuth.ts',
+      'v1/data/attribution.ts',
+      'v1/data/catalogRepo.ts',
+      'v1/data/cursor.ts',
+      'v1/data/envelope.ts',
+      'v1/data/forecastsRepo.ts',
+      'v1/data/freshnessMap.ts',
+      'v1/data/links.ts',
+      'v1/data/models.ts',
+      'v1/data/observationsRepo.ts',
+      'v1/data/params.ts',
+      'v1/data/series.ts',
       'v1/keys/apiKeyStore.ts',
       'v1/keys/keyFormat.ts',
       'v1/publicApp.ts',
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',
+      'v1/routes/catalog.ts',
+      'v1/routes/forecasts.ts',
       'v1/routes/index.ts',
+      'v1/routes/observations.ts',
       'v1/routes/root.ts',
     ]);
   });
@@ -194,26 +283,50 @@ describe('the exact public module graph', () => {
     // builtin and not a dependency at all — ABL-300 adds no package to
     // `server/package.json`, and the keys CLI is hand-rolled rather than taking
     // an argument parser for the same reason.
+    //
+    // **ABL-303 adds none either**, which is worth checking rather than
+    // assuming: eight endpoints with cursor pagination, ISO-8601 duration
+    // formatting and opaque token encoding are exactly the shape of change that
+    // arrives with a date library, a query builder and a base64 helper. The
+    // cursor uses `node:crypto` (already here for key hashing) and `Buffer`;
+    // durations are four modulo tests; the window parser is two regexes.
     expect(graph.packages).toEqual(['compression', 'cors', 'express', 'helmet', 'node:crypto']);
   });
 
-  it('does not choose a key store or a usage store, only name the shape of each', () => {
-    // The composition takes an `ApiKeyDirectory` and a `UsageMeter`, and
-    // `publicIndex.ts` decides what implements them. That is what keeps a
-    // database driver out of the module that serves requests, even though this
-    // app now both authenticates and meters against one.
+  it('does not choose a key store, a usage store or a data source — only name each shape', () => {
+    // The composition takes an `ApiKeyDirectory`, a `UsageMeter` and a
+    // `V1DataContext`, and `publicIndex.ts` decides what implements them. That
+    // is what keeps a database driver out of the module that serves requests,
+    // even though this app now authenticates, meters *and* reads a 9.4 GB
+    // SQLite file.
     expect(graph.packages).not.toContain('better-sqlite3');
     expect(graph.modules).not.toContain('v1/keys/sqliteApiKeyStore.ts');
     expect(graph.modules).not.toContain('v1/usage/sqliteUsageStore.ts');
+    expect(graph.modules).not.toContain('v1/data/sqliteEnergySource.ts');
   });
 });
 
 describe('the entrypoint chooses the key store, and only there', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicIndex.ts'), SRC_ROOT);
 
-  it('is these fifteen modules and no others', () => {
+  it('is these thirty-three modules and no others', () => {
     expect(graph.modules).toEqual([
+      'services/freshness.ts',
+      'services/loadQuality.ts',
+      'utils/timestamp.ts',
       'v1/auth/apiKeyAuth.ts',
+      'v1/data/attribution.ts',
+      'v1/data/catalogRepo.ts',
+      'v1/data/cursor.ts',
+      'v1/data/envelope.ts',
+      'v1/data/forecastsRepo.ts',
+      'v1/data/freshnessMap.ts',
+      'v1/data/links.ts',
+      'v1/data/models.ts',
+      'v1/data/observationsRepo.ts',
+      'v1/data/params.ts',
+      'v1/data/series.ts',
+      'v1/data/sqliteEnergySource.ts',
       'v1/keys/apiKeyStore.ts',
       'v1/keys/keyFormat.ts',
       'v1/keys/sqliteApiKeyStore.ts',
@@ -221,7 +334,10 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',
       'v1/publicIndex.ts',
+      'v1/routes/catalog.ts',
+      'v1/routes/forecasts.ts',
       'v1/routes/index.ts',
+      'v1/routes/observations.ts',
       'v1/routes/root.ts',
       'v1/usage/sqliteUsageStore.ts',
       'v1/usage/usageMaintenance.ts',
@@ -231,7 +347,7 @@ describe('the entrypoint chooses the key store, and only there', () => {
     ]);
   });
 
-  it('opens a database in exactly two modules, and both are named here', () => {
+  it('opens a database in exactly three modules, and all three are named here', () => {
     // ABL-300 wrote this as "exactly one module, and that module is the key
     // store", and predicted its own change in the next sentence: *"if a future
     // issue needs another store — ABL-301's usage tables are the obvious
@@ -254,13 +370,51 @@ describe('the entrypoint chooses the key store, and only there', () => {
     // A *third* fails this test, which is the point. Naming them individually
     // rather than asserting a count is deliberate: a count would pass if
     // somebody deleted one and added another.
+    //
+    // ## ABL-303 is that third, and it is a different file, not a third handle
+    //    on the same one
+    //
+    // The two above open `API_KEYS_DB_PATH` — a small file this project owns.
+    // `v1/data/sqliteEnergySource.ts` opens `ENERGY_DB_PATH`, the 9.4 GB energy
+    // database owned by `energy-data-gathering`, which is the file the previous
+    // two exist to stay out of. That looks like the guard being reversed, so
+    // here is why it is not:
+    //
+    // - It is **readonly**, so this process still cannot write to a database it
+    //   does not own. The write capability added at ABL-301 remains confined to
+    //   the usage tables in our own file.
+    // - It is opened **only from the entrypoint**, so `createPublicApp` still
+    //   chooses no storage — the assertion in the block above still passes with
+    //   this module absent from the app's graph.
+    // - `resolveEnergyDbPath` reuses `resolveApiKeysDbPath` rather than reading
+    //   `API_KEYS_DB_PATH` itself, so the "these two files are never the same
+    //   file" rule is still decided in one place and now guarded from both
+    //   directions.
+    //
+    // What would be a real loosening, and what this test still catches: a
+    // *fourth* module, a non-readonly handle on the energy database, or this
+    // module appearing in `createPublicApp`'s graph.
     const importers = graph.modules.filter((module) =>
       collectImportSpecifiers(fs.readFileSync(path.join(SRC_ROOT, module), 'utf8')).runtime.includes(
         'better-sqlite3'
       )
     );
 
-    expect(importers).toEqual(['v1/keys/sqliteApiKeyStore.ts', 'v1/usage/sqliteUsageStore.ts']);
+    expect(importers).toEqual([
+      'v1/data/sqliteEnergySource.ts',
+      'v1/keys/sqliteApiKeyStore.ts',
+      'v1/usage/sqliteUsageStore.ts',
+    ]);
+  });
+
+  it('opens the energy database readonly, and through the key store path resolver', () => {
+    // The two properties that make the third handle safe, checked as text for
+    // the same reason the rest of this file is: the claim is about what the
+    // module *says*, and importing it would open a 9.4 GB database to find out.
+    const source = fs.readFileSync(path.join(SRC_ROOT, 'v1/data/sqliteEnergySource.ts'), 'utf8');
+
+    expect(source).toContain('readonly: true');
+    expect(source).toContain('resolveApiKeysDbPath');
   });
 
   it('opens the usage store through the key store path resolver, not its own variable', () => {
@@ -276,6 +430,10 @@ describe('the entrypoint chooses the key store, and only there', () => {
   });
 
   it('adds no package beyond the driver and two Node builtins', () => {
+    // Unchanged by ABL-303. Eight endpoints, cursor pagination and a freshness
+    // map, and the dependency list is the same seven entries — worth pinning,
+    // because "we needed a date library" is how a public surface quietly becomes
+    // the place new dependencies enter a codebase.
     expect(graph.packages).toEqual([
       'better-sqlite3',
       'compression',
