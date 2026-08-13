@@ -2404,15 +2404,43 @@ conflicts were rounding artifacts of the same reading, average diff
 for these 23 countries, not the stale 107,047 total): the losing row was
 copied to `energy_load_conflict_backup_abl215` (tagged `rule_applied`) before
 being deleted, and the 26,465 T-wins rows had their surviving space-row
-`load_mw` updated to the T value. **CH, PL and SI are still open** — ABL-227's
-sample couldn't resolve them (differences were noise-scale against a further,
-later ENTSO-E revision neither stored snapshot captured) — leaving 9,496
-conflicting pairs. `energy_price`'s 16,896 conflicting pairs are untouched
-entirely; ABL-227/ABL-215 scoped to `energy_load` only, since price's overlap
-is mostly disjoint coverage rather than value conflict. The two-LEFT-JOIN-
-COALESCE shape below is therefore still load-bearing for CH/PL/SI and for all
-of `energy_price` — do not simplify it back to a single join on the theory
-that ABL-215 "closed" the conflict question.
+`load_mw` updated to the T value. **CH, PL and SI were left open at the time**
+— ABL-227's original sample couldn't resolve them (differences were
+noise-scale against a further, later ENTSO-E revision neither stored snapshot
+captured) — leaving 9,496 conflicting pairs. `energy_price`'s 16,896
+conflicting pairs are untouched entirely; ABL-227/ABL-215 scoped to
+`energy_load` only, since price's overlap is mostly disjoint coverage rather
+than value conflict.
+
+**ABL-255/ABL-257 resolved SI and most of PL on 2026-08-12, on a larger
+ENTSO-E sample.** ABL-255 re-adjudicated the 9,496 with more evidence per
+country: SI got the same T-row-wins treatment as ABL-215's 8-country group (T
+closer in all 13 sampled weeks, 89.3% overall, median relative error T 0.82%
+vs space 13.44%), and PL got a mixed verdict — most of it is the identical
+int-vs-2dp rounding artifact that defined ABL-215's FI/HU rule, but 69 rows
+plus all of CH still showed noise-scale differences against an unsettled
+ENTSO-E revision the sample couldn't pin down. ABL-257 executed the resolvable
+part on 2026-08-12 (Board `request_confirmation` accepted 07:35:09Z, scoped
+fresh rather than reusing ABL-215's approval): **SI 1,857 T-wins + PL 5,760
+no-op/format-only = 7,617 rows**, mirroring ABL-215's mechanics exactly —
+re-enumerated immediately before writing (zero drift from the plan), losing
+rows copied to `energy_load_conflict_backup_abl257` before deletion, in-
+transaction verification (byte-identity on every touched row, scope
+boundaries untouched, exact row-count delta) before COMMIT, then an
+independent post-commit re-check on a separate connection. `energy_load`
+dropped from 2,649,706 to **2,642,089** (exactly −7,617); every other table
+confirmed byte-for-byte unchanged. SI now carries 3 T-rows (rounding-only,
+diff < 1 MW, left untouched — not a genuine conflict) and PL carries 93 (24
+zero-fabrication rows out of scope per ABL-210/closed, plus the 69 residual
+rows deferred alongside CH).
+
+**CH (1,783: 1,403 genuine + 380 rounding) and PL's 69 residual rows are the
+only `energy_load` conflicts still open**, tracked in a follow-up issue
+(ABL-258) pending a larger or more recent ENTSO-E sample — the same
+unsettled-revision problem ABL-255 could not close for them. The two-LEFT-
+JOIN-COALESCE shape below is still load-bearing for CH, PL's 69 residual rows,
+and all of `energy_price` — do not simplify it back to a single join on the
+theory that this is fully closed.
 
 **ABL-256 executed on 2026-08-12 and closed the rest — every non-conflicting
 `energy_load` T-row, format only, zero `load_mw` values changed anywhere.**
@@ -2440,11 +2468,12 @@ row-count-verified before either statement ran, and independent post-commit
 re-verification (20/20 spot checks on each block; `energy_price` and every
 other table confirmed byte-for-byte unchanged). `energy_load` dropped from
 182,329 to exactly **9,496** T-separator rows — CH 1,783 / PL 5,853 / SI
-1,860, precisely the still-open conflicts ABL-215 could not resolve — and
-gained zero new orphans, since every rewritten row already had no space-form
-counterpart to collide with. `energy_load`'s own row count dropped by exactly
-30,066 (the deletes, from 2,679,772 to 2,649,706); nothing else in the table
-or the database changed.
+1,860, precisely the still-open conflicts ABL-215 could not resolve at that
+point — and gained zero new orphans, since every rewritten row already had no
+space-form counterpart to collide with. `energy_load`'s own row count dropped
+by exactly 30,066 (the deletes, from 2,679,772 to 2,649,706); nothing else in
+the table or the database changed. (That 9,496 was ABL-256's own snapshot, not
+the current figure — ABL-257 resolved 7,617 of it the same day; see above.)
 
 `timestampFormOnClause` (`server/src/utils/timestamp.ts:145`) is instead
 always used as **two separate LEFT JOINs** — one matching the space form, one
