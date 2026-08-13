@@ -107,6 +107,16 @@ const FORBIDDEN_PREFIXES: ReadonlyArray<{ prefix: string; why: string }> = [
  * - `services/freshness.ts` — the measured/day-ahead classifier split. ABL-293
  *   §2g says to reuse it "verbatim" precisely so that `/v1` and the dashboard
  *   cannot reach different conclusions about the same zone.
+ * - `services/wape.ts` (ABL-373) — the one definition of a weighted percentage
+ *   error, `100 * sum|a-f| / sum|a|`. It already has two internal callers
+ *   (`mlForecastService` and `tsoForecastService`, ABL-388) and `/v1/accuracy`
+ *   is the third. A private copy under `v1/` would let the public "WAPE" and the
+ *   dashboard's come to mean different things under the same column heading —
+ *   and this one carries three properties that are easy to re-derive wrongly:
+ *   `null` rather than `0` when the actuals sum to zero, `|actual|` in the
+ *   denominator so a negative price cannot cancel it, and non-finite pairs
+ *   skipped rather than counted. ABL-19 (BE solar MAPE 148,458%) and ABL-388
+ *   (HU solar 7,421.87%) are what the shared definition exists to stop.
  *
  * The exception is narrow and **checked rather than asserted**: the test below
  * requires each of them to be a *leaf* — to import nothing at runtime at all. A
@@ -118,6 +128,7 @@ const SHARED_LEAVES = [
   'utils/timestamp.ts',
   'services/freshness.ts',
   'services/loadQuality.ts',
+  'services/wape.ts',
 ] as const;
 
 /** Both entry points: the factory, and the process that actually runs. */
@@ -209,7 +220,7 @@ describe.each(ENTRIES)('$label', ({ file }) => {
 describe('the exact public module graph', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicApp.ts'), SRC_ROOT);
 
-  it('is these twenty-five modules and no others', () => {
+  it('is these twenty-eight modules and no others', () => {
     // Pinned as an exact set on purpose. Any new edge out of the public app —
     // to a shared service, a middleware, the database config — shows up here as
     // a failing diff and gets justified in review rather than noticed later.
@@ -248,11 +259,22 @@ describe('the exact public module graph', () => {
     // - `v1/data/sqliteEnergySource.ts` is absent for the same reason
     //   `sqliteApiKeyStore.ts` is. The module that serves requests still opens
     //   no database.
+    //
+    // **ABL-373 adds three** — the ninth endpoint: a route, the join
+    // (`accuracyRepo.ts`), the arithmetic (`accuracyMetrics.ts`) — plus the
+    // fourth shared leaf, `services/wape.ts`. What to look for: the accuracy
+    // join reads its actuals through `data/series.ts`'s `STREAMS`, the same
+    // constant `/v1/observations` reads, so `services/mlForecastService.ts` and
+    // the frozen `energy_renewable` table it maps to are **not** in this graph
+    // and must not become so.
     expect(graph.modules).toEqual([
       'services/freshness.ts',
       'services/loadQuality.ts',
+      'services/wape.ts',
       'utils/timestamp.ts',
       'v1/auth/apiKeyAuth.ts',
+      'v1/data/accuracyMetrics.ts',
+      'v1/data/accuracyRepo.ts',
       'v1/data/attribution.ts',
       'v1/data/catalogRepo.ts',
       'v1/data/cursor.ts',
@@ -269,12 +291,36 @@ describe('the exact public module graph', () => {
       'v1/publicApp.ts',
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',
+      'v1/routes/accuracy.ts',
       'v1/routes/catalog.ts',
       'v1/routes/forecasts.ts',
       'v1/routes/index.ts',
       'v1/routes/observations.ts',
       'v1/routes/root.ts',
     ]);
+  });
+
+  it('does not reach the frozen energy_renewable read path', () => {
+    // ABL-373's largest correctness decision, checked structurally rather than
+    // left in a comment. `mlForecastService.ACTUAL_DATA_MAPPING` points the
+    // accuracy join at `energy_renewable`, which carries `DEFAULT 0` on every
+    // `*_mw` column and so cannot express "not reported" — it stores an
+    // unreported type as a literal `0.0`. ABL-353 measured the result on the TSO
+    // accuracy route: 477,846 pairs existed only because of that default, and 23
+    // countries that report no offshore wind at all scored a flawless
+    // `mae: 0, rmse: 0` over thousands of points. `/v1/accuracy` reads
+    // `STREAMS` instead, so its actuals are the rows `/v1/observations` serves.
+    //
+    // Reusing that mapping is the single most likely "simplification" a future
+    // edit makes here, and it is one import away. This is the line that fails.
+    for (const frozen of [
+      'services/mlForecastService',
+      'services/crossCountryMetricsService',
+      'services/forecastService',
+      'services/tsoForecastService',
+    ]) {
+      expect(graph.modules.filter((m) => m.startsWith(frozen))).toEqual([]);
+    }
   });
 
   it('depends on no package the private app does not already have', () => {
@@ -309,7 +355,7 @@ describe('the exact public module graph', () => {
 describe('the entrypoint chooses the key store, and only there', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicIndex.ts'), SRC_ROOT);
 
-  it('is these thirty-seven modules and no others', () => {
+  it('is these forty modules and no others', () => {
     // **ABL-302 adds four**, all under `v1/quota/`, and they are here rather than
     // in the app's graph above for the same reason the whole of ABL-301's
     // metering is: `publicApp.ts` takes a `PlanGate` as a type and this file
@@ -325,8 +371,11 @@ describe('the entrypoint chooses the key store, and only there', () => {
     expect(graph.modules).toEqual([
       'services/freshness.ts',
       'services/loadQuality.ts',
+      'services/wape.ts',
       'utils/timestamp.ts',
       'v1/auth/apiKeyAuth.ts',
+      'v1/data/accuracyMetrics.ts',
+      'v1/data/accuracyRepo.ts',
       'v1/data/attribution.ts',
       'v1/data/catalogRepo.ts',
       'v1/data/cursor.ts',
@@ -350,6 +399,7 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/quota/planGate.ts',
       'v1/quota/planLimits.ts',
       'v1/quota/rateLimiter.ts',
+      'v1/routes/accuracy.ts',
       'v1/routes/catalog.ts',
       'v1/routes/forecasts.ts',
       'v1/routes/index.ts',

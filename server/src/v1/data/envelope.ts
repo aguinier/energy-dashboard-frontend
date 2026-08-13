@@ -35,8 +35,36 @@ import type { StreamFreshness } from './freshnessMap.js';
  * - `not_captured` — reserved, and not produced by any endpoint in this release.
  *   It is the answer for a series we deliberately do not capture for a zone;
  *   net position is the case it exists for and it is not on this surface.
+ *
+ * Two more are produced only by `/v1/accuracy` (ABL-373), because a *joined*
+ * result has two ways to be empty that a single-table read does not, and
+ * collapsing them into `no_data` would lose the distinction a subscriber acts
+ * on. On that endpoint `coverage` is doing more work than it does anywhere else:
+ * it is the field that separates a flawless forecast from an unmeasurable one,
+ * and it is required on every accuracy response for exactly that reason
+ * (ABL-293 §2a).
+ *
+ * - `no_model_coverage` — the model has no forecast rows for this zone, type and
+ *   window at all. A **normal** answer, not an error: catboost and xgboost cover
+ *   disjoint zone sets — `load` is xgboost for AT/BE/FR and catboost for the
+ *   other 21 — so "how does catboost forecast France" is a well-formed question
+ *   whose honest answer is "that model does not serve this zone".
+ * - `no_paired_actuals` — we forecast this window and no actual lined up against
+ *   it. A window in the future, or one whose actuals have not been ingested yet.
+ *   Distinct from `no_model_coverage` because the fix is different: wait, versus
+ *   ask a different model.
+ *
+ * Every metric is `null` under both, never `0`. Coverage says *why*; the null
+ * says a client that never reads coverage still cannot mistake it for a score.
  */
-export type Coverage = 'ok' | 'no_data' | 'out_of_scope' | 'upstream_gap' | 'not_captured';
+export type Coverage =
+  | 'ok'
+  | 'no_data'
+  | 'out_of_scope'
+  | 'upstream_gap'
+  | 'not_captured'
+  | 'no_model_coverage'
+  | 'no_paired_actuals';
 
 /**
  * Decide the coverage of an empty page.
