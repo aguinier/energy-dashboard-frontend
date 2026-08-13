@@ -2786,7 +2786,8 @@ hydro.
 
 **Known consequence, stated rather than absorbed: the models are trained on the
 other table.** The sibling `energy-forecast` job fits these renewable-family
-models against `energy_renewable`, so scoring them against `energy_generation`
+models against `energy_renewable` (`RENEWABLE_TYPE_SOURCE_TABLE`,
+`../energy-forecast/src/db.py:392`), so scoring them against `energy_generation`
 measures them against a quantity they were not fitted to. That is what moves BE
 `biomass` (mean actual 101.03 -> 252.35 MW, MAE roughly doubling) and BE
 `wind_onshore`. It is not a regression introduced here — it is the same
@@ -2796,8 +2797,31 @@ every other surface already reads `energy_generation`; keeping this one path on
 the frozen table to preserve a flattering number would be the
 confidently-wrong-number defect in its purest form. **Any renewable-family
 accuracy figure recorded before 2026-08-13 is not comparable with one recorded
-after** — re-measure, do not reconcile. The training-target mismatch belongs to
-the forecast repo and is filed separately.
+after** — re-measure, do not reconcile.
+
+**Do not file "switch the training table onto `energy_generation`" — that is
+ABL-321, and the CEO rejected it on measurement**
+(`../energy-forecast/src/db.py:356` states the verdict at the constant itself).
+Its before/after backtest **failed** a non-inferiority check on three
+already-serving pairs — AT solar 12.89 -> 13.44% WAPE, DE wind_onshore
+51.63 -> 53.50, BE wind_onshore 46.56 -> 47.81 — four improvements
+notwithstanding. ABL-331 then narrowed that constant to the default for a
+training run that names no source, since which table an artifact is *served*
+from is recorded in the artifact rather than in the constant, so flipping it now
+moves no live forecast (`../energy-forecast/src/db.py:381`). Scoring truth and
+training source are independent, and ABL-321's own decision window already used
+`energy_generation` as primary truth.
+
+What is genuinely new is **ABL-410**: that repo's forecast-quality scorecard
+still scores these types against the frozen table (`ACTUAL_SPECS`,
+`../energy-forecast/src/evaluation/scorecard.py:52`), so it and this dashboard
+now publish **different WAPEs for the same model** — its figure is the left
+column of the table above, ours the right. Do not reconcile them; they measure
+against different statements of the actual. `hydro_total` differs there twice
+over, because that entry also uses a strict `hydro_run_mw + hydro_reservoir_mw`
+against its own training-side target's null-aware form
+(`../energy-forecast/src/db.py:406`) — the same rule this dashboard arrived at
+independently, which is decent evidence it is the right one.
 
 **Performance is unchanged**, which a 4x larger actuals table does not suggest:
 measured warm on the replica, the whole cross-country query is **1,974 ms
