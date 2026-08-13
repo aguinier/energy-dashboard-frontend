@@ -262,6 +262,70 @@ export function getLoadForecastAccuracy(
 
 /**
  * Get generation forecast accuracy for a specific type (solar, wind_onshore, wind_offshore)
+ *
+ * ## Why `energy_generation` and not `energy_renewable` (ABL-324, tranche 3 of 3)
+ *
+ * Both queries below used to pair `energy_generation_forecast` against the
+ * frozen `energy_renewable`. That table is the wrong actuals source for an
+ * accuracy metric in three independent ways, each measured on the replica
+ * 2026-08-13 and each removed by the move:
+ *
+ * 1. **It fabricates the actual.** `energy_renewable` carries `DEFAULT 0` on
+ *    every `*_mw` column, so a type a country does not report is stored as a
+ *    literal `0.0` rather than as NULL. `energy_generation` deliberately has no
+ *    such default. Fleet-wide, over full history, **477,846 pairs** existed
+ *    only because of that default — 477,838 of them (99.998%) with the frozen
+ *    table holding exactly `0.0` — and the pathology is concentrated in
+ *    `wind_offshore_mw`, where **436,069 of 661,077 pairs (66%) were
+ *    fabricated**. For 23 countries with no offshore fleet at all (AT, CZ, HU,
+ *    LT, RO, SE, SK, …) *every* pair was a fabricated `0.0` actual against a
+ *    `0.0` forecast, which `calculateMetrics` published as
+ *    `mae: 0, rmse: 0` over thousands of `dataPoints` — a flawless
+ *    offshore-wind forecast for a landlocked country. Those pairs now do not
+ *    exist, so the endpoint reports `dataPoints: 0` and null metrics: we did
+ *    not measure it.
+ * 2. **It silently drops variant-spelled actuals.** `energy_renewable` holds
+ *    90,636 rows whose `timestamp_utc` is `T`-separated or carries a trailing
+ *    offset, while `energy_generation_forecast` is 100% space-form. A string
+ *    equality cannot match those, so the pair was dropped from the join with no
+ *    error and no empty state — silent sample loss from an accuracy figure.
+ *    Measured on the 90,636 rows themselves: **60,494 solar / 69,056
+ *    wind_onshore / 70,408 wind_offshore** pairs across **28 countries** were
+ *    being discarded this way.
+ * 3. **It covers far less.** 829,568 rows against `energy_generation`'s
+ *    3,178,270.
+ *
+ * ## Why the plain equality join below is correct, and when it would stop being
+ *
+ * `mlForecastService` and `crossCountryMetricsService` join their actuals
+ * through `timestampFormOnClause` as two LEFT JOINs plus a `COALESCE`, because
+ * their actuals tables hold both separator forms and a naive `IN (...)` join
+ * would fan out across a conflicting pair. Neither condition holds here once
+ * the actuals come from `energy_generation`, measured 2026-08-13:
+ *
+ *  - `energy_generation` is **0 `T`-form / 0 non-19-length rows out of
+ *    3,178,270**, and `energy_generation_forecast` is **0 / 0 out of
+ *    3,050,001**. Both sides of this join are space-form by construction, so
+ *    there is no second spelling to be agnostic about.
+ *  - Both tables have **zero** duplicate `(country_code, instant)` keys, so the
+ *    join is one-to-at-most-one and cannot fan out.
+ *
+ * Adding the two-LEFT-JOIN shape would therefore cost the index seek and buy
+ * nothing today. That is a claim about a measurement, not a guarantee: if a
+ * future ingest change reintroduces `T`-form rows into either table, this join
+ * silently drops them again and needs the `timestampFormOnClause` pair.
+ * `routes/tsoForecast.test.ts` pins the shape that would catch it.
+ *
+ * ## Two costs, both signed off under ABL-324 and both visible here
+ *
+ *  - `energy_generation` lacks hours `energy_renewable` has — measured, FR
+ *    2026-07-01..07-22 (2,073 rows) and BA (92). An `INNER JOIN` renders those
+ *    as **absent points**, never as a zero, which is the required behaviour.
+ *  - No NULL-aware total is involved at either site. `solar` / `wind_onshore` /
+ *    `wind_offshore` are single columns carrying identical names in both
+ *    tables, so this is a table swap, not a re-derivation, and
+ *    `renewableTotal.ts`'s `sumOrNull` has nothing to reduce here. It is
+ *    deliberately not imported rather than threaded through a one-element sum.
  */
 export function getGenerationForecastAccuracy(
   countryCode: string,
@@ -293,7 +357,7 @@ export function getGenerationForecastAccuracy(
           ELSE NULL
         END as error_pct
       FROM energy_generation_forecast f
-      INNER JOIN energy_renewable a
+      INNER JOIN energy_generation a
         ON f.country_code = a.country_code
         AND f.target_timestamp_utc = a.timestamp_utc
       WHERE f.country_code = ?
@@ -322,7 +386,7 @@ export function getGenerationForecastAccuracy(
       SELECT
         ${groupByClause} as timestamp,
         ROUND(AVG(${actualColumn}), 2) as actual_value
-      FROM energy_renewable
+      FROM energy_generation
       WHERE country_code = ?
         AND ${rangeClause('timestamp_utc')}
         AND ${actualColumn} IS NOT NULL
