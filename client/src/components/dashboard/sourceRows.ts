@@ -1,5 +1,6 @@
 import type { GenerationMix } from '@/types';
 import { GENERATION_GROUP_COLORS, type GenerationGroupKey } from './generationSeries';
+import { isSolarPartial, SOLAR_PARTIAL_QUALIFIER } from './solarCoverageNote';
 
 export interface SourceRow {
   /**
@@ -99,9 +100,17 @@ function sumOrNull(values: Array<number | null | undefined>): number | null {
 export function buildSourceRows(
   mix: GenerationMix | undefined,
 ): { rows: SourceRow[]; totalMw: number | null } {
+  // The Solar row carries its own qualifier when this country reports only the
+  // grid-metered part of its fleet (ABL-325). Derived from the mix itself
+  // rather than passed in by the caller, so the value cannot be rendered
+  // without the caveat - `solarCoverageNote.ts` owns the rule and the wording.
+  const solarLabel = isSolarPartial(mix?.solar_coverage)
+    ? `Solar (${SOLAR_PARTIAL_QUALIFIER})`
+    : 'Solar';
+
   const raw: Array<[SourceRow['key'], string, number | null]> = [
     ['nuclear', 'Nuclear', mix?.nuclear ?? null],
-    ['solar', 'Solar', mix?.solar ?? null],
+    ['solar', solarLabel, mix?.solar ?? null],
     ['wind', 'Wind', mix ? sumOrNull([mix.wind_onshore, mix.wind_offshore]) : null],
     ['hydro', 'Hydro', mix ? sumOrNull([mix.hydro_run, mix.hydro_reservoir]) : null],
     ['hydroPumped', 'Pumped storage', mix?.hydro_pumped ?? null],

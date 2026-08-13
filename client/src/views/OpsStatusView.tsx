@@ -53,7 +53,7 @@ export default function OpsStatusView() {
         </p>
 
         {isLoading && <SkeletonBlock />}
-        {isError && <ErrorBlock onRetry={() => refetch()} />}
+        {isError && <ErrorBlock onRetry={() => { void refetch(); }} />}
 
         {data && (
           <div className="space-y-4">
@@ -73,7 +73,7 @@ export default function OpsStatusView() {
               <p className="text-meta text-ink-dim">
                 Could not load the snapshot history.{' '}
                 <button
-                  onClick={() => historyQuery.refetch()}
+                  onClick={() => { void historyQuery.refetch(); }}
                   className="cursor-pointer underline underline-offset-2 hover:text-foreground"
                 >
                   Retry

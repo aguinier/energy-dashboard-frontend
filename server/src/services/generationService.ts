@@ -3,6 +3,7 @@ import defaultDb from '../config/database.js';
 import { GenerationMix, GenerationSeriesPoint, WindGenerationSeriesPoint, Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { RENEWABLE_MW_COLUMNS, nullAwareSumSql, WINDOW_AVERAGE } from './renewableTotal.js';
+import { getSolarCoverage } from './solarCoverage.js';
 
 /**
  * SQL for getGenerationMix, exported so tests can assert on the exact text
@@ -53,10 +54,12 @@ export const GENERATION_MIX_SQL = `
       AND ${rangeClause('timestamp_utc')}
   `;
 
-// `renewable_percentage` is attached to GenerationMix after the SQL row comes
-// back (see getGenerationMix) - GENERATION_MIX_SQL itself never selects it,
-// so the raw row shape omits it.
-type GenerationMixRow = Omit<GenerationMix, 'renewable_percentage'> & { row_count: number };
+// `renewable_percentage` and `solar_coverage` are attached to GenerationMix
+// after the SQL row comes back (see getGenerationMix) - GENERATION_MIX_SQL
+// itself never selects either, so the raw row shape omits them.
+type GenerationMixRow = Omit<GenerationMix, 'renewable_percentage' | 'solar_coverage'> & {
+  row_count: number;
+};
 
 /**
  * Window-average generation by production type, straight from the complete
@@ -91,6 +94,16 @@ export function getGenerationMix(
   return {
     ...mix,
     renewable_percentage: getRenewableShare(upperCode, start, end, db),
+    // Attached here rather than fetched separately by the client (ABL-325) so
+    // the caveat and the number it qualifies arrive in one payload and cannot
+    // be rendered apart - the same reason `renewable_percentage` is computed
+    // server-side above. A `solar` field that reaches the Generation tab
+    // without its coverage verdict beside it is precisely the wrong-number-
+    // under-a-plausible-label failure this is here to close.
+    //
+    // Deliberately NOT scoped to `start`/`end`: coverage is a property of the
+    // series, not of the window on screen. See COVERAGE_REFERENCE_DAYS.
+    solar_coverage: getSolarCoverage(upperCode, db),
   };
 }
 

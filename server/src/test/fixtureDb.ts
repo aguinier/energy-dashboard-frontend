@@ -36,7 +36,10 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
  *   measured 0.0 while `wind_onshore_mw` is NULL: zero and unknown side by side
  *   in one row, which must stay distinguishable on the wire.
  * - `BE` — negative day-ahead prices, and a window whose solar actuals are all a
- *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null.
+ *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null. Also the
+ *   only country with a `wind_offshore` forecast, against DE which has none
+ *   (ABL-319) — the pair that pins serving as data-driven rather than
+ *   country-gated.
  * - `PT` — rows exist but every generation column is NULL (a country reporting
  *   nothing). Must read as "no data", never 0%. On the day after WINDOW it also
  *   carries MK's and SI's live `energy_load` shape: impossible exact-`0.0`
@@ -311,6 +314,21 @@ function seed(db: DatabaseType): void {
   HOURS.forEach((h) => load.run('PT', at(h), 200));
   // AT: 600 / 620 / 640 / 660.
   HOURS.forEach((h, i) => load.run('AT', at(h), 600 + i * 20));
+  // NL — the ABL-277 shape: realized load and the TSO day-ahead forecast are
+  // published on different bases (ENTSO-E nets behind-the-meter solar out of
+  // the Dutch realized series and not out of the forecast), so their
+  // difference is a definitional gap, not forecast error. Every row is a real
+  // measurement and no guard drops it; it is the *aggregate accuracy* derived
+  // from the pair that must not be published.
+  //
+  // On NEXT_DAY, not WINDOW, and deliberately: `crossCountryMetricsService`'s
+  // ABL-214 test seeds its own NL conflict pair at `2026-07-01 01:00:00` to
+  // prove the two-LEFT-JOIN shape cannot fan out. A second NL row at that
+  // timestamp here would be an exact `(country_code, timestamp_utc)`
+  // duplicate — the one thing that join's no-fan-out property is measured
+  // against (verified 2026-08-11: zero such duplicates in the real table) —
+  // and would break it for a reason that has nothing to do with separators.
+  HOURS.forEach((h, i) => load.run('NL', at(h, 2), 900 - i * 200));
   // GR went silent after 01:00. The last two hours of the window simply are
   // not there — the shape GR and IE have had since 2026-03-14.
   load.run('GR', at(0), 300);
@@ -493,6 +511,28 @@ function seed(db: DatabaseType): void {
     forecast.run('BE', 'solar', atT(h), GENERATED_AT, 12, 5, 'catboost', 'v1')
   );
 
+  // BE wind_offshore, xgboost — the SERVED half of the ABL-319 natural
+  // experiment, and the only country here that has an offshore model at all.
+  //
+  // Its partner case is DE, which has offshore *generation* but no
+  // `wind_offshore` forecast row anywhere in this database — deliberately not
+  // written, because that absence IS the fixture. Measured on the replica
+  // 2026-08-12, that is production exactly: `wind_offshore` forecasts exist for
+  // BE (33,024 rows) and FR (32,664) and no one else, while DE reports 662-701
+  // MW of real offshore generation every hour. DE has a `models/DE/wind_offshore`
+  // directory, but no promoted top-level `model.joblib` in it, so
+  // `Forecaster.load` raises FileNotFoundError and `forecast_daily.py` counts
+  // the pair as skipped rather than writing rows.
+  //
+  // Nothing on the serving side knows any of that, and the pair pins it: the
+  // country that has rows serves, the country that does not degrades to an
+  // empty series rather than erroring or drawing a zero line. When ABL-316
+  // trains ~40 new per-country generation models, this is the behaviour that
+  // has to make them appear without a code change.
+  HOURS.forEach((h, i) =>
+    forecast.run('BE', 'wind_offshore', atT(h), GENERATED_AT, 12, 700 + i * 10, 'xgboost', 'v1')
+  );
+
   // FR hydro_total and renewable, catboost. These are the two forecast types
   // whose actual-column mapping in forecastService named a column that does not
   // exist (`hydro_mw`, `total_mw`), so /forecasts/compare 500'd for both. Paired
@@ -563,6 +603,13 @@ function seed(db: DatabaseType): void {
   // carries and the day-ahead one does not.
   HOURS.forEach((h, i) =>
     loadForecast.run('DE', at(h), 800 + i * 100, 'week_ahead', 700 + i * 100, 900 + i * 100)
+  );
+  // NL day-ahead, ~2x the realized load at every hour. Pairs perfectly — four
+  // points, no gaps — so the ONLY thing that can suppress its MAE/MAPE/RMSE is
+  // the divergent-basis rule, not an empty window (ABL-277). Deliberately far
+  // outside any plausible forecast error, mirroring the measured 73% MAPE.
+  HOURS.forEach((h, i) =>
+    loadForecast.run('NL', at(h, 2), 2 * (900 - i * 200), 'day_ahead', null, null)
   );
 
   const generationForecast = db.prepare(

@@ -23,6 +23,7 @@ export const NO_DATA_FILL = '#E4E0D6';
 export const NO_DATA_STROKE = '#CFCABE';
 
 /** SVG paint referencing a hatch pattern rendered under `id`. */
+// eslint-disable-next-line react-refresh/only-export-components -- utility co-located with the pattern component it serves
 export function noDataHatchUrl(id: string): string {
   return `url(#${id})`;
 }

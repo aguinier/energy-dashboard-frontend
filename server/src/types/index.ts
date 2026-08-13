@@ -1,10 +1,13 @@
-// The two types here that are owned elsewhere: the rule that decides them lives
+// The types here that are owned elsewhere: the rule that decides them lives
 // in the service, next to the measurements that justify its threshold.
 import type {
   NetPositionActualCoverage,
   NetPositionForecastCoverage,
 } from '../services/degenerateForecast.js';
 export type { NetPositionActualCoverage, NetPositionForecastCoverage };
+
+import type { SolarCoverage, SolarCoverageVerdict } from '../services/solarCoverage.js';
+export type { SolarCoverage, SolarCoverageVerdict };
 
 // Country types
 export interface Country {
@@ -141,6 +144,14 @@ export interface GenerationMix {
   // same window. Null when this country has no energy_generation rows in the
   // window, or when total positive generation is zero/negative.
   renewable_percentage: number | null;
+  // Whether `solar` above can carry an unqualified "Solar" label, or is a
+  // grid-metered subset of the country's real solar output (ABL-325 - NL
+  // reports ~2% of its fleet into this feed). Measured against ENTSO-E's own
+  // day-ahead solar forecast for the same hours; see solarCoverage.ts for the
+  // test, the thresholds, and why this is never a correction factor. Always
+  // present - a country that could not be checked reads `unknown`, which is
+  // not the same claim as `consistent`.
+  solar_coverage: SolarCoverage;
 }
 
 /**

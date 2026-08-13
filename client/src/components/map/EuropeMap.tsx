@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useId, useRef, memo } from 'react';
+﻿import { useState, useEffect, useMemo, useCallback, useId, useRef, memo } from 'react';
 import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
 import { ChartWrapper } from '@/components/charts/ChartWrapper';
 import { useMapData } from '@/hooks/useDashboardData';
@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils';
 import type { MetricType, MapDataPoint } from '@/types';
 import { selectMapGeometry, hoverCardClearsSelector, countryAriaLabel } from './mapGeometry';
 import { NoDataHatchPattern, NoDataSwatch, noDataHatchUrl } from './NoDataHatch';
+import type { GeoFeature } from './mapGeometry';
 
 const EUROPE_GEO_URL = '/europe.topojson';
 
@@ -35,18 +36,18 @@ const COUNTRY_NAME_MAP: Record<string, string> = {
 };
 
 // able data-scale colors.
-// Load is a magnitude → single-hue teal ramp, light → dark.
+// Load is a magnitude â†’ single-hue teal ramp, light â†’ dark.
 // Price / renewable share carry real polarity (cheap/expensive, clean/dirty)
-// → diverging clean (green) → medium (amber) → dirty (terracotta).
+// â†’ diverging clean (green) â†’ medium (amber) â†’ dirty (terracotta).
 // The three diverging stops moved to lib/dataScale.ts when ComparisonView
-// adopted the same ramp — one definition, so the two views cannot disagree
+// adopted the same ramp â€” one definition, so the two views cannot disagree
 // about which colour a given position on the scale is.
 const CLEAN = SCALE_CLEAN;
 const MEDIUM = SCALE_MEDIUM;
 const DIRTY = SCALE_DIRTY;
 const LOAD_LOW = '#CFE3DC';
 const LOAD_HIGH = '#12503F';
-// No-data is a diagonal hatch, not a fill — it moved to NoDataHatch.tsx when
+// No-data is a diagonal hatch, not a fill â€” it moved to NoDataHatch.tsx when
 // ComparisonMap needed the same mark (ABL-23). See that file for why it must not
 // sit on the same beige axis as the diverging scale's zero below.
 
@@ -60,7 +61,7 @@ const EXPORT_STRONG = '#14506E';
 const lerp = lerpHex;
 
 function dataColor(metric: MetricType, value: number, min: number, max: number): string {
-  // Net position is signed, so it cannot use the min→max normalisation below:
+  // Net position is signed, so it cannot use the minâ†’max normalisation below:
   // that would place 0 MW wherever it happens to fall in the range. See
   // divergingScale.ts.
   if (metric === 'net_position') {
@@ -77,10 +78,10 @@ function dataColor(metric: MetricType, value: number, min: number, max: number):
   return lerp(MEDIUM, DIRTY, (t - 0.5) * 2);
 }
 
-// Number-only formatters — the unit is rendered once, in its own muted span.
+// Number-only formatters â€” the unit is rendered once, in its own muted span.
 // `load`'s unit label (metricInfo.unit = 'GW') already matches the unconditional
 // /1000 below. `net_position`'s unit label is a fixed 'MW', so its conditional
-// /1000 rescale must say 'k' itself (matching formatLegendValue) — otherwise a
+// /1000 rescale must say 'k' itself (matching formatLegendValue) â€” otherwise a
 // 2500 MW value renders as a bare "2.50" next to "MW", reading as 2.50 MW.
 function formatHoverValue(value: number, metric: MetricType): string {
   switch (metric) {
@@ -135,7 +136,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     code: string;
     name: string;
   } | null>(null);
-  // Unique per mounted instance — the map can render both docked (ChartWrapper)
+  // Unique per mounted instance â€” the map can render both docked (ChartWrapper)
   // and full-screen at once, and a hardcoded pattern id would collide.
   const noDataHatchId = `no-data-hatch-${useId()}`;
 
@@ -153,7 +154,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     }
   }, [prefetchCountry]);
 
-  // No prefetch here on purpose — this country has nothing to open in the
+  // No prefetch here on purpose â€” this country has nothing to open in the
   // Core view, and warming its country page would be work for a click that
   // is not offered.
   const handleOutOfScopeEnter = useCallback((code: string, name: string) => {
@@ -179,7 +180,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
 
   const metricInfo = MAP_METRICS.find((m) => m.value === mapMetric);
 
-  const getCountryCode = (geo: { properties: Record<string, string> }): string | null => {
+  const getCountryCode = (geo: GeoFeature): string | null => {
     const name = geo.properties.NAME;
     return name ? (COUNTRY_NAME_MAP[name] || null) : null;
   };
@@ -188,7 +189,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
   // guessed header height) so the viewBox aspect always matches reality,
   // whether this is the full-screen map view or a docked chart card.
   // Belt-and-suspenders: ResizeObserver is the primary signal, but it only
-  // guarantees delivery before the next paint — some embedding contexts
+  // guarantees delivery before the next paint â€” some embedding contexts
   // (e.g. an inactive/non-compositing tab) can delay or skip that, so a
   // window `resize` listener re-measures directly too, and the initial
   // state is seeded from window.innerWidth/innerHeight for a same-render
@@ -204,7 +205,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     const { width, height } = el.getBoundingClientRect();
     if (width > 0 && height > 0) {
       // ResizeObserver + window `resize` both fire, unthrottled, on every
-      // layout pass — bail out when the measured box hasn't actually
+      // layout pass â€” bail out when the measured box hasn't actually
       // changed so an unrelated reflow doesn't re-render the whole
       // Geographies tree.
       setContainerSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
@@ -223,7 +224,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
   }, [measureContainer]);
 
   // Which viewBox/scale to render, and whether the hover card has room to
-  // dock in the corner — both are pure functions of the measured container
+  // dock in the corner â€” both are pure functions of the measured container
   // box (task-11 review findings 1 and 2; see mapGeometry.ts for the "why").
   const { projectionScale, mapWidth, mapHeight } = selectMapGeometry(
     containerSize.width,
@@ -246,7 +247,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         </defs>
         <Geographies geography={EUROPE_GEO_URL}>
           {({ geographies }) =>
-            geographies.map((geo) => {
+            geographies.map((geo: GeoFeature) => {
               const code = getCountryCode(geo);
               const d = code ? dataMap.get(code) : null;
               const has = !!d;
@@ -262,7 +263,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                 hoveredCountry?.country_code === code || hoveredOutOfScope?.code === code;
               const countryName: string = geo.properties.NAME ?? code ?? 'Unknown';
               // An out-of-scope country is not "no data" to a screen reader
-              // either — it gets the same sentence a sighted reader gets on
+              // either â€” it gets the same sentence a sighted reader gets on
               // hover, rather than falling through to countryAriaLabel's
               // no-data wording.
               const ariaLabel = outOfScope
@@ -270,7 +271,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                 : countryAriaLabel(
                     countryName,
                     has,
-                    has ? formatHoverValue(d!.value, mapMetric) : '',
+                    has ? formatHoverValue(d.value, mapMetric) : '',
                     metricInfo?.unit ?? '',
                     metricInfo?.label ?? mapMetric,
                   );
@@ -280,12 +281,12 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                   geography={geo}
                   // Own class (rather than relying on react-simple-maps'
                   // internal `rsm-geography`) so the :focus-visible ring in
-                  // index.css survives Tailwind's content-based purge —
+                  // index.css survives Tailwind's content-based purge â€”
                   // Tailwind drops @layer base selectors that don't appear
                   // literally in a scanned source file, and a class that
                   // only exists inside node_modules doesn't qualify.
                   className="able-country"
-                  fill={has ? dataColor(mapMetric, d!.value, min, max) : noDataHatchUrl(noDataHatchId)}
+                  fill={has ? dataColor(mapMetric, d.value, min, max) : noDataHatchUrl(noDataHatchId)}
                   stroke={isHover || isSelected ? 'hsl(var(--foreground))' : '#FFFFFF'}
                   strokeWidth={isHover ? 2.4 : isSelected ? 1.6 : 1.2}
                   style={{
@@ -300,16 +301,16 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                   // Only data-bearing countries are real controls: they're
                   // the only ones a click/Enter does anything to, so only
                   // they take a tab stop (react-simple-maps otherwise
-                  // defaults every <Geography> to tabIndex 0 — ~50 of them,
+                  // defaults every <Geography> to tabIndex 0 â€” ~50 of them,
                   // most unclickable). role="button" + aria-label carries
                   // the same name/value/unit the hover card shows visually,
-                  // since a screen reader has no other way to reach it — see
+                  // since a screen reader has no other way to reach it â€” see
                   // countryAriaLabel's doc comment in mapGeometry.ts.
                   // An out-of-scope country takes a tab stop even though it is
                   // not clickable: its sentence is the only thing that tells a
                   // reader why a country they can see is not coloured, and a
                   // keyboard user has no other way to reach it. It stays
-                  // `role="img"`, not `button` — nothing happens on Enter.
+                  // `role="img"`, not `button` â€” nothing happens on Enter.
                   tabIndex={has || outOfScope ? 0 : -1}
                   role={has ? 'button' : outOfScope ? 'img' : undefined}
                   aria-label={ariaLabel}
@@ -326,8 +327,8 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                     else handleMouseEnter(d ?? null);
                   }}
                   onMouseLeave={handleMouseLeave}
-                  // Keyboard focus mirrors mouse hover — same stroke
-                  // highlight, same hover card — so a sighted keyboard user
+                  // Keyboard focus mirrors mouse hover â€” same stroke
+                  // highlight, same hover card â€” so a sighted keyboard user
                   // sees exactly what a mouse user sees, and Tab is a real
                   // substitute for scanning the map instead of a second,
                   // unlabeled mode.
@@ -343,10 +344,10 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         </Geographies>
       </ComposableMap>
 
-      {/* Hover card — docks top-right once the container is wide enough that
+      {/* Hover card â€” docks top-right once the container is wide enough that
           the corner position actually clears the floating metric selector
           (MapMetricSelector `floating`, centered across the top of this same
-          container) — see hoverCardClearsSelector in mapGeometry.ts. Below
+          container) â€” see hoverCardClearsSelector in mapGeometry.ts. Below
           that width, it drops below the selector instead, which stays clear
           at any width. */}
       {hoveredCountry && (
@@ -373,7 +374,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           <p className="mt-1 text-xs text-ink-dim">{metricInfo?.label}</p>
           {fullScreen && (
             <div className="mt-2.5 border-t border-input pt-2 font-mono-num text-micro text-ink-muted">
-              Click or press Enter to open →
+              Click or press Enter to open â†’
             </div>
           )}
         </div>
@@ -402,7 +403,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         </div>
       )}
 
-      {/* Empty state — the API returned no countries for this metric */}
+      {/* Empty state â€” the API returned no countries for this metric */}
       {!isLoading && dataMap.size === 0 && (
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-[320px] rounded-[10px] border border-border bg-card px-5 py-4 text-center shadow-[0_4px_20px_rgba(0,0,0,0.06)]">
           <div className="text-body font-medium text-foreground">
@@ -417,7 +418,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                 // deployment (server/src/services/coreNetPositionScheduler.ts),
                 // so the honest reading is "not switched on here" rather than
                 // "late".
-                'The Core figure is captured from JAO separately, and this deployment has stored none yet. Switch to “All coupled borders” for the figure this dashboard does hold.'
+                'The Core figure is captured from JAO separately, and this deployment has stored none yet. Switch to â€œAll coupled bordersâ€ for the figure this dashboard does hold.'
               : 'Pick another metric above, or check back after the next ENTSO-E sync.'}
           </p>
         </div>
@@ -428,7 +429,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         <div className="mb-1.5 flex items-baseline justify-between">
           <span className="text-xs font-medium text-foreground">
             {/* The net position legend heading names which borders are in
-                scope, so it has to follow the toggle — a heading naming the
+                scope, so it has to follow the toggle â€” a heading naming the
                 other view is exactly the confidently-wrong label ABL-222
                 added this line to prevent. */}
             {mapMetric === 'net_position'
@@ -454,10 +455,10 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         />
         {mapMetric === 'net_position' ? (
           <>
-            {/* Ends are ±bound, so the centre tick is a true zero rather than
+            {/* Ends are Â±bound, so the centre tick is a true zero rather than
                 the midpoint of the data range. */}
             <div className="flex justify-between font-mono-num text-micro text-ink-muted">
-              <span>−{formatLegendValue(symmetricBound(min, max), mapMetric)}</span>
+              <span>âˆ’{formatLegendValue(symmetricBound(min, max), mapMetric)}</span>
               <span>0</span>
               <span>+{formatLegendValue(symmetricBound(min, max), mapMetric)}</span>
             </div>
@@ -465,7 +466,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
               <span>importing</span>
               <span>exporting</span>
             </div>
-            {/* Which "net position" this is — the same claim this repo has
+            {/* Which "net position" this is â€” the same claim this repo has
                 shipped wrong before, now stated rather than left implicit
                 (ABL-222). See lib/netPositionScope.ts. */}
             <p className="mt-1.5 border-t border-input pt-1.5 text-micro text-ink-muted">
@@ -480,7 +481,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           </div>
         )}
         {/* One hatch key, not two. In Core view the same texture covers both
-            "no rows here" and "outside the Core region" — they are the same
+            "no rows here" and "outside the Core region" â€” they are the same
             kind of mark (not on the scale) and a second texture would weaken
             the first (NoDataHatch.tsx). The per-country hover sentence is what
             distinguishes them, so the key widens its wording rather than

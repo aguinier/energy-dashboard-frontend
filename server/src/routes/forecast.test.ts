@@ -195,3 +195,101 @@ describe('GET /api/forecasts/compare — impossible zero load actuals', () => {
     expect(data.actuals.map((a) => a.value)).toEqual([1000, 1100, 1200, 1300]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ABL-319. Serving-readiness probe for ABL-316, which trains up to ~40 new
+// per-country generation models. The question this block answers is whether a
+// newly trained country/stream pair reaches the dashboard on its own, or whether
+// something between the `forecasts` table and the chart gates by country.
+//
+// Traced end to end on 2026-08-12 against the replica, DE `wind_offshore`:
+// nothing on the serving side gates by country. `getForecastData` filters on
+// country_code / forecast_type / model_name only, `resolveModelCandidates` is
+// keyed by stream and never sees a country, `getAvailableForecastTypes` is a
+// plain SELECT DISTINCT over the rows that exist, and no client component
+// carries a country allowlist. DE offshore is missing because it was never
+// written: `models/DE/wind_offshore` holds only un-promoted variant
+// subdirectories, with no top-level `model.joblib` for `Forecaster.load` to
+// open, so `forecast_daily.py` skips the pair. The gate is the write path.
+//
+// So there is no fix to land, and these tests pin the property instead — the
+// one that has to hold for the ABL-316 retrains to light up without a code
+// change, and the one whose silent loss would be found only after 40 retrains.
+//
+// Both directions are asserted, because "serves when rows exist" is only half of
+// it. The other half is what a country WITHOUT rows does, and the failure this
+// dashboard exists to prevent is the confident wrong number: an offshore chart
+// that renders a flat zero line for Germany, or a 500, rather than nothing.
+// ---------------------------------------------------------------------------
+
+describe('GET /api/forecasts — serving is data-driven, not country-gated', () => {
+  it('serves a country that has rows for the stream', async () => {
+    const { status, body } = await get(`?country=BE&type=wind_offshore&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    expect(body.data).toHaveLength(4);
+    expect(body.data.map((p: { value: number }) => p.value)).toEqual([700, 710, 720, 730]);
+    // Nothing in the registry pins offshore per country — BE resolves through
+    // the same stream-keyed ladder every other country would.
+    expect(body.data.every((p: { model_name: string }) => p.model_name === 'xgboost')).toBe(true);
+  });
+
+  it('degrades to an empty series for a country with no rows, rather than erroring', async () => {
+    // DE, the production case. A 500 here would be a bug; a zero-valued point
+    // would be an incident.
+    const { status, body } = await get(`?country=DE&type=wind_offshore&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.data).toEqual([]);
+    expect(body.meta.count).toBe(0);
+    // No model is claimed to have served, because none did.
+    expect(body.meta.model).toBeNull();
+  });
+
+  it('does not gate the country — the same country serves a stream it does have', async () => {
+    // The control. If DE's empty offshore response came from a country-level
+    // block rather than from absent rows, this would be empty too. Length is
+    // deliberately not pinned: unfiltered by horizon this returns DE's D+1 and
+    // D+2 vintages both, which is a separate property with its own tests.
+    const { status, body } = await get(`?country=DE&type=load&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    expect(body.data.length).toBeGreaterThan(0);
+  });
+
+  it('derives the available-type list from the rows that exist', async () => {
+    // This is the mechanism by which a newly trained model becomes reachable:
+    // `getAvailableForecastTypes` is SELECT DISTINCT over `forecasts`, so the
+    // first row written for DE/wind_offshore adds the type with no code change.
+    // It also had no test at all before this one.
+    const be = await get(`types?country=BE`);
+    const de = await get(`types?country=DE`);
+
+    expect(be.status).toBe(200);
+    expect(be.body.data).toContain('wind_offshore');
+    expect(de.body.data).not.toContain('wind_offshore');
+    // ...and DE is a fully served country otherwise, so absence is per-stream.
+    expect(de.body.data).toContain('load');
+  });
+
+  it('returns nothing for a registered model that nothing has ever written', async () => {
+    // A registry entry whose `model_name` no writer produces is dead: an
+    // explicit request is honoured strictly (`resolveModelCandidates`), so it
+    // resolves to that model and finds no rows. Measured on the replica
+    // 2026-08-12, both wind shadow candidates are in exactly this state —
+    // `xgboost-retrain-v1` and `catboost-retrain-v1` have zero rows fleet-wide.
+    //
+    // Pinned as an empty series rather than a substitution: answering with
+    // xgboost's numbers under the retrain-v1 label is the failure mode
+    // `resolveAccuracyModel` already refuses for accuracy.
+    const { status, body } = await get(
+      `?country=BE&type=wind_offshore&model=xgboost-retrain-v1&${WINDOW_QS}`
+    );
+
+    expect(status).toBe(200);
+    expect(body.data).toEqual([]);
+    expect(body.meta.modelRequested).toBe('xgboost-retrain-v1');
+    expect(body.meta.model).toBeNull();
+  });
+});
