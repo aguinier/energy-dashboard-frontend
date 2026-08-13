@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 
-import { buildFixtureDb, WINDOW, WINDOW_QS } from '../test/fixtureDb.js';
+import { buildFixtureDb, WINDOW, WINDOW_QS, NEXT_DAY_QS } from '../test/fixtureDb.js';
 
 // The router graph opens the shared SQLite file at import time. Hand it the
 // in-memory fixture instead, so no test can reach the real database. The
@@ -226,15 +226,78 @@ describe('GET /api/dashboard/timeseries', () => {
         date: '2026-07-01',
         load: 1150,
         price: 65,
-        solar: 130,          // AVG(100, 120, 140, 160)
+        solar: 100,
         wind_onshore: 200,
-        wind_offshore: 0,
-        hydro: 0,
-        biomass: 0,
-        geothermal: 0,
+        // ABL-324 tranche 2. These four were `0` while this read the frozen
+        // `energy_renewable`, whose columns carry `DEFAULT 0` and which the
+        // old query additionally wrapped in `COALESCE(…, 0)`. DE reports none
+        // of the four, so `null` — "we hold no reading" — is the only true
+        // answer, and `0 MW of offshore wind` was a fabricated one.
+        wind_offshore: null,
+        hydro: null,
+        biomass: null,
+        geothermal: null,
       },
     ]);
     expect(body.meta).toMatchObject({ country: 'DE', count: 1 });
+  });
+
+  it('keeps a measured zero apart from an unreported type, in one row', async () => {
+    // FR is the fixture's 0-vs-NULL case. `solar_mw` is a measured 0.0 and
+    // `wind_onshore_mw` is absent; both would have read `0` before this move,
+    // which is the whole defect. `hydro` is the partial case that separates
+    // the null-aware sum from a plain `+`: run-of-river is 100 and the
+    // reservoir column is unreported, so the total is the reported half, not
+    // NULL and not 100+0-as-a-claim-about-reservoir.
+    const { body } = await api.get(`dashboard/timeseries?country=FR&${WINDOW_QS}`);
+    expect(body.data).toEqual([
+      {
+        date: '2026-07-01',
+        load: 800,
+        price: 5,
+        solar: 0,
+        wind_onshore: null,
+        wind_offshore: null,
+        hydro: 100,
+        biomass: null,
+        geothermal: null,
+      },
+    ]);
+  });
+
+  it('reports nothing rather than zero for a country that reports no type at all', async () => {
+    // PT holds four `energy_generation` rows in which every column is NULL.
+    // The row exists — we fetched the A75 document — and it reported nothing.
+    const { body } = await api.get(`dashboard/timeseries?country=PT&${WINDOW_QS}`);
+    expect(body.data).toEqual([
+      {
+        date: '2026-07-01',
+        load: 200,
+        solar: null,
+        wind_onshore: null,
+        wind_offshore: null,
+        hydro: null,
+        biomass: null,
+        geothermal: null,
+      },
+    ]);
+  });
+
+  it('renders a day with no generation rows as a gap, never as zero', async () => {
+    // The shape of the FR 2026-07-01..21 hole (ABL-323/ABL-328), which
+    // `energy_generation` lacks and `energy_renewable` has: PT has load on
+    // NEXT_DAY and no generation row at all. The day must carry the load it
+    // has and simply not carry the renewable keys — an absent series, which a
+    // chart draws as a break, rather than six zeros it would draw as a
+    // measured collapse to nothing.
+    const { body } = await api.get(`dashboard/timeseries?country=PT&${NEXT_DAY_QS}`);
+    expect(body.data).toEqual([
+      // AVG over PT's two measured hours (200, 220); the interleaved 0.0
+      // placeholders are dropped by the load guard.
+      { date: '2026-07-02', load: 210 },
+    ]);
+    const [day] = body.data as Array<Record<string, unknown>>;
+    expect(Object.keys(day)).not.toContain('solar');
   });
 
   it('returns an empty series rather than an error for a country with no rows', async () => {
