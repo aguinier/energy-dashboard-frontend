@@ -1,5 +1,4 @@
 import { Router, type Request, type Response } from 'express';
-import { PublicApiError } from '../publicErrors.js';
 import {
   describeSeries,
   observeResolution,
@@ -11,10 +10,10 @@ import { buildLink } from '../data/links.js';
 import { decodeCursor, encodeCursor, queryFingerprint } from '../data/cursor.js';
 import {
   parseEnum,
+  parseHorizon,
   parseLimit,
   parseWindow,
   parseZone,
-  singleValue,
   toIsoSecond,
 } from '../data/params.js';
 import {
@@ -24,11 +23,7 @@ import {
   resolveServingModel,
   type ForecastRow,
 } from '../data/forecastsRepo.js';
-import {
-  MAX_HORIZON_HOURS,
-  PUBLIC_FORECAST_MODELS,
-  PUBLIC_FORECAST_TYPE_IDS,
-} from '../data/models.js';
+import { PUBLIC_FORECAST_MODELS, PUBLIC_FORECAST_TYPE_IDS } from '../data/models.js';
 import { forecastSeries } from '../data/series.js';
 import type { V1DataContext } from '../data/context.js';
 
@@ -63,37 +58,6 @@ export function forecastsRouter(context: V1DataContext): Router {
   router.get('/', (req, res) => serveForecasts(context, req, res));
   router.get('/latest', (req, res) => serveLatest(context, req, res));
   return router;
-}
-
-/**
- * `?horizon=` — one horizon in hours, or every horizon in the window.
- *
- * Hours, not "D+1"/"D+2". The internal route takes `horizon=1` and turns it into
- * `horizon_hours BETWEEN 0 AND 30` (`forecastService.ts:56-60`), which is a UI
- * shorthand with two hard-coded bands; freezing it into a public contract would
- * commit us to those bands forever and would answer a different question than
- * the parameter name suggests.
- */
-function parseHorizon(raw: unknown): number | undefined {
-  const value = singleValue(raw, 'horizon', 'invalid_horizon');
-  if (value === undefined || value === '') return undefined;
-
-  if (!/^\d{1,3}$/.test(value)) {
-    throw new PublicApiError(
-      400,
-      'invalid_horizon',
-      `The horizon parameter is a whole number of hours between 0 and ${MAX_HORIZON_HOURS}.`
-    );
-  }
-  const hours = Number(value);
-  if (hours > MAX_HORIZON_HOURS) {
-    throw new PublicApiError(
-      400,
-      'invalid_horizon',
-      `The longest horizon this API holds is ${MAX_HORIZON_HOURS} hours. There is no D+3 forecast.`
-    );
-  }
-  return hours;
 }
 
 interface ForecastMetaExtras {

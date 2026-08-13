@@ -2449,6 +2449,19 @@ request to fill one of them.
   grep -rn "energy_renewable" server/src --include=*.ts | grep -v '\.test\.ts'
   ```
 
+  **`/v1/accuracy` (ABL-373) is deliberately not an eighth read site**, and it
+  is the one that would have been easiest to add — `mlForecastService`'s
+  `ACTUAL_DATA_MAPPING` is the obvious thing to import when you need "which
+  actual does this forecast type score against", and importing it is one line.
+  `accuracyStream` (`server/src/v1/data/accuracyRepo.ts:162`) resolves the
+  actuals side through `v1/data/series.ts`'s `STREAMS` instead — the same
+  constant `/v1/observations` reads — so a public accuracy figure is computed
+  from rows the subscriber can fetch and check, and an unreported production
+  type arrives as SQL `NULL` and leaves the join unpaired rather than as the
+  frozen table's fabricated `0.0`. `publicAppGraph.test.ts` asserts the four
+  frozen-table services are unreachable from the public app, so re-adopting the
+  mapping is a failing test rather than a plausible simplification.
+
   Those three were out of ABL-324's scope deliberately: they are generic over
   forecast type, so moving them is not a table swap but a decision about what
   `renewable` / `hydro_total` mean on the new table, per type. It is derived
@@ -2921,6 +2934,35 @@ The rule this entry states still stands for every read that *does* touch a
 two-form table: never the naive `IN(...)`, for the fan-out reason —
 `energy_renewable` alone has **26,400** conflicting `T`/space pairs, 98.9% of
 the 26,694 it has.
+
+**`/v1/accuracy` is the third call site, and the first that publishes the
+tie-break as a term of a contract** (ABL-373). `readAccuracyPoints`
+(`server/src/v1/data/accuracyRepo.ts:236`) uses the same two-LEFT-JOIN-plus-
+`COALESCE` shape against `energy_load`, `energy_price` and `energy_generation`,
+and every response carries `meta.conflict_convention: "space_preferred"`.
+
+That field is the part worth copying. Which member of a conflicting pair is
+authoritative is **ABL-215**, and the parts of it still open — CH's 1,783 pairs
+and PL's 69 residual rows in `energy_load`, all 16,896 of `energy_price`'s
+overlapping pairs — are exactly the ones a paid accuracy metric would resolve
+*silently*, because reducing a window to a number requires picking one. Naming
+the convention on the response converts a silent pick into a published one: if
+ABL-215 later rules the other way for a zone, the number changes as a
+**documented change to a stated convention** that a subscriber can reconcile,
+rather than as a correction they discover by finding last quarter's figures no
+longer reproduce. An endpoint that has to make an open decision should say which
+way it made it.
+
+Dormant against live data today for the same reason the two internal sites are —
+`forecasts`' earliest row of any type is 2025-12-26, a month after the actuals
+cutover, so no forecast currently pairs with a `T`-form actual. It is shipped
+now rather than when it starts to matter, because what makes it start to matter
+is a historical backfill or a retrained model's archived vintage, and neither of
+those arrives with a reminder to revisit an accuracy join.
+`accuracyRepo.test.ts` pins both directions on the production schema: the shape
+returns one row for a conflicting pair, and the naive `IN(...)` returns two —
+both stored values, offered to the metric as independent observations, with
+nothing in the result saying which is wrong.
 
 ## Data the database does not have
 
