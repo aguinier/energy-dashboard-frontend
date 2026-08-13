@@ -1881,7 +1881,7 @@ ordinary cases and far from it for a handful: solar NL 18.28, BA 3.21, CY
 of **0.00** for NO solar, CZ/SI wind_onshore and IT wind_offshore, where the
 TSO publishes a forecast column of zeros and WAPE reads exactly 100%. None of
 those is established against the upstream documents the way ABL-277's NL load
-entry is, so none is suppressed — that is ABL-389, and the evidence bar
+entry is, so none is suppressed — that is ABL-400, and the evidence bar
 `loadForecastBasis.ts` sets applies to it. Above ~100% the only honest reading
 of a WAPE is "loses to forecasting zero".
 

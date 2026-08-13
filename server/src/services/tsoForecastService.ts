@@ -420,7 +420,7 @@ export function getGenerationForecastAccuracyMetrics(
  * `partial_subset` finding rather than a forecast miss, and it survives the
  * switch to WAPE unchanged. That is a basis question — the generation-side
  * counterpart of what `loadForecastBasis.ts` already suppresses for NL load —
- * and it is deliberately not answered here; see ABL-389.
+ * and it is deliberately not answered here; see ABL-400.
  */
 export function calculateMetrics(data: ForecastAccuracyDataPoint[]) {
   if (data.length === 0) {
