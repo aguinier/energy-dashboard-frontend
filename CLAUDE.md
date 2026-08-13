@@ -2666,12 +2666,56 @@ Three things to know before touching this:
   has **no `DEFAULT 0`**, and the mapping avoids `fillna(0)`. Note
   `groupby().sum()` collapses an all-NaN group to `0.0` unless you pass
   `min_count=1`.
-- **Values can be negative, legitimately.** ENTSO-E reports `Actual Aggregated`
-  and `Actual Consumption` separately; the full mapping nets them
-  (`aggregated - consumption`), so `hydro_pumped_mw` is negative while pumping
-  and a consumption-only type (French `Fossil Hard coal`) is negative outright.
-  An earlier version skipped every Consumption series, which recorded France as
-  a net pumped-storage *generator* at +26 MW while it was pumping 285-349 MW.
+- **Values can be negative, legitimately — including solar and wind (ABL-412).**
+  ENTSO-E reports `Actual Aggregated` and `Actual Consumption` separately; the
+  full mapping nets them (`aggregated - consumption`), so `hydro_pumped_mw` is
+  negative while pumping and a consumption-only type (French `Fossil Hard coal`)
+  is negative outright. An earlier version skipped every Consumption series,
+  which recorded France as a net pumped-storage *generator* at +26 MW while it
+  was pumping 285-349 MW.
+
+  **The netting is applied to every production type, not only to the store-like
+  ones it was introduced for**
+  (`../energy-data-gathering/src/entsoe_client.py:1472`,
+  `_net_generation_consumption`). So a type whose
+  own auxiliary load is metered reads negative whenever it is not generating,
+  and `energy_generation.solar_mw` is a *signed net* quantity, not gross solar
+  output. Counted read-only on the replica on 2026-08-13, **seven of the nine
+  renewable columns carry negative readings** — `solar_mw` 97,702 rows (3.45%,
+  worst -57.36, NL and IT), `biomass_mw` 21,230 (NL), `wind_offshore_mw` 11,325
+  (BE, NL, FR), `other_renewable_mw` 9,039 (IT, worst -1,111.0),
+  `hydro_reservoir_mw` 2,073 (PT, HU, FR), `hydro_run_mw` 705 (IE),
+  `wind_onshore_mw` 491 (FR, worst -1,018.7). Only `geothermal_mw` and
+  `marine_mw` are genuinely never negative.
+
+  **NL solar is negative at every single night hour** (-0.11 to -1.52 MW,
+  1,390/1,390 fit-window hours in the ABL-396 screen) — the same ABL-325 story
+  as the bullet below: its A75 solar is a small grid-metered subset, so that
+  subset's metered auxiliary load is a large fraction of it. The values arrive
+  non-negative from ENTSO-E; **the sign is ours**, produced by the netting. It
+  is therefore not an ingest sign error to repair and not a metering artefact to
+  re-fetch — it is a read-side semantics question, and it is answered read-side.
+- **A ratio against `TOTAL_POSITIVE_MW_SUM` clamps; a reported MW value does
+  not.** `RENEWABLE_MW_SUM` used to sum its nine columns unclamped on the
+  premise that "none of these nine types are expected to go negative" — refuted
+  by the census above, and refuted when it was written. The numerator let a
+  negative reading subtract while the denominator clamped the same column to 0,
+  which understated the share (BE 7-day 56.63% -> 56.72%, NL 30-day 21.56% ->
+  21.61%, i.e. visibly at the 2dp the wire carries). Both halves now clamp
+  per row per column. `/renewables/mix`'s seven fields and its `total`
+  deliberately do **not** — they report readings, where a negative net value is
+  a true measurement and blanking it would be the fabrication this dashboard
+  exists to avoid.
+- **DE's overnight solar floor is upstream, and it stopped on 2026-05-31
+  22:00Z** (= 2026-06-01 00:00 Europe/Berlin, a clean local-midnight boundary).
+  DE reported a flat 3-17 MW baseline at every night hour from 2022-01 to that
+  instant, then exact `0.0` from it onward; 2021 is clean too. This is not an
+  ingest vintage artefact: `fetched_at` shows the whole 2021-01..2026-06 span
+  was written by **one** backfill run on 2026-07-29 15:00-15:29, one chunk per
+  month, so the same code produced both the floor and the zeros. Do not "fix"
+  it, and do not read a clean recent window as certifying an older one — the
+  ABL-396 gate window (2026-07-11 onward) is 0/160 contaminated night hours
+  while its fit window is 87.8%.
 - **Share of generation, not of load.** `generationService.getRenewableShare` is
   the single definition — renewable output over total *positive* generation, as
   a ratio of window sums. Three separate implementations existed before
@@ -3619,7 +3663,7 @@ outage can take: the run reports "no tests" for the file rather than naming an
 assertion, so a green-looking suite is quietly dozens of cases short exactly
 when someone running `predone` is reading it as permission to ship. A lock is
 not absence — and neither is a corrupt header or a permissions error — so
-`replicaHasGenerationTable` now **catches** (`generationService.test.ts:746`)
+`replicaHasGenerationTable` now **catches** (`generationService.test.ts:812`)
 and skips the opportunistic block while the rest of the file runs.
 
 So a server count a little under 1,642 may simply mean the replica was busy —
