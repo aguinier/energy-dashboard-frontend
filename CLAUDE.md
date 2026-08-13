@@ -678,8 +678,8 @@ query really is model-agnostic.
 already been misread once (ABL-285 was filed on the premise that a `/forecasts`
 batch can mix models), so state it plainly: `getForecastData` walks the
 candidate ladder and **returns the first candidate that has rows**
-(`forecastService.ts:32-37`), and `queryForecasts` always applies
-`AND model_name = ?` (`:52`). One `/forecasts` response therefore carries
+(`forecastService.ts:33-37`), and `queryForecasts` always applies
+`AND model_name = ?` (`:53`). One `/forecasts` response therefore carries
 **exactly one `model_name`**, pinned or not. What it *can* mix, because neither
 is pinned, is `model_version` and `generated_at` — the hourly branch takes
 `MAX(generated_at)` per target timestamp (`:80-88`), so one window spans as
@@ -2423,40 +2423,59 @@ request to fill one of them.
   ENTSO-E production type. Prefer this for anything new.
 - **`energy_renewable`** — the older, narrower table: 8 renewable columns, with
   pumped storage folded into `hydro_reservoir_mw`. **Frozen.** The forecast job
-  and several backfill scripts read it; the dashboard is being moved off it
-  read site by read site (ABL-324). **All three tranches have landed**: tranche
-  1 moved `renewableService`'s four sites (ABL-351), tranche 2 moved
-  `dashboardService`'s timeseries leg and `countryService`'s two (ABL-352), and
+  and several backfill scripts read it; the dashboard **has now been moved off
+  it entirely** (ABL-324), read site by read site. Tranche 1 moved
+  `renewableService`'s four sites (ABL-351), tranche 2 moved
+  `dashboardService`'s timeseries leg and `countryService`'s two (ABL-352),
   tranche 3 moved `tsoForecastService`'s two (ABL-353) — see "Generation
   forecast accuracy moved off the frozen table" below, which is where the
   migration stopped being a tidy-up and started removing published wrong
-  numbers.
+  numbers — and **ABL-399 finished it**, moving the seven sites the first three
+  tranches could not see.
 
-  **Seven read sites remain, in three services, and a literal grep will not
-  find them.** `crossCountryMetricsService`, `mlForecastService` and
-  `forecastService` each hold a mapping object keyed by forecast type that
-  carries the table as a *string* — `ACTUAL_DATA_MAPPING`
-  (`mlForecastService.ts:21`) is the pattern — and then interpolate it into the
-  SQL at query time: `FROM ${mapping.table}` (`forecastService.ts:251`), and
-  `LEFT JOIN ${mapping.table}` twice in `mlForecastService.ts:133` and four
-  times in `crossCountryMetricsService.ts:131`. So
-  `grep -rn "FROM energy_renewable\|JOIN energy_renewable" server/src` returns
-  **zero hits** while all seven are live. That grep is what this entry used to
-  recommend; it now reports a completed migration that has not happened. Use
-  the bare table name instead:
+  **`server/src` now holds no read of this table.** Verify with the bare table
+  name, never with a SQL-keyword grep — see the next paragraph for why:
 
   ```bash
   grep -rn "energy_renewable" server/src --include=*.ts | grep -v '\.test\.ts'
   ```
 
-  Those three were out of ABL-324's scope deliberately: they are generic over
-  forecast type, so moving them is not a table swap but a decision about what
-  `renewable` / `hydro_total` mean on the new table, per type. It is derived
-  from the
-  *pre-netting* flatten specifically so its values are unchanged; deriving it
-  from `energy_generation` shifts `hydro_reservoir_mw` (measured 1520 → 1410)
-  because of that folding. It is now redundant and worth retiring, but that is
-  its own migration.
+  The only hits are prose. `src/test/fixtureDb.ts` still **creates and seeds**
+  the table on purpose: its `DEFAULT 0` is the contrast the accuracy tests
+  measure against, and deleting it would delete the ability to prove the
+  fabricated-actual defect is gone.
+
+  **Why those seven hid from a grep, and the rule it leaves behind.**
+  `crossCountryMetricsService`, `mlForecastService` and `forecastService` each
+  held their own mapping object keyed by forecast type, carrying the table as a
+  *string*, and interpolated it into the SQL at query time — `FROM
+  ${mapping.table}`, `LEFT JOIN ${mapping.table}`. No literal ever sat next to a
+  SQL keyword, so
+  `grep -rn "FROM energy_renewable\|JOIN energy_renewable" server/src` returned
+  **zero hits while all seven were live**, and this entry recommended exactly
+  that grep — reporting a completed migration that had not happened. A
+  table name held in a variable is invisible to the search everyone runs. The
+  mapping now lives once, in `server/src/services/actualsSource.ts`
+  (`actualsSource.ts:205`), where the table names are literals and
+  `actualsSource.test.ts` asserts that none of them is `energy_renewable`.
+
+  Those three were out of the earlier tranches' scope deliberately: they are
+  generic over forecast type, so moving them was not a table swap but a
+  decision about what `renewable` and `hydro_total` mean on the new table.
+  Both reuse `renewableTotal.ts` rather than restating it — `renewable` is a
+  null-aware sum over `RENEWABLE_MW_COLUMNS` (it had no counterpart column at
+  all; `total_renewable_mw` was a stored computed column), and `hydro_total` is
+  `RENEWABLE_COMPONENTS.hydro`, i.e. run-of-river + reservoir and **not**
+  pumped storage. See "The ML accuracy path scored forecasts against actuals
+  that never happened" below for what that moved and why.
+
+  `energy_renewable` itself remains frozen and is not re-derived: it is built
+  from the *pre-netting* flatten specifically so its values are unchanged, and
+  deriving it from `energy_generation` would shift `hydro_reservoir_mw`
+  (measured 1520 → 1410) because of that folding. With no dashboard reader left
+  it is now redundant here, but the forecast job and several backfill scripts
+  still read it, so retiring it is its own cross-module migration with its own
+  approval.
 
   **It also stores one instant under several timestamp spellings, which is why
   the read path is leaving it** (ABL-324, CEO-approved 2026-08-12). Measured on
@@ -2644,6 +2663,132 @@ Three things to know before touching this:
   series peaks at 428.8 MW against a Dutch fleet well over 20 GW, and renders
   as 0.93% of NL's generation mix in high summer. See the next section.
 
+### The ML accuracy path scored forecasts against actuals that never happened (ABL-399)
+
+The remainder of ABL-324, and the tranche where the frozen table was hurting
+the most reader-facing surfaces: `/forecasts/compare`, the ML accuracy
+endpoints, and the ComparisonView heatmap, map and leaderboard — plus the D-7
+seasonal-naive baseline, so a wrong baseline had been making models look better
+or worse than they are.
+
+**One mapping now, not three.** `server/src/services/actualsSource.ts` is the
+single forecast-type -> actuals source, replacing a private copy in each of
+`forecastService`, `mlForecastService` and `crossCountryMetricsService`. One of
+those copies carried a comment promising it was "kept identical to the mapping
+every other consumer already uses … so the three cannot drift apart again",
+which is a promise a literal cannot keep. `ActualsSource.valueExpr(prefix)`
+also removed the per-site `hydro_total` special case each of the three had to
+carry, because a two-column expression cannot simply be prefixed with a join
+alias.
+
+All figures below measured read-only on the replica 2026-08-13, full history.
+Blast radius is **AT, BE, DE and FR** — the only countries with a stored ML
+forecast of any renewable-family type.
+
+**1. The frozen table fabricated the actual.** `DEFAULT 0` on every `*_mw`
+column means a type a country does not report is stored as a literal `0.0`.
+Taking every forecast row paired against such a `0.0` and asking
+`energy_generation` what it recorded at the same country and instant:
+
+| type | pairs at `0.0` | genuine `0.0` | **positive** | **negative** | no gen row |
+|---|---:|---:|---:|---:|---:|
+| `solar` | 44,279 | 38,128 | **5,287** | 0 | 864 |
+| `wind_offshore` | 3,895 | 0 | 0 | **3,895** | 0 |
+| `wind_onshore` | 8 | 0 | **8** | 0 | 0 |
+| `biomass` | 2 | 0 | **2** | 0 | 0 |
+
+**9,192 pairs were scored against a zero that never happened.** Every one of
+the 3,895 offshore pairs is wrong and not one agrees: the real measurement is
+*negative* — a fleet drawing auxiliary load — which `energy_generation` records
+and the frozen table flattens. Reproduced per row on BE `2026-01-14 08:00:00`:
+frozen `wind_offshore_mw = 0`, generation **−26.2625 MW**. On the solar side
+the real generation reached **+334.72 MW** (DE) against a stored zero.
+
+**The 38,128 genuine overnight zeros are kept.** A solar fleet at 03:00 really
+did generate 0 MW. This is why the fix is a table swap and **not** a `> 0`
+filter on the actual — that would delete those readings and bias every
+renewable accuracy figure upward. `loadQuality.loadActualGuard` still applies
+`> 0` to `load` and to nothing else, unchanged.
+
+(Those counts are raw forecast rows. The endpoints deduplicate to
+`MAX(generated_at)` per target timestamp first, so the *scored* pairs corrected
+are 1,460, against 6,285 genuine zeros preserved and 108 instants with no
+`energy_generation` row, which become absent points.)
+
+**2. `hydro_total` was run-of-river plus a store, and is now hydro.** Both
+tables carry `hydro_run_mw` and `hydro_reservoir_mw`, which is the trap: the
+frozen table folds pumped storage into `hydro_reservoir_mw` while
+`energy_generation` splits it into its own `hydro_pumped_mw`. Proven on the BE
+instant above — frozen `hydro_reservoir_mw` is `73.31`, *exactly*
+`energy_generation.hydro_pumped_mw`, while generation's own
+`hydro_reservoir_mw` is NULL. `actualsSource` takes
+`RENEWABLE_COMPONENTS.hydro` (run + reservoir, no pumping), the definition
+ABL-351 already shipped for `/renewables`, so the two surfaces cannot disagree
+about the same country's hydro. **BE's hydro actual falls from ~129 MW mean to
+~39 MW**: the old figure was hydro generation plus a store.
+
+**The reduction must be null-aware, and BE is why.** BE reports no reservoir
+hydro at all — `hydro_reservoir_mw` is NULL in **all 49,213**
+`energy_generation` rows — so a NULL-propagating `a + b` yields NULL for every
+Belgian hour and takes BE's `hydro_total` accuracy from 5,121 pairs to **zero**,
+discarding real run-of-river readings to express an absence that is a property
+of Belgium's fleet rather than of our data. For FR the two rules differ on **2
+rows of 90,397**. This reverses a comment `forecastService` used to carry
+("deliberately not COALESCE'd to 0 … `NULL + 30` reading as 30 would invent a
+measurement"): true of a bare COALESCE, false of the guarded form, which is
+NULL when *every* component is NULL and so can never turn an absence into a
+measurement.
+
+**3. Headline movements.** WAPE, full history, before -> after:
+
+| type | AT | BE | DE | FR |
+|---|---|---|---|---|
+| `solar` | 87.58 → 87.37 | 26.18 → 26.20 | 57.78 → 57.91 | 20.29 → 20.82 |
+| `wind_onshore` | 76.02 → 75.67 | 121.96 → **137.74** | 66.45 → 66.02 | 78.15 → 77.63 |
+| `wind_offshore` | — | 111.68 → 110.39 | — | 69.52 → 70.29 |
+| `biomass` | — | 58.83 → **72.01** | — | 6.69 → 6.95 |
+| `hydro_total` | — | 79.85 → **626.98** | — | 15.62 → 20.82 |
+| `renewable` | 57.52 → 53.35 | 46.61 → 52.82 | 43.77 → 45.68 | 17.33 → 23.16 |
+
+Pair counts move two ways and both are correct. Every country gains ~28 pairs
+from hours `energy_generation` holds and the frozen table does not; **FR loses
+491** (5,025 → 4,534) to the `energy_generation` coverage hole
+(2026-07-01..22, ABL-323/ABL-328), which renders as absent points — never zero,
+never interpolated. BE `hydro_total` keeps its pairs (5,121 → 5,149): the
+run-of-river actual is still measured, it is simply no longer added to a store.
+Its WAPE at 626.98% is the training-target mismatch below, stated loudly rather
+than smoothed — per this file's own rule, above ~100% the only honest reading
+of a WAPE is "loses to forecasting zero", and BE's `hydro_total` model is
+predicting roughly the right number for a quantity we have stopped calling
+hydro.
+
+**Known consequence, stated rather than absorbed: the models are trained on the
+other table.** The sibling `energy-forecast` job fits these renewable-family
+models against `energy_renewable`, so scoring them against `energy_generation`
+measures them against a quantity they were not fitted to. That is what moves BE
+`biomass` (mean actual 101.03 -> 252.35 MW, MAE roughly doubling) and BE
+`wind_onshore`. It is not a regression introduced here — it is the same
+disagreement, now visible. The endpoint's job is to compare a forecast of a
+country's generation against the best statement we hold of that generation, and
+every other surface already reads `energy_generation`; keeping this one path on
+the frozen table to preserve a flattering number would be the
+confidently-wrong-number defect in its purest form. **Any renewable-family
+accuracy figure recorded before 2026-08-13 is not comparable with one recorded
+after** — re-measure, do not reconcile. The training-target mismatch belongs to
+the forecast repo and is filed separately.
+
+**Performance is unchanged**, which a 4x larger actuals table does not suggest:
+measured warm on the replica, the whole cross-country query is **1,974 ms
+before and 1,908 ms after**. (A first pass read 13,568 ms for the "before" arm
+and it was a cold-cache artifact — worth naming, because it briefly looked like
+a 5.8x speed-up and would have been written down as one. Time both arms warm,
+in the same process, or the number measures the page cache.) The
+two-LEFT-JOIN `timestampFormOnClause` shape is kept for every
+type, including the six now on `energy_generation` where the 'T'-form fallback
+join provably matches nothing (0 'T' rows in 3,180,752) — retained so the query
+stays correct without a code change if a future ingest ever writes one, which
+is the silent-drop trap ABL-353 had to document for its single-join site.
+
 ### Solar coverage: when the label cannot stand unqualified
 
 `getGenerationMix` attaches a `solar_coverage` verdict
@@ -2730,9 +2875,9 @@ rows matched. ABL-211 found the underlying join is generic across every
 forecast type sharing `ACTUAL_DATA_MAPPING` — it dropped `T`-separated
 `energy_load` actuals identically, not just `energy_price`'s. Both sites are
 now separator-agnostic: `mlForecastService.ts`'s `resolvedActualJoin()`
-(`mlForecastService.ts:122`, called from both its hourly and aggregated
+(`mlForecastService.ts:128`, called from both its hourly and aggregated
 branches) and `crossCountryMetricsService.ts`'s `metricSelect()`
-(`crossCountryMetricsService.ts:99`, covering both the actuals join and the
+(`crossCountryMetricsService.ts:93`, covering both the actuals join and the
 D-7 seasonal-naive baseline join beneath it).
 
 **The obvious fix is wrong, not just imprecise — measure before joining on
@@ -3245,11 +3390,20 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-13, measured on ABL-388 merged with `origin/main` at
-`7859e9f`: **50 client test files / 666 tests** and **88 server test files /
-1,648 tests**, all passing, zero skipped, clean typecheck on both (`tsc -b`
+Green as of 2026-08-13, measured on ABL-399 branched from `origin/main` at
+`50d7a72`: **50 client test files / 666 tests** and **89 server test files /
+1,661 tests**, all passing, zero skipped, clean typecheck on both (`tsc -b`
 and `tsc --noEmit`, exit 0). Fewer tests passing than that means something
 broke.
+
+ABL-399 is **+1 server file / +13 server cases**, and touches no client test:
+`services/actualsSource.test.ts` is the new file at 9 cases,
+`routes/forecast.test.ts` goes 6 → 9 in its actual-column block (three
+assertions about the frozen table's semantics replaced by six about the new
+ones), and `routes/forecastComparison.test.ts` gains 1. It also **deletes** the
+last `energy_renewable` read from `server/src`; the table stays in
+`src/test/fixtureDb.ts` deliberately, because its `DEFAULT 0` is what the
+fabricated-actual tests measure against.
 
 **Both halves of the previous figure were stale, and the file-count half was
 decidable without running anything — which is the lesson.** The text this
@@ -3948,6 +4102,12 @@ out of `crossCountryMetricsService.ts` when `tsoForecastService` and
 `mlForecastService` became its second and third callers; its test needed a
 fixture database built before it could import a piece of arithmetic, and now
 imports no DB-touching module at all),
+`server/src/services/actualsSource.ts` (ABL-399 — the single forecast-type ->
+actuals mapping, replacing a private copy in each of `forecastService`,
+`mlForecastService` and `crossCountryMetricsService`; it emits SQL text and
+touches no connection, so its test asserts the shape of the generated
+expression — including that no type resolves to the frozen `energy_renewable`,
+which is the one assertion that would catch this whole migration being undone),
 `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
@@ -4161,10 +4321,10 @@ Check the `forecasts` table for the `model_name` before adding the entry.
 training a model is the whole job.** Traced DE `wind_offshore` on 2026-08-12:
 
 - `getForecastData` filters on `country_code` / `forecast_type` / `model_name`
-  only (`services/forecastService.ts:41-117`); `resolveModelCandidates` is keyed
+  only (`services/forecastService.ts:42-118`); `resolveModelCandidates` is keyed
   by **stream** and never sees a country (`config/forecastModels.ts:224`).
 - `getAvailableForecastTypes` is a plain `SELECT DISTINCT forecast_type`
-  (`services/forecastService.ts:164-176`), so the first row written for a
+  (`services/forecastService.ts:165-177`), so the first row written for a
   country/stream adds the type to the picker with no code change.
 - No client component gates generation by country; `WindTab` is shared by both
   wind streams and reads whatever the API returns.

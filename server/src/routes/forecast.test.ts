@@ -44,37 +44,84 @@ describe('GET /api/forecasts/compare — actual-column mapping', () => {
     expect(body.success).toBe(true);
   });
 
-  it('sums the two hydro columns rather than reading a nonexistent hydro_mw', async () => {
+  // ABL-399 moved these actuals from the frozen `energy_renewable` onto
+  // `energy_generation`. FR's generation rows report `hydro_run_mw` 100 and no
+  // `hydro_reservoir_mw` at all — the shape Belgium has fleet-wide, where
+  // `hydro_reservoir_mw` is NULL in all 49,213 rows because BE has no reservoir
+  // fleet.
+  it('sums the reported hydro components rather than reading a nonexistent hydro_mw', async () => {
     const { status, body } = await get(`compare?country=FR&type=hydro_total&${WINDOW_QS}`);
 
     expect(status).toBe(200);
     const data = body.data as Compare;
-    // 30+70, 35+75, 40+NULL, 45+85.
     expect(data.actuals).toEqual([
       { timestamp: '2026-07-01 00:00:00', value: 100 },
-      { timestamp: '2026-07-01 01:00:00', value: 110 },
-      { timestamp: '2026-07-01 02:00:00', value: null },
-      { timestamp: '2026-07-01 03:00:00', value: 130 },
+      { timestamp: '2026-07-01 01:00:00', value: 100 },
+      { timestamp: '2026-07-01 02:00:00', value: 100 },
+      { timestamp: '2026-07-01 03:00:00', value: 100 },
     ]);
   });
 
-  it('leaves an unknown hydro component null instead of treating it as zero', async () => {
+  // The reduction is null-aware in BOTH directions, and each half is the fix
+  // for the other's failure. This is the half that keeps a real reading:
+  // a NULL-propagating `a + b` would answer NULL for every one of BE's 49,213
+  // hours and drop Belgium's hydro accuracy from 5,121 pairs to zero —
+  // discarding real run-of-river measurements to express an absence that is a
+  // property of Belgium's fleet, not of our data.
+  it('keeps a reported hydro component when its sibling is not reported', async () => {
     const { body } = await get(`compare?country=FR&type=hydro_total&${WINDOW_QS}`);
     const data = body.data as Compare;
 
-    const unknown = data.actuals[2];
-    expect(unknown.value).toBeNull();
-    // The specific failure guarded against: NULL + 40 reading as 40, which
-    // would render a run-of-river-only hour as the whole hydro fleet.
-    expect(unknown.value).not.toBe(40);
-    expect(unknown.value).not.toBe(0);
+    // hydro_run_mw = 100 is reported; hydro_reservoir_mw is not.
+    expect(data.actuals[2].value).toBe(100);
+    expect(data.actuals[2].value).not.toBeNull();
   });
 
-  it('reads renewable from total_renewable_mw', async () => {
+  // ...and this is the other half. PT's `energy_generation` rows exist but
+  // every column is NULL — the country reports no production type at all. That
+  // must not reduce to a confident `0`, and with the `IS NOT NULL` filter it is
+  // an absent point rather than a `{ value: null }` one, so no consumer writing
+  // `value ?? 0` can turn "we hold no reading" into "it generated nothing".
+  it('serves no actual at all where every component is unreported', async () => {
+    for (const type of ['renewable', 'hydro_total']) {
+      const { status, body } = await get(`compare?country=PT&type=${type}&${WINDOW_QS}`);
+      expect(status).toBe(200);
+      expect((body.data as Compare).actuals, type).toEqual([]);
+    }
+  });
+
+  // A measured zero is a value, not a missing reading — the distinction the
+  // frozen table's `DEFAULT 0` destroyed in the other direction. BE's solar is
+  // 0.0 at every hour (overnight), and must survive as 0.
+  it('keeps a measured zero rather than dropping it as missing', async () => {
+    const { body } = await get(`compare?country=BE&type=renewable&${WINDOW_QS}`);
+    const data = body.data as Compare;
+
+    expect(data.actuals).toHaveLength(4);
+    expect(data.actuals.map((a) => a.value)).toEqual([0, 0, 0, 0]);
+  });
+
+  // `renewable` is the type with no counterpart column: `total_renewable_mw`
+  // was a stored computed column on the frozen table. FR reports solar 0 and
+  // hydro_run 100 and nothing else renewable, so the total is 100 — pumped
+  // storage (-300) is a store and is excluded, which is what keeps this figure
+  // equal to the one /renewables serves for the same hour.
+  it('derives renewable as a null-aware sum over energy_generation', async () => {
     const { body } = await get(`compare?country=FR&type=renewable&${WINDOW_QS}`);
     const data = body.data as Compare;
 
-    expect(data.actuals.map((a) => a.value)).toEqual([130, 145, null, 160]);
+    expect(data.actuals.map((a) => a.value)).toEqual([100, 100, 100, 100]);
+  });
+
+  // The cost of the move, and it must render as a gap. AT has no
+  // `energy_generation` rows at all — the shape of the FR 2026-07-01..22 hole
+  // (ABL-323/ABL-328), where the frozen table holds 2,073 rows and
+  // energy_generation holds none. Never a zero, never carried forward.
+  it('renders an energy_generation coverage hole as absent, never as zero', async () => {
+    const { status, body } = await get(`compare?country=AT&type=solar&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    expect((body.data as Compare).actuals).toEqual([]);
   });
 
   // ABL-21. `forecasts` stores `target_timestamp_utc` with a 'T' separator for

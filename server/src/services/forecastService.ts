@@ -3,6 +3,7 @@ import { ForecastDataPoint, ForecastType, Granularity } from '../types/index.js'
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { resolveModelCandidates } from '../config/forecastModels.js';
 import { loadActualGuard } from './loadQuality.js';
+import { actualsSourceFor } from './actualsSource.js';
 
 // There used to be a second normalizer here, `normalizeForForecastsTable`,
 // which kept the 'T' separator "for the forecasts table". It had the mirror of
@@ -184,33 +185,22 @@ export function getForecastWithActuals(
   const upperCode = countryCode.toUpperCase();
   const range = timestampRange(start, end);
 
-  // Map forecast type to actual data table and column.
+  // Which table and value an actual is read from is `actualsSource.ts`
+  // (ABL-399). This function used to carry its own copy of that mapping under a
+  // comment promising it was "kept identical to the mapping every other
+  // consumer already uses … so the three cannot drift apart again" — three
+  // literals and a comment, which is the arrangement that comment describes the
+  // risk of. There is now one mapping and no promise to keep.
   //
-  // These column names are interpolated straight into the SELECT below, so a
-  // name that does not exist on the table is not a wrong number — better-sqlite3
-  // throws at prepare() and the request 500s. `renewable` named `total_mw` and
-  // `hydro_total` named `hydro_mw`; neither exists on `energy_renewable`, whose
-  // columns are `total_renewable_mw` and the `hydro_run_mw`/`hydro_reservoir_mw`
-  // pair. Kept identical to the mapping every other consumer already uses
-  // (`mlForecastService.ts:20-29`, `crossCountryMetricsService.ts:19-28`) so the
-  // three cannot drift apart again.
-  //
-  // The hydro sum is deliberately not COALESCE'd to 0: if either component is
-  // NULL the total is unknown, and `NULL + 30` reading as 30 would invent a
-  // measurement.
-  const tableMapping: Record<string, { table: string; column: string }> = {
-    load: { table: 'energy_load', column: 'load_mw' },
-    price: { table: 'energy_price', column: 'price_eur_mwh' },
-    renewable: { table: 'energy_renewable', column: 'total_renewable_mw' },
-    solar: { table: 'energy_renewable', column: 'solar_mw' },
-    wind_onshore: { table: 'energy_renewable', column: 'wind_onshore_mw' },
-    wind_offshore: { table: 'energy_renewable', column: 'wind_offshore_mw' },
-    hydro_total: { table: 'energy_renewable', column: 'hydro_run_mw + hydro_reservoir_mw' },
-    biomass: { table: 'energy_renewable', column: 'biomass_mw' },
-  };
-
-  const mapping = tableMapping[forecastType];
-  if (!mapping) {
+  // That copy also asserted that the hydro sum was "deliberately not COALESCE'd
+  // to 0: if either component is NULL the total is unknown, and `NULL + 30`
+  // reading as 30 would invent a measurement". True of a bare COALESCE, and not
+  // true of the guarded reduction that replaces it — see `actualsSource.ts` for
+  // why, and for the measurement (BE reports no reservoir hydro at all, in all
+  // 49,213 rows, so NULL-propagation made Belgium's hydro unmeasurable rather
+  // than unknown).
+  const source = actualsSourceFor(forecastType);
+  if (!source) {
     return { forecasts: [], actuals: [] };
   }
 
@@ -238,6 +228,17 @@ export function getForecastWithActuals(
   // floor here would delete real measurements and bias every renewable metric
   // upward, which is the same defect pointing the other way.
   //
+  // `IS NOT NULL` is new with ABL-399 and is load-bearing now that the actuals
+  // come from `energy_generation`. The frozen table's `DEFAULT 0` meant a value
+  // always existed, so this filter would have been dead; `energy_generation`
+  // stores NULL for a production type a country does not report, and an
+  // unfiltered read would serve `{ timestamp, value: null }` points — an
+  // invitation for any consumer writing `value ?? 0` to turn "we hold no
+  // reading" into "it generated nothing". A gap is expressed by the point's
+  // absence, which is what the accuracy joins beside this one already do with
+  // their `WHERE ... IS NOT NULL`, and what the FR 2026-07-01..22
+  // `energy_generation` coverage hole (ABL-323/ABL-328) has to render as.
+  //
   // This site was the last unguarded `energy_load` read (ABL-262). It is the
   // ABL-60 shape again: measured read-only against prod 2026-08-12, a
   // `?country=MK&type=load` window over 2026-08-01..03 returned 24 actuals of
@@ -247,11 +248,12 @@ export function getForecastWithActuals(
   const actualStmt = db.prepare(`
     SELECT
       timestamp_utc as timestamp,
-      ${mapping.column} as value
-    FROM ${mapping.table}
+      ${source.valueExpr('')} as value
+    FROM ${source.table}
     WHERE country_code = ?
       AND ${rangeClause('timestamp_utc')}
-      ${loadActualGuard(forecastType, mapping.column)}
+      AND ${source.valueExpr('')} IS NOT NULL
+      ${loadActualGuard(forecastType, source.valueExpr(''))}
     ORDER BY timestamp_utc
   `);
   const actuals = actualStmt.all(upperCode, ...rangeArgs(range));

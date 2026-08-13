@@ -135,8 +135,7 @@ export const RAW_COLUMN: SqlTerm = (column) => column;
 export const WINDOW_AVERAGE: SqlTerm = (column) => `AVG(${column})`;
 
 /**
- * `sumOrNull` expressed in SQL: a CASE guard that yields NULL only when every
- * term is NULL, and otherwise a COALESCE-to-0 sum of the terms.
+ * `sumOrNull` as a bare SQL *expression* over already-built terms.
  *
  * Both halves are load-bearing, and each is the fix for the other's failure:
  *
@@ -150,6 +149,30 @@ export const WINDOW_AVERAGE: SqlTerm = (column) => `AVG(${column})`;
  * reported member stand next to an unreported sibling. It can therefore never
  * turn an absence into a measurement.
  *
+ * Split out of `nullAwareSumSql` by ABL-399, which needed the same reduction
+ * without the `ROUND` and without a `SELECT` alias: the accuracy joins in
+ * `actualsSource.ts` embed it as a value inside `ABS(... - forecast_value)`,
+ * where rounding the actual before differencing would quietly change the error.
+ * One definition, two framings — a second copy is exactly what this module was
+ * created to prevent.
+ *
+ * `wrapSum` is applied to the summed expression *inside* the CASE, which is
+ * what lets `nullAwareSumSql` re-add its `ROUND(..., 2)` in the original
+ * position and keep emitting byte-identical text.
+ */
+export function nullAwareSumExpr(
+  terms: readonly string[],
+  wrapSum: (sum: string) => string = (sum) => sum
+): string {
+  const allNull = terms.map((t) => `${t} IS NULL`).join(' AND ');
+  const sum = terms.map((t) => `COALESCE(${t}, 0)`).join(' + ');
+  return `CASE WHEN ${allNull} THEN NULL ELSE ${wrapSum(sum)} END`;
+}
+
+/**
+ * `sumOrNull` expressed in SQL as a `SELECT` item: `nullAwareSumExpr` with the
+ * value rounded to 2dp and bound to a column alias.
+ *
  * Emits byte-identical text to the `groupExpression` this replaces in
  * `generationService`, so that module's SQL — and the query-plan and
  * SQL-shape assertions over it — are unchanged by the consolidation.
@@ -159,10 +182,8 @@ export function nullAwareSumSql(
   alias: string,
   term: SqlTerm = RAW_COLUMN
 ): string {
-  const terms = columns.map(term);
-  const allNull = terms.map((t) => `${t} IS NULL`).join(' AND ');
-  const sum = terms.map((t) => `COALESCE(${t}, 0)`).join(' + ');
-  return `CASE WHEN ${allNull} THEN NULL ELSE ROUND(${sum}, 2) END as ${alias}`;
+  const expr = nullAwareSumExpr(columns.map(term), (sum) => `ROUND(${sum}, 2)`);
+  return `${expr} as ${alias}`;
 }
 
 /**
