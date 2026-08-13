@@ -254,7 +254,7 @@ repository.
 
 `server/src/v1/` holds a **separate Express application** for the commercial
 `/v1` surface, built by `createPublicApp`
-(`server/src/v1/publicApp.ts:101`) and run as its own process from
+(`server/src/v1/publicApp.ts:127`) and run as its own process from
 `server/src/v1/publicIndex.ts`. It is not `createApp()` with routes hidden.
 
 The distinction is the whole point (ABL-304, specified by ABL-293 §2f). A

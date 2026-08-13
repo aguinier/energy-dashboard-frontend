@@ -2,13 +2,14 @@ import express, { type Express } from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
-import v1Routes from './routes/index.js';
+import { createV1Routes } from './routes/index.js';
 import publicRootRoutes from './routes/root.js';
 import { requireApiKey } from './auth/apiKeyAuth.js';
 import { publicErrorHandler, publicNotFoundHandler } from './publicErrors.js';
 import { assertPublicEnvironment, parsePublicCorsOrigins, type PublicEnv } from './publicEnv.js';
 import type { ApiKeyDirectory } from './keys/apiKeyStore.js';
 import type { UsageMeter } from './usage/usageMeter.js';
+import type { V1DataContext } from './data/context.js';
 
 /**
  * The public application, composed from scratch.
@@ -90,6 +91,31 @@ export interface PublicAppOptions {
   usageMeter: UsageMeter;
 
   /**
+   * The energy data the `/v1` resources read, plus the memoized freshness and
+   * catalogue maps built over it (ABL-303).
+   *
+   * **Required, with no default, for the third time in this options bag** — and
+   * the reason has shifted slightly each time, which is worth a line. A missing
+   * key store would be an unauthenticated API; a missing meter would be an API
+   * that bills nobody; a missing data source would be an API with no product in
+   * it. The first two are dangerous, the third is merely useless, but all three
+   * are states nobody would choose deliberately, so none of them is spellable.
+   *
+   * Injected as a type, exactly like the other two, and that is what keeps this
+   * module's import graph free of `better-sqlite3` even though `/v1` now reads a
+   * 9.4 GB SQLite file on every request. `publicApp.ts` names the *shape* of a
+   * data source; `publicIndex.ts` opens one — readonly, on a database owned by
+   * `energy-data-gathering`. `publicAppGraph.test.ts` pins both halves.
+   *
+   * The context also carries the **public base URL**, which is configuration
+   * rather than anything derived from a request. That is trap 1 from the ABL-291
+   * brief: a `next` link built from `req.get('host')` bakes a `192.168.x`
+   * address into a subscriber's client, works perfectly on the LAN, and is
+   * discovered only after the API moves.
+   */
+  data: V1DataContext;
+
+  /**
    * The environment to configure from and to vet. Defaults to `process.env`.
    *
    * Injectable so tests can assert the refusal without mutating a global under
@@ -101,6 +127,7 @@ export interface PublicAppOptions {
 export function createPublicApp({
   apiKeyDirectory,
   usageMeter,
+  data,
   env = process.env,
 }: PublicAppOptions): Express {
   // First, before anything is wired: refuse to exist in a process that was
@@ -192,11 +219,15 @@ export function createPublicApp({
   //   metered to. `requireApiPrincipal` throws rather than counting to nobody,
   //   so mounting it on the wrong side fails on the first request instead of
   //   producing an invoice with a hole in it.
-  // - *Before* the routes and, when ABL-303 adds one, **outside the cache**.
+  // - *Before* the routes and, when anything adds one, **outside the cache**.
   //   This is the one ordering detail in ABL-293 §2c that is not negotiable:
   //   `cacheMiddleware` returns early on a hit and never reaches the handler, so
   //   a meter mounted inside the cache bills a customer polling a 5-minute-TTL
-  //   endpoint for 1 request in 300.
+  //   endpoint for 1 request in 300. **ABL-303 added no cache** — the row cap
+  //   and the 366-day window bound query cost directly, and a cache would have
+  //   made `freshness.generated_at` lie by up to its TTL unless every handler
+  //   computed it, which is why §2g.F requires the handler to stamp it. The
+  //   ordering above is what lets one be added later without a billing hole.
   //
   // ABL-302's quota check slots in between the meter and the routes: it needs
   // the count this produces, and a request refused for quota is still a request
@@ -204,7 +235,7 @@ export function createPublicApp({
   app.use('/v1', publicRootRoutes);
   app.use('/v1', requireApiKey({ directory: apiKeyDirectory }));
   app.use('/v1', usageMeter.middleware);
-  app.use('/v1', v1Routes);
+  app.use('/v1', createV1Routes(data));
 
   // Unconditional and last, in this order — `notFound` first so anything that
   // matched no route becomes a typed 404 rather than reaching Express's HTML
