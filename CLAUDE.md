@@ -2273,7 +2273,17 @@ request to fill one of them.
 - **`energy_renewable`** — the older, narrower table: 8 renewable columns, with
   pumped storage folded into `hydro_reservoir_mw`. **Frozen.** The forecast job
   and several backfill scripts read it; the dashboard is being moved off it
-  read site by read site (ABL-324). It is derived from the
+  read site by read site (ABL-324). **Tranche 1 (ABL-351) moved
+  `renewableService`'s 4 sites and tranche 3 (ABL-353) moved
+  `tsoForecastService`'s 2** — see "Generation forecast accuracy moved off the
+  frozen table" below, which is where the migration stopped being a tidy-up and
+  started removing published wrong numbers. Still reading it:
+  `dashboardService` and `countryService` (tranche 2, ABL-352), plus
+  `crossCountryMetricsService`, `mlForecastService` and `forecastService`, whose
+  `ACTUAL_DATA_MAPPING` tables are generic over forecast type and were not in
+  ABL-324's scope. Check with
+  `grep -rn "FROM energy_renewable\|JOIN energy_renewable" server/src` rather
+  than trusting this list. It is derived from the
   *pre-netting* flatten specifically so its values are unchanged; deriving it
   from `energy_generation` shifts `hydro_reservoir_mw` (measured 1520 → 1410)
   because of that folding. It is now redundant and worth retiring, but that is
@@ -2341,6 +2351,82 @@ request to fill one of them.
   have left a live endpoint slower than it was before the move.
   `routes/renewables.test.ts` asserts the plan rather than a duration, since
   on a six-country fixture both shapes are instant.
+
+### Generation forecast accuracy moved off the frozen table (ABL-353)
+
+Tranche 3 of ABL-324. `getGenerationForecastAccuracy`'s two query sites — the
+hourly join (`tsoForecastService.ts:359`) and the aggregated branch
+(`:388`) — now read `energy_generation`. This is the accuracy-critical tranche,
+and the move removed three separate defects; the sample change is large enough
+that **any accuracy figure for solar / wind_onshore / wind_offshore recorded
+before 2026-08-13 is not comparable with one recorded after**.
+
+All figures measured read-only on the replica 2026-08-13, forecast-anchored
+over full history (the forecast side is unchanged, so classifying each forecast
+row by what the two actuals tables offer for the same instant isolates the
+move).
+
+**1. The frozen table was fabricating the actual, and this is the serious one.**
+`energy_renewable` carries `DEFAULT 0` on every `*_mw` column, so a type a
+country does not report is stored as a literal `0.0`. `energy_generation` has
+no such default and stores NULL. **477,846 pairs existed only because of that
+default**, 477,838 of them (99.998%) with the frozen table holding exactly
+`0.0`. The proof of the mechanism is in the data: across all three types,
+`energy_renewable` holds NULL in **zero** rows the forecast could pair with —
+it cannot express "not reported" at all.
+
+It is concentrated in offshore wind, where **436,069 of 661,077 pairs (66%)
+were fabricated**, and for **23 countries with no offshore fleet — AT, BA, BG,
+CH, CZ, EE, FI, GR, HR, HU, IE, LT, LU, LV, ME, MK, PL, RO, RS, SE, SI, SK and
+CY — 100% of their pairs were.** A `0.0` fabricated actual against the `0.0`
+forecast ENTSO-E publishes for those zones scored zero error at every point, so
+`/tso-forecast/accuracy/generation/:cc` reported `mae: 0, rmse: 0` over
+thousands of `dataPoints`: a flawless offshore-wind forecast for a landlocked
+country, and top of any ranking sorted by error. Those pairs no longer exist,
+so the endpoint now answers `dataPoints: 0` and null metrics. Solar had the
+same shape at smaller scale (41,012 pairs, 41,011 exactly zero), which is what
+takes MK and RS solar to zero pairs — the ABL-35 dead-zero species, correctly
+withheld rather than relabelled.
+
+**2. Variant-spelled actuals were silently dropped** — the defect the issue is
+named for. 90,636 `energy_renewable` rows are `T`-separated or carry a trailing
+offset while `energy_generation_forecast` is 100% space-form, so the string
+equality could not match them and the pair left the join with no error and no
+empty state. Recovered: **60,494 solar / 69,056 wind_onshore / 70,408
+wind_offshore pairs across 28 countries.**
+
+**3. Coverage.** `energy_generation` holds 3,178,270 rows against the frozen
+table's 829,568, so pair counts rise roughly fourfold over full history
+(solar 663,242 → 2,664,498; wind_onshore 663,242 → 2,929,588; wind_offshore
+119,601 → 603,150). Almost all of that is hours `energy_renewable` never held.
+
+**The cost, and it must render as a gap.** `energy_generation` lacks hours the
+frozen table has: **FR 2,073 rows over 2026-07-01..07-22 and BA 92 rows** (the
+ABL-323/ABL-328 hole). The `INNER JOIN` drops those to absent points, which is
+the required behaviour — never a zero, never carried forward, never
+interpolated. `routes/tsoForecast.test.ts` pins it on AT, which has real
+`energy_renewable` readings and no `energy_generation` rows at all.
+
+**Headline metrics moved, and the movement is the point rather than a
+regression.** Because the sample changed in both directions, a MAPE that fell
+is not an improved forecast and one that rose is not a degraded one — both are
+the same forecast measured over an honest sample. Over 2026-07-14..08-12,
+NL wind_offshore MAE goes 1,988.84 → 781, DE solar MAPE 198.02 → 57.39 over
+full history, and 23 countries' offshore figures disappear entirely. **Do not
+reconcile a stored or screenshotted pre-2026-08-13 figure against a current
+one**; re-measure instead.
+
+Two things this tranche deliberately did **not** do. No NULL-aware total is
+involved — `solar` / `wind_onshore` / `wind_offshore` are single columns
+carrying identical names in both tables, so this is a table swap and
+`renewableTotal.ts` has nothing to reduce here; it is not imported rather than
+threaded through a one-element sum. And the join stays a plain equality rather
+than gaining `timestampFormOnClause` — see the entry under "Timestamp storage"
+for the measurement behind that, and for the condition that would reverse it.
+
+Nothing in this client calls `/tso-forecast/accuracy/generation/:cc` (see
+"ForecastTab" above), so none of the above was visible in the UI. It is a live
+public endpoint, so it was wrong where an API consumer could read it.
 
 Three things to know before touching this:
 
@@ -2613,25 +2699,38 @@ regression would be wrong — the fix is correct and was worth shipping now
 rather than waiting for it to matter, but there is no headline WAPE it moves
 today.
 
-**Still open, and deliberately not folded into ABL-214 — a real, live gap, not
-the same one-line shape.** `tsoForecastService.ts:296`
-(`getGenerationForecastAccuracy`, joining `energy_generation_forecast` to
-`energy_renewable`) has the identical defect — `f.target_timestamp_utc =
-a.timestamp_utc`, no normalisation on either side — and unlike the two services
-above it **is** currently live: `energy_generation_forecast` holds rows back to
-2021-01-01, deep inside `energy_renewable`'s `T`-form window
-(90,636 rows, 2021-12-31..2025-11-25). Measured on a DE/solar window straddling
-the cutover (2025-11-15..2025-12-01): today's bare-equality join returns 1,057
-rows; the separator-agnostic, dedup-safe join returns 2,013 — essentially
-double. It needs the identical `timestampFormOnClause`-pair-plus-`COALESCE`
-treatment as the two fixed services above (never the naive `IN(...)`, for the
-same fan-out reason — `energy_renewable` alone has **26,400** conflicting
-`T`/space pairs, 98.9% of the 26,694 it has), in both its hourly and
-aggregated branches. That is materially more
-than "the same one line" this ticket was scoped for, and nothing in this
-client currently calls `/tso-forecast/accuracy/generation/:cc` (see
-"ForecastTab" above), so it was left unfixed here rather than grown into this
-change — filed as its own follow-up instead.
+**Closed by ABL-353, and not by the fix this entry used to prescribe.**
+`getGenerationForecastAccuracy` had the identical bare-equality defect —
+`f.target_timestamp_utc = a.timestamp_utc`, no normalisation on either side —
+and unlike the two services above it **was** live, because
+`energy_generation_forecast` holds rows back to 2021-01-01, deep inside
+`energy_renewable`'s `T`-form window. This entry prescribed the
+`timestampFormOnClause`-pair-plus-`COALESCE` treatment for both its branches.
+That is **not** what shipped, and the reason is worth keeping: ABL-324
+tranche 3 moved the actuals side off `energy_renewable` onto
+`energy_generation` (`tsoForecastService.ts:359`, `:388`), which removes the
+precondition rather than working around it. Measured 2026-08-13,
+`energy_generation` is **0 `T`-form and 0 non-19-length rows out of
+3,178,270** and `energy_generation_forecast` is **0 of 3,050,001** — both
+sides of the join are space-form by construction, and both tables have **zero**
+duplicate `(country_code, instant)` keys, so the join is one-to-at-most-one and
+a plain equality is exact. Adding the two-LEFT-JOIN shape would forfeit the
+index seek for no rows. The plans are unchanged and both sides still seek
+(`SEARCH a USING INDEX idx_generation_country_time`); measured on DE/solar over
+30 days, 4.2 ms against the old 6.8 ms.
+
+The single-window figure this entry used to quote (DE/solar 2025-11-15..12-01,
+1,057 rows bare vs 2,013 separator-agnostic) understated the problem by
+measuring one country in one month. Fleet-wide over full history, the pairs
+lost to variant spelling alone were **60,494 solar / 69,056 wind_onshore /
+70,408 wind_offshore across 28 countries**. See "Generation forecast accuracy
+moved off the frozen table" below for the full accounting, including the larger
+defect the move uncovered.
+
+The rule this entry states still stands for every read that *does* touch a
+two-form table: never the naive `IN(...)`, for the fan-out reason —
+`energy_renewable` alone has **26,400** conflicting `T`/space pairs, 98.9% of
+the 26,694 it has.
 
 ## Data the database does not have
 
@@ -2956,20 +3055,27 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-13, measured on ABL-351 merged with `main` at the ABL-317
-publish merge — `origin/main`'s `/v1` line (ABL-300, ABL-301, ABL-304, ABL-311,
-ABL-282) joined to local `main` (ABL-309, ABL-319, ABL-325, ABL-329) and the
-three Group B branches (ABL-276/277/278, ABL-257, ABL-282's flat config), plus
-ABL-324 tranche 1: **50 client test files / 666 tests** and **77 server test
-files / 1,401 tests**, all passing, zero skipped, clean typecheck on both
-(`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing than that means
-something broke.
+Green as of 2026-08-13, measured fresh on ABL-353 (ABL-324 tranche 3) branched
+from `origin/main` at `eac20ed`: **50 client test files / 666 tests** and
+**83 server test files / 1,549 tests**, all passing, zero skipped, clean
+typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing
+than that means something broke.
 
-ABL-351 is the last of those and adds +2 server files
-(`services/renewableTotal.test.ts`, `routes/renewables.test.ts`) and +34 server
-cases over the 75 / 1,367 that `main` measured immediately before it; it touches
-no client test, which is why the client figure is unmoved. Recorded as a delta
-to explain the movement — not as arithmetic to trust in place of a fresh run.
+ABL-353 adds **+3 server cases** in the existing `routes/tsoForecast.test.ts`
+and no new file, over the 83 / 1,546 `origin/main` measured at `eac20ed`. It
+touches no client test, which is why the client figure is unmoved.
+
+**The server figure this entry carried before — 77 files / 1,401 tests — was
+never true of any tree**, and is a worked example of the rule below rather than
+a typo worth quietly correcting. It was recorded against ABL-351 *pre-merge*
+and then left standing while `origin/main` moved underneath it (ABL-303's `/v1`
+endpoints landed as `56cc338`, ABL-351 itself merged as `09ee082`). Anyone
+sizing a regression against 1,401 would have concluded ~148 tests had vanished.
+Re-measure; never carry a count forward across a merge.
+
+(ABL-351 — tranche 1 — added +2 server files, `services/renewableTotal.test.ts`
+and `routes/renewables.test.ts`, and +34 server cases. Recorded as a delta to
+explain movement, not as arithmetic to trust in place of a fresh run.)
 
 **Neither input figure survived, and neither was added up.** Local `main` read
 49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
