@@ -2977,11 +2977,27 @@ movement; they are not to be summed.
 
 **Neither input figure survived, and neither was added up.** Local `main` read
 49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
-`origin/main` read 49 / 644 and 66 server files / 1,114 at `87aaa1c`; their
+`origin/main` read 49 / 644 and 66 server files / 1,114 at `cc28802`; their
 merge read 50 / 666 and 75 / 1,367 at `a8d6fe8`. The sides touch disjoint code
 — `CLAUDE.md` was the only file every one of them edited — so each figure is a
 fresh `npx vitest run` on the tree it names, per the ABL-234 rule below. The
 deltas recorded further down explain the movement; they are not to be summed.
+
+**That `cc28802` read `87aaa1c` until it was corrected here, and the rule this
+paragraph states is exactly what the mislabel broke.** `66 / 1,114` is a real
+measurement — of `cc28802` (PR #19, ABL-300), one merge *before* `87aaa1c`
+(PR #21, ABL-301), whose six new `v1/usage/*` test files take that tree to
+**72**. So a reader reconciling `66 -> 75` credited the local-`main` merge with
+`+9` server files when it contributed `+3`, and ABL-301 with none when it
+contributed six. **Settle a file count from the tree, not by re-running
+anything**: `git ls-tree -r <ref> --name-only | grep -c '^server/src/.*\.test\.ts$'`
+(plus the one `scripts/` file the server suite also discovers —
+`server/vitest.config.ts:11`) is decidable at any commit, needs no
+`node_modules`, no matching Node ABI and no free replica, and is what settled
+this. It reads 63 at `4977f8a`, 66 at `cc28802`, 72 at `87aaa1c`, 75 at
+`a8d6fe8`, and 83 at both `eac20ed` and `cf20527` — matching every figure
+recorded beside those commits except the one corrected here. It cannot check a
+*test* count, which is why that half still needs a run.
 
 Both suites were run under **v24.18.0**, which is not optional — see
 "NODE_MODULE_VERSION mismatch" below, and note that all 666 client tests pass
