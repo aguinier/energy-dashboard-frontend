@@ -314,6 +314,21 @@ function seed(db: DatabaseType): void {
   HOURS.forEach((h) => load.run('PT', at(h), 200));
   // AT: 600 / 620 / 640 / 660.
   HOURS.forEach((h, i) => load.run('AT', at(h), 600 + i * 20));
+  // NL — the ABL-277 shape: realized load and the TSO day-ahead forecast are
+  // published on different bases (ENTSO-E nets behind-the-meter solar out of
+  // the Dutch realized series and not out of the forecast), so their
+  // difference is a definitional gap, not forecast error. Every row is a real
+  // measurement and no guard drops it; it is the *aggregate accuracy* derived
+  // from the pair that must not be published.
+  //
+  // On NEXT_DAY, not WINDOW, and deliberately: `crossCountryMetricsService`'s
+  // ABL-214 test seeds its own NL conflict pair at `2026-07-01 01:00:00` to
+  // prove the two-LEFT-JOIN shape cannot fan out. A second NL row at that
+  // timestamp here would be an exact `(country_code, timestamp_utc)`
+  // duplicate — the one thing that join's no-fan-out property is measured
+  // against (verified 2026-08-11: zero such duplicates in the real table) —
+  // and would break it for a reason that has nothing to do with separators.
+  HOURS.forEach((h, i) => load.run('NL', at(h, 2), 900 - i * 200));
   // GR went silent after 01:00. The last two hours of the window simply are
   // not there — the shape GR and IE have had since 2026-03-14.
   load.run('GR', at(0), 300);
@@ -588,6 +603,13 @@ function seed(db: DatabaseType): void {
   // carries and the day-ahead one does not.
   HOURS.forEach((h, i) =>
     loadForecast.run('DE', at(h), 800 + i * 100, 'week_ahead', 700 + i * 100, 900 + i * 100)
+  );
+  // NL day-ahead, ~2x the realized load at every hour. Pairs perfectly — four
+  // points, no gaps — so the ONLY thing that can suppress its MAE/MAPE/RMSE is
+  // the divergent-basis rule, not an empty window (ABL-277). Deliberately far
+  // outside any plausible forecast error, mirroring the measured 73% MAPE.
+  HOURS.forEach((h, i) =>
+    loadForecast.run('NL', at(h, 2), 2 * (900 - i * 200), 'day_ahead', null, null)
   );
 
   const generationForecast = db.prepare(

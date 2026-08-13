@@ -1393,6 +1393,92 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   Nothing is persisted for this panel, so no `PERSIST_VERSION` bump was needed:
   it compares every registered model rather than a user-chosen subset.
 
+  **A country whose realized load and TSO load forecast measure different
+  quantities publishes no accuracy figure at all** (ABL-277). Subtracting one
+  series from the other only measures forecast error when both measure the
+  same thing. For **NL** they do not, and the resulting numbers were live:
+  measured on prod over 2026-08-04..11, NL's D+1 load forecast scored **75.1%
+  MAPE with a +2,427 MW bias**, against 1.2-3.6% for DE/FR/ES/IT/BE.
+
+  **The divergence is upstream, and our ingest is faithful** — established by
+  probing ENTSO-E directly on 2026-08-12 for market day 2026-08-05.
+  `A65`/`A16` (Actual Total Load) and `A65`/`A01` (Day-ahead Total Load
+  Forecast) for domain `10YNL----------L` each return one TimeSeries,
+  businessType `A04`, objectAggregation `A01`, unit `MAW`, resolution `PT15M`
+  — and disagree at source (realized 3,858.9-11,248.2 MW, forecast
+  8,280.6-13,378.8 MW). Our stored rows reproduce both to the decimal. So the
+  three obvious causes are all excluded: no ingest aggregation or scaling
+  error, no bidding-zone mismatch, no partial-TSO coverage. **Do not re-file
+  this as an ingest bug**, and do not "fix" it in `energy-data-gathering`.
+
+  The gap is behind-the-meter solar. ENTSO-E's *reported* NL solar generation
+  peaks at **181 MW** on a cloudless August day against an installed Dutch
+  fleet well over 20 GW, so essentially the whole fleet is invisible as
+  generation and is netted out of the realized series but not the forecast.
+  Seasonality is the proof: over 2026-08-04..11 the midday bias (09-14 UTC) is
+  **+123.2%** against **+9.8%** overnight, while the same measurement over
+  2026-01-06..20 gives **+0.0%** midday and **−0.2%** overnight. No solar, no
+  divergence. (A second, smaller level offset visible at night is *unexplained*
+  and wanders — it crossed sign between 2025-11 and 2025-12, and a year
+  earlier the forecast sat *below* realized at midday, 2025-06 midday bias
+  **−38%**. It does not weaken the finding: two series measuring one quantity
+  do not carry a wandering ±10% night-time offset.)
+
+  `services/loadForecastBasis.ts` is the rule (pure, colocated test).
+  Three properties are load-bearing:
+
+  - **It is a registry of measured findings, not a threshold**
+    (`DIVERGENT_LOAD_BASIS`, `loadForecastBasis.ts:69`). A threshold was
+    tried and rejected: across the 34 countries with a stored D+1 load
+    forecast there is **no gap in the MAPE distribution to put one in**. FR
+    reached 11.6% and DK 11.0% over 2025-06-01..15 through ordinary forecast
+    error, while EE and IE sit at ~10.5% over 2026-08-04..11 — any cutoff
+    catching the latter condemns the former. An uncalibrated cutoff is exactly
+    what `METRIC_THRESHOLDS` was deleted for. An entry is added only once the
+    divergence is established against the raw upstream documents, and carries
+    the evidence that established it.
+  - **The rule lives in the service, not the routes**
+    (`tsoForecastService.ts:366`), so every consumer inherits it rather than
+    having to remember it. That is what closes `/tso-forecast/accuracy/load`,
+    `/tso-forecast/metrics`, and — through `forecastComparisonService`'s three
+    call sites — `/forecast-comparison/:cc`, `/:cc/best` and `/:cc/rolling`.
+    `ForecastTab`'s TSO D+1/D+7 horizon bars vanish for NL as a consequence,
+    because `buildHorizonBars` drops a bar whose `mape` is null.
+  - **`dataPoints`/`mapeSamples` stay truthful; `mae`/`mape`/`rmse`/`bias` go
+    null.** The points really did pair — reporting zero of them would assert
+    "no data", a different and equally false claim, the same distinction
+    `degenerate_zero` draws against `no_actuals` on the net-position side.
+    **`bias` is the one that most needed nulling**: measured on the replica
+    before the fix, NL's summary reported `mae: 0, rmse: 0` beside
+    `bias: 2435.22` — a clean systematic over-forecast the TSO could
+    supposedly correct, when it is the solar the two series disagree about.
+    Two `?? 0` coercions produced those zeros
+    (`forecastComparisonService.ts:255` is where the divergent case now
+    returns before reaching them).
+
+  Suppression is **unconditional**, not gated on season or on the size of the
+  observed error. In a window where the two happen to agree — NL winter — the
+  difference is still not attributable to forecast skill, and a number we
+  cannot attribute is not a number we can publish.
+
+  Client side, `ForecastTab.tsx:178` prints the reason under the stat strip
+  and `modelComparison.ts:200` gives the panel a `divergent_basis` row state,
+  because three em-dashes beside a healthy sample count reads as a sparse
+  measurement rather than as no measurement.
+
+  **NL is not the only suspect zone — the others are unestablished, and were
+  deliberately not guessed at.** Measured over 2026-08-04..11: BA 37.2% MAPE
+  (+6.6% night / +86.7% midday — NL's exact signature, and 137% MAPE over
+  2026-06), MK 26.4%, MD 23.6%, LT 14.2%, EE 10.8%, IE 10.5%. None has been
+  probed upstream, so none is in the registry. Filed separately; do not add an
+  entry without the upstream measurement that justifies it.
+
+  Note this is a **TSO-forecast** property, not a property of NL's actuals.
+  Our own ml models are trained against the same realized series they are
+  scored on, so ml accuracy for NL is measuring what it claims to (it is
+  simply poor — 94.75% MAPE for catboost D+1 over that window, which is a
+  model-quality question, not a basis one).
+
 ### 4. Time navigation
 
 `TimePicker.tsx` (`client/src/components/dashboard/TimePicker.tsx`) is the
@@ -2620,14 +2706,40 @@ change — filed as its own follow-up instead.
   no reader touched.
 
   **It captures nothing until this server is deployed and running with a
-  write connection.** Landing this branch on `main` changes no running
-  process; `forecast_vintage_archive` does not exist in production until
-  code built from it is deployed. Once it is, capture is automatic and
-  gated exactly like `POST /api/weather/snapshot` already is — on
-  `HELIO_WRITE_TOKEN` being set (`shouldScheduleForecastVintageArchive`,
+  write connection** — but that condition is now **met on prod, so query the
+  archive rather than assuming it is empty** (ABL-278). Landing this branch
+  on `main` changes no running process; `forecast_vintage_archive` does not
+  exist in production until code built from it is deployed. Once it is,
+  capture is automatic and gated exactly like `POST /api/weather/snapshot`
+  already is — on `HELIO_WRITE_TOKEN` being set
+  (`shouldScheduleForecastVintageArchive`,
   `forecastVintageArchiveScheduler.ts:50`), started from `index.ts` at
   server boot. If that variable is unset in production for some other
   reason, deploying this code still captures nothing until it is set.
+
+  Verified live on prod 2026-08-12: `HELIO_WRITE_TOKEN` is set, the container
+  logs "Forecast vintage archive scheduler: HELIO_WRITE_TOKEN is set;
+  capturing every 15m", and the table holds **13,858,301 rows** with
+  `first_seen_at` from `2026-08-11T15:24:21Z`. Incremental growth is ~100k
+  rows/day, most of it redundant: a refetch that carries an unchanged value
+  under a bumped `publication_timestamp_utc` is a new identity tuple, so it
+  lands as a new vintage row (see the IDENTITY / DEDUPE KEY note in
+  `forecastVintageArchiveService.ts`'s header). That is the design working as
+  specified, not a defect, but it is why "more than one vintage" must never
+  be read as "the value changed" — count `DISTINCT forecast_value`.
+
+  **What it has already proved (ABL-278).** ENTSO-E day-ahead forecasts are
+  revised, and the two TSO tables' overwrite really does destroy the
+  as-issued value: over 27,844 observed refetch events, **21.2% of
+  pre-delivery refetches and 1.8% of refetches in the first 24h after
+  delivery changed the stored value**, while 24-48h after (3,984 events) and
+  48h-7d after (19,890 events) changed **zero**. So the value freezes ~24-36h
+  past delivery and the remaining ~5 days of the rolling 7-day refetch window
+  are pure churn. TSO accuracy read from these tables is measured against the
+  revised value, not the as-issued one, and is optimistically biased —
+  measured at **11.3% relative** on target day 2026-08-12 (WAPE 2.0849% ->
+  1.8485%, n=389), a lower bound. See ABL-278 for the full evidence; the fix
+  is scoped separately.
 
   **Runs in a worker thread, never on Express's request-handling thread.**
   Measured against a full copy of the production-scale replica (2026-08-11):
@@ -2955,6 +3067,23 @@ and `lib/opsStatusThresholds.ts` imports only *types* from the DB-touching
 modules (type imports erase at compile time), so both suites run under either
 Node. Prefer that shape for new logic.
 
+(ABL-277 added the divergent-forecast-basis rule: **+19 server tests / +1
+server file**, measured against a stashed-changes baseline of 620/44 in this
+same worktree rather than derived — `services/loadForecastBasis.test.ts` is
+the new file at 11 cases, and `routes/tsoForecast.test.ts` goes 15 → 23. Plus
++5 client cases in
+`dashboard/modelComparison.test.ts` — no new client file. It also gave the
+shared fixture an **NL** country, on `NEXT_DAY` rather than `WINDOW`
+specifically because `crossCountryMetricsService.test.ts` seeds its own NL
+`T`/space conflict pair at `2026-07-01 01:00:00`; a second NL row at that
+timestamp would be an exact `(country_code, timestamp_utc)` duplicate, which
+is the one thing that test's no-fan-out property is measured against. The
+server figures here were measured in a **fresh worktree with dependencies
+installed from scratch** — note the repo-root `package.json` holds
+`@types/react-simple-maps`, so `npm install` in `client/` and `server/` alone
+leaves `npx tsc -b` failing on `react-simple-maps` with TS7016; install at the
+repo root too before diagnosing that as a code error.)
+
 (Both figures are a fresh `npx vitest run` on ABL-238 merged with `origin/main`
 at `0871259` — what `main` becomes when this lands — not arithmetic on the two
 branches' separate claims. Measured on a detached `origin/main` immediately
@@ -3211,7 +3340,8 @@ Two conventions, and they are for different layers.
 `dashboard/degenerateForecastNote.ts`, `config/forecastModels.ts`,
 `server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
 (which now classifies both the forecast and the actuals series),
-`server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
+`server/src/services/loadQuality.ts`,
+`server/src/services/loadForecastBasis.ts`, `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
 `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
@@ -3583,6 +3713,22 @@ interface TSOForecastAccuracyMetrics {
 **"Cannot connect to database":**
 - Verify the SQLite file at `ENERGY_DB_PATH` (or `server/.env`'s value) exists
 - Without `ENERGY_DB_PATH` set, the server defaults to `/data/energy_dashboard.db`, which won't exist on a workstation checkout
+
+**The Forecast-accuracy tab shows no MAE/MAPE/RMSE for a country, with a
+sentence instead of numbers:**
+- That is the signal working. A country whose ENTSO-E realized load and TSO
+  load forecast are published on different bases has every error measure
+  withheld, because their difference is a definitional gap rather than
+  forecast error — see the `ForecastTab` entry above. **NL** is the only
+  registered case; `services/loadForecastBasis.ts` carries the upstream
+  measurement behind it.
+- `dataPoints` stays non-zero on purpose: the points really did pair, and
+  reporting zero would claim we hold no data when we hold both series in full.
+  The TSO D+1/D+7 horizon bars are absent for the same reason.
+- Do not "fix" this by adding a threshold — the distribution has no gap to put
+  one in (FR reached 11.6% MAPE through ordinary error). Do not add a registry
+  entry for another country without probing the raw ENTSO-E `A65` documents
+  first; BA/MK/MD/LT/EE/IE are suspected and unestablished.
 
 **A country's load/price forecast is blank:**
 - Check whether a specific model is checked in `ModelPicker` — catboost and
