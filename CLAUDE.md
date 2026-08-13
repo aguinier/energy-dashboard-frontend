@@ -3159,7 +3159,7 @@ the 26,694 it has.
 
 **`/v1/accuracy` is the third call site, and the first that publishes the
 tie-break as a term of a contract** (ABL-373). `readAccuracyPoints`
-(`server/src/v1/data/accuracyRepo.ts:245`) uses the same two-LEFT-JOIN-plus-
+(`server/src/v1/data/accuracyRepo.ts:259`) uses the same two-LEFT-JOIN-plus-
 `COALESCE` shape against `energy_load`, `energy_price` and `energy_generation`,
 and every response carries `meta.conflict_convention: "space_preferred"`.
 
