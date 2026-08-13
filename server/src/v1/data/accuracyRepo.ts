@@ -234,6 +234,20 @@ export function countForecastHours(source: EnergyQuery, query: AccuracyQuery): n
  * without it the subquery compares a 6-hour-ahead run against a 60-hour-ahead
  * one and the outer filter then keeps neither consistently.
  *
+ * The correlated subquery's target-hour key uses `IN (f1.target_timestamp_utc,
+ * REPLACE(...,'T',' '), REPLACE(...,' ','T'))` rather than exact equality.
+ * Exact equality would count the same logical target hour twice when a model
+ * ever wrote it in both separator forms — the same fan-out shape ABL-373 was
+ * split out to prevent, on the forecast side of the join. The IN members are
+ * scalar values derived from the outer row (not subqueries), so SQLite treats
+ * them as literals and can still seek the index on `f2.target_timestamp_utc`.
+ * The `GROUP BY` on the normalized form then collapses any duplicates that
+ * survive (possible only when both stored forms share the same `generated_at`).
+ * `f1.target_timestamp_utc` stays bare in the outer WHERE so the range seek is
+ * unaffected. This mirrors how `countForecastHours` normalises with
+ * `COUNT(DISTINCT REPLACE(...))`, making the two counts agree by construction
+ * rather than by the writer-uniformity property recorded in CLAUDE.md.
+ *
  * `LENGTH(timestamp_utc) = 19` is deliberately **absent** from the join, and its
  * absence is not an inconsistency with `observationsRepo`. The 26,405 rows
  * carrying a trailing UTC offset are length 25, and both join predicates test
@@ -265,7 +279,8 @@ export function readAccuracyPoints(source: EnergyQuery, query: AccuracyQuery): A
 
   return source.all<AccuracyPoint>(
     `WITH latest_forecasts AS (
-       SELECT f1.target_timestamp_utc, f1.forecast_value
+       SELECT REPLACE(f1.target_timestamp_utc, 'T', ' ') AS target_timestamp_utc,
+              MAX(f1.forecast_value) AS forecast_value
          FROM forecasts f1
         WHERE f1.country_code = ?
           AND f1.forecast_type = ?
@@ -277,10 +292,15 @@ export function readAccuracyPoints(source: EnergyQuery, query: AccuracyQuery): A
               FROM forecasts f2
              WHERE f2.country_code = f1.country_code
                AND f2.forecast_type = f1.forecast_type
-               AND f2.target_timestamp_utc = f1.target_timestamp_utc
+               AND f2.target_timestamp_utc IN (
+                     f1.target_timestamp_utc,
+                     REPLACE(f1.target_timestamp_utc, 'T', ' '),
+                     REPLACE(f1.target_timestamp_utc, ' ', 'T')
+                   )
                AND f2.model_name = ?
                ${horizonClause.replace('f1.horizon_hours', 'f2.horizon_hours')}
           )
+        GROUP BY REPLACE(f1.target_timestamp_utc, 'T', ' ')
      )
      SELECT f.forecast_value AS "forecast", ${actual} AS "actual"
        FROM latest_forecasts f

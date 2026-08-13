@@ -308,6 +308,39 @@ describe('countForecastHours', () => {
   });
 });
 
+describe('forecast-side separator agnosticism (ABL-408)', () => {
+  // Closes the latent inconsistency found during ABL-373 review: if a model
+  // ever wrote the same target hour in both separator forms, the exact-equality
+  // correlated subquery would treat them as two distinct hours, both would
+  // survive the CTE dedupe, and `sample_size` would exceed `forecast_hours` —
+  // the fan-out shape ABL-373 was split out to prevent, on the forecast side.
+  it('returns one point and sample_size <= forecast_hours when both separator forms are stored', () => {
+    // Seed both forms of the same logical hour, same vintage — the scenario the
+    // writer-uniformity table in CLAUDE.md currently prevents but the SQL did not
+    // guard against by construction.
+    db.forecast({
+      zone: 'DE', type: 'load', target: tForm(9),
+      generatedAt: '2026-08-12T07:00:00.100000', horizonHours: 9, value: 45_000, model: 'catboost',
+    });
+    db.forecast({
+      zone: 'DE', type: 'load', target: spaceForm(9),
+      generatedAt: '2026-08-12T07:00:00.100000', horizonHours: 9, value: 45_000, model: 'catboost',
+    });
+    db.load('DE', spaceForm(9), 40_000);
+
+    const scored = points();
+    const forecastHours = countForecastHours(db, {
+      zone: 'DE', forecastType: 'load', model: 'catboost', window: WINDOW,
+    });
+
+    // One logical target hour → one point out; sample_size can never exceed
+    // forecast_hours regardless of how many separator forms are stored.
+    expect(scored).toHaveLength(1);
+    expect(forecastHours).toBe(1);
+    expect(scored.length).toBeLessThanOrEqual(forecastHours);
+  });
+});
+
 describe('the offer', () => {
   it('serves six types, and not the two whose actual is undefined on this table', () => {
     // `hydro_total` and `renewable` are withheld because what their actual *is*
