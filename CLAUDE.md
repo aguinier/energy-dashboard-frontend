@@ -1950,7 +1950,7 @@ an NTP step between two samples would otherwise scale every rate on the page.
 Two parsing traps are covered by `hostMetrics.test.ts`: a wide counter abuts
 its colon (`eth0:123456789012`) so the line splits on the first `:` not on
 whitespace, and transmit bytes are field 9, not field 2. Client-side, `network`
-is **optional, not merely nullable** (`client/src/types/index.ts:392`) — a peer on a build
+is **optional, not merely nullable** (`client/src/types/index.ts:502`) — a peer on a build
 older than ABL-290 sends no key at all, which `buildNetworkRows`
 (`client/src/lib/networkRows.ts`) renders as "not reported by this build",
 separately from `null` ("not measured on Windows"), `[]` ("no non-loopback
@@ -2849,39 +2849,55 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-**This paragraph is mid-merge and names two trees, neither of which is this
-one — the figure is re-measured in the commit that closes ABL-317, and that is
-the one to read.** Neither side of this publish merge had measured the merged
-tree: local `main` read **49 client files / 657 tests** and **63 server files /
-1,026 tests** at `4977f8a` (ABL-309, ABL-319, ABL-325, ABL-329), while
-`origin/main` read **49 / 644** and **66 server files / 1,114 tests** at
-`87aaa1c` (ABL-300, ABL-301, ABL-304, ABL-311, ABL-282). The two sets of
-branches touch disjoint code — `CLAUDE.md` is the only file both sides edited —
-so neither figure survives the merge, and adding them would be the exact
-derived-rather-than-measured count the ABL-234 note below forbids.
+Green as of 2026-08-13, measured on `main` at the ABL-317 publish merge —
+`origin/main`'s `/v1` line (ABL-300, ABL-301, ABL-304, ABL-311, ABL-282) joined
+to local `main` (ABL-309, ABL-319, ABL-325, ABL-329) and the three Group B
+branches (ABL-276/277/278, ABL-257, ABL-282's flat config): **50 client test
+files / 666 tests** and **75 server test files / 1,367 tests**, all passing,
+zero skipped, clean typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0).
+Fewer tests passing than that means something broke.
 
-Both figures were a fresh `npx vitest run` on their own tree. The deltas below
-are recorded to explain the movement, not to be added up.
+**Neither input figure survived, and neither was added up.** Local `main` read
+49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
+`origin/main` read 49 / 644 and 66 server files / 1,114 at `87aaa1c`. The two
+sides touch disjoint code — `CLAUDE.md` was the only file both edited — so the
+merged figure is a fresh `npx vitest run` on the merged tree, per the ABL-234
+rule below. The deltas recorded further down explain the movement; they are not
+to be summed.
 
-**Read the server figure with its one caveat, which is environmental and not a
-regression.** The 66th file, `services/generationService.test.ts`, could not be
-*collected* during this measurement: it ends in an opportunistic `describe`
-against the read-only development replica at `C:/Code/able/data/energy_dashboard.db`,
-and that database was mid-refresh (a 3.6 GB rollback journal growing during the
-run), so the readonly open raised `SqliteError: database is locked` at import
-time. That is a locked shared database, not a failing assertion — no assertion
-failure appeared anywhere in the run, and the file plus its whole import chain
-is byte-identical to `origin/main`, so it cannot be attributed to any branch
-merged here. The file is written to skip when the replica is *absent*; a lock is
-not absence, which is why it throws rather than skipping.
+Both suites were run under **v24.18.0**, which is not optional — see
+"NODE_MODULE_VERSION mismatch" below, and note that all 666 client tests pass
+under it, including the `dashboardStore.test.ts`/`windowLabel.test.ts` cases
+that fail under v25.6.1 for the `storage.setItem` reason recorded there.
 
-That file contributes its replica-backed cases whenever the shared database is
-reachable, so a run against a free database reads **higher** than 1,114, and
-1,114 is a floor rather than a ceiling. The size of the gap is itself measured,
-not derived: the same PR-head tree read **1,148** when the replica was reachable
-and **1,100** when it was not, in two independent runs — a 48-case swing that is
-entirely this one opportunistic `describe`. Do not treat a number above 1,114 as
-drift, and do not "fix" this file by deleting the replica check.
+**The server figure carries one caveat, which is environmental and not a
+regression: it moves depending on whether the shared replica is free.**
+`services/generationService.test.ts` ends in an opportunistic `describe` against
+the read-only development replica at `C:/Code/able/data/energy_dashboard.db`.
+The 1,367 above was measured with that replica **reachable**, so those cases are
+included. When it is not reachable the file contributes fewer — and when it is
+*locked* rather than absent, the file does not collect at all and contributes
+none.
+
+That last state is the one to recognise, because it is the worst shape a test
+outage can take. The guard tests only `fs.existsSync`, but the open runs at
+module evaluation, so during the twice-daily DB sync (ABL-220, ABL-249 — a 3.6
+GB rollback journal was observed on 2026-08-12) the readonly open raises
+`SqliteError: database is locked` and the throw becomes a **collection** error
+that takes the whole file down, including the ~46 fixture-backed cases beside
+the opportunistic ones that touch no replica at all. The run then reports "no
+tests" for the file rather than naming an assertion, so a green-looking suite is
+quietly dozens of cases short. A lock is not absence, which is why it throws
+instead of skipping.
+
+So a server count in the 1,300s is normal, a lower one may simply mean the
+replica was busy, and the number to distrust is a *file count* below 75 — that
+is the collection failure, not drift. Do not "fix" this file by deleting the
+replica check. **The real fix — catching rather than testing `existsSync`, so a
+lock skips the opportunistic block and the rest of the file still runs — is
+written and reviewed but NOT on `origin/main`**: it is in `e6bcd9d` on the
+ABL-311 branch, awaiting review with the `git cherry` publish-gate fix. Until
+that lands, this caveat is live.
 
 (ABL-300 added four server files — `v1/keys/keyFormat.test.ts`,
 `v1/keys/sqliteApiKeyStore.test.ts`, `v1/keys/keysCli.test.ts` and
