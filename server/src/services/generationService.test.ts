@@ -13,7 +13,7 @@ vi.mock('../config/database.js', () => ({ default: null }));
 const {
   getGenerationMix, GENERATION_MIX_SQL, getRenewableShare, RENEWABLE_SHARE_SQL,
   getGenerationSeries, generationSeriesSql, GENERATION_GROUPS, RENEWABLE_MW_SUM,
-  getWindGenerationSeries, windGenerationSeriesSql,
+  TOTAL_POSITIVE_MW_SUM, getWindGenerationSeries, windGenerationSeriesSql,
 } = await import('./generationService.js');
 
 // Mirrors the real energy_generation schema (Task 1 of the A75 plan),
@@ -119,7 +119,11 @@ function expectedRenewableShare(rows: Array<Record<string, number | null | undef
   let renewableSum = 0;
   let totalPositiveSum = 0;
   for (const row of rows) {
-    for (const key of RENEWABLE_KEYS) renewableSum += row[key] ?? 0;
+    // Both sides clamp each column to >=0 per row (ABL-412). They have to
+    // measure a negative reading the same way or the fraction mixes two
+    // definitions of one - the numerator letting it subtract while the
+    // denominator ignores it.
+    for (const key of RENEWABLE_KEYS) renewableSum += Math.max(row[key] ?? 0, 0);
     for (const key of ALL_GENERATION_KEYS) totalPositiveSum += Math.max(row[key] ?? 0, 0);
   }
   if (totalPositiveSum <= 0) return null;
@@ -288,6 +292,19 @@ describe('RENEWABLE_SHARE_SQL shape', () => {
     expect(inSum.sort()).toEqual([...RENEWABLE_KEYS].sort());
     expect(RENEWABLE_MW_SUM).not.toMatch(/hydro_pumped_mw|energy_storage_mw/);
   });
+
+  it('clamps every numerator column to >=0, exactly as the denominator does (ABL-412)', () => {
+    // The two halves of one fraction must measure a negative reading the same
+    // way. Asserted on the SQL text, not only through a query, because the
+    // failure mode is silent: an unclamped numerator still returns a
+    // plausible number, just a slightly smaller one.
+    for (const column of RENEWABLE_KEYS) {
+      expect(RENEWABLE_MW_SUM).toContain(`MAX(COALESCE(${column}, 0), 0)`);
+      expect(TOTAL_POSITIVE_MW_SUM).toContain(`MAX(COALESCE(${column}, 0), 0)`);
+    }
+    // No bare `COALESCE(c, 0)` term survives outside a MAX().
+    expect(RENEWABLE_MW_SUM.replace(/MAX\(COALESCE\(\w+, 0\), 0\)/g, '')).not.toMatch(/COALESCE/);
+  });
 });
 
 describe('getRenewableShare', () => {
@@ -379,6 +396,64 @@ describe('getRenewableShare', () => {
     const pct = getRenewableShare('FR', '2026-07-29 12:00:00', '2026-07-29 14:00:00', db);
 
     expect(pct).toBeNull();
+  });
+
+  // ABL-412. `energy_generation` holds a signed net-of-consumption value: the
+  // ingest subtracts ENTSO-E's 'Actual Consumption' sub-series from 'Actual
+  // Aggregated' for every production type, not only for the store-like ones
+  // (energy-data-gathering `_net_generation_consumption`, ABL-34). Seven of
+  // the nine renewable columns are negative somewhere on the replica; NL's
+  // solar is negative at every night hour because its A75 solar is a small
+  // grid-metered subset (ABL-325) whose own metered auxiliary load is a large
+  // fraction of it.
+  it('does not let a negative renewable reading subtract from the numerator while the denominator ignores it', () => {
+    const db = buildDb();
+    // NL-shaped: solar reads a small negative overnight, wind is generating.
+    const row = {
+      country_code: 'NL', timestamp_utc: '2026-07-29 01:00:00',
+      solar_mw: -1.2, wind_onshore_mw: 100, nuclear_mw: 100,
+    };
+    insertRow(db, row);
+
+    const pct = getRenewableShare('NL', '2026-07-29 00:00:00', '2026-07-29 02:00:00', db);
+
+    // Denominator clamps solar to 0, so the total is 100 + 100 = 200. The
+    // numerator must clamp it too: 100/200 = 50%, not (100 - 1.2)/200.
+    expect(pct).toBeCloseTo(50, 2);
+    expect(pct).toBeCloseTo(expectedRenewableShare([row])!, 2);
+    // Guard the specific wrong answer, so a revert reads as this test failing
+    // rather than as a rounding wobble.
+    expect(pct).not.toBeCloseTo(((100 - 1.2) / 200) * 100, 2);
+  });
+
+  it('clamps every negative renewable column, not just solar', () => {
+    const db = buildDb();
+    // Each of the seven columns measured negative on the replica, at once.
+    const row = {
+      country_code: 'NL', timestamp_utc: '2026-07-29 01:00:00',
+      solar_mw: -1.2, biomass_mw: -3, wind_offshore_mw: -2, other_renewable_mw: -4,
+      hydro_reservoir_mw: -5, hydro_run_mw: -6, wind_onshore_mw: -7,
+      geothermal_mw: 40, marine_mw: 10, nuclear_mw: 50,
+    };
+    insertRow(db, row);
+
+    const pct = getRenewableShare('NL', '2026-07-29 00:00:00', '2026-07-29 02:00:00', db);
+
+    // Only the two columns that are genuinely never negative contribute:
+    // (40 + 10) / (40 + 10 + 50) = 50%.
+    expect(pct).toBeCloseTo(50, 2);
+  });
+
+  it('never returns a share above 100% or below 0 - numerator terms are a subset of the denominator terms', () => {
+    const db = buildDb();
+    // Every renewable column negative and nothing else generating: the
+    // denominator is 0, so this is "a share of nothing", not -Infinity or 0%.
+    insertRow(db, {
+      country_code: 'NL', timestamp_utc: '2026-07-29 01:00:00',
+      solar_mw: -1.2, biomass_mw: -3, wind_offshore_mw: -2,
+    });
+
+    expect(getRenewableShare('NL', '2026-07-29 00:00:00', '2026-07-29 02:00:00', db)).toBeNull();
   });
 });
 

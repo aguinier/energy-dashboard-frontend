@@ -119,10 +119,60 @@ export function getGenerationMix(
  * Renewable = solar, onshore/offshore wind, run-of-river and reservoir hydro,
  * biomass, geothermal, marine, and ENTSO-E's "other renewable" bucket - every
  * `*_renewable_mw`/generation column the A75 document reports except the two
- * excluded below. Summed with COALESCE-to-0 (not clamped): none of these nine
- * types are expected to go negative, and a country that simply does not
- * report one (null) must contribute nothing to the sum rather than poison it.
+ * excluded below. A country that simply does not report one (null) must
+ * contribute nothing to the sum rather than poison it, hence COALESCE-to-0.
  *
+ * ## Why each column is also clamped to >=0, per row (ABL-412)
+ *
+ * This used to sum `COALESCE(c, 0)` unclamped, on the stated premise that
+ * "none of these nine types are expected to go negative". **That premise is
+ * false**, and it was false when it was written. `energy_generation` stores a
+ * *signed net-of-consumption* value: ENTSO-E's A75 reports up to two
+ * sub-series per production type, and the ingest subtracts 'Actual
+ * Consumption' from 'Actual Aggregated' for every type, not only for the
+ * store-like ones the netting was introduced for
+ * (`../energy-data-gathering/src/entsoe_client.py`,
+ * `_net_generation_consumption`, ABL-34). Any type
+ * whose own auxiliary load is metered therefore goes negative whenever it is
+ * not generating.
+ *
+ * Counted read-only on the 9.4 GB replica on 2026-08-13, seven of the nine
+ * columns carry negative readings - `rows with a value / negative / worst`:
+ *
+ * ```
+ *   solar_mw            2,834,612 /  97,702 (3.45%) /   -57.36   NL, IT
+ *   biomass_mw          2,721,286 /  21,230 (0.78%) /   -23.49   NL
+ *   wind_offshore_mw      922,370 /  11,325 (1.23%) /   -50.83   BE, NL, FR
+ *   other_renewable_mw  1,467,797 /   9,039 (0.62%) / -1,111.00   IT
+ *   hydro_reservoir_mw  2,262,935 /   2,073 (0.09%) /  -398.00   PT, HU, FR
+ *   hydro_run_mw        2,845,707 /     705 (0.02%) /    -7.15   IE
+ *   wind_onshore_mw     3,168,423 /     491 (0.02%) / -1,018.70   FR
+ * ```
+ *
+ * Only `geothermal_mw` and `marine_mw` are genuinely never negative.
+ *
+ * Unclamped, this ratio mixed two definitions of a negative reading in one
+ * fraction: the numerator let it *subtract*, while TOTAL_POSITIVE_MW_SUM
+ * (below) clamps the very same column to 0. That understated the share -
+ * measured on the replica, BE's last-7-day share moved 56.63% -> 56.72% and
+ * NL's last-30-day 21.56% -> 21.61%, i.e. visibly, at the 2dp the wire
+ * carries. The clamp here is the same per-row per-column clamp the
+ * denominator already applies, so numerator and denominator now measure a
+ * negative reading identically and the numerator can never exceed the
+ * denominator term-by-term.
+ *
+ * This clamps nothing in the database and hides nothing on screen. The stored
+ * value is untouched, and GENERATION_MIX_SQL still reports the real signed
+ * average for every type - a negative net solar reading stays visible on the
+ * by-source table, where it is a fact about the feed. It is only excluded from
+ * a *share of positive generation*, which is what this ratio is.
+ *
+ * NL is the country this is most visible on and it is worth knowing why: its
+ * A75 solar is a small grid-metered subset (ABL-325, see solarCoverage.ts),
+ * and that subset's metered auxiliary load is a large fraction of it - so NL
+ * reads -0.11 to -1.52 MW at *every* night hour rather than 0 (ABL-396 §6).
+ *
+
  * `hydro_pumped` and `energy_storage` are deliberately excluded from the
  * renewable set - they are stores, not primary generation. Net pumping is
  * routinely negative (charging), and even when positive (discharging) it is
@@ -135,6 +185,18 @@ export function getGenerationMix(
  * about which columns are renewable. They are served side by side on one
  * `/renewables/mix` object, where two definitions would be visible.
  *
+ * The clamp above is *not* pushed into that breakdown, and the asymmetry is
+ * deliberate rather than an oversight: the breakdown's seven fields and its
+ * `total` report **readings** in MW, where a negative net reading is a true
+ * measurement and blanking it to 0 would be the fabrication this dashboard
+ * exists to avoid. This fragment is the numerator of a **ratio of positive
+ * generation**, a different question with a different correct answer. The
+ * rule, stated once so it can be applied consistently: a ratio against
+ * TOTAL_POSITIVE_MW_SUM clamps; a reported MW value does not. Nothing else
+ * uses RENEWABLE_MW_SUM - `grep` finds exactly two call sites, both
+ * `SUM${...} * 100.0 / NULLIF(SUM${TOTAL_POSITIVE_MW_SUM}, 0)` - so this
+ * clamp cannot leak into a displayed MW total.
+ *
  * COALESCE-to-0 rather than `renewableTotal`'s NULL-aware CASE, and the
  * difference is deliberate: this fragment is a *numerator inside a ratio of
  * window sums*, where an unreported type must contribute nothing. A NULL here
@@ -142,7 +204,7 @@ export function getGenerationMix(
  * where it belongs - by `row_count` and the `NULLIF` on the denominator.
  */
 export const RENEWABLE_MW_SUM = `(
-        ${RENEWABLE_MW_COLUMNS.map((c) => `COALESCE(${c}, 0)`).join(' + ')}
+        ${RENEWABLE_MW_COLUMNS.map((c) => `MAX(COALESCE(${c}, 0), 0)`).join(' + ')}
       )`;
 
 /**
