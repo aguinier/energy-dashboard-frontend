@@ -2960,24 +2960,25 @@ Green as of 2026-08-13, measured on `origin/main` at `eac20ed` with ABL-311's
 patch-identity gate merged on top — the `/v1` line (ABL-300, ABL-301, ABL-303,
 ABL-304, ABL-282) joined to ABL-309, ABL-319, ABL-325, ABL-329, the three Group
 B branches (ABL-276/277/278, ABL-257, ABL-282's flat config), ABL-324 tranche 1
-(ABL-351) and ABL-311: **50 client test files / 666 tests** and **79 server test
-files / 1,449 tests**, all passing, zero skipped, clean typecheck on both
+(ABL-351) and ABL-311: **50 client test files / 666 tests** and **83 server test
+files / 1,555 tests**, all passing, zero skipped, clean typecheck on both
 (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing than that means
 something broke.
 
-The last three moves are recorded as deltas to explain the movement, not as
-arithmetic to trust in place of a fresh run: ABL-351 added +2 server files
-(`services/renewableTotal.test.ts`, `routes/renewables.test.ts`) and +34 cases
-over the 75 / 1,367 `main` measured before it; ABL-303 (PR #23) added the `/v1`
-resource endpoints after that text was written; and ABL-311 adds +9 `release/`
-cases. None of them touches a client test, which is why the client figure is
-unmoved across all three.
+**That server figure is a fresh run, and it had to be — every figure available
+to derive it from was stale within the hour.** The text this replaced claimed
+77 / 1,401, measured on ABL-351 before PR #23 (ABL-303) merged; adding ABL-311's
+own `+9` `release/` cases to it predicts 1,410, and the tree actually measures
+1,555. The gap is ABL-303's `/v1` resource endpoints, which landed after that
+sentence was written and were never counted into it. This is the ABL-234 rule
+paying for itself twice in one run: a count is only true of the tree it was
+measured on, and the arithmetic is not a substitute. The deltas below explain
+movement; they are not to be summed.
 
 **Neither input figure survived, and neither was added up.** Local `main` read
 49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
 `origin/main` read 49 / 644 and 66 server files / 1,114 at `87aaa1c`; their
-merge read 50 / 666 and 75 / 1,367 at `a8d6fe8`, and ABL-311's own `+9`
-`release/` cases take the server figure to 1,376. The sides touch disjoint code
+merge read 50 / 666 and 75 / 1,367 at `a8d6fe8`. The sides touch disjoint code
 — `CLAUDE.md` was the only file every one of them edited — so each figure is a
 fresh `npx vitest run` on the tree it names, per the ABL-234 rule below. The
 deltas recorded further down explain the movement; they are not to be summed.
@@ -2991,10 +2992,10 @@ that fail under v25.6.1 for the `storage.setItem` reason recorded there.
 regression: it moves depending on whether the shared replica is free.**
 `services/generationService.test.ts` ends in an opportunistic `describe` against
 the read-only development replica at `C:/Code/able/data/energy_dashboard.db`.
-The 1,367 above was measured with that replica **reachable**, so those cases are
+The 1,555 above was measured with that replica **reachable**, so those cases are
 included. When it is not reachable the file contributes fewer — and when it is
-*locked* rather than absent, the file does not collect at all and contributes
-none.
+*locked* rather than absent, the file used to not collect at all and contribute
+none, which is the state the next paragraph is about.
 
 **The third state — locked — used to take the whole file down, and ABL-311
 fixed that.** The guard tested only `fs.existsSync`, but the open runs at module
@@ -3007,11 +3008,11 @@ outage can take: the run reports "no tests" for the file rather than naming an
 assertion, so a green-looking suite is quietly dozens of cases short exactly
 when someone running `predone` is reading it as permission to ship. A lock is
 not absence — and neither is a corrupt header or a permissions error — so
-`replicaHasGenerationTable` now **catches** (`generationService.test.ts:734`)
+`replicaHasGenerationTable` now **catches** (`generationService.test.ts:746`)
 and skips the opportunistic block while the rest of the file runs.
 
-So a server count in the 1,300s is normal and a lower one may simply mean the
-replica was busy — but a *file count* below 75 is no longer explainable that
+So a server count a little under 1,555 may simply mean the replica was busy —
+but a *file count* below 83 is no longer explainable that
 way, because a locked replica now skips rather than fails to collect. Do not
 "fix" this file by deleting the replica check.
 
