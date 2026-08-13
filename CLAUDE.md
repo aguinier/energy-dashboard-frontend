@@ -2376,9 +2376,13 @@ default**, 477,838 of them (99.998%) with the frozen table holding exactly
 it cannot express "not reported" at all.
 
 It is concentrated in offshore wind, where **436,069 of 661,077 pairs (66%)
-were fabricated**, and for **23 countries with no offshore fleet — AT, BA, BG,
-CH, CZ, EE, FI, GR, HR, HU, IE, LT, LU, LV, ME, MK, PL, RO, RS, SE, SI, SK and
-CY — 100% of their pairs were.** A `0.0` fabricated actual against the `0.0`
+were fabricated**, and for **23 countries that report no offshore wind at all —
+AL, AT, BA, BG, CH, CY, CZ, EE, FI, GR, HR, HU, IE, LT, LU, LV, ME, MK, RO, RS,
+SE, SI, SK — 100% of their pairs were**, so their offshore pair count is now
+exactly zero. (PL is *not* one of them, despite looking like one in a 30-day
+window: it retains 3,613 pairs over full history. Take that list from the
+full-history count, not from a recent window, or a country reads as
+never-reporting when it has merely stopped.) A `0.0` fabricated actual against the `0.0`
 forecast ENTSO-E publishes for those zones scored zero error at every point, so
 `/tso-forecast/accuracy/generation/:cc` reported `mae: 0, rmse: 0` over
 thousands of `dataPoints`: a flawless offshore-wind forecast for a landlocked

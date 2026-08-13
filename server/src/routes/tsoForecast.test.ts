@@ -41,10 +41,14 @@ function seedTranche3Shapes(db: ReturnType<typeof buildFixtureDb>): void {
   // (every column NULL). `energy_renewable` cannot express that: its columns
   // carry `DEFAULT 0`, so the same non-reporting reads as a measured `0.0`.
   // Paired against a `0.0` forecast that is a real number, the old join
-  // produced 4 points at zero error — `mae: 0, rmse: 0` — for an offshore
-  // fleet PT does not have. Measured fleet-wide on the replica 2026-08-13,
-  // this shape accounted for 436,069 of wind_offshore's 661,077 pairs, and for
-  // 23 countries it was 100% of them.
+  // produces 4 points at zero error — `mae: 0, rmse: 0` — a claim to have
+  // measured something rather than a small error.
+  //
+  // (The fixture's PT is the all-NULL country; real Portugal does report
+  // offshore wind, 48,587 pairs. The shape is what matters here, not the
+  // country.) Measured fleet-wide on the replica 2026-08-13, it accounted for
+  // 436,069 of wind_offshore's 661,077 pairs, and for the 23 countries that
+  // report no offshore wind at all it was 100% of theirs.
   HOURS.forEach((h) => renewable.run('PT', at(h), 0, 0, 0));
   HOURS.forEach((h) => forecast.run('PT', at(h), 0, 0, 0, 0, 'day_ahead'));
 
