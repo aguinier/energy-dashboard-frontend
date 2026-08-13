@@ -3048,11 +3048,27 @@ movement; they are not to be summed.
 
 **Neither input figure survived, and neither was added up.** Local `main` read
 49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
-`origin/main` read 49 / 644 and 66 server files / 1,114 at `87aaa1c`; their
+`origin/main` read 49 / 644 and 66 server files / 1,114 at `cc28802`; their
 merge read 50 / 666 and 75 / 1,367 at `a8d6fe8`. The sides touch disjoint code
 — `CLAUDE.md` was the only file every one of them edited — so each figure is a
 fresh `npx vitest run` on the tree it names, per the ABL-234 rule below. The
 deltas recorded further down explain the movement; they are not to be summed.
+
+**That `cc28802` read `87aaa1c` until it was corrected here, and the rule this
+paragraph states is exactly what the mislabel broke.** `66 / 1,114` is a real
+measurement — of `cc28802` (PR #19, ABL-300), one merge *before* `87aaa1c`
+(PR #21, ABL-301), whose six new `v1/usage/*` test files take that tree to
+**72**. So a reader reconciling `66 -> 75` credited the local-`main` merge with
+`+9` server files when it contributed `+3`, and ABL-301 with none when it
+contributed six. **Settle a file count from the tree, not by re-running
+anything**: `git ls-tree -r <ref> --name-only | grep -c '^server/src/.*\.test\.ts$'`
+(plus the one `scripts/` file the server suite also discovers —
+`server/vitest.config.ts:11`) is decidable at any commit, needs no
+`node_modules`, no matching Node ABI and no free replica, and is what settled
+this. It reads 63 at `4977f8a`, 66 at `cc28802`, 72 at `87aaa1c`, 75 at
+`a8d6fe8`, and 83 at both `eac20ed` and `cf20527` — matching every figure
+recorded beside those commits except the one corrected here. It cannot check a
+*test* count, which is why that half still needs a run.
 
 Both suites were run under **v24.18.0**, which is not optional — see
 "NODE_MODULE_VERSION mismatch" below, and note that all 666 client tests pass
@@ -3546,28 +3562,37 @@ Gate 2 is deliberately **board-independent**: it asks git a question git can
 always answer. A gate that needs a reachable network in order to fail is a gate
 that fails open, and gate 1 does exit 0 when the board is unreachable.
 
-So: `git push origin main` — then re-run `predone` and see `0 ahead, 0 behind`
-— *then* mark the issue `done`. If the push is not yours to make, say so on the
-issue and leave the status `in_review`, not `done`.
+So: `predone` must read `0 ahead, 0 behind` before you mark the issue `done` —
+and reaching that state is a **merge, not a push** (next section). If local
+`main` is ahead, that content is stranded in this checkout: branch from it,
+open a PR, and leave the issue `in_review` until the PR is merged. Do not
+resolve gate 2 with `git push origin main`.
 
-#### PR or direct push?
+#### Every change ships as a PR the CEO merges
 
-Both are legitimate; the split is by *what the change touches*, not by who is
-awake. Inferring the convention from whatever the last agent did is what left
-the push step belonging to nobody (ABL-311).
+**Board ruling, 2026-08-13** — ABL-351, request_confirmation
+`53530572-a65c-4c79-b1f2-b30c3b892ec4`, accepted 08:56:06Z. There is no class
+of change an agent pushes to `origin/main` directly, and none an agent merges
+itself — not its own PR, not a one-line docs fix. Push the branch, open the PR
+against `main`, and leave the issue `in_review` until the CEO merges it.
 
-- **Open a PR** for changes to shared contracts and anything security-sensitive:
-  the database layer and query shapes, the public `/v1` surface, auth or
-  credential handling, `energy_renewable`, ingest-adjacent code, and any schema
-  or dependency change. These get a second reader before they reach prod.
-- **Push direct to `origin/main`** for everything else once it is green on both
-  suites and `predone` passes: a tab, a chart, a pure helper, a route that reads
-  existing tables, docs, tooling and tests. Requiring a CEO merge on every issue
-  would make an hourly heartbeat the bottleneck on all work, which costs more
-  than the stranding it prevents.
+This **supersedes the "PR or direct push?" split** that stood here for one day.
+That section split by what the change touched — shared contracts and
+security-sensitive code by PR; "a tab, a chart, a pure helper, a route that
+reads existing tables, docs, tooling and tests" direct — arguing that requiring
+a CEO merge on every issue makes an hourly heartbeat the bottleneck on all
+work. The ruling heard that cost and accepted it. It is recorded here rather
+than deleted, because the argument was published and reads as sound; an agent
+who does not know it was decided will re-derive it. **Do not re-propose it.**
 
-Either way the branch-per-concern rule stands, and either way the issue is not
-`done` until the work is an ancestor of `origin/main`.
+The bottleneck is also narrower than that argument implies: the merge is the
+only serialized step, and the branch can be pushed and the PR opened the moment
+the work is green. What waits on the CEO is publication, not the next issue —
+so the correct response to an unmerged PR is to leave the issue `in_review` and
+pick up other work, never to ship it another way.
+
+The branch-per-concern rule stands, and the issue is not `done` until the work
+is an ancestor of `origin/main`.
 
 **`state: MERGED` is not a publication check — only content on `origin/main`
 is.** A PR is merged into *its base branch*, and nothing requires that base to
