@@ -713,23 +713,42 @@ describe('getWindGenerationSeries query plan', () => {
 
 /**
  * Opportunistic check against the read-only replica used for development on
- * this workstation. Skipped when the replica or the energy_generation table
- * is absent, so this suite never depends on either existing - CI and any
- * checkout without a local replica simply skip it.
+ * this workstation. Skipped when the replica is absent, unreadable or lacks the
+ * energy_generation table, so this suite never depends on any of those - CI and
+ * any checkout without a local replica simply skip it.
+ *
+ * **Unavailable includes locked, and that is the whole reason this is a
+ * try/catch rather than an `fs.existsSync` alone.** This runs at module
+ * evaluation, so anything it throws is a *collection* error that takes the
+ * entire file down - all ~60 fixture-backed cases in it, none of which touch
+ * the replica. Measured on 2026-08-12: the twice-daily DB sync (ABL-220,
+ * ABL-249) held the replica with a 3.6 GB rollback journal, the readonly open
+ * raised `SqliteError: database is locked`, and the file reported "no tests"
+ * for a full sync window - silently dropping the generation-mix NULL-vs-zero
+ * and diverging-stack coverage exactly when someone running `predone` would
+ * read the suite as green-but-short. A lock is not absence, and neither is a
+ * corrupt header or a permissions error; all of them mean the same thing here,
+ * which is that the opportunistic check cannot run and the rest of the file
+ * still must.
  */
 const REPLICA_PATH = 'C:/Code/able/data/energy_dashboard.db';
 const replicaAvailable = fs.existsSync(REPLICA_PATH);
 
 function replicaHasGenerationTable(): boolean {
   if (!replicaAvailable) return false;
-  const db = new Database(REPLICA_PATH, { readonly: true });
+  let db: InstanceType<typeof Database> | undefined;
   try {
+    db = new Database(REPLICA_PATH, { readonly: true });
     const row = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='energy_generation'")
       .get();
     return !!row;
+  } catch {
+    // Locked, mid-refresh, or otherwise unopenable. Skip the opportunistic
+    // block; never fail the file for it.
+    return false;
   } finally {
-    db.close();
+    db?.close();
   }
 }
 
