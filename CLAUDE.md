@@ -2999,20 +2999,27 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-13, measured on ABL-351 merged with `main` at the ABL-317
-publish merge — `origin/main`'s `/v1` line (ABL-300, ABL-301, ABL-304, ABL-311,
-ABL-282) joined to local `main` (ABL-309, ABL-319, ABL-325, ABL-329) and the
-three Group B branches (ABL-276/277/278, ABL-257, ABL-282's flat config), plus
-ABL-324 tranche 1: **50 client test files / 666 tests** and **77 server test
-files / 1,401 tests**, all passing, zero skipped, clean typecheck on both
-(`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing than that means
-something broke.
+Green as of 2026-08-13, measured on ABL-352 (ABL-324 tranche 2) branched from
+`origin/main` at `eac20ed` — the ABL-317 publish merge plus ABL-351 (tranche 1,
+PR #22) and ABL-303 (PR #23): **50 client test files / 666 tests** and
+**83 server test files / 1,554 tests**, all passing, zero skipped, clean
+typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing
+than that means something broke.
 
-ABL-351 is the last of those and adds +2 server files
+**The server figure this entry carried before — 77 files / 1,401 tests — went
+stale the moment ABL-303 merged**, which is the ABL-234 rule below happening
+again and is why it is corrected here rather than carried forward. `origin/main`
+at `eac20ed` measures **83 files / 1,546 tests**; ABL-352 adds **+8 server
+cases** (3 in `routes/dashboard.test.ts`, 5 in `routes/countries.test.ts`) and
+**no new file**, and touches no client test, which is why the client figure is
+unmoved. The 83/1,554 above is a fresh `npx vitest run` on this branch, not that
+arithmetic — the delta is recorded to explain the movement, not to be trusted in
+place of a run.
+
+ABL-351 preceded it, adding +2 server files
 (`services/renewableTotal.test.ts`, `routes/renewables.test.ts`) and +34 server
 cases over the 75 / 1,367 that `main` measured immediately before it; it touches
-no client test, which is why the client figure is unmoved. Recorded as a delta
-to explain the movement — not as arithmetic to trust in place of a fresh run.
+no client test either.
 
 **Neither input figure survived, and neither was added up.** Local `main` read
 49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
