@@ -3491,28 +3491,37 @@ Gate 2 is deliberately **board-independent**: it asks git a question git can
 always answer. A gate that needs a reachable network in order to fail is a gate
 that fails open, and gate 1 does exit 0 when the board is unreachable.
 
-So: `git push origin main` — then re-run `predone` and see `0 ahead, 0 behind`
-— *then* mark the issue `done`. If the push is not yours to make, say so on the
-issue and leave the status `in_review`, not `done`.
+So: `predone` must read `0 ahead, 0 behind` before you mark the issue `done` —
+and reaching that state is a **merge, not a push** (next section). If local
+`main` is ahead, that content is stranded in this checkout: branch from it,
+open a PR, and leave the issue `in_review` until the PR is merged. Do not
+resolve gate 2 with `git push origin main`.
 
-#### PR or direct push?
+#### Every change ships as a PR the CEO merges
 
-Both are legitimate; the split is by *what the change touches*, not by who is
-awake. Inferring the convention from whatever the last agent did is what left
-the push step belonging to nobody (ABL-311).
+**Board ruling, 2026-08-13** — ABL-351, request_confirmation
+`53530572-a65c-4c79-b1f2-b30c3b892ec4`, accepted 08:56:06Z. There is no class
+of change an agent pushes to `origin/main` directly, and none an agent merges
+itself — not its own PR, not a one-line docs fix. Push the branch, open the PR
+against `main`, and leave the issue `in_review` until the CEO merges it.
 
-- **Open a PR** for changes to shared contracts and anything security-sensitive:
-  the database layer and query shapes, the public `/v1` surface, auth or
-  credential handling, `energy_renewable`, ingest-adjacent code, and any schema
-  or dependency change. These get a second reader before they reach prod.
-- **Push direct to `origin/main`** for everything else once it is green on both
-  suites and `predone` passes: a tab, a chart, a pure helper, a route that reads
-  existing tables, docs, tooling and tests. Requiring a CEO merge on every issue
-  would make an hourly heartbeat the bottleneck on all work, which costs more
-  than the stranding it prevents.
+This **supersedes the "PR or direct push?" split** that stood here for one day.
+That section split by what the change touched — shared contracts and
+security-sensitive code by PR; "a tab, a chart, a pure helper, a route that
+reads existing tables, docs, tooling and tests" direct — arguing that requiring
+a CEO merge on every issue makes an hourly heartbeat the bottleneck on all
+work. The ruling heard that cost and accepted it. It is recorded here rather
+than deleted, because the argument was published and reads as sound; an agent
+who does not know it was decided will re-derive it. **Do not re-propose it.**
 
-Either way the branch-per-concern rule stands, and either way the issue is not
-`done` until the work is an ancestor of `origin/main`.
+The bottleneck is also narrower than that argument implies: the merge is the
+only serialized step, and the branch can be pushed and the PR opened the moment
+the work is green. What waits on the CEO is publication, not the next issue —
+so the correct response to an unmerged PR is to leave the issue `in_review` and
+pick up other work, never to ship it another way.
+
+The branch-per-concern rule stands, and the issue is not `done` until the work
+is an ancestor of `origin/main`.
 
 **`state: MERGED` is not a publication check — only content on `origin/main`
 is.** A PR is merged into *its base branch*, and nothing requires that base to
