@@ -2477,6 +2477,28 @@ request to fill one of them.
   still read it, so retiring it is its own cross-module migration with its own
   approval.
 
+  **`/v1/accuracy` (ABL-373) keeps its own mapping, deliberately**, and it was
+  never an eighth read site — `mlForecastService`'s then-`ACTUAL_DATA_MAPPING`
+  was the obvious thing to import when you need "which actual does this
+  forecast type score against", and importing it is one line. `accuracyStream`
+  (`server/src/v1/data/accuracyRepo.ts:171`) resolves the actuals side through
+  `v1/data/series.ts`'s `STREAMS` instead — the same constant
+  `/v1/observations` reads — so a public accuracy figure is computed from rows
+  the subscriber can fetch and check. `publicAppGraph.test.ts` asserts those
+  internal services are unreachable from the public app, so adopting their
+  mapping is a failing test rather than a plausible simplification. **That
+  separation survives ABL-399**: `services/actualsSource.ts` is the one mapping
+  for the internal services, `v1/data/series.ts` is the one for the public
+  surface, and neither may import the other.
+
+  ABL-373 excluded `renewable` and `hydro_total` from `/v1/accuracy` on the
+  grounds that "their actual has no settled definition on the table we are
+  moving to", naming ABL-399 as the issue that would settle it. It now is
+  settled — see the two definitions above — so adding those two streams to
+  `/v1/accuracy` is available follow-up work, and would restate the same
+  decision in that app's own constant rather than share one across the
+  boundary.
+
   **It also stores one instant under several timestamp spellings, which is why
   the read path is leaving it** (ABL-324, CEO-approved 2026-08-12). Measured on
   the replica 2026-08-12: `energy_renewable` holds **26,694 duplicate
@@ -3067,6 +3089,35 @@ two-form table: never the naive `IN(...)`, for the fan-out reason —
 `energy_renewable` alone has **26,400** conflicting `T`/space pairs, 98.9% of
 the 26,694 it has.
 
+**`/v1/accuracy` is the third call site, and the first that publishes the
+tie-break as a term of a contract** (ABL-373). `readAccuracyPoints`
+(`server/src/v1/data/accuracyRepo.ts:245`) uses the same two-LEFT-JOIN-plus-
+`COALESCE` shape against `energy_load`, `energy_price` and `energy_generation`,
+and every response carries `meta.conflict_convention: "space_preferred"`.
+
+That field is the part worth copying. Which member of a conflicting pair is
+authoritative is **ABL-215**, and the parts of it still open — CH's 1,783 pairs
+and PL's 69 residual rows in `energy_load`, all 16,896 of `energy_price`'s
+overlapping pairs — are exactly the ones a paid accuracy metric would resolve
+*silently*, because reducing a window to a number requires picking one. Naming
+the convention on the response converts a silent pick into a published one: if
+ABL-215 later rules the other way for a zone, the number changes as a
+**documented change to a stated convention** that a subscriber can reconcile,
+rather than as a correction they discover by finding last quarter's figures no
+longer reproduce. An endpoint that has to make an open decision should say which
+way it made it.
+
+Dormant against live data today for the same reason the two internal sites are —
+`forecasts`' earliest row of any type is 2025-12-26, a month after the actuals
+cutover, so no forecast currently pairs with a `T`-form actual. It is shipped
+now rather than when it starts to matter, because what makes it start to matter
+is a historical backfill or a retrained model's archived vintage, and neither of
+those arrives with a reminder to revisit an accuracy join.
+`accuracyRepo.test.ts` pins both directions on the production schema: the shape
+returns one row for a conflicting pair, and the naive `IN(...)` returns two —
+both stored values, offered to the metric as independent observations, with
+nothing in the result saying which is wrong.
+
 ## Data the database does not have
 
 - **Timestamps that are all really UTC.** 26,405 rows carry a trailing offset
@@ -3390,11 +3441,23 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-13, measured on ABL-399 branched from `origin/main` at
-`50d7a72`: **50 client test files / 666 tests** and **89 server test files /
-1,661 tests**, all passing, zero skipped, clean typecheck on both (`tsc -b`
+Green as of 2026-08-13, measured on ABL-399 **merged with** `origin/main` at
+`808a31f`: **50 client test files / 666 tests** and **92 server test files /
+1,715 tests**, all passing, zero skipped, clean typecheck on both (`tsc -b`
 and `tsc --noEmit`, exit 0). Fewer tests passing than that means something
 broke.
+
+**The rule below cost a correction on this very branch, which is the best
+evidence it is real.** ABL-399 measured 89 / 1,661 against `50d7a72` and wrote
+that here. PR #29 (ABL-373, `/v1/accuracy`) then merged underneath it, adding
+three `v1/data`/`v1/routes` test files this branch had never run — so the same
+unchanged work now measures 92 / 1,715. The figure above is a fresh run on the
+merged tree, not `1,661 + 54`. Re-measure after merging the base in, not only
+after writing the code; and settle the *file* count from the tree, which needs
+no run at all — `git ls-tree -r origin/main --name-only | grep -c
+'^server/src/.*\.test\.ts$'` returns 90, plus the one `scripts/` file the
+server suite also discovers (`server/vitest.config.ts:11`), plus this branch's
+one new file = 92.
 
 ABL-399 is **+1 server file / +13 server cases**, and touches no client test:
 `services/actualsSource.test.ts` is the new file at 9 cases,

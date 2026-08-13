@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { accuracyRouter } from './accuracy.js';
 import { catalogRouter } from './catalog.js';
 import { forecastsRouter } from './forecasts.js';
 import { observationsRouter } from './observations.js';
@@ -28,14 +29,29 @@ import type { V1DataContext } from '../data/context.js';
  * GET /v1/catalog/coverage          ?zone=&stream=[&from=&to=]
  * ```
  *
- * **`/v1/accuracy` is deliberately absent** and is filed as its own issue. It is
- * the only endpoint that joins forecasts to actuals, and that join is a live
- * correctness hazard rather than routine work: ABL-214's two-separator join
- * drops roughly half the rows across the 2025-11 cutover, `energy_load` alone
- * holds 137,113 country-hours where both separator forms exist with **107,047
- * of those pairs disagreeing**, and which of a conflicting pair is authoritative
- * is ABL-215 — an open board decision an accuracy endpoint would have to make
- * silently in order to return a number. Nothing here depends on it.
+ * ## What ABL-373 added: the ninth
+ *
+ * ```
+ * GET /v1/accuracy                  ?zone=&type=&from=&to=&horizon=&model=
+ * ```
+ *
+ * This paragraph used to say `/v1/accuracy` was "deliberately absent" because it
+ * is the only endpoint that joins forecasts to actuals and that join is a live
+ * correctness hazard: ABL-214's two-separator join drops roughly half the rows
+ * across the 2025-11 cutover, `energy_load` alone holds 137,113 country-hours
+ * where both separator forms exist with **107,047 of those pairs disagreeing**,
+ * and which of a conflicting pair is authoritative is ABL-215 — an open Board
+ * decision an accuracy endpoint would have to make silently in order to return a
+ * number.
+ *
+ * All of that is still true. What changed is not the hazard but the handling of
+ * it: the join is two `LEFT JOIN`s and a `COALESCE` preferring space (never an
+ * `IN(...)`, which fans a conflicting pair out into two observations), and the
+ * preference is **published** as `meta.conflict_convention` rather than applied
+ * silently — so ABL-215 ruling the other way later is a documented change to a
+ * stated convention instead of a correction to numbers a subscriber has already
+ * used. `data/accuracyRepo.ts` carries the argument; nothing here depends on
+ * ABL-215 closing first.
  *
  * **Net position is absent by construction, not by filter.** There is no
  * `net-position` route, no `net_position` entry in `data/series.ts`, and no
@@ -56,17 +72,19 @@ import type { V1DataContext } from '../data/context.js';
  * that serves requests.
  *
  * **Every module reachable from this file becomes reachable from the public
- * app**, and that test asserts the resulting graph. Three shared modules are
- * reachable from here by design — `utils/timestamp.ts`, `services/freshness.ts`
- * and `services/loadQuality.ts` — each of them a side-effect-free leaf, each of
- * them holding a rule that must not be reimplemented in a second place. The
- * graph test names them individually and checks that they import nothing.
+ * app**, and that test asserts the resulting graph. Four shared modules are
+ * reachable from here by design — `utils/timestamp.ts`, `services/freshness.ts`,
+ * `services/loadQuality.ts` and (ABL-373) `services/wape.ts` — each of them a
+ * side-effect-free leaf, each of them holding a rule that must not be
+ * reimplemented in a second place. The graph test names them individually and
+ * checks that they import nothing.
  */
 export function createV1Routes(context: V1DataContext): Router {
   const router = Router();
 
   router.use('/observations', observationsRouter(context));
   router.use('/forecasts', forecastsRouter(context));
+  router.use('/accuracy', accuracyRouter(context));
   router.use('/catalog', catalogRouter(context));
 
   return router;

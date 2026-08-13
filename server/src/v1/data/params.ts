@@ -1,5 +1,6 @@
 import { PublicApiError } from '../publicErrors.js';
 import { normalizeTimestamp } from '../../utils/timestamp.js';
+import { MAX_HORIZON_HOURS } from './models.js';
 
 /**
  * Request parameters: parsed, bounded, and never echoed back.
@@ -323,6 +324,42 @@ export function parseEnum<T extends string>(
     );
   }
   return lower as T;
+}
+
+/**
+ * `?horizon=` — one horizon in hours, or every horizon in the window.
+ *
+ * Hours, not "D+1"/"D+2". The internal route takes `horizon=1` and turns it into
+ * `horizon_hours BETWEEN 0 AND 30` (`forecastService.ts:56-60`), which is a UI
+ * shorthand with two hard-coded bands; freezing it into a public contract would
+ * commit us to those bands forever and would answer a different question than
+ * the parameter name suggests.
+ *
+ * Lives here rather than beside its first caller because ABL-373 gave it a
+ * second one. `/v1/forecasts` and `/v1/accuracy` must agree about what
+ * `horizon=24` selects — an accuracy figure filed under a horizon the forecast
+ * endpoint reads differently is two endpoints disagreeing about the same rows —
+ * and this is the module whose colocated test asserts the parameter grammar
+ * parameter by parameter.
+ */
+export function parseHorizon(raw: unknown): number | undefined {
+  const value = singleValue(raw, 'horizon', 'invalid_horizon');
+  if (value === undefined || value === '') return undefined;
+
+  if (!/^\d{1,3}$/.test(value)) {
+    throw invalid(
+      'invalid_horizon',
+      `The horizon parameter is a whole number of hours between 0 and ${MAX_HORIZON_HOURS}.`
+    );
+  }
+  const hours = Number(value);
+  if (hours > MAX_HORIZON_HOURS) {
+    throw invalid(
+      'invalid_horizon',
+      `The longest horizon this API holds is ${MAX_HORIZON_HOURS} hours. There is no D+3 forecast.`
+    );
+  }
+  return hours;
 }
 
 /**
