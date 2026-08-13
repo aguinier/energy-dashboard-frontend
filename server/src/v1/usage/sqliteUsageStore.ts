@@ -8,6 +8,7 @@ import {
   resolveRetentionPolicy,
   subtractDays,
   subtractMonths,
+  THROTTLED_STATUS,
   type AccountUsageExport,
   type CloseMonthsOutcome,
   type RetentionOutcome,
@@ -323,6 +324,45 @@ ON CONFLICT(account_id, key_id, year_month) DO UPDATE SET
     usage_rollup.late_billable_requests + excluded.late_billable_requests
 `;
 
+/**
+ * Requests one account had served in a month — the live quota figure (ABL-302).
+ *
+ * Three things about this statement are deliberate:
+ *
+ * - **A half-open `received_at` range, not `substr(received_at, 1, 7) = ?`.** The
+ *   substring form is the obvious way to write it, reads better, and cannot use
+ *   `idx_usage_events_account_received`: a function of the column is not
+ *   sargable, so it degrades to a scan of every event the account has ever sent.
+ *   This runs on a request path, once per account per re-seed interval, and the
+ *   difference is an index seek against a table that grows by one row per
+ *   request forever.
+ * - **`status <> THROTTLED_STATUS`.** See that constant. Quota counts requests we
+ *   served, and a 429 is one we refused.
+ * - **Every key of the account, summed.** The plan is sold to the account, so the
+ *   quota belongs to the account; `usage_rollup` keeps the per-key split for the
+ *   invoice and for key-sharing investigation.
+ */
+const COUNT_SERVED_IN_MONTH = `
+SELECT COUNT(*) AS v
+  FROM usage_events
+ WHERE account_id = ?
+   AND received_at >= ?
+   AND received_at < ?
+   AND status <> ${THROTTLED_STATUS}
+`;
+
+/**
+ * The first instant of a `YYYY-MM`, in the same text form `received_at` holds.
+ *
+ * `Date#toISOString()` is what the meter writes, so the bounds are built the same
+ * way rather than by string concatenation: comparing `2026-08-01T00:00:00.000Z`
+ * against `2026-08-01T00:00:00.000Z` is a string comparison that works only
+ * because both sides are that exact fixed-width form.
+ */
+function monthStartIso(yearMonth: string): string {
+  return new Date(`${yearMonth}-01T00:00:00.000Z`).toISOString();
+}
+
 function readRollup(row: Record<string, unknown>): UsageRollupRow {
   return {
     accountId: row.account_id as string,
@@ -399,6 +439,7 @@ export function openUsageStore({
   const insertEvent = db.prepare(INSERT_EVENT);
   const findPrior = db.prepare(FIND_IDEMPOTENT_PRIOR);
   const rollUpRange = db.prepare(ROLL_UP);
+  const countServedInMonth = db.prepare(COUNT_SERVED_IN_MONTH);
 
   function readWatermark(): number {
     const row = db
@@ -627,6 +668,16 @@ export function openUsageStore({
           )
           .all(yearMonth) as Record<string, unknown>[]
       ).map(readRollup);
+    },
+
+    servedRequestsInMonth(accountId, yearMonth) {
+      return (
+        countServedInMonth.get(
+          accountId,
+          monthStartIso(yearMonth),
+          monthEndExclusive(yearMonth).toISOString()
+        ) as { v: number }
+      ).v;
     },
 
     exportAccount(accountId): AccountUsageExport {

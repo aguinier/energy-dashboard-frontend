@@ -309,7 +309,19 @@ describe('the exact public module graph', () => {
 describe('the entrypoint chooses the key store, and only there', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicIndex.ts'), SRC_ROOT);
 
-  it('is these thirty-three modules and no others', () => {
+  it('is these thirty-seven modules and no others', () => {
+    // **ABL-302 adds four**, all under `v1/quota/`, and they are here rather than
+    // in the app's graph above for the same reason the whole of ABL-301's
+    // metering is: `publicApp.ts` takes a `PlanGate` as a type and this file
+    // constructs one. The gate ultimately counts rows in a SQLite file and none
+    // of that is in the module that serves requests.
+    //
+    // What to look for if this list changes again: nothing under `v1/quota/`
+    // should ever import a store. The gate is handed a `MonthlyUsageReader` —
+    // one method, reads one integer — and `quota/planGate.test.ts` asserts that
+    // its graph cannot reach `sqliteApiKeyStore.ts` or the keys CLI, which is
+    // what makes ABL-297 §6.5's "suspension is never fully automated" a property
+    // of the build rather than a promise in a comment.
     expect(graph.modules).toEqual([
       'services/freshness.ts',
       'services/loadQuality.ts',
@@ -334,6 +346,10 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',
       'v1/publicIndex.ts',
+      'v1/quota/monthlyQuota.ts',
+      'v1/quota/planGate.ts',
+      'v1/quota/planLimits.ts',
+      'v1/quota/rateLimiter.ts',
       'v1/routes/catalog.ts',
       'v1/routes/forecasts.ts',
       'v1/routes/index.ts',
@@ -430,10 +446,13 @@ describe('the entrypoint chooses the key store, and only there', () => {
   });
 
   it('adds no package beyond the driver and two Node builtins', () => {
-    // Unchanged by ABL-303. Eight endpoints, cursor pagination and a freshness
-    // map, and the dependency list is the same seven entries — worth pinning,
-    // because "we needed a date library" is how a public surface quietly becomes
-    // the place new dependencies enter a codebase.
+    // Unchanged by ABL-303 and unchanged by ABL-302. Eight endpoints, cursor
+    // pagination, a freshness map, a sliding-window rate limiter and a monthly
+    // quota counter, and the dependency list is the same seven entries — worth
+    // pinning, because "we needed a date library" is how a public surface
+    // quietly becomes the place new dependencies enter a codebase, and a rate
+    // limiter is the single most reached-for package in this class of change.
+    // The window is an array of numbers and one `splice`.
     expect(graph.packages).toEqual([
       'better-sqlite3',
       'compression',

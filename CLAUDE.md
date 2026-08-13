@@ -254,7 +254,7 @@ repository.
 
 `server/src/v1/` holds a **separate Express application** for the commercial
 `/v1` surface, built by `createPublicApp`
-(`server/src/v1/publicApp.ts:127`) and run as its own process from
+(`server/src/v1/publicApp.ts:154`) and run as its own process from
 `server/src/v1/publicIndex.ts`. It is not `createApp()` with routes hidden.
 
 The distinction is the whole point (ABL-304, specified by ABL-293 §2f). A
@@ -511,6 +511,77 @@ would grow, and forecast vintages are contractually not prunable (ToS §9.3).
 full account of what is recorded and why, is in
 `server/src/v1/usage/PRIVACY-AND-RETENTION.md`.
 
+## `/v1` plan limits refuse requests and never suspend anything
+
+ABL-302. `server/src/v1/quota/` enforces a per-minute rate limit and a monthly
+quota, both by plan tier, and answers a breach with a 429 and nothing else.
+`createPlanGate` (`server/src/v1/quota/planGate.ts:264`) is mounted between the
+usage meter and the resources — *after* the meter so a refusal is still recorded
+as traffic, *before* the routes so a refused request does not first run a
+366-day query.
+
+**The numbers are the ABL-291 brief §1.2 table**, in `planLimits.ts` as source
+rather than as configuration: Explorer 1,000/month at 10/min, Developer
+50,000 at 60/min, Professional 500,000 at 300/min, Enterprise negotiated (no
+monthly quota, 600/min as a service-protection default). Explorer and Developer
+hard-stop; Professional soft-overages at €1.00/1,000 up to a bill cap of 2× the
+plan price, which derives a ceiling of 749,000. Retention periods are read from
+the environment because ABL-297 §5 requires it; a quota is the opposite kind of
+number, and an operator who could raise one with an env var could give the
+product away without a diff.
+
+**Both limits are per account, not per key.** `MAX_LIVE_KEYS_PER_ACCOUNT` is 5,
+so a per-key quota would deliver five times what a customer bought. The per-key
+split is not lost — `usage_rollup` is keyed `(account, key, month)` and the
+invoice reads from there.
+
+**The quota counter is seeded, not queried.** A `SELECT COUNT(*)` per request
+would put a disk read on the critical path and would still be stale, because the
+meter buffers. Instead each `(account, month)` is seeded once from
+`servedRequestsInMonth`, counted in process, and reconciled every 60 seconds by
+taking `max(counted, durable)` — both are lower bounds on the same total, so the
+larger is the better one and it can neither lose our own unflushed requests nor
+double-count them. A failed read serves rather than refuses. That figure reads
+`usage_events` and **not** the rollup, which is the opposite of the rule an
+invoice follows: an invoice must come from the aggregate that survives
+retention, a quota is enforced against a month still open.
+
+**A 429 excludes itself from the quota.** Every request is metered including
+refusals, and `servedRequestsInMonth` excludes `THROTTLED_STATUS`, so the
+durable seed and the in-process counter mean the same thing. A 4xx *does* consume
+quota — a broken client's errors are not free traffic — and is still not billable.
+
+Headers on every authenticated response: `RateLimit-Limit`, `-Remaining`,
+`-Reset` (the IETF draft names), `Quota-Limit-Month`, `Quota-Remaining-Month`,
+`Quota-Overage-Month` for a plan that can accrue one, and `Retry-After` on a
+429 — seconds for a rate breach, seconds until the UTC month rolls over for a
+quota breach. All seven are in `publicApp.ts`'s CORS `exposedHeaders`, and
+`publicApp.test.ts` checks the two lists agree: a header a browser cannot read
+is a quota a browser client cannot respect. Three refusal codes, because the
+fixes differ: `rate_limit_exceeded`, `quota_exceeded`, `overage_cap_exceeded`.
+
+**Enforcement stops at the 429, and that is a written commitment.** ABL-297
+filed it on this issue from a Board decision: automated throttling and automated
+429s are permitted (privacy notice §8 — a technical control, not a decision
+about a person, which is what keeps it outside GDPR Art. 22), but suspending or
+terminating an account is never fully automated (AUP §6.5 — a human reviews and
+confirms, and the subscriber can appeal). So nothing here disables a key, flags
+an account or accumulates state across breaches: the request after a 429 is
+evaluated exactly like the first. The gate is handed a `MonthlyUsageReader` —
+one method, reads one integer — and `planGate.test.ts` walks its import graph to
+assert it cannot reach `sqliteApiKeyStore.ts` or the keys CLI, where
+`setAccountDisabled` and `revokeKey` live. An enforcement path beyond a 429 must
+stop at a queue or a flag for a human, and would fail that test until somebody
+named it, which is the point at which the commitment gets read again.
+
+**The per-request row cap is ABL-303's, not this issue's** — `MAX_ROW_LIMIT` is
+10,000 in `data/params.ts`, one figure for every plan, with `MAX_WINDOW_DAYS`
+366 bounding what has to be looked at. No tier raises it: `planLimits.ts` does
+not import `params.ts` and `planLimits.test.ts` asserts that its whole import
+graph is one module. A plan buys more requests, never bigger ones — which is
+what makes requests-per-month a billing dimension that prices anything (brief
+§1.3).
+
 ## Key Features
 
 ### 1. Views
@@ -757,14 +828,14 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   | module | `energy_load` reads | helper |
   |---|---:|---|
   | `loadService.ts:21` `:38` `:57` `:75` `:86` `:111` `:146` | 7 | `measuredLoadClause()` |
-  | `dashboardService.ts:78` `:100` `:177` `:300` | 4 | `measuredLoadClause()` |
+  | `dashboardService.ts:84` `:106` `:183` `:369` | 4 | `measuredLoadClause()` |
   | `tsoForecastService.ts:199` `:239` | 2 | `measuredLoadClause()` |
   | `countryService.ts:51` | 1 | `measuredLoadClause()` |
   | `dataFreshnessService.ts:35` | 1 | `measuredLoadClause()` |
   | `crossCountryMetricsService.ts:140-150` | 4 aliases | `loadActualGuard()` ×3 |
   | `mlForecastService.ts:235` `:279` | 2 | `loadActualGuard()` |
   | `forecastService.ts:251` | 1 | `loadActualGuard()` |
-  | `countryService.ts:114` | 1 | **none, deliberately** |
+  | `countryService.ts:153` | 1 | **none, deliberately** |
 
   `dashboardService.ts`'s four are current load, peak demand, the map
   choropleth and the timeseries daily average.
@@ -776,11 +847,18 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   The unguarded one is `getCountriesWithData` — a `SELECT DISTINCT` over a
   three-table `UNION` that answers *is this code worth offering in a picker*,
   not *what did we measure*. It returns no value a chart can render, and
-  guarding only its load leg would make the `UNION` incoherent, since
-  `energy_renewable`'s zeros are genuinely ambiguous (see the "Known gap"
-  below) and a zero-clearing `energy_price` hour is a real measurement. It also
+  guarding only its load leg would make the `UNION` incoherent, since an
+  all-NULL `energy_generation` row is an honestly empty A75 document rather
+  than a placeholder value, and a zero-clearing `energy_price` hour is a real
+  measurement. It also
   changes nothing: every one of the 11 countries carrying placeholder zeros
   holds tens of thousands of genuine rows beside them.
+
+  (Its third leg read the frozen `energy_renewable` until ABL-352; the sentence
+  above used to cite that table's ambiguous zeros as the reason. Both legs of
+  that reason still hold, for different tables. Verified on the replica
+  2026-08-13 that the move is a no-op on live data: both tables hold the same
+  34 country codes and the whole `UNION` returns the identical 36 either way.)
 
   **Two sites have been the hole, and both were `MAX(timestamp_utc)`.**
   `dataFreshnessService.ts` (ABL-60) dated the *pipeline's health* from a raw
@@ -793,6 +871,23 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   now, together rather than separately — `records` gates whether the block
   renders at all, so counting placeholders would let a country whose every
   stored load row is a placeholder report a confident span we never measured.
+
+  That endpoint's *renewable* block had a third version of the same defect,
+  fixed by ABL-352 (ABL-324 tranche 2): it counted **rows** in the frozen
+  `energy_renewable`, which stores one instant under several spellings, so
+  `records` overstated our own coverage. It reads `energy_generation` now,
+  where a row count is an instant count. Deliberately **unguarded**, unlike the
+  load block beside it, and the distinction is the one this whole section turns
+  on: a stored `load_mw = 0.0` is a positive false claim, while an
+  `energy_generation` row whose value columns are all NULL asserts nothing —
+  NULL is already the correct encoding, and the row's existence really does
+  mean we hold that instant's A75 document. Measured 2026-08-13, 90 rows of
+  3,178,270 are in that state and they move exactly one country's `to` (DE's
+  raw MAX `2026-08-12 13:00:00`, an unfilled leading-edge document, against a
+  value-bearing `12:45:00`). Guarding it costs the covering index — 17.4 ms to
+  86.4 ms on DE — which is not proportionate to 0.0028% of rows. Note the
+  frozen table was *worse* at that same instant, not better: its `DEFAULT 0`
+  stores DE's 13:00 as `solar_mw = 0, total_renewable_mw = 0`.
 
   `loadActualGuard()` covers the accuracy joins and the comparison endpoint,
   which are generic over forecast type and so must apply the rule **only** to
@@ -1650,7 +1745,7 @@ Nor was there ever a *backend* blocker forcing it to stay. The
 `/dashboard/overview|map|initial` endpoints take an explicit `start`/`end`
 window and let it **win** over the legacy enum whenever both are present
 (`server/src/routes/dashboard.ts:49`, `:76`, `:138`; `timeRange` is consulted
-only as the fallback, via `getTimeRangeDates` in `dashboardService.ts:14`, and
+only as the fallback, via `getTimeRangeDates` in `dashboardService.ts:20`, and
 each site carries a comment explaining the backward compatibility). That
 passthrough predates ABL-4: the blocker this file described — "the client can't
 drop `timeRange` without a backend change first" — had already been removed
@@ -2273,17 +2368,33 @@ request to fill one of them.
 - **`energy_renewable`** — the older, narrower table: 8 renewable columns, with
   pumped storage folded into `hydro_reservoir_mw`. **Frozen.** The forecast job
   and several backfill scripts read it; the dashboard is being moved off it
-  read site by read site (ABL-324). **Tranche 1 (ABL-351) moved
-  `renewableService`'s 4 sites and tranche 3 (ABL-353) moved
-  `tsoForecastService`'s 2** — see "Generation forecast accuracy moved off the
-  frozen table" below, which is where the migration stopped being a tidy-up and
-  started removing published wrong numbers. Still reading it:
-  `dashboardService` and `countryService` (tranche 2, ABL-352), plus
-  `crossCountryMetricsService`, `mlForecastService` and `forecastService`, whose
-  `ACTUAL_DATA_MAPPING` tables are generic over forecast type and were not in
-  ABL-324's scope. Check with
-  `grep -rn "FROM energy_renewable\|JOIN energy_renewable" server/src` rather
-  than trusting this list. It is derived from the
+  read site by read site (ABL-324). **All three tranches have landed**: tranche
+  1 moved `renewableService`'s four sites (ABL-351), tranche 2 moved
+  `dashboardService`'s timeseries leg and `countryService`'s two (ABL-352), and
+  tranche 3 moved `tsoForecastService`'s two (ABL-353) — see "Generation
+  forecast accuracy moved off the frozen table" below, which is where the
+  migration stopped being a tidy-up and started removing published wrong
+  numbers.
+
+  **Seven read sites remain, in three services, and a literal grep will not
+  find them.** `crossCountryMetricsService`, `mlForecastService` and
+  `forecastService` name the table in an `ACTUAL_DATA_MAPPING`-style object
+  keyed by forecast type and interpolate it — `FROM ${mapping.table}`
+  (`forecastService.ts:251`), `LEFT JOIN ${mapping.table}`
+  (`mlForecastService.ts:125`, `crossCountryMetricsService.ts:140`) — so
+  `grep -rn "FROM energy_renewable\|JOIN energy_renewable" server/src` returns
+  **zero hits** while all seven are live. That grep is what this entry used to
+  recommend; it now reports a completed migration that has not happened. Use
+  the bare table name instead:
+
+  ```bash
+  grep -rn "energy_renewable" server/src --include=*.ts | grep -v '\.test\.ts'
+  ```
+
+  Those three were out of ABL-324's scope deliberately: they are generic over
+  forecast type, so moving them is not a table swap but a decision about what
+  `renewable` / `hydro_total` mean on the new table, per type. It is derived
+  from the
   *pre-netting* flatten specifically so its values are unchanged; deriving it
   from `energy_generation` shifts `hydro_reservoir_mw` (measured 1520 → 1410)
   because of that folding. It is now redundant and worth retiring, but that is
@@ -2298,6 +2409,23 @@ request to fill one of them.
   other than 19, so none of the trailing-offset rows either). A duplicate
   instant is not cosmetic where a query `AVG()`s over a window: the two
   disagreeing values were averaged into one chart point equal to neither.
+
+  **Three different numbers are in circulation for this census and they are
+  all correct — they count different things.** Re-measured 2026-08-13, whole
+  table, 829,568 rows (821,822 of length 19 and 7,746 of length 25, the
+  trailing-offset rows):
+
+  | figure | definition |
+  |---:|---|
+  | **26,694** | duplicate instants among **length-19 rows only** — the figure above and in `utils/timestamp.ts`. Every one is a pair, so surplus rows is also 26,694. |
+  | **28,987** | duplicate instants over **all** rows, i.e. including the length-25 trailing-offset spelling as a third form. (ABL-352's issue text says 28,982; that is the same measurement a day earlier.) |
+  | **34,440** | **surplus rows** over all forms — `rows − distinct instants`, so an instant stored three times contributes 2. This is the one that says how much a `COUNT(*)` overstates. |
+
+  Quote whichever answers the question at hand and say which it is. The
+  distribution is not even: **BA alone holds 65,868 rows for 48,766 distinct
+  instants** (26% duplicated). `energy_generation`'s control figure is **0
+  duplicate instants across 3,178,270 rows** under every one of the three
+  definitions.
 
   Two costs come with each move, both signed off, and both must be surfaced
   rather than absorbed:
@@ -3059,24 +3187,38 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-13, measured on `origin/main` at `eac20ed` with ABL-311's
-patch-identity gate merged on top — the `/v1` line (ABL-300, ABL-301, ABL-303,
+Green as of 2026-08-13, measured on ABL-352 (ABL-324 tranche 2) merged with
+`origin/main` at `cf20527` — the `/v1` line (ABL-300, ABL-301, ABL-303,
 ABL-304, ABL-282) joined to ABL-309, ABL-319, ABL-325, ABL-329, the three Group
 B branches (ABL-276/277/278, ABL-257, ABL-282's flat config), ABL-324 tranche 1
-(ABL-351) and ABL-311: **50 client test files / 666 tests** and **83 server test
-files / 1,555 tests**, all passing, zero skipped, clean typecheck on both
-(`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing than that means
-something broke.
+(ABL-351), ABL-311's patch-identity gate, and this tranche: **50 client test
+files / 666 tests** and **83 server test files / 1,563 tests**, all passing,
+zero skipped, clean typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0).
+Fewer tests passing than that means something broke.
 
 **That server figure is a fresh run, and it had to be — every figure available
 to derive it from was stale within the hour.** The text this replaced claimed
 77 / 1,401, measured on ABL-351 before PR #23 (ABL-303) merged; adding ABL-311's
-own `+9` `release/` cases to it predicts 1,410, and the tree actually measures
-1,555. The gap is ABL-303's `/v1` resource endpoints, which landed after that
-sentence was written and were never counted into it. This is the ABL-234 rule
-paying for itself twice in one run: a count is only true of the tree it was
-measured on, and the arithmetic is not a substitute. The deltas below explain
-movement; they are not to be summed.
+own `+9` `release/` cases to it predicts 1,410, and `origin/main` at `cf20527`
+actually measures **1,555**. The gap is ABL-303's `/v1` resource endpoints,
+which landed after that sentence was written and were never counted into it.
+This is the ABL-234 rule paying for itself twice in one run: a count is only
+true of the tree it was measured on, and the arithmetic is not a substitute. The
+deltas below explain movement; they are not to be summed.
+
+It paid for itself a **third** time an hour later, which is why this paragraph
+is worth reading before trusting any number above it. ABL-352 measured
+83 / 1,554 against `eac20ed` and opened a PR saying so; ABL-311 merged in the
+meantime, and both branches had independently rewritten this same sentence.
+ABL-352 adds **+8 server cases** (3 in `routes/dashboard.test.ts`, 5 in
+`routes/countries.test.ts`) and **no new file**, and touches no client test —
+but 1,563 above is a fresh `npx vitest run` on the merged tree, not
+`1,555 + 8`.
+
+ABL-351 preceded all of it, adding +2 server files
+(`services/renewableTotal.test.ts`, `routes/renewables.test.ts`) and +34 server
+cases over the 75 / 1,367 that `main` measured immediately before it; it touches
+no client test either.
 
 ABL-353 (ABL-324 tranche 3) then adds **+3 server cases** in the existing
 `routes/tsoForecast.test.ts` and no new file, taking the tree to **83 server
@@ -3087,11 +3229,27 @@ not to rely on it.
 
 **Neither input figure survived, and neither was added up.** Local `main` read
 49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
-`origin/main` read 49 / 644 and 66 server files / 1,114 at `87aaa1c`; their
+`origin/main` read 49 / 644 and 66 server files / 1,114 at `cc28802`; their
 merge read 50 / 666 and 75 / 1,367 at `a8d6fe8`. The sides touch disjoint code
 — `CLAUDE.md` was the only file every one of them edited — so each figure is a
 fresh `npx vitest run` on the tree it names, per the ABL-234 rule below. The
 deltas recorded further down explain the movement; they are not to be summed.
+
+**That `cc28802` read `87aaa1c` until it was corrected here, and the rule this
+paragraph states is exactly what the mislabel broke.** `66 / 1,114` is a real
+measurement — of `cc28802` (PR #19, ABL-300), one merge *before* `87aaa1c`
+(PR #21, ABL-301), whose six new `v1/usage/*` test files take that tree to
+**72**. So a reader reconciling `66 -> 75` credited the local-`main` merge with
+`+9` server files when it contributed `+3`, and ABL-301 with none when it
+contributed six. **Settle a file count from the tree, not by re-running
+anything**: `git ls-tree -r <ref> --name-only | grep -c '^server/src/.*\.test\.ts$'`
+(plus the one `scripts/` file the server suite also discovers —
+`server/vitest.config.ts:11`) is decidable at any commit, needs no
+`node_modules`, no matching Node ABI and no free replica, and is what settled
+this. It reads 63 at `4977f8a`, 66 at `cc28802`, 72 at `87aaa1c`, 75 at
+`a8d6fe8`, and 83 at both `eac20ed` and `cf20527` — matching every figure
+recorded beside those commits except the one corrected here. It cannot check a
+*test* count, which is why that half still needs a run.
 
 Both suites were run under **v24.18.0**, which is not optional — see
 "NODE_MODULE_VERSION mismatch" below, and note that all 666 client tests pass
@@ -3585,28 +3743,37 @@ Gate 2 is deliberately **board-independent**: it asks git a question git can
 always answer. A gate that needs a reachable network in order to fail is a gate
 that fails open, and gate 1 does exit 0 when the board is unreachable.
 
-So: `git push origin main` — then re-run `predone` and see `0 ahead, 0 behind`
-— *then* mark the issue `done`. If the push is not yours to make, say so on the
-issue and leave the status `in_review`, not `done`.
+So: `predone` must read `0 ahead, 0 behind` before you mark the issue `done` —
+and reaching that state is a **merge, not a push** (next section). If local
+`main` is ahead, that content is stranded in this checkout: branch from it,
+open a PR, and leave the issue `in_review` until the PR is merged. Do not
+resolve gate 2 with `git push origin main`.
 
-#### PR or direct push?
+#### Every change ships as a PR the CEO merges
 
-Both are legitimate; the split is by *what the change touches*, not by who is
-awake. Inferring the convention from whatever the last agent did is what left
-the push step belonging to nobody (ABL-311).
+**Board ruling, 2026-08-13** — ABL-351, request_confirmation
+`53530572-a65c-4c79-b1f2-b30c3b892ec4`, accepted 08:56:06Z. There is no class
+of change an agent pushes to `origin/main` directly, and none an agent merges
+itself — not its own PR, not a one-line docs fix. Push the branch, open the PR
+against `main`, and leave the issue `in_review` until the CEO merges it.
 
-- **Open a PR** for changes to shared contracts and anything security-sensitive:
-  the database layer and query shapes, the public `/v1` surface, auth or
-  credential handling, `energy_renewable`, ingest-adjacent code, and any schema
-  or dependency change. These get a second reader before they reach prod.
-- **Push direct to `origin/main`** for everything else once it is green on both
-  suites and `predone` passes: a tab, a chart, a pure helper, a route that reads
-  existing tables, docs, tooling and tests. Requiring a CEO merge on every issue
-  would make an hourly heartbeat the bottleneck on all work, which costs more
-  than the stranding it prevents.
+This **supersedes the "PR or direct push?" split** that stood here for one day.
+That section split by what the change touched — shared contracts and
+security-sensitive code by PR; "a tab, a chart, a pure helper, a route that
+reads existing tables, docs, tooling and tests" direct — arguing that requiring
+a CEO merge on every issue makes an hourly heartbeat the bottleneck on all
+work. The ruling heard that cost and accepted it. It is recorded here rather
+than deleted, because the argument was published and reads as sound; an agent
+who does not know it was decided will re-derive it. **Do not re-propose it.**
 
-Either way the branch-per-concern rule stands, and either way the issue is not
-`done` until the work is an ancestor of `origin/main`.
+The bottleneck is also narrower than that argument implies: the merge is the
+only serialized step, and the branch can be pushed and the PR opened the moment
+the work is green. What waits on the CEO is publication, not the next issue —
+so the correct response to an unmerged PR is to leave the issue `in_review` and
+pick up other work, never to ship it another way.
+
+The branch-per-concern rule stands, and the issue is not `done` until the work
+is an ancestor of `origin/main`.
 
 **`state: MERGED` is not a publication check — only content on `origin/main`
 is.** A PR is merged into *its base branch*, and nothing requires that base to
