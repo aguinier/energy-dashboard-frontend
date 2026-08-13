@@ -3059,35 +3059,39 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-13, measured fresh on ABL-353 (ABL-324 tranche 3) branched
-from `origin/main` at `eac20ed`: **50 client test files / 666 tests** and
-**83 server test files / 1,549 tests**, all passing, zero skipped, clean
-typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing
-than that means something broke.
+Green as of 2026-08-13, measured on `origin/main` at `eac20ed` with ABL-311's
+patch-identity gate merged on top — the `/v1` line (ABL-300, ABL-301, ABL-303,
+ABL-304, ABL-282) joined to ABL-309, ABL-319, ABL-325, ABL-329, the three Group
+B branches (ABL-276/277/278, ABL-257, ABL-282's flat config), ABL-324 tranche 1
+(ABL-351) and ABL-311: **50 client test files / 666 tests** and **83 server test
+files / 1,555 tests**, all passing, zero skipped, clean typecheck on both
+(`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing than that means
+something broke.
 
-ABL-353 adds **+3 server cases** in the existing `routes/tsoForecast.test.ts`
-and no new file, over the 83 / 1,546 `origin/main` measured at `eac20ed`. It
-touches no client test, which is why the client figure is unmoved.
+**That server figure is a fresh run, and it had to be — every figure available
+to derive it from was stale within the hour.** The text this replaced claimed
+77 / 1,401, measured on ABL-351 before PR #23 (ABL-303) merged; adding ABL-311's
+own `+9` `release/` cases to it predicts 1,410, and the tree actually measures
+1,555. The gap is ABL-303's `/v1` resource endpoints, which landed after that
+sentence was written and were never counted into it. This is the ABL-234 rule
+paying for itself twice in one run: a count is only true of the tree it was
+measured on, and the arithmetic is not a substitute. The deltas below explain
+movement; they are not to be summed.
 
-**The server figure this entry carried before — 77 files / 1,401 tests — was
-never true of any tree**, and is a worked example of the rule below rather than
-a typo worth quietly correcting. It was recorded against ABL-351 *pre-merge*
-and then left standing while `origin/main` moved underneath it (ABL-303's `/v1`
-endpoints landed as `56cc338`, ABL-351 itself merged as `09ee082`). Anyone
-sizing a regression against 1,401 would have concluded ~148 tests had vanished.
-Re-measure; never carry a count forward across a merge.
-
-(ABL-351 — tranche 1 — added +2 server files, `services/renewableTotal.test.ts`
-and `routes/renewables.test.ts`, and +34 server cases. Recorded as a delta to
-explain movement, not as arithmetic to trust in place of a fresh run.)
+ABL-353 (ABL-324 tranche 3) then adds **+3 server cases** in the existing
+`routes/tsoForecast.test.ts` and no new file, taking the tree to **83 server
+files / 1,558 tests** with the client figure unmoved — it touches no client
+test. Measured fresh on the merge, not derived: 1,555 + 3 happens to be right
+here, which is luck rather than method, and the paragraph above is the reason
+not to rely on it.
 
 **Neither input figure survived, and neither was added up.** Local `main` read
 49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
-`origin/main` read 49 / 644 and 66 server files / 1,114 at `87aaa1c`. The two
-sides touch disjoint code — `CLAUDE.md` was the only file both edited — so the
-merged figure is a fresh `npx vitest run` on the merged tree, per the ABL-234
-rule below. The deltas recorded further down explain the movement; they are not
-to be summed.
+`origin/main` read 49 / 644 and 66 server files / 1,114 at `87aaa1c`; their
+merge read 50 / 666 and 75 / 1,367 at `a8d6fe8`. The sides touch disjoint code
+— `CLAUDE.md` was the only file every one of them edited — so each figure is a
+fresh `npx vitest run` on the tree it names, per the ABL-234 rule below. The
+deltas recorded further down explain the movement; they are not to be summed.
 
 Both suites were run under **v24.18.0**, which is not optional — see
 "NODE_MODULE_VERSION mismatch" below, and note that all 666 client tests pass
@@ -3098,30 +3102,29 @@ that fail under v25.6.1 for the `storage.setItem` reason recorded there.
 regression: it moves depending on whether the shared replica is free.**
 `services/generationService.test.ts` ends in an opportunistic `describe` against
 the read-only development replica at `C:/Code/able/data/energy_dashboard.db`.
-The 1,367 above was measured with that replica **reachable**, so those cases are
+The 1,555 above was measured with that replica **reachable**, so those cases are
 included. When it is not reachable the file contributes fewer — and when it is
-*locked* rather than absent, the file does not collect at all and contributes
-none.
+*locked* rather than absent, the file used to not collect at all and contribute
+none, which is the state the next paragraph is about.
 
-That last state is the one to recognise, because it is the worst shape a test
-outage can take. The guard tests only `fs.existsSync`, but the open runs at
-module evaluation, so during the twice-daily DB sync (ABL-220, ABL-249 — a 3.6
-GB rollback journal was observed on 2026-08-12) the readonly open raises
-`SqliteError: database is locked` and the throw becomes a **collection** error
-that takes the whole file down, including the ~46 fixture-backed cases beside
-the opportunistic ones that touch no replica at all. The run then reports "no
-tests" for the file rather than naming an assertion, so a green-looking suite is
-quietly dozens of cases short. A lock is not absence, which is why it throws
-instead of skipping.
+**The third state — locked — used to take the whole file down, and ABL-311
+fixed that.** The guard tested only `fs.existsSync`, but the open runs at module
+evaluation, so during the twice-daily DB sync (ABL-220, ABL-249 — a 3.6 GB
+rollback journal was observed on 2026-08-12) the readonly open raised
+`SqliteError: database is locked` and the throw became a **collection** error
+that took the whole file down, including the ~46 fixture-backed cases beside the
+opportunistic ones that touch no replica at all. That is the worst shape a test
+outage can take: the run reports "no tests" for the file rather than naming an
+assertion, so a green-looking suite is quietly dozens of cases short exactly
+when someone running `predone` is reading it as permission to ship. A lock is
+not absence — and neither is a corrupt header or a permissions error — so
+`replicaHasGenerationTable` now **catches** (`generationService.test.ts:746`)
+and skips the opportunistic block while the rest of the file runs.
 
-So a server count in the 1,300s is normal, a lower one may simply mean the
-replica was busy, and the number to distrust is a *file count* below 75 — that
-is the collection failure, not drift. Do not "fix" this file by deleting the
-replica check. **The real fix — catching rather than testing `existsSync`, so a
-lock skips the opportunistic block and the rest of the file still runs — is
-written and reviewed but NOT on `origin/main`**: it is in `e6bcd9d` on the
-ABL-311 branch, awaiting review with the `git cherry` publish-gate fix. Until
-that lands, this caveat is live.
+So a server count a little under 1,555 may simply mean the replica was busy —
+but a *file count* below 83 is no longer explainable that
+way, because a locked replica now skips rather than fails to collect. Do not
+"fix" this file by deleting the replica check.
 
 (ABL-300 added four server files — `v1/keys/keyFormat.test.ts`,
 `v1/keys/sqliteApiKeyStore.test.ts`, `v1/keys/keysCli.test.ts` and
@@ -3542,9 +3545,32 @@ ahead of `origin/main`**.
 
 `predone` runs **two gates**, and the second is the one ABL-311 added:
 
-1. **Per branch** — `done` + not an ancestor of the target = shipping gap.
+1. **Per branch** — `done` + the work not on the target = shipping gap.
 2. **`main` itself** — local `main` ahead of the target = **not published**
    (`release/publishState.ts`, pure, colocated test).
+
+**Gate 1 asks git two questions, not one, and the second is why it can be
+trusted.** Ancestry (`git merge-base --is-ancestor`) answers whether the *commit*
+reached the target — not whether the *work* did. Cherry-pick or rebase the same
+change onto `main` and the tip is no longer an ancestor while every line of it
+is already there. Run against this repo on 2026-08-12, ancestry alone reported
+**seven** shipping gaps of which **three were phantoms** — ABL-166 (`3c42ec8`),
+ABL-216 (`484b3e2`) and ABL-249 (`d84e97b`), each fully cherry-picked. So a
+branch that fails the ancestry test is then measured with `git cherry <target>
+<tip>`: zero `+` lines means every commit's patch is already on the target, and
+the branch is reported as `rebased` ("already on origin/main … safe to delete")
+rather than failed. Four real gaps survived that filter and the command still
+exited 1.
+
+This is the difference between a gate people run and a gate people learn to
+skim. It is also **fail-closed in the direction that matters**: a squash merge
+collapses N commits into one whose patch-id matches none of them, so a
+squash-merged branch still reads as novel and is still reported — over-reporting
+there is the safe error, and this repo merges with merge commits anyway. An
+unmeasurable count (`null`) falls back to ancestry alone rather than to an
+all-clear, because a signal that could not be gathered must never read as
+permission to ship. `release/unmergedWork.ts` holds the classification, pure,
+with the phantom-vs-real cases pinned in its colocated test.
 
 Gate 2 exists because gate 1 structurally could not see the common case. It
 reads an issue identifier out of the branch name, and `main` has none, so
@@ -3581,6 +3607,36 @@ the push step belonging to nobody (ABL-311).
 
 Either way the branch-per-concern rule stands, and either way the issue is not
 `done` until the work is an ancestor of `origin/main`.
+
+**`state: MERGED` is not a publication check — only content on `origin/main`
+is.** A PR is merged into *its base branch*, and nothing requires that base to
+be `main`. Found on the sibling `energy-forecast` repo on 2026-08-13: PR #11
+reported `state: MERGED` on GitHub while its content was not on `main` at all,
+because it had been opened against another PR's branch; it took merging PR #10
+to actually publish it. So a green "Merged" badge answers *which branch did this
+land on*, not *did this ship*.
+
+This is a third stranding shape, distinct from the two above, and neither gate
+sees it. Gate 2 cannot: the content never reached local `main`, so `main` is not
+ahead of anything. Gate 1 can only see it while the head branch still exists
+locally — against `origin/main` the tip fails ancestry and `git cherry` reports
+`+` lines, so it is correctly named a gap — but merging a PR is exactly the
+moment the branch gets deleted, and a deleted branch is a tip gate 1 never
+enumerates. The merge destroys the evidence of its own incompleteness.
+
+Two rules follow, and both are local, which is why they are rules rather than a
+third gate. A gate that had to ask GitHub for a PR's base would fail open the
+moment the token expired, which is precisely the failure mode
+`gh`-token outages already produce here:
+
+- **Open PRs against `main`.** If you deliberately stack one on another branch,
+  the issue is not `done` when that PR merges — it is `done` when the bottom of
+  the stack reaches `origin/main`.
+- **Do not delete a branch until `git cherry origin/main <tip>` prints nothing.**
+  That command is the whole publication check in one line, it needs no network
+  and no board, and it is the same patch-identity test gate 1 runs. Empty output
+  means every commit's patch is on the remote; anything else means the branch is
+  still the only copy of something.
 
 **A commit on a branch is not shipping.** ABL-76 found five issues marked `done`
 whose branch was created, committed, and never merged — three of them absent
