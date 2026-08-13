@@ -34,6 +34,49 @@ Runs client and server together (`concurrently`). The server needs a local
 - Frontend: http://localhost:5173
 - API Server: http://localhost:3001
 
+### Troubleshooting the dev server
+
+**1. `Cannot find package '@babel/core'` is usually a stale process, not a broken tree.**
+
+Symptom: `npm run dev` serves 200 on `:5173`, but every request for `client/src/main.tsx` 500s with
+`[plugin:vite:react-babel] Cannot find package '@babel/core' imported from …@vitejs/plugin-react/dist/index.js`,
+and the page is blank behind Vite's red error overlay.
+
+The tell: the resolved path in the error ends `@babel\core\index.js`, **not** `lib\index.js`.
+`index.js` is the no-`main`-field fallback Node records when it reads the package directory mid-write.
+A genuinely missing package reports the bare specifier instead.
+Confirm with:
+
+```bash
+node -e "import('@babel/core').then(m=>console.log(Object.keys(m).length))"
+```
+
+Run from the repo root — if that succeeds while the server still throws, the tree is fine and the
+server is stale.
+
+Cause: Node's ESM loader caches resolution results for the life of the process. A dev server started
+while an install was mid-flight is pinned to that failure permanently.
+
+**Fix: restart the dev server. Do NOT run `npm install`.** This workstation runs ~20 concurrent node
+processes across agent sessions; rewriting `node_modules` underneath them re-creates the race and can
+turn one stale process into several.
+
+**2. Check the server half by socket, not by process.** `tsx watch` keeps idling alive after its
+child crashes, so a live PID does not mean a live server. Probe the port directly.
+
+**3. Never inherit `PORT` from a Paperclip run.** It is `3100`, Paperclip's own control plane, and
+the dashboard server dies `EADDRINUSE`. This is a launch artifact, not a repo bug — do not file it.
+
+**4. If `node_modules/.bin` is genuinely absent**, invoke the package entry points directly rather
+than reinstalling:
+
+```bash
+node node_modules/tsx/dist/cli.mjs          # server
+node node_modules/vite/bin/vite.js           # client
+```
+
+This bypasses the missing shims and was the ABL-362 workaround.
+
 ## Project Structure
 
 ```
