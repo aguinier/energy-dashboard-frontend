@@ -211,7 +211,7 @@ repository.
 
 `server/src/v1/` holds a **separate Express application** for the commercial
 `/v1` surface, built by `createPublicApp`
-(`server/src/v1/publicApp.ts:59`) and run as its own process from
+(`server/src/v1/publicApp.ts:101`) and run as its own process from
 `server/src/v1/publicIndex.ts`. It is not `createApp()` with routes hidden.
 
 The distinction is the whole point (ABL-304, specified by ABL-293 §2f). A
@@ -294,12 +294,179 @@ is meant to be updated deliberately — an edge added there is the moment the
 isolation stops being free.
 
 Not done by ABL-304, and deliberately: the `/v1` resources themselves
-(ABL-303), API-key auth (ABL-300), metering (ABL-301), quotas and the row cap
-(ABL-302), and the OpenAPI document and its drift check (ABL-305). The public
-process binds `127.0.0.1` by default and **is not deployed or exposed**;
-`PUBLIC_BIND_HOST` exists so the bind address is configuration rather than a
-code change, but choosing anything other than loopback is a network-exposure
-decision that needs its own Board-approved issue.
+(ABL-303), metering (ABL-301), quotas and the row cap (ABL-302), and the
+OpenAPI document and its drift check (ABL-305). API-key auth is ABL-300, below.
+The public process binds `127.0.0.1` by default and **is not deployed or
+exposed**; `PUBLIC_BIND_HOST` exists so the bind address is configuration
+rather than a code change, but choosing anything other than loopback is a
+network-exposure decision that needs its own Board-approved issue.
+
+## `/v1` authenticates with an API key, and the key store is its own database
+
+ABL-300. `Authorization: Bearer able_<env>_<prefix>_<secret>` — for example
+`able_live_7f3a9c21_xR4k…`. Four `_`-separated segments, each of which earns
+its place: a fixed `able` namespace so a leaked key is attributable and
+greppable, a `live`/`test` environment, an **8-character non-secret prefix**
+stored in clear, and the secret.
+
+`middleware/writeAuth.ts` is untouched and keeps gating the two ingest `POST`s
+on the private app. It could not be the public mechanism, for reasons that are
+structural rather than a matter of hardening (ABL-293 §2b): it is **one shared
+secret** compared with `!==` against `HELIO_WRITE_TOKEN`
+(`middleware/writeAuth.ts:27`), so there is no identity, therefore no
+attribution, therefore nothing ABL-301 could meter; there is no revocation
+short of breaking every caller at once; and `!==` on a secret is a timing
+oracle. Its own comment says it is LAN-only.
+
+**Nothing stores a raw key.** `mintApiKey`
+(`server/src/v1/keys/keyFormat.ts:204`) returns the key string once, and the
+store persists `sha256(secret)` and the prefix — there is no column that could
+hold a key, and `sqliteApiKeyStore.test.ts` asserts that against the database
+file's bytes rather than against the schema. SHA-256 rather than bcrypt or
+argon2 is correct *here specifically*, which is the opposite of the usual
+advice and so is written down: the secret is 43 base62 characters of CSPRNG
+output — about 256 bits — so there is nothing to brute-force, and a slow KDF
+would put tens of milliseconds on the critical path of every request for no
+benefit. Same reason there is no salt. Verification is a prefix lookup plus
+`crypto.timingSafeEqual`, and an unknown prefix burns a comparison anyway
+(`burnSecretComparison`) so the non-secret handle is not an enumeration oracle.
+
+**Where the records live: a second SQLite file at `API_KEYS_DB_PATH`, never the
+energy database.** That file is 376 GiB, is owned by `energy-data-gathering`
+and is opened readonly here (`config/database.ts:11`); writing accounts and
+keys into it would mean a write path contending with ingest, in a schema we do
+not own, and would undo the property ABL-304 established — that the public
+process holds no write handle on energy data. `resolveApiKeysDbPath`
+(`server/src/v1/keys/sqliteApiKeyStore.ts:88`) refuses to start when the two
+paths resolve to the same file, and refuses `config/database.ts`'s literal
+default too. There is no default for `API_KEYS_DB_PATH` itself, because a
+credentials file must not land somewhere nobody chose. ABL-301's
+`usage_events`/`usage_rollup` belong in this same file and are deliberately not
+created yet.
+
+Two capabilities over that file, split at the type *and* at the file handle:
+
+- `openApiKeyDirectory` opens it **readonly** and returns `findByPrefix` and
+  nothing else. This is what `publicIndex.ts` gives `createPublicApp`, so the
+  serving process cannot alter a key record — not a check that returns false,
+  an operating-system-level one.
+- `openApiKeyAdminStore` opens it read-write and is reached only from the keys
+  CLI. `publicAppGraph.test.ts` asserts by name that neither entrypoint can
+  reach `keysCli.ts` or the test-only `memoryApiKeyDirectory.ts`, and that
+  `better-sqlite3` is imported by exactly one module in the entrypoint's graph.
+
+**The gate covers paths, not routes.** `publicApp.ts` mounts three things in
+order: `v1/routes/root.ts` (the entire unauthenticated surface — one discovery
+endpoint returning two constants), then `requireApiKey`, then
+`v1/routes/index.ts`. So `/v1/anything` answers **401 rather than 404** without
+a key — the surface cannot be enumerated, and a resource ABL-303 adds to
+`routes/index.ts` is authenticated whether or not its author thought about it.
+CORS sits ahead of the gate deliberately: `cors` answers a preflight itself,
+and a preflight carries no `Authorization` header by specification. Handlers
+read the caller with `requireApiPrincipal`
+(`server/src/v1/auth/apiKeyAuth.ts:77`), which **throws** rather than returning
+`undefined` — a route mounted on the wrong side of the gate fails loudly the
+first time it is exercised instead of being metered to nobody.
+
+Six refusal codes, each a distinct `error.code`: `key_missing`,
+`key_malformed`, `key_invalid`, `key_revoked`, `key_expired` (all 401) and
+`account_disabled` (403 — the credential is good, so telling the customer to
+check their key would be the wrong afternoon to spend). The specific ones are
+not an information leak: revoked, expired and disabled are reachable **only
+after** the presented secret has matched the stored hash, so someone guessing
+keys sees nothing but `key_invalid`. Every message is a constant — nothing
+interpolates the key, the prefix or an account name — because a 401 body is the
+single most likely thing a customer pastes into a public tracker.
+
+Keys are issued by an operator, not by an endpoint. There is no `POST /v1/keys`
+until there is an account model, an identity provider and a payment
+relationship, none of which exist:
+
+```bash
+cd server                        # reads server/.env.public — see .env.public.example
+npm run keys -- accounts:create --name "Acme Energy" --plan developer
+npm run keys -- keys:issue --account acct_... --label "prod ETL"
+npm run keys -- keys:rotate --key key_... --overlap-days 7
+npm run keys -- keys:revoke --key key_... --reason "leaked in a support ticket"
+```
+
+Rotation is one atomic store operation, not "issue then remember to retire":
+the sequence has two quiet failure states — a new key with the old never
+retired, and an old key retired with no replacement. With an overlap the
+outgoing key gets an `expires_at` so the customer can deploy before it stops;
+`--overlap-days 0` revokes it immediately, which is what a suspected leak
+wants. Revocation is **soft** — a `revoked_at` timestamp, never a row delete,
+because ABL-301's usage records will point at the key id and a billing history
+whose foreign key dangles is a dispute we cannot answer. An account holds at
+most **5** live keys (`MAX_LIVE_KEYS_PER_ACCOUNT`); a rotation with an overlap
+counts both while they overlap.
+
+There is no `last_used_at`. It is the obvious column to want and it would cost
+a write on the critical path of every authenticated request to maintain a field
+nobody needs to the second; once ABL-301 lands it is a `MAX(received_at)` over
+`usage_events`. An unused column invites someone to start filling it.
+
+Not done by ABL-300: quotas, rate limits and the 429 contract (ABL-302), and the
+resources themselves (ABL-303). The `plan` on the principal is carried for
+ABL-302 to enforce and nothing here branches on it — that issue authenticates and
+identifies a caller, it does not meter one. Metering is ABL-301, below.
+
+## `/v1` usage metering is the number a customer gets billed on
+
+`server/src/v1/usage/` counts every authenticated request per key, survives a
+restart, and aggregates to a monthly figure an invoice is raised from (ABL-301).
+The tables live in the **same SQLite file as the key store** — never the energy
+database — and `sqliteUsageStore.ts` reuses `resolveApiKeysDbPath` so there is
+one decision about that path and one guard to keep true.
+
+**Where the error is allowed to go.** Every place a failure forces a choice
+between counting a request twice and not counting it at all, this code chooses
+not to count it, and says so at the line where the choice is made. An invoice
+that is slightly low is a margin absorbed quietly; an invoice that is slightly
+high is a refund, an apology, and a customer who checks every future invoice by
+hand. The two failure modes are named and tested rather than hoped about:
+
+- **Lost write.** The meter buffers and flushes on a timer
+  (`usageMeter.ts`), so a hard kill discards at most one second of that
+  process's traffic. The alternative — an fsync on the critical path of every
+  authenticated request, in a single-threaded process — was rejected
+  deliberately. A shutdown that *runs its handler* loses nothing:
+  `usageShutdown.ts` flushes, aggregates and closes, in that order, and is
+  tested. Note the caveat, established against a running server rather than
+  assumed: **Windows does not deliver `SIGTERM`**, so a `taskkill` there skips
+  the handler entirely and loses whatever was buffered. `SIGINT` (Ctrl-C) is
+  emulated and does arrive; on Linux both do.
+- **Double count.** `usage_events.request_id` is unique and the insert is
+  `ON CONFLICT(request_id) DO NOTHING`, so a flush that commits and is then
+  retried inserts nothing. `INSERT OR IGNORE` was wrong here and was changed: it
+  suppresses `NOT NULL` and `CHECK` violations too, which turned a discarded
+  billing record into a number that read like a benign retry.
+
+**`usage_events.id` is `INTEGER PRIMARY KEY AUTOINCREMENT`, and the keyword is
+load-bearing.** The rollup is watermarked on the highest id it has aggregated. A
+bare rowid is reassigned as `max(rowid)+1`, so once retention deletes rows the
+next request would reuse an id below the watermark and be skipped by the rollup
+forever — billing the customer zero, which is the one error nobody reports.
+
+**The monthly aggregate is materialised, not derived** (`usage_rollup`,
+ABL-297 §9(2)). An invoice is read from that table and never from a scan of raw
+events, because the raw rows are deleted at 13 months and an invoice must be
+defensible for about seven years. A month is closed explicitly, closing is
+idempotent, and a closed month is final — a late event increments `late_*`
+columns and never changes a figure that has already been sent out.
+
+**Retention is a running job, not a policy** (`usageMaintenance.ts`): source IP
+and user agent cleared at 90 days, de-identified records deleted at 13 months,
+both periods read from configuration. It never deletes an event the rollup has
+not aggregated, and it is scoped to `usage_events` alone — this is the first
+scheduled deletion in the codebase, so it is where a general-purpose row reaper
+would grow, and forecast vintages are contractually not prunable (ToS §9.3).
+
+`npm run usage -- usage:month --month YYYY-MM` is the invoice figure;
+`usage:stats` reports whether the published retention is actually being met;
+`usage:export` answers a subject access request. The procedure for that, and the
+full account of what is recorded and why, is in
+`server/src/v1/usage/PRIVACY-AND-RETENTION.md`.
 
 ## Key Features
 
@@ -2541,24 +2708,97 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12, re-measured on `main` at `4977f8a` on a clean tree
-(ABL-329): **49 client test files / 657 tests** and **63 server test files /
-1026 tests**, all passing, clean typecheck on both. Fewer tests passing than
-that means something broke. Both suites were run under Node 24 — see
-"NODE_MODULE_VERSION mismatch" below for why the Node matters.
+**This paragraph is mid-merge and names two trees, neither of which is this
+one — the figure is re-measured in the commit that closes ABL-317, and that is
+the one to read.** Neither side of this publish merge had measured the merged
+tree: local `main` read **49 client files / 657 tests** and **63 server files /
+1,026 tests** at `4977f8a` (ABL-309, ABL-319, ABL-325, ABL-329), while
+`origin/main` read **49 / 644** and **66 server files / 1,114 tests** at
+`87aaa1c` (ABL-300, ABL-301, ABL-304, ABL-311, ABL-282). The two sets of
+branches touch disjoint code — `CLAUDE.md` is the only file both sides edited —
+so neither figure survives the merge, and adding them would be the exact
+derived-rather-than-measured count the ABL-234 note below forbids.
 
-(ABL-329 is a docs-only correction and adds no test of its own, so those two
-figures are `main`'s. They restate a baseline that read **48/640** and
-**61/988** at `1ffbae5`: ABL-309's own `lib/nativeAbi.test.ts` landed, and
-ABL-319 and ABL-325 added cases after it. Re-measured, never derived by
-summing the branches' separate claims — see the ABL-234 note below.)
+Both figures were a fresh `npx vitest run` on their own tree. The deltas below
+are recorded to explain the movement, not to be added up.
 
-(The server half of that figure had drifted badly: it read **56 files / 863
-tests** until ABL-309 re-measured it, understating `main` by 5 files and 125
-cases. ABL-309 itself then adds `lib/nativeAbi.test.ts`, +1 file / +15 cases, so
-that branch reads **62 files / 1003 tests**. A baseline is only a tripwire while
-it is current — an understated one quietly stops detecting the deletions it is
-written down to catch.)
+**Read the server figure with its one caveat, which is environmental and not a
+regression.** The 66th file, `services/generationService.test.ts`, could not be
+*collected* during this measurement: it ends in an opportunistic `describe`
+against the read-only development replica at `C:/Code/able/data/energy_dashboard.db`,
+and that database was mid-refresh (a 3.6 GB rollback journal growing during the
+run), so the readonly open raised `SqliteError: database is locked` at import
+time. That is a locked shared database, not a failing assertion — no assertion
+failure appeared anywhere in the run, and the file plus its whole import chain
+is byte-identical to `origin/main`, so it cannot be attributed to any branch
+merged here. The file is written to skip when the replica is *absent*; a lock is
+not absence, which is why it throws rather than skipping.
+
+That file contributes its replica-backed cases whenever the shared database is
+reachable, so a run against a free database reads **higher** than 1,114, and
+1,114 is a floor rather than a ceiling. The size of the gap is itself measured,
+not derived: the same PR-head tree read **1,148** when the replica was reachable
+and **1,100** when it was not, in two independent runs — a 48-case swing that is
+entirely this one opportunistic `describe`. Do not treat a number above 1,114 as
+drift, and do not "fix" this file by deleting the replica check.
+
+(ABL-300 added four server files — `v1/keys/keyFormat.test.ts`,
+`v1/keys/sqliteApiKeyStore.test.ts`, `v1/keys/keysCli.test.ts` and
+`v1/auth/apiKeyAuth.test.ts` — plus new cases in the two ABL-304 files it
+touches: +4 files / +160 cases. It changed no client file.)
+
+(ABL-311 re-measured this, and the correction was large. The whole chain is
+kept because every link in it was a stale figure cited as a live one. The entry
+before ABL-311 read 56 server files / 863 tests, taken before PR #17 (ABL-304)
+merged as `c3f0dac` and so predating its +5 files / +125 tests: 56 + 5 = 61,
+863 + 125 = 988, measured on unmodified `origin/main` at `1ffbae5`. ABL-311
+then added `release/publishState.test.ts`, +1 file / +14 tests, giving
+62 / 1002 including one skip. The client figure survived all of that, because
+ABL-304, ABL-311 and ABL-300 are server-only — but **ABL-282 (PR #16) moved
+it**, landing a component-test environment (`jsdom`, `@testing-library/react`)
+and a `LoadTab.test.tsx` change. Re-measured here rather than carried forward,
+the client suite is **49 / 644**, so the 48 / 640 that stood through everything
+above is retired: +1 file / +4 cases. A count is only true of the tree it was
+measured on — the ABL-234 rule below, gone stale twice in one day exactly the
+way that rule predicts.)
+
+(Note for whoever measures next, learned the hard way this run: ABL-282's
+`jsdom` and `@testing-library/*` are new dependencies, so a worktree created
+before PR #16 will not have them and the client suite cannot run until you
+`npm install`. Do that install under **v24.18.0** as well: `prebuild-install`
+resolves the `better-sqlite3` binary against the running Node, so installing
+under the v25.6.1 first on `PATH` is the same ABI-141 trap the standing
+instruction below documents for `npm rebuild`, arrived at by a different route.
+Installed under v24.18.0 this run, `node -p "process.versions.modules"` reports
+**137** and the module loads, which is the check worth doing before trusting a
+count.)
+
+### A raw control byte makes a test file invisible to review
+
+Write control characters in test fixtures as **escapes** (`'\0'`, `'\x1b'`),
+never as the raw byte. A single `0x00` anywhere in a file makes git classify the
+whole blob as binary: `git diff --stat` reports `Bin 9542 -> 9543 bytes` instead
+of line counts, the PR renders the file as *0 additions, 0 deletions*, and the
+file will not merge line-wise. ABL-300 hit this — `v1/keys/keyFormat.test.ts`
+held a literal NUL in a hostile-input list, and the reviewer could not read the
+diff of the most security-relevant test in the change. It was first written off
+as a GitHub rename-detection artifact, which it was not; `git diff --stat`
+saying `Bin` on your own machine is the tell that settles it. `'\0'` is the same
+single NUL character at runtime, so nothing about the test weakens. If a PR
+shows a text file as `0 additions`, check for a stray control byte before
+believing any explanation that blames the renderer.
+
+(Measurement conditions, which are not optional. Run under **v24.18.0**: see
+the two measurement notes below for why a count taken in a tree shared with a
+concurrent run is not trustworthy, and the `storage.setItem` note for why the
+Node version decides whether the client suite passes at all. ABL-311 measured
+in a throwaway clone at `1ffbae5` with `node_modules` junctioned from the
+primary checkout, because that checkout was held the whole time; the figures
+above were measured in this branch's own worktree with its own `node_modules`,
+which no other run holds. The *worktree* being exclusive is not the same as the
+*database* being free, which is the distinction the 66th-file caveat above turns
+on: source isolation is cheap, but the one shared 376 GiB database is a single
+resource and any suite that touches it inherits whatever ingest is doing.)
 
 (ABL-287 added five server files — `lib/opsAlertRules.test.ts`,
 `lib/opsAlertEngine.test.ts`, `lib/opsAlertStateStore.test.ts`,
@@ -2624,13 +2864,25 @@ Two measurement notes worth having before you diagnose a "failure":
   45/590 figure before it likewise. Run `git status` first; if it is not clean,
   measure in a worktree instead (`git worktree add`, then junction or install
   `node_modules`) — that is how ABL-292's numbers were taken.
-- **The `storage.setItem is not a function` failures did not reproduce.**
-  Earlier entries recorded 20 failing in
-  `dashboardStore.test.ts`/`windowLabel.test.ts`; on 2026-08-12 every client
-  test passed in a clean worktree, before and after ABL-292. That quirk is
-  documented as intermittent (ABL-203 below, tracked by ABL-263) — treat it as
-  environmental and re-check on unmodified `main` before attributing it to a
-  branch, exactly as that paragraph says. It is **not** confirmed fixed.
+- **The `storage.setItem is not a function` failures are not intermittent —
+  they are the Node version on your `PATH`, deterministically** (ABL-311).
+  Earlier entries here recorded 20 failures in
+  `dashboardStore.test.ts`/`windowLabel.test.ts`, then recorded them as having
+  "not reproduced", and called the quirk intermittent. It is not intermittent —
+  and the drift was in *this document*: **ABL-263 had already root-caused it
+  exactly**, down to the `--localstorage-file` warning, and is open with that
+  diagnosis. Do not re-investigate it; read that issue.
+  **Node v25.6.1 defines a global `localStorage` object whose `setItem` is
+  `undefined`** unless `--localstorage-file` is passed; the store's
+  `createJSONStorage(() => localStorage)` gets that truthy-but-hollow object and
+  zustand calls straight through to a missing method. Under **v24.18.0**
+  `typeof localStorage === 'undefined'`, zustand's persist middleware takes its
+  no-storage path, and all 640 client tests pass — that tree's figure; the
+  merged tree reads 644, see "Testing" above. Verified both ways on the same
+  tree at `1ffbae5`, and again 60 commits back at `cb83944` with identical
+  results — so it never depended on a branch. This is the **same root cause as
+  the NODE_MODULE_VERSION section below**: `C:\Program Files\nodejs` (v25.6.1)
+  shadowing the nvm v24.18.0 install. One `export PATH` fixes both suites.
 
 ### NODE_MODULE_VERSION mismatch
 
@@ -2651,8 +2903,13 @@ on `PATH`:
 
 ```bash
 export PATH="/c/Users/guill/AppData/Local/nvm/v24.18.0:$PATH"
-cd server && npx vitest run   # 61 files / 988 tests on main at 1ffbae5
+cd server && npx vitest run   # see "Testing" above for the current figure
 ```
+
+That `export` fixes the client suite too, for a different mechanism with the
+same cause — see the `storage.setItem` note above. Set it once per shell and
+run both suites. (`/c/nvm4w/nodejs2/nodejs` is the nvm4w "current" symlink and
+also resolves to v24.18.0; either path works, the versioned one is stable.)
 
 **Since ABL-309 the suite tells you this itself.** A vitest `globalSetup`
 (`server/vitest.config.ts:16`) opens an in-memory database before any test file
@@ -2874,8 +3131,58 @@ server-side actually arrived, and added `release/unmergedWork.test.ts`.)
 ### Before you mark an issue `done`
 
 ```bash
-cd server && npm run check:unmerged
+npm run predone            # from the repo root; = npm run check:unmerged -w server
 ```
+
+**Publishing to `origin/main` is the last step of `done`, not an optional
+one.** Prod is built from the remote. Work that is merged to local `main` and
+not pushed has not shipped, however green its tests are and whatever the board
+says. This has now recurred five times — ABL-79, ABL-98, ABL-136,
+ABL-189/190/196, ABL-262/265, and on 2026-08-12 five issues (ABL-285, ABL-292,
+ABL-288, ABL-290, ABL-295) all read `done` while local `main` sat **12 commits
+ahead of `origin/main`**.
+
+`predone` runs **two gates**, and the second is the one ABL-311 added:
+
+1. **Per branch** — `done` + not an ancestor of the target = shipping gap.
+2. **`main` itself** — local `main` ahead of the target = **not published**
+   (`release/publishState.ts`, pure, colocated test).
+
+Gate 2 exists because gate 1 structurally could not see the common case. It
+reads an issue identifier out of the branch name, and `main` has none, so
+`issueFromBranch('main')` returns null and the verdict was `unattributed` —
+"reported, not failed". A `main` twelve commits ahead printed one grey line and
+the command exited **0**. Verified on a synthetic repo in the ABL-311 run: the
+pre-ABL-311 checker exits 0 on a merged-but-unpushed `main`, the current one
+exits 1. Gate 2 also survives the two shapes that leave gate 1 no tip at all —
+deleting the feature branch after merging, and committing straight to `main`.
+
+Gate 2 is deliberately **board-independent**: it asks git a question git can
+always answer. A gate that needs a reachable network in order to fail is a gate
+that fails open, and gate 1 does exit 0 when the board is unreachable.
+
+So: `git push origin main` — then re-run `predone` and see `0 ahead, 0 behind`
+— *then* mark the issue `done`. If the push is not yours to make, say so on the
+issue and leave the status `in_review`, not `done`.
+
+#### PR or direct push?
+
+Both are legitimate; the split is by *what the change touches*, not by who is
+awake. Inferring the convention from whatever the last agent did is what left
+the push step belonging to nobody (ABL-311).
+
+- **Open a PR** for changes to shared contracts and anything security-sensitive:
+  the database layer and query shapes, the public `/v1` surface, auth or
+  credential handling, `energy_renewable`, ingest-adjacent code, and any schema
+  or dependency change. These get a second reader before they reach prod.
+- **Push direct to `origin/main`** for everything else once it is green on both
+  suites and `predone` passes: a tab, a chart, a pure helper, a route that reads
+  existing tables, docs, tooling and tests. Requiring a CEO merge on every issue
+  would make an hourly heartbeat the bottleneck on all work, which costs more
+  than the stranding it prevents.
+
+Either way the branch-per-concern rule stands, and either way the issue is not
+`done` until the work is an ancestor of `origin/main`.
 
 **A commit on a branch is not shipping.** ABL-76 found five issues marked `done`
 whose branch was created, committed, and never merged — three of them absent
@@ -2887,9 +3194,10 @@ neither is.
 The check joins `git merge-base --is-ancestor <tip> main` to the board's issue
 status and fails only on `done` + unmerged (`release/unmergedWork.ts`, pure,
 colocated test). In-flight, blocked and in-review branches are listed but never
-failed — the whole point is a check nobody wants to disable. It needs
+failed — the whole point is a check nobody wants to disable. **Gate 1** needs
 `PAPERCLIP_API_URL` / `PAPERCLIP_API_KEY` / `PAPERCLIP_COMPANY_ID`; without them
-it lists unmerged branches and exits 0 rather than guessing.
+it lists unmerged branches and exits 0 rather than guessing. **Gate 2 still
+fails without any of them** — that is the point of keeping it board-independent.
 
 It is deliberately **not** in the vitest suite: a test that failed whenever an
 unmerged branch existed would be red on every working branch every day. Run it
@@ -2915,6 +3223,9 @@ pure modules for the reason `comparison/mapFill.ts` does: `<Geographies>`
 fetches its topojson, so the map's Core/out-of-scope decision cannot be
 asserted through the component),
 `server/src/docs/claudeMdCitations.ts`, `server/src/release/unmergedWork.ts`,
+`server/src/release/publishState.ts` (ABL-311 — the caller hands it two
+integers from one `git rev-list --left-right --count`, so every publish verdict
+is asserted without a repo, a remote or a network),
 `server/src/services/freshnessRollup.ts`, `server/src/services/hostMetrics.ts`
 (ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
 as optional params, specifically so `hostMetrics.test.ts` can exercise the
