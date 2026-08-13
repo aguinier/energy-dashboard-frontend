@@ -205,6 +205,23 @@ export interface UsageAdminStore extends UsageSink {
   applyRetention(now: Date): RetentionOutcome;
   /** The billable figure for a month, from the rollup and never from the raw events. */
   monthlyUsage(yearMonth: string): UsageRollupRow[];
+  /**
+   * Requests **served** to one account in a `YYYY-MM`, for the quota ABL-302
+   * enforces. Excludes {@link THROTTLED_STATUS}: a refusal is recorded traffic
+   * but never consumed quota.
+   *
+   * Read from `usage_events` and deliberately **not** from `usage_rollup`, which
+   * is the opposite of the rule {@link monthlyUsage} follows, so the difference
+   * is worth stating. An invoice is raised once, after the month has closed, and
+   * must come from the materialised aggregate that survives retention. A quota is
+   * enforced on the next request, against a month still open, and the rollup lags
+   * it by a maintenance interval — enforcing against a figure that is minutes
+   * stale would let a burst through in exactly the window a burst arrives in.
+   *
+   * Satisfies {@link MonthlyUsageReader} in `quota/monthlyQuota.ts`, which is the
+   * only shape of this store the request path is ever given.
+   */
+  servedRequestsInMonth(accountId: string, yearMonth: string): number;
   /** Everything held about one account, for a subject access request (ABL-297 §9.3). */
   exportAccount(accountId: string): AccountUsageExport;
   /** Counts and the retention check. See {@link UsageStoreStats}. */
@@ -249,6 +266,23 @@ export interface AccountUsageExport {
 export function isBillableStatus(status: number): boolean {
   return status >= 200 && status < 300;
 }
+
+/**
+ * The status a request refused by the plan gate carries (ABL-302).
+ *
+ * One constant with two consumers, and they must not be able to drift. `planGate`
+ * answers with it; {@link UsageAdminStore.servedRequestsInMonth} excludes it. If
+ * the two ever disagreed, the durable seed for a quota would count requests the
+ * quota refused — which on a hard-stop plan is a customer permanently locked out
+ * a little early, and on a soft-overage plan is a euro billed for a request we
+ * did not serve.
+ *
+ * Nothing else on this surface produces a 429, which is what makes the exclusion
+ * exact rather than approximate. That is a property of the code as it stands and
+ * not a law: a second source of 429 would need this comment read again, which is
+ * why it is written here rather than left as a `<> 429` in a query.
+ */
+export const THROTTLED_STATUS = 429;
 
 /*
  * ---------------------------------------------------------------------------

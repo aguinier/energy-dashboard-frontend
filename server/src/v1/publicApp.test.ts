@@ -6,6 +6,7 @@ import { FORBIDDEN_PUBLIC_ENV } from './publicEnv.js';
 import { createMemoryApiKeyDirectory } from './keys/memoryApiKeyDirectory.js';
 import { createMemoryUsageSink, type MemoryUsageSink } from './usage/memoryUsageSink.js';
 import { createUsageMeter, type UsageMeter } from './usage/usageMeter.js';
+import { createPlanGate, QUOTA_HEADERS, RATE_LIMIT_HEADERS, type PlanGate } from './quota/planGate.js';
 import { createMemoryDataContext, createMemoryEnergySource } from './data/memoryEnergySource.js';
 
 /**
@@ -98,6 +99,35 @@ function meter(): { meter: UsageMeter; sink: MemoryUsageSink } {
 const mounted = meter();
 
 /**
+ * A plan gate, for the fourth time and the fourth reason (ABL-302):
+ * `createPublicApp` requires one, because an app where Explorer's 1,000 requests
+ * and Professional's 500,000 buy identical service is not an app anybody meant to
+ * build.
+ *
+ * The limits are raised far above any plan for the shared app below, and that is
+ * not a way of switching the gate off — it is mounted, it runs on every request
+ * and it sets its headers. This file's subject is the *isolation* claim, and it
+ * asserts that claim by making a few dozen requests in a few hundred
+ * milliseconds; against Developer's real 60/min the file would start failing on
+ * whichever assertion happened to be the sixty-first, and the failure would read
+ * as a routing bug. The real numbers are `quota/planLimits.test.ts`'s and the
+ * real enforcement is `quota/planGate.test.ts`'s; what belongs here is that the
+ * gate is in the stack and in the right place, which the block at the end of this
+ * file checks with a limit of one.
+ */
+function gate(perMinute = 1_000_000): PlanGate {
+  return createPlanGate({
+    usage: { servedRequestsInMonth: () => 0 },
+    limits: (plan) => ({
+      plan,
+      monthlyRequests: perMinute,
+      requestsPerMinute: perMinute,
+      overage: { kind: 'hard_stop' },
+    }),
+  });
+}
+
+/**
  * A data context, for the third time and the third reason (ABL-303): an app
  * without one would have no product in it.
  *
@@ -127,6 +157,7 @@ beforeAll(async () => {
     createPublicApp({
       apiKeyDirectory: seeded.directory,
       usageMeter: mounted.meter,
+      planGate: gate(),
       data: dataContext(),
     })
   );
@@ -298,6 +329,7 @@ describe('hardened HTTP configuration', () => {
       createPublicApp({
         apiKeyDirectory: seeded.directory,
         usageMeter: meter().meter,
+        planGate: gate(),
         data: dataContext(),
         env: { PUBLIC_CORS_ORIGINS: 'https://docs.example.com, https://app.example.com' },
       })
@@ -333,16 +365,16 @@ describe('hardened HTTP configuration', () => {
 
 describe('the public app refuses a process holding write or ops capability', () => {
   it.each([...FORBIDDEN_PUBLIC_ENV])('refuses to build when %s is set', (name) => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, data: dataContext(), env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
   });
 
   it('never puts the value in the message', () => {
     // An error message is the one place a secret reliably reaches a log file.
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, data: dataContext(), env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
       /HELIO_WRITE_TOKEN/
     );
     try {
-      createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, data: dataContext(), env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
+      createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
       expect.unreachable('should have thrown');
     } catch (err) {
       expect((err as Error).message).not.toContain('super-secret-value');
@@ -350,7 +382,7 @@ describe('the public app refuses a process holding write or ops capability', () 
   });
 
   it('builds when the environment is clean', () => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, data: dataContext(), env: {} })).not.toThrow();
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), env: {} })).not.toThrow();
   });
 });
 
@@ -405,6 +437,115 @@ describe('the meter is mounted where the composition says it is (ABL-301)', () =
     await new Promise((resolve) => setTimeout(resolve, 50));
     mounted.meter.flush();
     expect(mounted.sink.events).toHaveLength(0);
+  });
+});
+
+describe('the plan gate is mounted where the composition says it is (ABL-302)', () => {
+  /**
+   * A second app, with a limit of one, so the gate's position can be asserted
+   * without making the shared app above unusable for everything else.
+   */
+  async function throttled(): Promise<{
+    origin: string;
+    sink: MemoryUsageSink;
+    meter: UsageMeter;
+    close: () => Promise<void>;
+  }> {
+    const m = meter();
+    const server = await listen(
+      createPublicApp({
+        apiKeyDirectory: seeded.directory,
+        usageMeter: m.meter,
+        planGate: gate(1),
+        data: dataContext(),
+      })
+    );
+    return { origin: server.origin, sink: m.sink, meter: m.meter, close: server.close };
+  }
+
+  it('refuses the second request, so the gate is really in the stack', async () => {
+    // `/v1/catalog/zones` takes no parameters, so a 200 here is the gate letting
+    // the request through rather than a parameter parser happening to accept it.
+    const app = await throttled();
+    try {
+      expect((await probe(app.origin, '/v1/catalog/zones', { headers: AUTH })).status).toBe(200);
+
+      const refused = await probe(app.origin, '/v1/catalog/zones', { headers: AUTH });
+      expect(refused.status).toBe(429);
+      expect(refused.json()).toEqual({
+        error: { code: 'rate_limit_exceeded', message: expect.any(String) },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('meters the request it refused, because a 429 is still traffic', async () => {
+    // The composition's ordering claim, from the outside: the meter is mounted
+    // *before* the gate, so a refusal is recorded with its status, its route and
+    // its key. Mounted the other way round, the traffic that most needs to be
+    // visible to abuse detection would be the only traffic leaving no trace.
+    const app = await throttled();
+    try {
+      await probe(app.origin, '/v1/catalog/zones', { headers: AUTH });
+      app.meter.flush();
+      app.sink.events.length = 0;
+
+      expect((await probe(app.origin, '/v1/catalog/zones', { headers: AUTH })).status).toBe(429);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      app.meter.flush();
+
+      const recorded = app.sink.events.filter((e) => e.status === 429);
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0].keyId).toBe(seeded.keys[0].record.id);
+      // Recorded and **not billed**: `isBillableStatus` is 2xx only, so a
+      // refusal appears in the log and never on an invoice.
+      expect(recorded[0].billable).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not gate the unauthenticated discovery root', async () => {
+    // `publicRootRoutes` is mounted ahead of both the key gate and this one, so
+    // the endpoint a client uses to check it is pointed at a `/v1` at all cannot
+    // be rate-limited by an account it does not have.
+    const app = await throttled();
+    try {
+      for (let i = 0; i < 5; i += 1) {
+        expect((await probe(app.origin, '/v1')).status).toBe(200);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('exposes every header the gate sets to a browser client', async () => {
+    // The CORS `exposedHeaders` list in `publicApp.ts` is a hand-copied
+    // duplicate of the gate's two header tables, and this is the test that keeps
+    // the duplication honest. A header a browser cannot read is a quota a
+    // browser client cannot respect — the failure is silent, is invisible from
+    // the server, and looks to the client like the headers were never sent.
+    const app = await throttled();
+    try {
+      const res = await probe(app.origin, '/v1/catalog/zones', {
+        headers: { ...AUTH, Origin: 'https://app.example.com' },
+      });
+      const exposed = (res.headers.get('access-control-expose-headers') ?? '')
+        .split(',')
+        .map((name) => name.trim().toLowerCase());
+
+      for (const header of [
+        ...Object.values(RATE_LIMIT_HEADERS),
+        ...Object.values(QUOTA_HEADERS),
+        'Retry-After',
+      ]) {
+        expect(exposed).toContain(header.toLowerCase());
+      }
+    } finally {
+      await app.close();
+    }
   });
 });
 

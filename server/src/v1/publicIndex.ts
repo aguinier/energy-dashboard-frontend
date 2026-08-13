@@ -4,6 +4,7 @@ import { openUsageStore } from './usage/sqliteUsageStore.js';
 import { createUsageMeter } from './usage/usageMeter.js';
 import { startUsageMaintenance } from './usage/usageMaintenance.js';
 import { shutDownUsage } from './usage/usageShutdown.js';
+import { createPlanGate } from './quota/planGate.js';
 import { openEnergyDatabase } from './data/sqliteEnergySource.js';
 import { createFreshnessMap } from './data/freshnessMap.js';
 import { createCatalogRepo } from './data/catalogRepo.js';
@@ -87,6 +88,22 @@ const usageStore = openUsageStore();
 const usageMeter = createUsageMeter({ sink: usageStore });
 const usageMaintenance = startUsageMaintenance({ store: usageStore });
 
+// The plan gate (ABL-302), reading the same store the meter writes.
+//
+// It is handed `usageStore` where a `MonthlyUsageReader` is expected, so the gate
+// sees a one-method capability that reads an integer — the widening to the full
+// `UsageAdminStore` happens nowhere, because structural typing means the gate's
+// parameter type *is* the narrowing. That is what makes the ABL-297 §6.5
+// commitment checkable: `setAccountDisabled` lives on `ApiKeyAdminStore`, this
+// process never holds one (`openApiKeyDirectory` is readonly), and nothing in
+// `quota/`'s import graph could reach it if it did.
+//
+// No lifecycle to shut down. The gate's state is two in-memory maps, and losing
+// them on exit resets the rate windows to empty and re-seeds the month counters
+// from the store on the next request — which is the whole reason the counter
+// reconciles with durable storage rather than trusting a number it kept.
+const planGate = createPlanGate({ usage: usageStore });
+
 // The energy database, and the two memoized maps built over it (ABL-303).
 //
 // Opened before `listen` for the third time and the third reason: the key store
@@ -118,6 +135,7 @@ const publicBaseUrl = resolvePublicBaseUrl(process.env);
 const app = createPublicApp({
   apiKeyDirectory,
   usageMeter,
+  planGate,
   data: { source: energySource, freshness, catalog, publicBaseUrl, now: () => new Date() },
 });
 
@@ -128,6 +146,7 @@ const server = app.listen(PORT, HOST, () => {
 🔒 Public composition: internal routes are absent, not filtered
 🔑 API-key auth: Authorization: Bearer able_<env>_<prefix>_<secret>
 📈 Usage metering: on — every authenticated request is counted per key
+🚦 Plan limits: on — per-account monthly quota and per-minute rate limit, 429 only
 🚀 Listening on http://${HOST}:${PORT}
 📊 API base URL: http://${HOST}:${PORT}/v1
 🔗 Pagination links: ${publicBaseUrl ?? 'relative (PUBLIC_BASE_URL unset)'}
