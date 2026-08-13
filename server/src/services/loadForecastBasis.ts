@@ -99,6 +99,12 @@ export function classifyLoadForecastBasis(countryCode: string): LoadForecastBasi
 export interface SuppressibleLoadMetrics {
   mae: number | null;
   mape: number | null;
+  /**
+   * Added by ABL-388. Required, not optional, and that is the point: a new
+   * error measure must not be able to reach a divergent-basis country by
+   * being forgotten here. An optional field would have compiled.
+   */
+  wape: number | null;
   rmse: number | null;
   dataPoints: number;
   mapeSamples: number;
@@ -111,6 +117,16 @@ export interface SuppressibleLoadMetrics {
  * up, which is real, and zeroing them would assert "no data" — a different and
  * equally false claim, the same distinction `degenerate_zero` draws against
  * `no_actuals` on the net-position side.
+ *
+ * **`wape` is suppressed along with the rest, and it is worth saying why it is
+ * not an exception.** WAPE is immune to the *near-zero-actual* defect that
+ * makes NL's MAPE unreadable (ABL-388), so it is tempting to let it through as
+ * the one honest number here. It is not one. This rule is not about a metric
+ * behaving badly — it is about the two series measuring different quantities,
+ * and a weighted average of a definitional gap is still a definitional gap.
+ * Measured for NL load over 2026-08-04..11, the D+1 forecast runs +123.2%
+ * against realized at midday and +9.8% overnight; WAPE reports that faithfully
+ * and it is still not forecast error.
  */
 export function applyLoadForecastBasis<T extends SuppressibleLoadMetrics>(
   countryCode: string,
@@ -118,5 +134,5 @@ export function applyLoadForecastBasis<T extends SuppressibleLoadMetrics>(
 ): T & LoadForecastBasisVerdict {
   const verdict = classifyLoadForecastBasis(countryCode);
   if (verdict.basis === 'comparable') return { ...metrics, ...verdict };
-  return { ...metrics, ...verdict, mae: null, mape: null, rmse: null };
+  return { ...metrics, ...verdict, mae: null, mape: null, wape: null, rmse: null };
 }

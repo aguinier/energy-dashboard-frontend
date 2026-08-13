@@ -2,6 +2,7 @@ import db from '../config/database.js';
 import { ForecastType, Granularity } from '../types/index.js';  
 import { timestampRange, rangeClause, rangeArgs, timestampFormOnClause } from '../utils/timestamp.js';
 import { loadActualGuard } from './loadQuality.js';
+import { wape } from './wape.js';
 
 /**
  * ML Forecast Accuracy Service
@@ -41,6 +42,13 @@ export interface MLForecastAccuracyDataPoint {
 export interface MLForecastAccuracyMetrics {
   mae: number | null;      // Mean Absolute Error — null only when dataPoints is 0
   mape: number | null;     // Mean Absolute Percentage Error — null when no point had a measurable (positive) actual
+  /**
+   * Weighted Absolute Percentage Error — `100 * sum|e| / sum|actual|`, over
+   * every paired point (so its sample is `dataPoints`, not `mapeSamples`).
+   * `null` when the window's actuals sum to zero. Added by ABL-388 beside
+   * `mape`, which a near-zero actual can dominate without bound.
+   */
+  wape: number | null;
   rmse: number | null;     // Root Mean Square Error — null only when dataPoints is 0
   bias: number | null;     // Mean Error (positive = over-forecast) — null only when dataPoints is 0
   dataPoints: number;
@@ -352,10 +360,18 @@ export function hasMLForecastRowsInWindow(
  * undefined at zero. Those points previously contributed 0, which understated
  * mape wherever actuals legitimately hit zero (solar overnight) or negative
  * (price). Mirrors tsoForecastService.calculateMetrics — same bug, same fix.
+ *
+ * `wape` is served beside `mape` for the same reason and by the same shared
+ * definition (ABL-388). This function is a deliberate mirror of the TSO one,
+ * so the two get the measure together: a percentage error that exists on one
+ * accuracy endpoint and not its twin is how the two come to disagree about
+ * the same forecast. Note MAPE's unboundedness is a property of the *actuals*
+ * passing near zero, not of who produced the forecast, so it reaches the ml
+ * side identically wherever the forecast type is solar or wind.
  */
 export function calculateMetrics(data: MLForecastAccuracyDataPoint[]): MLForecastAccuracyMetrics {
   if (data.length === 0) {
-    return { mae: null, mape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0 };
+    return { mae: null, mape: null, wape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0 };
   }
 
   const n = data.length;
@@ -377,9 +393,16 @@ export function calculateMetrics(data: MLForecastAccuracyDataPoint[]): MLForecas
   // Bias: Mean Error (positive = actual > forecast = under-forecast)
   const bias = data.reduce((sum, d) => sum + d.error, 0) / n;
 
+  // WAPE: the one shared definition. It handles its own null/non-finite and
+  // zero-denominator cases, so every paired point goes in.
+  const wapeValue = wape(
+    data.map((d) => ({ actual: d.actual_value, forecast: d.forecast_value }))
+  );
+
   return {
     mae: round2(mae),
     mape: mape == null ? null : round2(mape),
+    wape: wapeValue,
     rmse: round2(rmse),
     bias: round2(bias),
     dataPoints: n,

@@ -9,26 +9,14 @@ vi.mock('./readQueryWorker.js', () => ({ runReadQueryInWorker: vi.fn() }));
 const { crossCountryMetricsSql, VALID_FORECAST_TYPES, wape, getCrossCountryMetrics } =
   await import('./crossCountryMetricsService.js');
 
-describe('wape', () => {
-  it('is zero for a perfect forecast', () => {
-    expect(wape([{ actual: 50, forecast: 50 }, { actual: 20, forecast: 20 }])).toBe(0);
-  });
-
-  it('does not explode on a near-zero actual', () => {
-    const value = wape([{ actual: 0.01, forecast: 5 }, { actual: 100, forecast: 100 }]);
-    expect(value).toBeLessThan(20);
-  });
-
-  it('does not let negative actuals cancel error', () => {
-    expect(wape([{ actual: -50, forecast: 0 }, { actual: 50, forecast: 0 }])).toBe(100);
-  });
-
-  it('returns null when the summed magnitude is zero', () => {
-    expect(wape([{ actual: 0, forecast: 3 }])).toBeNull();
-  });
-
-  it('returns null for an empty series', () => {
-    expect(wape([])).toBeNull();
+// The `wape` cases moved to `wape.test.ts` when ABL-388 extracted the function
+// into its own pure module — they needed a fixture database built before they
+// could import a piece of arithmetic. What is still this file's business is
+// that the re-export survives: this is where callers have imported it from
+// since ABL-19.
+describe('wape re-export', () => {
+  it('still resolves through crossCountryMetricsService', () => {
+    expect(wape([{ actual: 100, forecast: 90 }])).toBe(10);
   });
 });
 

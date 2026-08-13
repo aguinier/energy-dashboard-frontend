@@ -829,11 +829,11 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   |---|---:|---|
   | `loadService.ts:21` `:38` `:57` `:75` `:86` `:111` `:146` | 7 | `measuredLoadClause()` |
   | `dashboardService.ts:84` `:106` `:183` `:369` | 4 | `measuredLoadClause()` |
-  | `tsoForecastService.ts:199` `:239` | 2 | `measuredLoadClause()` |
+  | `tsoForecastService.ts:200` `:240` | 2 | `measuredLoadClause()` |
   | `countryService.ts:51` | 1 | `measuredLoadClause()` |
   | `dataFreshnessService.ts:35` | 1 | `measuredLoadClause()` |
-  | `crossCountryMetricsService.ts:140-150` | 4 aliases | `loadActualGuard()` ×3 |
-  | `mlForecastService.ts:235` `:279` | 2 | `loadActualGuard()` |
+  | `crossCountryMetricsService.ts:131-141` | 4 aliases | `loadActualGuard()` ×3 |
+  | `mlForecastService.ts:243` `:287` | 2 | `loadActualGuard()` |
   | `forecastService.ts:251` | 1 | `loadActualGuard()` |
   | `countryService.ts:153` | 1 | **none, deliberately** |
 
@@ -842,7 +842,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `crossCountryMetricsService.ts` joins the table under four aliases and needs
   only three guards: `s`/`s2` are guarded in their join clauses and the
   `a`/`a2` pair is guarded once in the `WHERE`, through the `COALESCE` that
-  merges them (`crossCountryMetricsService.ts:117,156`).
+  merges them (`crossCountryMetricsService.ts:108,147`).
 
   The unguarded one is `getCountriesWithData` — a `SELECT DISTINCT` over a
   three-table `UNION` that answers *is this code worth offering in a picker*,
@@ -1576,7 +1576,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     divergence is established against the raw upstream documents, and carries
     the evidence that established it.
   - **The rule lives in the service, not the routes**
-    (`tsoForecastService.ts:366`), so every consumer inherits it rather than
+    (`tsoForecastService.ts:367`), so every consumer inherits it rather than
     having to remember it. That is what closes `/tso-forecast/accuracy/load`,
     `/tso-forecast/metrics`, and — through `forecastComparisonService`'s three
     call sites — `/forecast-comparison/:cc`, `/:cc/best` and `/:cc/rolling`.
@@ -1828,6 +1828,62 @@ Per-country TSO/ML accuracy (`ForecastTab`, `/tso-forecast/metrics`,
 positive actual (`mapeSamples` in the response, always <= `dataPoints`) and
 returns `null` rather than `0` when no point qualified — e.g. solar overnight,
 where every actual is legitimately zero.
+
+**Those same endpoints now serve `wape` beside `mape`, and on a generation
+type it is the one to read** (ABL-388). The `actual > 0` guard above stops a
+division *by zero*; nothing in it stops a division by 0.4 MW, and a solar
+series passes through near-zero at dawn and dusk every day. Measured on the
+replica 2026-08-13, full history, `/tso-forecast/accuracy/generation/:cc`:
+
+| country | type | MAPE | WAPE |
+|---|---|---:|---:|
+| HU | solar | 7,421.87% | **13.12%** |
+| NL | solar | 6,866.02% | 1,727.81% |
+| CY | solar | 4,850.79% | 128.39% |
+| CY | wind_onshore | 4,694.35% | 77.71% |
+| HU | wind_onshore | 3,306.38% | 82.45% |
+| PT | solar | 928.00% | **14.41%** |
+| DE | solar | 57.39% | **7.17%** |
+
+This is ABL-19's defect (BE solar MAPE 148,458%) in a second place, so it gets
+ABL-19's answer rather than a new one: `services/wape.ts` is now the single
+definition, moved out of `crossCountryMetricsService.ts` when it acquired a
+second caller, and both `tsoForecastService.calculateMetrics` and its
+deliberate mirror `mlForecastService.calculateMetrics` reduce through it. Do
+not write a second WAPE — that is the mistake `renewableTotal.ts` exists to
+prevent, one measure over.
+
+Three things about the shape:
+
+- **`wape`'s sample is `dataPoints`, not `mapeSamples`.** It covers every
+  paired row, including the zero-actual ones MAPE must skip, so there is
+  deliberately no `wapeSamples` field.
+- **`null`, never `0`, when the window's actuals sum to zero.** BE's overnight
+  solar is a measured 0.0 at every hour; a magnitude-weighted error over zero
+  magnitude is undefined, not a flawless forecast.
+- **`applyLoadForecastBasis` blanks it along with `mae`/`mape`/`rmse`**, and
+  `SuppressibleLoadMetrics.wape` is required rather than optional so a future
+  measure cannot reach a divergent-basis country by being forgotten. WAPE is
+  immune to the near-zero defect, which makes it tempting to let through as
+  the one honest number for NL — it is not one. That rule is about two series
+  measuring different quantities, and weighting by magnitude does not turn a
+  definitional gap into forecast error.
+
+**WAPE is not a universal rescue, and the NL row above is the proof.** It
+stays at 1,727.81% because that is not a near-zero-actual artifact: NL's
+ENTSO-E day-ahead solar forecast sums to **18.28x** our metered actuals over
+full history, which is exactly the `partial_subset` finding
+`solarCoverage.ts` already carries (it measured 17.0 over a 90-day window).
+A WAPE is forecast skill only where both series measure the same population.
+Measured the same day, the aggregate forecast/actual ratio is ~1 for the
+ordinary cases and far from it for a handful: solar NL 18.28, BA 3.21, CY
+2.24, LU 1.57; wind_onshore SK 2.29, BA 1.75, HU 1.58, NL 1.75; and a ratio
+of **0.00** for NO solar, CZ/SI wind_onshore and IT wind_offshore, where the
+TSO publishes a forecast column of zeros and WAPE reads exactly 100%. None of
+those is established against the upstream documents the way ABL-277's NL load
+entry is, so none is suppressed — that is ABL-400, and the evidence bar
+`loadForecastBasis.ts` sets applies to it. Above ~100% the only honest reading
+of a WAPE is "loses to forecasting zero".
 
 **Colouring a WAPE is a ranking, never a grade** (ABL-19). All three tabs
 colour through `components/comparison/accuracyScale.ts`: `wapeScale()` collects
@@ -2088,7 +2144,7 @@ an NTP step between two samples would otherwise scale every rate on the page.
 Two parsing traps are covered by `hostMetrics.test.ts`: a wide counter abuts
 its colon (`eth0:123456789012`) so the line splits on the first `:` not on
 whitespace, and transmit bytes are field 9, not field 2. Client-side, `network`
-is **optional, not merely nullable** (`client/src/types/index.ts:513`) — a peer on a build
+is **optional, not merely nullable** (`client/src/types/index.ts:530`) — a peer on a build
 older than ABL-290 sends no key at all, which `buildNetworkRows`
 (`client/src/lib/networkRows.ts`) renders as "not reported by this build",
 separately from `null` ("not measured on Windows"), `[]` ("no non-loopback
@@ -2380,10 +2436,10 @@ request to fill one of them.
   find them.** `crossCountryMetricsService`, `mlForecastService` and
   `forecastService` each hold a mapping object keyed by forecast type that
   carries the table as a *string* — `ACTUAL_DATA_MAPPING`
-  (`mlForecastService.ts:20`) is the pattern — and then interpolate it into the
+  (`mlForecastService.ts:21`) is the pattern — and then interpolate it into the
   SQL at query time: `FROM ${mapping.table}` (`forecastService.ts:251`), and
-  `LEFT JOIN ${mapping.table}` twice each in `mlForecastService.ts:125` and
-  `crossCountryMetricsService.ts:140`. So
+  `LEFT JOIN ${mapping.table}` twice in `mlForecastService.ts:133` and four
+  times in `crossCountryMetricsService.ts:131`. So
   `grep -rn "FROM energy_renewable\|JOIN energy_renewable" server/src` returns
   **zero hits** while all seven are live. That grep is what this entry used to
   recommend; it now reports a completed migration that has not happened. Use
@@ -2674,9 +2730,9 @@ rows matched. ABL-211 found the underlying join is generic across every
 forecast type sharing `ACTUAL_DATA_MAPPING` — it dropped `T`-separated
 `energy_load` actuals identically, not just `energy_price`'s. Both sites are
 now separator-agnostic: `mlForecastService.ts`'s `resolvedActualJoin()`
-(`mlForecastService.ts:114`, called from both its hourly and aggregated
+(`mlForecastService.ts:122`, called from both its hourly and aggregated
 branches) and `crossCountryMetricsService.ts`'s `metricSelect()`
-(`crossCountryMetricsService.ts:108`, covering both the actuals join and the
+(`crossCountryMetricsService.ts:99`, covering both the actuals join and the
 D-7 seasonal-naive baseline join beneath it).
 
 **The obvious fix is wrong, not just imprecise — measure before joining on
@@ -3189,14 +3245,51 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-13, measured on ABL-353 (ABL-324 tranche 3) merged with
-`origin/main` at `b6cb322` — the `/v1` line (ABL-300, ABL-301, ABL-302,
-ABL-303, ABL-304, ABL-282) joined to ABL-309, ABL-319, ABL-325, ABL-329, the
-three Group B branches (ABL-276/277/278, ABL-257, ABL-282's flat config),
-ABL-324 tranches 1 and 2 (ABL-351, ABL-352), ABL-311's patch-identity gate, and
-this tranche: **50 client test files / 666 tests** and **87 server test files /
-1,642 tests**, all passing, zero skipped, clean typecheck on both (`tsc -b` and
-`tsc --noEmit`, exit 0). Fewer tests passing than that means something broke.
+Green as of 2026-08-13, measured on ABL-388 merged with `origin/main` at
+`7859e9f`: **50 client test files / 666 tests** and **88 server test files /
+1,648 tests**, all passing, zero skipped, clean typecheck on both (`tsc -b`
+and `tsc --noEmit`, exit 0). Fewer tests passing than that means something
+broke.
+
+**Both halves of the previous figure were stale, and the file-count half was
+decidable without running anything — which is the lesson.** The text this
+replaced claimed `83 server test files / 1,563 tests`, measured on ABL-352
+merged with `origin/main` at `cf20527`. Two merges later, `origin/main` at
+`b6cb322` measures **87 files / 1,639** — so the claim was short by 4 files
+and 76 cases *before this branch existed*, and anyone sizing a regression
+against it would have read a green suite as 82 cases missing. The file count
+never needed a run: `git ls-tree -r b6cb322 --name-only | grep -c
+'^server/src/.*\.test\.ts$'` returns 86, plus the one `scripts/` file the
+server suite also discovers (`server/vitest.config.ts:11`), and that command
+needs no `node_modules`, no matching Node ABI and no free replica. Settle a
+file count that way; only the test count needs a run.
+
+ABL-388 itself is **+1 server file / +6 server cases**, and touches no client
+test: `services/wape.test.ts` is the new file at 9 cases,
+`crossCountryMetricsService.test.ts` loses the 5 `wape` cases that moved into
+it and gains 1 re-export guard (−4), and `routes/tsoForecast.test.ts` gains 1.
+Every other file it touches changed assertions without changing their count.
+
+**That delta is the stable number here; the headline above it has already gone
+stale once, while this very branch sat in review.** ABL-388 was measured at
+88 / 1,645 against `b6cb322`, which was `origin/main` when it was written. PR
+#26 (ABL-353) then merged underneath it, taking `origin/main` to 87 / 1,642 —
+so the same unchanged branch now measures 88 / 1,648. Nothing about the work
+moved; the floor did. That is the ABL-234 rule in its least obvious form: a
+count can go stale between opening a PR and merging it, so re-measure after
+merging the base in, not only after writing the code.
+
+**Merging that base in also broke two assertions git had merged cleanly, which
+is the failure mode worth knowing about.** `routes/tsoForecast.test.ts` is the
+one file both branches edited, and only some of it conflicted. ABL-353's PT
+case — the one asserting an unreported type publishes no score — sits far
+enough from ABL-388's edits that git took it verbatim, so it kept a full
+`toEqual` on a metrics object that had since grown a `wape` key, and failed
+with no conflict marker to warn anyone. `toEqual` is exact, which is what makes
+it the right assertion for a "no flawless 0" case and also what makes it break
+silently under a merge that adds a field. Two conflicting hunks, two clean-
+merged failures: after resolving markers here, run the suite before trusting
+the resolution.
 
 **That server figure is a fresh run, and it had to be — every figure available
 to derive it from was stale within the hour.** The text this replaced claimed
@@ -3849,7 +3942,13 @@ DB-touching module, so it runs without a database or a mock, and the
 assertion that `generationService.RENEWABLE_MW_SUM` really is built from its
 column list lives in `generationService.test.ts`, which already mocks that
 connection),
-`server/src/services/loadForecastBasis.ts`, `lib/divergingStack.ts`,
+`server/src/services/loadForecastBasis.ts`,
+`server/src/services/wape.ts` (ABL-388 — the single WAPE definition, moved
+out of `crossCountryMetricsService.ts` when `tsoForecastService` and
+`mlForecastService` became its second and third callers; its test needed a
+fixture database built before it could import a piece of arithmetic, and now
+imports no DB-touching module at all),
+`lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
 `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
@@ -4158,14 +4257,14 @@ The client and server declarations are **not** mirror images here — check whic
 side you are on.
 
 ```typescript
-// client/src/types/index.ts:172 — note the third member; the server's
+// client/src/types/index.ts:279 — note the third member; the server's
 // TSOForecastType (server/src/types/index.ts:168) is identical.
 type TSOForecastType = 'day_ahead' | 'week_ahead' | 'all';
 
-// client/src/types/index.ts:174. The server's TSOLoadForecastDataPoint
+// client/src/types/index.ts:281. The server's TSOLoadForecastDataPoint
 // (server/src/types/index.ts:170) has NO min/max fields; the two the client
 // adds are populated by the week-ahead branch of the query
-// (tsoForecastService.ts:56-57, NULL on the day-ahead branches).
+// (tsoForecastService.ts:57-58, NULL on the day-ahead branches).
 interface TSOLoadForecastDataPoint {
   timestamp: string;
   forecast_value_mw: number;
@@ -4176,7 +4275,7 @@ interface TSOLoadForecastDataPoint {
 }
 
 // server-only: server/src/types/index.ts:177 (and a duplicate at
-// tsoForecastService.ts:18). There is no client counterpart.
+// tsoForecastService.ts:21). There is no client counterpart.
 interface TSOGenerationForecastDataPoint {
   timestamp: string;
   solar_mw: number | null;
