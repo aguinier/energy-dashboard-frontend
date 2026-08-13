@@ -9,6 +9,7 @@ import { publicErrorHandler, publicNotFoundHandler } from './publicErrors.js';
 import { assertPublicEnvironment, parsePublicCorsOrigins, type PublicEnv } from './publicEnv.js';
 import type { ApiKeyDirectory } from './keys/apiKeyStore.js';
 import type { UsageMeter } from './usage/usageMeter.js';
+import type { PlanGate } from './quota/planGate.js';
 import type { V1DataContext } from './data/context.js';
 
 /**
@@ -91,17 +92,43 @@ export interface PublicAppOptions {
   usageMeter: UsageMeter;
 
   /**
+   * The plan quota and per-minute rate limit every authenticated request is
+   * checked against (ABL-302).
+   *
+   * **Required, with no default, for the same reason the two above are**, and the
+   * reason is the sharpest one yet because it is commercial rather than
+   * technical. An app composed without this gate serves every plan the same
+   * unlimited service: Explorer's 1,000 requests and Professional's 500,000 buy
+   * identical access, the €0 tier is the €249 tier, and nothing in the process
+   * would say so — the meter would keep counting happily and the invoices would
+   * keep coming out right, which is what makes it silent. There is no way to
+   * spell that app.
+   *
+   * Injected as a type, like the other three, so this module still names only
+   * shapes: the gate ultimately counts rows in a SQLite file, and none of that
+   * is in this module's import graph. `publicAppGraph.test.ts` pins it.
+   *
+   * What this gate does **not** do is as load-bearing as what it does: it refuses
+   * requests with a 429 and it never changes an account's state. ABL-297's
+   * requirement on ABL-302 — from a Board decision, and written into the AUP —
+   * is that suspension is never fully automated. See `quota/planGate.ts` for how
+   * that is held by construction rather than by policy.
+   */
+  planGate: PlanGate;
+
+  /**
    * The energy data the `/v1` resources read, plus the memoized freshness and
    * catalogue maps built over it (ABL-303).
    *
-   * **Required, with no default, for the third time in this options bag** — and
+   * **Required, with no default, for the fourth time in this options bag** — and
    * the reason has shifted slightly each time, which is worth a line. A missing
    * key store would be an unauthenticated API; a missing meter would be an API
-   * that bills nobody; a missing data source would be an API with no product in
-   * it. The first two are dangerous, the third is merely useless, but all three
-   * are states nobody would choose deliberately, so none of them is spellable.
+   * that bills nobody; a missing plan gate would be an API where every plan buys
+   * the same thing; a missing data source would be an API with no product in it.
+   * The first three are dangerous, the fourth is merely useless, but all four are
+   * states nobody would choose deliberately, so none of them is spellable.
    *
-   * Injected as a type, exactly like the other two, and that is what keeps this
+   * Injected as a type, exactly like the other three, and that is what keeps this
    * module's import graph free of `better-sqlite3` even though `/v1` now reads a
    * 9.4 GB SQLite file on every request. `publicApp.ts` names the *shape* of a
    * data source; `publicIndex.ts` opens one — readonly, on a database owned by
@@ -127,6 +154,7 @@ export interface PublicAppOptions {
 export function createPublicApp({
   apiKeyDirectory,
   usageMeter,
+  planGate,
   data,
   env = process.env,
 }: PublicAppOptions): Express {
@@ -178,9 +206,17 @@ export function createPublicApp({
       // means a preflight for one is refused before any route matching happens.
       methods: ['GET', 'HEAD', 'OPTIONS'],
       allowedHeaders: ['Authorization', 'Content-Type', 'Idempotency-Key'],
-      // Named now so that when ABL-302 starts sending these, a browser client
-      // can already read them; a header a browser cannot see is a quota a
-      // browser client cannot respect.
+      // Named by ABL-304 in advance so that when ABL-302 started sending these,
+      // a browser client could already read them; a header a browser cannot see
+      // is a quota a browser client cannot respect. ABL-302 sends all six and
+      // adds a seventh.
+      //
+      // The list is duplicated from `quota/planGate.ts`'s two header tables, and
+      // `publicApp.test.ts` asserts the two agree. Importing the tables instead
+      // would put `planGate.ts` in this module's runtime graph — and with it the
+      // rate limiter, the quota counter and `usageStore.ts` — to save retyping
+      // seven strings. The composition names shapes and chooses no
+      // implementation; a test is the cheaper way to keep two lists honest.
       exposedHeaders: [
         'RateLimit-Limit',
         'RateLimit-Remaining',
@@ -188,14 +224,18 @@ export function createPublicApp({
         'Retry-After',
         'Quota-Limit-Month',
         'Quota-Remaining-Month',
+        // ABL-302. A soft overage a customer cannot observe is a bill arriving
+        // without warning, so the figure that will be invoiced is on every
+        // response of a plan that can accrue one.
+        'Quota-Overage-Month',
       ],
     })
   );
 
   app.use(compression());
 
-  // Four mounts, and the order is the security property (ABL-300) and the
-  // billing property (ABL-301).
+  // Five mounts, and the order is the security property (ABL-300), the billing
+  // property (ABL-301) and the commercial one (ABL-302).
   //
   // `publicRootRoutes` is the entire unauthenticated surface — one discovery
   // endpoint returning two constants. It is a separate module rather than the
@@ -223,18 +263,32 @@ export function createPublicApp({
   //   This is the one ordering detail in ABL-293 §2c that is not negotiable:
   //   `cacheMiddleware` returns early on a hit and never reaches the handler, so
   //   a meter mounted inside the cache bills a customer polling a 5-minute-TTL
-  //   endpoint for 1 request in 300. **ABL-303 added no cache** — the row cap
+  //   endpoint for 1 request in 300. **No cache has been added** — the row cap
   //   and the 366-day window bound query cost directly, and a cache would have
   //   made `freshness.generated_at` lie by up to its TTL unless every handler
   //   computed it, which is why §2g.F requires the handler to stamp it. The
   //   ordering above is what lets one be added later without a billing hole.
   //
-  // ABL-302's quota check slots in between the meter and the routes: it needs
-  // the count this produces, and a request refused for quota is still a request
-  // that was made, so it must be counted before it can be refused.
+  // **ABL-302's gate went exactly where ABL-301 reserved for it** — between the
+  // meter and the routes — and both sides of that position are load-bearing:
+  //
+  // - *After the meter*, because a request refused for quota is still a request
+  //   that was made. The meter's `close` listener is registered before the gate
+  //   runs, so a 429 is recorded with its status, its route and its key, which is
+  //   what abuse detection and a billing dispute both read from. Mounted the
+  //   other way round, the traffic that most needs to be visible would be the
+  //   only traffic that left no trace.
+  // - *Before the routes*, because the point of a quota is to refuse work before
+  //   it is done. A gate after the router would run a 366-day query against a
+  //   9.4 GB database and then decline to send the answer.
+  //
+  // A resource added to `v1Routes` is therefore rate-limited and quota-checked
+  // whether or not its author thought about either, which is the same property
+  // the gate above it gives for authentication and the meter gives for billing.
   app.use('/v1', publicRootRoutes);
   app.use('/v1', requireApiKey({ directory: apiKeyDirectory }));
   app.use('/v1', usageMeter.middleware);
+  app.use('/v1', planGate.middleware);
   app.use('/v1', createV1Routes(data));
 
   // Unconditional and last, in this order — `notFound` first so anything that

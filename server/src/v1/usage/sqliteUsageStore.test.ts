@@ -916,3 +916,119 @@ describe('durability across a restart', () => {
     expect(monthOf('2026-07')[0].closedAt).toBe(closedAt);
   });
 });
+
+describe('the live quota figure (ABL-302)', () => {
+  it('counts every key on the account, because the plan is sold to the account', () => {
+    // `MAX_LIVE_KEYS_PER_ACCOUNT` is 5, so a per-key quota would deliver five
+    // times what a customer bought. The per-key split is not lost — it is what
+    // `usage_rollup` is keyed on — but the limit belongs where the plan does.
+    store.writeEvents([
+      event({ keyId }),
+      event({ keyId }),
+      event({ keyId: secondKeyId }),
+    ]);
+
+    expect(store.servedRequestsInMonth(accountId, '2026-07')).toBe(3);
+  });
+
+  it('excludes the requests the gate refused', () => {
+    // The one line that keeps the durable seed and the in-process counter
+    // talking about the same quantity. A 429 is recorded — a refusal is still
+    // traffic and still evidence — and it never consumed quota, so counting it
+    // here would lock a hard-stop customer out early and would put refused
+    // requests into a Professional account's billable overage.
+    store.writeEvents([
+      event({ status: 200 }),
+      event({ status: 429, billable: false }),
+      event({ status: 429, billable: false }),
+    ]);
+
+    expect(store.servedRequestsInMonth(accountId, '2026-07')).toBe(1);
+  });
+
+  it('counts a request the caller got wrong, which is still a request we served', () => {
+    // 4xx is recorded and not billed (`isBillableStatus`), and it still consumes
+    // quota. The alternative makes a broken client's error traffic free and
+    // unlimited, which is the same hole `isBillableStatus`'s own comment names
+    // from the rate-limit side.
+    store.writeEvents([event({ status: 400, billable: false }), event({ status: 500, billable: false })]);
+
+    expect(store.servedRequestsInMonth(accountId, '2026-07')).toBe(2);
+  });
+
+  it('is bounded by the UTC calendar month at both ends', () => {
+    // The billing month is UTC for every customer, so the quota window has to be
+    // the same one `usage_rollup.year_month` uses. An off-by-one at either edge
+    // hands a customer a free hour or bills them for one twice.
+    store.writeEvents([
+      event({ receivedAt: '2026-06-30T23:59:59.999Z' }),
+      event({ receivedAt: '2026-07-01T00:00:00.000Z' }),
+      event({ receivedAt: '2026-07-31T23:59:59.999Z' }),
+      event({ receivedAt: '2026-08-01T00:00:00.000Z' }),
+    ]);
+
+    expect(store.servedRequestsInMonth(accountId, '2026-06')).toBe(1);
+    expect(store.servedRequestsInMonth(accountId, '2026-07')).toBe(2);
+    expect(store.servedRequestsInMonth(accountId, '2026-08')).toBe(1);
+  });
+
+  it('handles a December-to-January boundary', () => {
+    // `monthEndExclusive` builds the upper bound with `new Date(Date.UTC(year,
+    // month, 1))`, so month 12 has to roll the year. Cheap to check and the kind
+    // of thing that fails once a year at midnight.
+    store.writeEvents([
+      event({ receivedAt: '2026-12-31T23:00:00.000Z' }),
+      event({ receivedAt: '2027-01-01T00:30:00.000Z' }),
+    ]);
+
+    expect(store.servedRequestsInMonth(accountId, '2026-12')).toBe(1);
+    expect(store.servedRequestsInMonth(accountId, '2027-01')).toBe(1);
+  });
+
+  it('sees another account’s traffic as none of this one’s', () => {
+    store.writeEvents([event({ accountId: 'acct_someone_else' }), event()]);
+
+    expect(store.servedRequestsInMonth(accountId, '2026-07')).toBe(1);
+  });
+
+  it('reads the raw events rather than the rollup, so an open month is current', () => {
+    // The opposite of the rule `monthlyUsage` follows, and deliberately.
+    // An invoice must come from the materialised aggregate, which survives
+    // retention. A quota is enforced against a month still open, and the rollup
+    // lags by a maintenance interval — enforcing on a figure that is minutes
+    // stale would let a burst through in exactly the window a burst arrives in.
+    store.writeEvents([event(), event()]);
+
+    // Nothing has been rolled up yet.
+    expect(store.monthlyUsage('2026-07')).toHaveLength(0);
+    expect(store.servedRequestsInMonth(accountId, '2026-07')).toBe(2);
+  });
+
+  it('uses the account index rather than scanning', () => {
+    // The reason the bounds are a half-open `received_at` range and not
+    // `substr(received_at, 1, 7) = ?`. The substring form reads better, cannot
+    // use `idx_usage_events_account_received`, and degrades to a scan of every
+    // event the account has ever sent — on a request path, against a table that
+    // grows by one row per request forever.
+    store.writeEvents([event()]);
+
+    const db = raw();
+    try {
+      const plan = db
+        .prepare(
+          `EXPLAIN QUERY PLAN
+           SELECT COUNT(*) FROM usage_events
+            WHERE account_id = ? AND received_at >= ? AND received_at < ? AND status <> 429`
+        )
+        .all(accountId, '2026-07-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z') as Array<{
+        detail: string;
+      }>;
+
+      const detail = plan.map((row) => row.detail).join(' ');
+      expect(detail).toContain('idx_usage_events_account_received');
+      expect(detail).not.toContain('SCAN usage_events');
+    } finally {
+      db.close();
+    }
+  });
+});

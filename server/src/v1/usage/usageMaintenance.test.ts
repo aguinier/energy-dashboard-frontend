@@ -62,6 +62,11 @@ function stubStore({
       return { scrubbed: 0, deleted: 0, keptPendingRollup: 0, ...retention };
     },
     monthlyUsage: () => [],
+    // ABL-302's live quota read. Present because the interface has it, and
+    // deliberately absent from `calls`: it is the request path's method, and a
+    // maintenance pass that touched it would be reaching across the split the
+    // two sit either side of.
+    servedRequestsInMonth: () => 0,
     exportAccount: () => ({ exportedAt: '', accountId: '', keys: [], events: [], rollups: [] }),
     stats: () => {
       throw new Error('not used here');
