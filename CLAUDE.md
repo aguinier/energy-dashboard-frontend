@@ -2378,10 +2378,12 @@ request to fill one of them.
 
   **Seven read sites remain, in three services, and a literal grep will not
   find them.** `crossCountryMetricsService`, `mlForecastService` and
-  `forecastService` name the table in an `ACTUAL_DATA_MAPPING`-style object
-  keyed by forecast type and interpolate it — `FROM ${mapping.table}`
-  (`forecastService.ts:251`), `LEFT JOIN ${mapping.table}`
-  (`mlForecastService.ts:125`, `crossCountryMetricsService.ts:140`) — so
+  `forecastService` each hold a mapping object keyed by forecast type that
+  carries the table as a *string* — `ACTUAL_DATA_MAPPING`
+  (`mlForecastService.ts:20`) is the pattern — and then interpolate it into the
+  SQL at query time: `FROM ${mapping.table}` (`forecastService.ts:251`), and
+  `LEFT JOIN ${mapping.table}` twice each in `mlForecastService.ts:125` and
+  `crossCountryMetricsService.ts:140`. So
   `grep -rn "FROM energy_renewable\|JOIN energy_renewable" server/src` returns
   **zero hits** while all seven are live. That grep is what this entry used to
   recommend; it now reports a completed migration that has not happened. Use
@@ -3187,14 +3189,14 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-13, measured on ABL-352 (ABL-324 tranche 2) merged with
-`origin/main` at `cf20527` — the `/v1` line (ABL-300, ABL-301, ABL-303,
-ABL-304, ABL-282) joined to ABL-309, ABL-319, ABL-325, ABL-329, the three Group
-B branches (ABL-276/277/278, ABL-257, ABL-282's flat config), ABL-324 tranche 1
-(ABL-351), ABL-311's patch-identity gate, and this tranche: **50 client test
-files / 666 tests** and **83 server test files / 1,563 tests**, all passing,
-zero skipped, clean typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0).
-Fewer tests passing than that means something broke.
+Green as of 2026-08-13, measured on ABL-353 (ABL-324 tranche 3) merged with
+`origin/main` at `b6cb322` — the `/v1` line (ABL-300, ABL-301, ABL-302,
+ABL-303, ABL-304, ABL-282) joined to ABL-309, ABL-319, ABL-325, ABL-329, the
+three Group B branches (ABL-276/277/278, ABL-257, ABL-282's flat config),
+ABL-324 tranches 1 and 2 (ABL-351, ABL-352), ABL-311's patch-identity gate, and
+this tranche: **50 client test files / 666 tests** and **87 server test files /
+1,642 tests**, all passing, zero skipped, clean typecheck on both (`tsc -b` and
+`tsc --noEmit`, exit 0). Fewer tests passing than that means something broke.
 
 **That server figure is a fresh run, and it had to be — every figure available
 to derive it from was stale within the hour.** The text this replaced claimed
@@ -3220,12 +3222,19 @@ ABL-351 preceded all of it, adding +2 server files
 cases over the 75 / 1,367 that `main` measured immediately before it; it touches
 no client test either.
 
-ABL-353 (ABL-324 tranche 3) then adds **+3 server cases** in the existing
-`routes/tsoForecast.test.ts` and no new file, taking the tree to **83 server
-files / 1,558 tests** with the client figure unmoved — it touches no client
-test. Measured fresh on the merge, not derived: 1,555 + 3 happens to be right
-here, which is luck rather than method, and the paragraph above is the reason
-not to rely on it.
+ABL-353 (ABL-324 tranche 3) adds **+3 server cases** in the existing
+`routes/tsoForecast.test.ts` and no new file, and touches no client test.
+
+**It paid for itself a fourth time, and this one is the cleanest illustration
+of the rule.** ABL-353 measured 83 / 1,558 on its own merge and wrote that
+number here; ABL-352 then landed and rewrote the same sentence to 83 / 1,563;
+and PR #27 (ABL-302, `/v1` quotas and rate limits) landed between the two,
+adding four `v1/quota/` test files that **neither branch had ever run**. Every
+one of those three figures was a fresh measurement, honestly taken, and all
+three were wrong by the time they were read — because each measured a tree that
+did not yet contain a change already merged elsewhere. The 87 / 1,642 above is
+this branch re-measured after merging `b6cb322`; do not reconcile it against
+1,558, 1,563 or `1,563 + 3`, and expect it to go stale the same way.
 
 **Neither input figure survived, and neither was added up.** Local `main` read
 49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
@@ -3260,7 +3269,7 @@ that fail under v25.6.1 for the `storage.setItem` reason recorded there.
 regression: it moves depending on whether the shared replica is free.**
 `services/generationService.test.ts` ends in an opportunistic `describe` against
 the read-only development replica at `C:/Code/able/data/energy_dashboard.db`.
-The 1,555 above was measured with that replica **reachable**, so those cases are
+The 1,642 above was measured with that replica **reachable**, so those cases are
 included. When it is not reachable the file contributes fewer — and when it is
 *locked* rather than absent, the file used to not collect at all and contribute
 none, which is the state the next paragraph is about.
@@ -3279,8 +3288,8 @@ not absence — and neither is a corrupt header or a permissions error — so
 `replicaHasGenerationTable` now **catches** (`generationService.test.ts:746`)
 and skips the opportunistic block while the rest of the file runs.
 
-So a server count a little under 1,555 may simply mean the replica was busy —
-but a *file count* below 83 is no longer explainable that
+So a server count a little under 1,642 may simply mean the replica was busy —
+but a *file count* below 87 is no longer explainable that
 way, because a locked replica now skips rather than fails to collect. Do not
 "fix" this file by deleting the replica check.
 
