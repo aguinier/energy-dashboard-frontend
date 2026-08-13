@@ -52,6 +52,23 @@ const SCHEMA = `
   );
   CREATE UNIQUE INDEX idx_generation_country_time ON energy_generation(country_code, timestamp_utc);
   CREATE INDEX idx_generation_time ON energy_generation(timestamp_utc);
+
+  -- getGenerationMix attaches a solar-coverage verdict (ABL-325), which pairs
+  -- energy_generation against ENTSO-E's own day-ahead solar forecast. Present
+  -- but deliberately left empty: none of the tests below seed a forecast, so
+  -- every mix they build carries the 'unknown' verdict - which is exactly what
+  -- a country we cannot check should produce, and is asserted as such below.
+  -- The verdict's own behaviour is covered in solarCoverage.test.ts.
+  CREATE TABLE energy_generation_forecast (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    target_timestamp_utc TIMESTAMP NOT NULL,
+    solar_mw REAL,
+    wind_onshore_mw REAL,
+    wind_offshore_mw REAL
+  );
+  CREATE INDEX idx_gen_forecast_country_ts
+    ON energy_generation_forecast(country_code, target_timestamp_utc);
 `;
 
 function buildDb(): DatabaseType {

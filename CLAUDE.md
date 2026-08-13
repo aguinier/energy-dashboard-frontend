@@ -34,6 +34,49 @@ Runs client and server together (`concurrently`). The server needs a local
 - Frontend: http://localhost:5173
 - API Server: http://localhost:3001
 
+### Troubleshooting the dev server
+
+**1. `Cannot find package '@babel/core'` is usually a stale process, not a broken tree.**
+
+Symptom: `npm run dev` serves 200 on `localhost:5173`, but every request for `client/src/main.tsx` 500s with
+`[plugin:vite:react-babel] Cannot find package '@babel/core' imported from …@vitejs/plugin-react/dist/index.js`,
+and the page is blank behind Vite's red error overlay.
+
+The tell: the resolved path in the error ends `@babel\core\index.js`, **not** `lib\index.js`.
+`index.js` is the no-`main`-field fallback Node records when it reads the package directory mid-write.
+A genuinely missing package reports the bare specifier instead.
+Confirm with:
+
+```bash
+node -e "import('@babel/core').then(m=>console.log(Object.keys(m).length))"
+```
+
+Run from the repo root — if that succeeds while the server still throws, the tree is fine and the
+server is stale.
+
+Cause: Node's ESM loader caches resolution results for the life of the process. A dev server started
+while an install was mid-flight is pinned to that failure permanently.
+
+**Fix: restart the dev server. Do NOT run `npm install`.** This workstation runs ~20 concurrent node
+processes across agent sessions; rewriting `node_modules` underneath them re-creates the race and can
+turn one stale process into several.
+
+**2. Check the server half by socket, not by process.** `tsx watch` keeps idling alive after its
+child crashes, so a live PID does not mean a live server. Probe the port directly.
+
+**3. Never inherit `PORT` from a Paperclip run.** It is `3100`, Paperclip's own control plane, and
+the dashboard server dies `EADDRINUSE`. This is a launch artifact, not a repo bug — do not file it.
+
+**4. If `node_modules/.bin` is genuinely absent**, invoke the package entry points directly rather
+than reinstalling:
+
+```bash
+node node_modules/tsx/dist/cli.mjs          # server
+node node_modules/vite/bin/vite.js           # client
+```
+
+This bypasses the missing shims and was the ABL-362 workaround.
+
 ## Project Structure
 
 ```
@@ -211,7 +254,7 @@ repository.
 
 `server/src/v1/` holds a **separate Express application** for the commercial
 `/v1` surface, built by `createPublicApp`
-(`server/src/v1/publicApp.ts:80`) and run as its own process from
+(`server/src/v1/publicApp.ts:101`) and run as its own process from
 `server/src/v1/publicIndex.ts`. It is not `createApp()` with routes hidden.
 
 The distinction is the whole point (ABL-304, specified by ABL-293 §2f). A
@@ -406,10 +449,67 @@ a write on the critical path of every authenticated request to maintain a field
 nobody needs to the second; once ABL-301 lands it is a `MAX(received_at)` over
 `usage_events`. An unused column invites someone to start filling it.
 
-Not done by ABL-300: metering (ABL-301), quotas, rate limits and the 429
-contract (ABL-302), and the resources themselves (ABL-303). The `plan` on the
-principal is carried for ABL-302 to enforce and nothing here branches on it —
-this issue authenticates and identifies a caller, it does not meter one.
+Not done by ABL-300: quotas, rate limits and the 429 contract (ABL-302), and the
+resources themselves (ABL-303). The `plan` on the principal is carried for
+ABL-302 to enforce and nothing here branches on it — that issue authenticates and
+identifies a caller, it does not meter one. Metering is ABL-301, below.
+
+## `/v1` usage metering is the number a customer gets billed on
+
+`server/src/v1/usage/` counts every authenticated request per key, survives a
+restart, and aggregates to a monthly figure an invoice is raised from (ABL-301).
+The tables live in the **same SQLite file as the key store** — never the energy
+database — and `sqliteUsageStore.ts` reuses `resolveApiKeysDbPath` so there is
+one decision about that path and one guard to keep true.
+
+**Where the error is allowed to go.** Every place a failure forces a choice
+between counting a request twice and not counting it at all, this code chooses
+not to count it, and says so at the line where the choice is made. An invoice
+that is slightly low is a margin absorbed quietly; an invoice that is slightly
+high is a refund, an apology, and a customer who checks every future invoice by
+hand. The two failure modes are named and tested rather than hoped about:
+
+- **Lost write.** The meter buffers and flushes on a timer
+  (`usageMeter.ts`), so a hard kill discards at most one second of that
+  process's traffic. The alternative — an fsync on the critical path of every
+  authenticated request, in a single-threaded process — was rejected
+  deliberately. A shutdown that *runs its handler* loses nothing:
+  `usageShutdown.ts` flushes, aggregates and closes, in that order, and is
+  tested. Note the caveat, established against a running server rather than
+  assumed: **Windows does not deliver `SIGTERM`**, so a `taskkill` there skips
+  the handler entirely and loses whatever was buffered. `SIGINT` (Ctrl-C) is
+  emulated and does arrive; on Linux both do.
+- **Double count.** `usage_events.request_id` is unique and the insert is
+  `ON CONFLICT(request_id) DO NOTHING`, so a flush that commits and is then
+  retried inserts nothing. `INSERT OR IGNORE` was wrong here and was changed: it
+  suppresses `NOT NULL` and `CHECK` violations too, which turned a discarded
+  billing record into a number that read like a benign retry.
+
+**`usage_events.id` is `INTEGER PRIMARY KEY AUTOINCREMENT`, and the keyword is
+load-bearing.** The rollup is watermarked on the highest id it has aggregated. A
+bare rowid is reassigned as `max(rowid)+1`, so once retention deletes rows the
+next request would reuse an id below the watermark and be skipped by the rollup
+forever — billing the customer zero, which is the one error nobody reports.
+
+**The monthly aggregate is materialised, not derived** (`usage_rollup`,
+ABL-297 §9(2)). An invoice is read from that table and never from a scan of raw
+events, because the raw rows are deleted at 13 months and an invoice must be
+defensible for about seven years. A month is closed explicitly, closing is
+idempotent, and a closed month is final — a late event increments `late_*`
+columns and never changes a figure that has already been sent out.
+
+**Retention is a running job, not a policy** (`usageMaintenance.ts`): source IP
+and user agent cleared at 90 days, de-identified records deleted at 13 months,
+both periods read from configuration. It never deletes an event the rollup has
+not aggregated, and it is scoped to `usage_events` alone — this is the first
+scheduled deletion in the codebase, so it is where a general-purpose row reaper
+would grow, and forecast vintages are contractually not prunable (ToS §9.3).
+
+`npm run usage -- usage:month --month YYYY-MM` is the invoice figure;
+`usage:stats` reports whether the published retention is actually being met;
+`usage:export` answers a subject access request. The procedure for that, and the
+full account of what is recorded and why, is in
+`server/src/v1/usage/PRIVACY-AND-RETENTION.md`.
 
 ## Key Features
 
@@ -1336,6 +1436,92 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   Nothing is persisted for this panel, so no `PERSIST_VERSION` bump was needed:
   it compares every registered model rather than a user-chosen subset.
 
+  **A country whose realized load and TSO load forecast measure different
+  quantities publishes no accuracy figure at all** (ABL-277). Subtracting one
+  series from the other only measures forecast error when both measure the
+  same thing. For **NL** they do not, and the resulting numbers were live:
+  measured on prod over 2026-08-04..11, NL's D+1 load forecast scored **75.1%
+  MAPE with a +2,427 MW bias**, against 1.2-3.6% for DE/FR/ES/IT/BE.
+
+  **The divergence is upstream, and our ingest is faithful** — established by
+  probing ENTSO-E directly on 2026-08-12 for market day 2026-08-05.
+  `A65`/`A16` (Actual Total Load) and `A65`/`A01` (Day-ahead Total Load
+  Forecast) for domain `10YNL----------L` each return one TimeSeries,
+  businessType `A04`, objectAggregation `A01`, unit `MAW`, resolution `PT15M`
+  — and disagree at source (realized 3,858.9-11,248.2 MW, forecast
+  8,280.6-13,378.8 MW). Our stored rows reproduce both to the decimal. So the
+  three obvious causes are all excluded: no ingest aggregation or scaling
+  error, no bidding-zone mismatch, no partial-TSO coverage. **Do not re-file
+  this as an ingest bug**, and do not "fix" it in `energy-data-gathering`.
+
+  The gap is behind-the-meter solar. ENTSO-E's *reported* NL solar generation
+  peaks at **181 MW** on a cloudless August day against an installed Dutch
+  fleet well over 20 GW, so essentially the whole fleet is invisible as
+  generation and is netted out of the realized series but not the forecast.
+  Seasonality is the proof: over 2026-08-04..11 the midday bias (09-14 UTC) is
+  **+123.2%** against **+9.8%** overnight, while the same measurement over
+  2026-01-06..20 gives **+0.0%** midday and **−0.2%** overnight. No solar, no
+  divergence. (A second, smaller level offset visible at night is *unexplained*
+  and wanders — it crossed sign between 2025-11 and 2025-12, and a year
+  earlier the forecast sat *below* realized at midday, 2025-06 midday bias
+  **−38%**. It does not weaken the finding: two series measuring one quantity
+  do not carry a wandering ±10% night-time offset.)
+
+  `services/loadForecastBasis.ts` is the rule (pure, colocated test).
+  Three properties are load-bearing:
+
+  - **It is a registry of measured findings, not a threshold**
+    (`DIVERGENT_LOAD_BASIS`, `loadForecastBasis.ts:69`). A threshold was
+    tried and rejected: across the 34 countries with a stored D+1 load
+    forecast there is **no gap in the MAPE distribution to put one in**. FR
+    reached 11.6% and DK 11.0% over 2025-06-01..15 through ordinary forecast
+    error, while EE and IE sit at ~10.5% over 2026-08-04..11 — any cutoff
+    catching the latter condemns the former. An uncalibrated cutoff is exactly
+    what `METRIC_THRESHOLDS` was deleted for. An entry is added only once the
+    divergence is established against the raw upstream documents, and carries
+    the evidence that established it.
+  - **The rule lives in the service, not the routes**
+    (`tsoForecastService.ts:366`), so every consumer inherits it rather than
+    having to remember it. That is what closes `/tso-forecast/accuracy/load`,
+    `/tso-forecast/metrics`, and — through `forecastComparisonService`'s three
+    call sites — `/forecast-comparison/:cc`, `/:cc/best` and `/:cc/rolling`.
+    `ForecastTab`'s TSO D+1/D+7 horizon bars vanish for NL as a consequence,
+    because `buildHorizonBars` drops a bar whose `mape` is null.
+  - **`dataPoints`/`mapeSamples` stay truthful; `mae`/`mape`/`rmse`/`bias` go
+    null.** The points really did pair — reporting zero of them would assert
+    "no data", a different and equally false claim, the same distinction
+    `degenerate_zero` draws against `no_actuals` on the net-position side.
+    **`bias` is the one that most needed nulling**: measured on the replica
+    before the fix, NL's summary reported `mae: 0, rmse: 0` beside
+    `bias: 2435.22` — a clean systematic over-forecast the TSO could
+    supposedly correct, when it is the solar the two series disagree about.
+    Two `?? 0` coercions produced those zeros
+    (`forecastComparisonService.ts:255` is where the divergent case now
+    returns before reaching them).
+
+  Suppression is **unconditional**, not gated on season or on the size of the
+  observed error. In a window where the two happen to agree — NL winter — the
+  difference is still not attributable to forecast skill, and a number we
+  cannot attribute is not a number we can publish.
+
+  Client side, `ForecastTab.tsx:178` prints the reason under the stat strip
+  and `modelComparison.ts:200` gives the panel a `divergent_basis` row state,
+  because three em-dashes beside a healthy sample count reads as a sparse
+  measurement rather than as no measurement.
+
+  **NL is not the only suspect zone — the others are unestablished, and were
+  deliberately not guessed at.** Measured over 2026-08-04..11: BA 37.2% MAPE
+  (+6.6% night / +86.7% midday — NL's exact signature, and 137% MAPE over
+  2026-06), MK 26.4%, MD 23.6%, LT 14.2%, EE 10.8%, IE 10.5%. None has been
+  probed upstream, so none is in the registry. Filed separately; do not add an
+  entry without the upstream measurement that justifies it.
+
+  Note this is a **TSO-forecast** property, not a property of NL's actuals.
+  Our own ml models are trained against the same realized series they are
+  scored on, so ml accuracy for NL is measuring what it claims to (it is
+  simply poor — 94.75% MAPE for catboost D+1 over that window, which is a
+  model-quality question, not a basis one).
+
 ### 4. Time navigation
 
 `TimePicker.tsx` (`client/src/components/dashboard/TimePicker.tsx`) is the
@@ -1452,7 +1638,7 @@ closed enum) and `timePreset` both persisted and both drove UI, and that the
 `/dashboard/*` endpoints forced it. Neither is true any more: nothing in
 `client/src` declares or reads a `timeRange` field, there is no `TimeRange`
 type in `client/src/types/index.ts` at all (the enum survives only server-side,
-`server/src/types/index.ts:233`), every per-tab hook sends an explicit
+`server/src/types/index.ts:244`), every per-tab hook sends an explicit
 `start`/`end` computed by `getDateRangeForPreset` (`useGenerationMix`,
 `useDashboardData.ts:208`, and `useMapData` likewise at `:188`), and
 `migratePersisted` deletes a stored
@@ -1807,7 +1993,7 @@ an NTP step between two samples would otherwise scale every rate on the page.
 Two parsing traps are covered by `hostMetrics.test.ts`: a wide counter abuts
 its colon (`eth0:123456789012`) so the line splits on the first `:` not on
 whitespace, and transmit bytes are field 9, not field 2. Client-side, `network`
-is **optional, not merely nullable** (`client/src/types/index.ts:392`) — a peer on a build
+is **optional, not merely nullable** (`client/src/types/index.ts:502`) — a peer on a build
 older than ABL-290 sends no key at all, which `buildNetworkRows`
 (`client/src/lib/networkRows.ts`) renders as "not reported by this build",
 separately from `null` ("not measured on Windows"), `[]` ("no non-loopback
@@ -2111,6 +2297,45 @@ Three things to know before touching this:
   (`renewableService`'s join, plus inline `AVG/AVG` SQL in the header and the
   map), disagreeing with each other. Share-of-load is wrong here: a net
   exporter generates more than it consumes, so single rows read over 100%.
+- **"Actual generation" means *metered* generation, and for one country that
+  is not the same thing** (ABL-325). A75 reports what the TSO can meter, which
+  excludes behind-the-meter distributed generation. For almost everyone that
+  gap is negligible; for **NL solar it is the whole story** — the reported
+  series peaks at 428.8 MW against a Dutch fleet well over 20 GW, and renders
+  as 0.93% of NL's generation mix in high summer. See the next section.
+
+### Solar coverage: when the label cannot stand unqualified
+
+`getGenerationMix` attaches a `solar_coverage` verdict
+(`server/src/services/solarCoverage.ts`) to every mix it serves, and the
+Generation tab qualifies its Solar band, arc and row from it
+(`client/src/components/dashboard/solarCoverageNote.ts`).
+
+The test is **not** installed capacity, which this repo does not hold. It pairs
+our actuals against **ENTSO-E's own day-ahead solar forecast for the same
+country and hour**, which we already ingest into `energy_generation_forecast`.
+If both describe the same fleet their sums agree. Measured on the replica over
+2026-05-14..08-12, eighteen countries land between 0.95 and 1.29 (RO is the
+widest honest case); **NL sits at 17.0 across 8,693 consecutive hours**, which
+no forecast error produces. NL is the only `partial_subset` in Europe.
+
+Three rules this encodes, all of which cost a bug to learn:
+
+- **The ratio is never a correction factor.** The day-ahead forecast is itself
+  only what the TSO sees (NL's peaks at 7,871 MW, still far under the fleet),
+  so 17.0 is a lower bound on a discrepancy, not a route back to national
+  solar. `solarCoverageNote.test.ts` pins that the note never prints one.
+- **`unknown` is not `consistent`.** A country with no solar forecast to check
+  against (NO's sums to exactly 0.0 MW over 8,691 pairs) must not divide out to
+  a comfortable ratio of 0 and be pronounced sound on absent evidence.
+- **A dead-zero actual series is a different defect and is deliberately not
+  claimed here.** **BA's solar has read exactly 0.0 at every hour since
+  2026-04-13 06:00** — four months through the Balkan summer — while ENTSO-E
+  forecasts up to 244 MW and BA's wind and hydro report normally. That is a
+  feed emitting zeros (the ABL-35 species), not a metered subset; the
+  partial-coverage wording would be actively wrong about it, and the remedy is
+  to *withhold* the number rather than relabel it. `classifySolarCoverage`
+  returns `unknown` for it. Not yet fixed — filed separately.
 
 ## Timestamp storage: two separators in one column
 
@@ -2179,7 +2404,9 @@ ticket originally sketched. It silently fans out: `energy_load` alone has
 **107,047** of those pairs held **conflicting** values (measured 2026-08-11,
 against ABL-211/ABL-215's then-still-open "which one is authoritative" board
 question — `energy_price` has 16,896 such pairs, 2 conflicting;
-`energy_renewable` 26,694 pairs, 2,441 conflicting). An `IN(...)` join matches
+`energy_renewable` 26,694 pairs, **26,400** conflicting, re-measured 2026-08-12
+over the whole 829,568-row table, pairing length-19 rows on `(country_code,
+instant)` and comparing `total_renewable_mw`). An `IN(...)` join matches
 *both* rows whenever both exist, so it would have traded ABL-214's silent-drop
 defect for a silent-fan-out one — double-counting that hour, and on a
 conflicting pair, handing an accuracy metric the right-looking value and the
@@ -2188,6 +2415,25 @@ confidently-wrong-number defect this whole file exists to catch, and it was
 not this join's decision to make: settling which of a conflicting pair is
 authoritative is a data-provenance judgment, not a read-side accuracy query,
 and that is what ABL-215 was for.
+
+**That `energy_renewable` figure read `2,441` here until ABL-329, understating
+it by ~10x** — it made a near-universal defect read as a marginal one, and
+anyone sizing work against this table from that number would have sized it an
+order of magnitude too small. The pair count reproduces to the row (26,694),
+which pins the definition exactly; the conflict count does not reproduce at
+2,441 under any predicate tried — 24 of them, every `*_mw` column both
+differs-at-all and differs-with-both-sides-non-zero, plus rounding, magnitude
+and relative-difference variants — so `2,441` measured nothing recoverable
+rather than something narrower. The real distribution, 2026-08-12:
+`total_renewable_mw` differs on 26,400 pairs, still 26,400 after `ROUND(,2)`,
+26,362 by more than 0.5 MW, and 23,237 with both sides non-zero. **Not one of
+the 26,400 is a NULL-against-a-value mismatch** — all 26,400 are two non-NULL,
+genuinely different numbers, which is what makes the `IN(...)` fan-out an
+accuracy defect rather than a coalescing nuisance. BA alone contributes 17,013;
+excluding it leaves 9,387 across 28 other countries, so this is not one bad
+country either. **The design conclusion is unchanged and strictly better
+supported** at a 98.9% conflict rate than at the 9% the old number implied:
+still two `LEFT JOIN`s plus `COALESCE`, never one `IN(...)`.
 
 **ABL-215 ruled and executed on 2026-08-12, but only for `energy_load` and
 only for 23 of the ~26 conflicted countries.** ABL-227 sampled ~200
@@ -2201,15 +2447,43 @@ conflicts were rounding artifacts of the same reading, average diff
 for these 23 countries, not the stale 107,047 total): the losing row was
 copied to `energy_load_conflict_backup_abl215` (tagged `rule_applied`) before
 being deleted, and the 26,465 T-wins rows had their surviving space-row
-`load_mw` updated to the T value. **CH, PL and SI are still open** — ABL-227's
-sample couldn't resolve them (differences were noise-scale against a further,
-later ENTSO-E revision neither stored snapshot captured) — leaving 9,496
-conflicting pairs. `energy_price`'s 16,896 conflicting pairs are untouched
-entirely; ABL-227/ABL-215 scoped to `energy_load` only, since price's overlap
-is mostly disjoint coverage rather than value conflict. The two-LEFT-JOIN-
-COALESCE shape below is therefore still load-bearing for CH/PL/SI and for all
-of `energy_price` — do not simplify it back to a single join on the theory
-that ABL-215 "closed" the conflict question.
+`load_mw` updated to the T value. **CH, PL and SI were left open at the time**
+— ABL-227's original sample couldn't resolve them (differences were
+noise-scale against a further, later ENTSO-E revision neither stored snapshot
+captured) — leaving 9,496 conflicting pairs. `energy_price`'s 16,896
+conflicting pairs are untouched entirely; ABL-227/ABL-215 scoped to
+`energy_load` only, since price's overlap is mostly disjoint coverage rather
+than value conflict.
+
+**ABL-255/ABL-257 resolved SI and most of PL on 2026-08-12, on a larger
+ENTSO-E sample.** ABL-255 re-adjudicated the 9,496 with more evidence per
+country: SI got the same T-row-wins treatment as ABL-215's 8-country group (T
+closer in all 13 sampled weeks, 89.3% overall, median relative error T 0.82%
+vs space 13.44%), and PL got a mixed verdict — most of it is the identical
+int-vs-2dp rounding artifact that defined ABL-215's FI/HU rule, but 69 rows
+plus all of CH still showed noise-scale differences against an unsettled
+ENTSO-E revision the sample couldn't pin down. ABL-257 executed the resolvable
+part on 2026-08-12 (Board `request_confirmation` accepted 07:35:09Z, scoped
+fresh rather than reusing ABL-215's approval): **SI 1,857 T-wins + PL 5,760
+no-op/format-only = 7,617 rows**, mirroring ABL-215's mechanics exactly —
+re-enumerated immediately before writing (zero drift from the plan), losing
+rows copied to `energy_load_conflict_backup_abl257` before deletion, in-
+transaction verification (byte-identity on every touched row, scope
+boundaries untouched, exact row-count delta) before COMMIT, then an
+independent post-commit re-check on a separate connection. `energy_load`
+dropped from 2,649,706 to **2,642,089** (exactly −7,617); every other table
+confirmed byte-for-byte unchanged. SI now carries 3 T-rows (rounding-only,
+diff < 1 MW, left untouched — not a genuine conflict) and PL carries 93 (24
+zero-fabrication rows out of scope per ABL-210/closed, plus the 69 residual
+rows deferred alongside CH).
+
+**CH (1,783: 1,403 genuine + 380 rounding) and PL's 69 residual rows are the
+only `energy_load` conflicts still open**, tracked in a follow-up issue
+(ABL-258) pending a larger or more recent ENTSO-E sample — the same
+unsettled-revision problem ABL-255 could not close for them. The two-LEFT-
+JOIN-COALESCE shape below is still load-bearing for CH, PL's 69 residual rows,
+and all of `energy_price` — do not simplify it back to a single join on the
+theory that this is fully closed.
 
 **ABL-256 executed on 2026-08-12 and closed the rest — every non-conflicting
 `energy_load` T-row, format only, zero `load_mw` values changed anywhere.**
@@ -2237,13 +2511,14 @@ row-count-verified before either statement ran, and independent post-commit
 re-verification (20/20 spot checks on each block; `energy_price` and every
 other table confirmed byte-for-byte unchanged). `energy_load` dropped from
 182,329 to exactly **9,496** T-separator rows — CH 1,783 / PL 5,853 / SI
-1,860, precisely the still-open conflicts ABL-215 could not resolve — and
-gained zero new orphans, since every rewritten row already had no space-form
-counterpart to collide with. `energy_load`'s own row count dropped by exactly
-30,066 (the deletes, from 2,679,772 to 2,649,706); nothing else in the table
-or the database changed.
+1,860, precisely the still-open conflicts ABL-215 could not resolve at that
+point — and gained zero new orphans, since every rewritten row already had no
+space-form counterpart to collide with. `energy_load`'s own row count dropped
+by exactly 30,066 (the deletes, from 2,679,772 to 2,649,706); nothing else in
+the table or the database changed. (That 9,496 was ABL-256's own snapshot, not
+the current figure — ABL-257 resolved 7,617 of it the same day; see above.)
 
-`timestampFormOnClause` (`server/src/utils/timestamp.ts:140`) is instead
+`timestampFormOnClause` (`server/src/utils/timestamp.ts:145`) is instead
 always used as **two separate LEFT JOINs** — one matching the space form, one
 matching the `T` form, on two different aliases — `COALESCE`d together
 preferring space. That changes nothing for any country-hour that already
@@ -2286,8 +2561,9 @@ the cutover (2025-11-15..2025-12-01): today's bare-equality join returns 1,057
 rows; the separator-agnostic, dedup-safe join returns 2,013 — essentially
 double. It needs the identical `timestampFormOnClause`-pair-plus-`COALESCE`
 treatment as the two fixed services above (never the naive `IN(...)`, for the
-same fan-out reason — `energy_renewable` alone has 2,441 conflicting `T`/space
-pairs), in both its hourly and aggregated branches. That is materially more
+same fan-out reason — `energy_renewable` alone has **26,400** conflicting
+`T`/space pairs, 98.9% of the 26,694 it has), in both its hourly and
+aggregated branches. That is materially more
 than "the same one line" this ticket was scoped for, and nothing in this
 client currently calls `/tso-forecast/accuracy/generation/:cc` (see
 "ForecastTab" above), so it was left unfixed here rather than grown into this
@@ -2502,14 +2778,40 @@ change — filed as its own follow-up instead.
   no reader touched.
 
   **It captures nothing until this server is deployed and running with a
-  write connection.** Landing this branch on `main` changes no running
-  process; `forecast_vintage_archive` does not exist in production until
-  code built from it is deployed. Once it is, capture is automatic and
-  gated exactly like `POST /api/weather/snapshot` already is — on
-  `HELIO_WRITE_TOKEN` being set (`shouldScheduleForecastVintageArchive`,
+  write connection** — but that condition is now **met on prod, so query the
+  archive rather than assuming it is empty** (ABL-278). Landing this branch
+  on `main` changes no running process; `forecast_vintage_archive` does not
+  exist in production until code built from it is deployed. Once it is,
+  capture is automatic and gated exactly like `POST /api/weather/snapshot`
+  already is — on `HELIO_WRITE_TOKEN` being set
+  (`shouldScheduleForecastVintageArchive`,
   `forecastVintageArchiveScheduler.ts:50`), started from `index.ts` at
   server boot. If that variable is unset in production for some other
   reason, deploying this code still captures nothing until it is set.
+
+  Verified live on prod 2026-08-12: `HELIO_WRITE_TOKEN` is set, the container
+  logs "Forecast vintage archive scheduler: HELIO_WRITE_TOKEN is set;
+  capturing every 15m", and the table holds **13,858,301 rows** with
+  `first_seen_at` from `2026-08-11T15:24:21Z`. Incremental growth is ~100k
+  rows/day, most of it redundant: a refetch that carries an unchanged value
+  under a bumped `publication_timestamp_utc` is a new identity tuple, so it
+  lands as a new vintage row (see the IDENTITY / DEDUPE KEY note in
+  `forecastVintageArchiveService.ts`'s header). That is the design working as
+  specified, not a defect, but it is why "more than one vintage" must never
+  be read as "the value changed" — count `DISTINCT forecast_value`.
+
+  **What it has already proved (ABL-278).** ENTSO-E day-ahead forecasts are
+  revised, and the two TSO tables' overwrite really does destroy the
+  as-issued value: over 27,844 observed refetch events, **21.2% of
+  pre-delivery refetches and 1.8% of refetches in the first 24h after
+  delivery changed the stored value**, while 24-48h after (3,984 events) and
+  48h-7d after (19,890 events) changed **zero**. So the value freezes ~24-36h
+  past delivery and the remaining ~5 days of the rolling 7-day refetch window
+  are pure churn. TSO accuracy read from these tables is measured against the
+  revised value, not the as-issued one, and is optimistically biased —
+  measured at **11.3% relative** on target day 2026-08-12 (WAPE 2.0849% ->
+  1.8485%, n=389), a lower bound. See ABL-278 for the full evidence; the fix
+  is scoped separately.
 
   **Runs in a worker thread, never on Express's request-handling thread.**
   Measured against a full copy of the production-scale replica (2026-08-11):
@@ -2590,44 +2892,56 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-12, measured on this merged tree (ABL-285 + ABL-292 +
-ABL-288 + ABL-295 + ABL-287 + ABL-304 + ABL-311 + ABL-282 + ABL-300):
-**49 client test files / 644 tests** and **66 server test files / 1,171 tests**
-(1,169 passing + 2 skipped), all files collected, zero assertion failures.
-Clean typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests
-passing than that means something broke.
+Green as of 2026-08-13, measured on `main` at the ABL-317 publish merge with
+ABL-311's patch-identity gate merged on top — `origin/main`'s `/v1` line
+(ABL-300, ABL-301, ABL-304, ABL-282) joined to local `main` (ABL-309, ABL-319,
+ABL-325, ABL-329), the three Group B branches (ABL-276/277/278, ABL-257,
+ABL-282's flat config), and ABL-311: **50 client test files / 666 tests** and
+**75 server test files / 1,376 tests**, all passing, zero skipped, clean
+typecheck on both (`tsc -b` and `tsc --noEmit`, exit 0). Fewer tests passing
+than that means something broke.
 
-The server figure is a fresh `npx vitest run` on this tree. The client figure is
-carried from the same merged tree's last measurement and **not** re-run here,
-which is sound only because this branch is server-only — `git status` lists no
-`client/` path. Neither is a sum of the branch deltas below; the deltas are
-recorded to explain the movement, not to be added up.
+**Neither input figure survived, and neither was added up.** Local `main` read
+49 client files / 657 tests and 63 server files / 1,026 tests at `4977f8a`;
+`origin/main` read 49 / 644 and 66 server files / 1,114 at `87aaa1c`; their
+merge read 50 / 666 and 75 / 1,367 at `a8d6fe8`, and ABL-311's own `+9`
+`release/` cases take the server figure to 1,376. The sides touch disjoint code
+— `CLAUDE.md` was the only file every one of them edited — so each figure is a
+fresh `npx vitest run` on the tree it names, per the ABL-234 rule below. The
+deltas recorded further down explain the movement; they are not to be summed.
 
-**The 66th file used to be a standing caveat, and ABL-311 fixed the cause.**
+Both suites were run under **v24.18.0**, which is not optional — see
+"NODE_MODULE_VERSION mismatch" below, and note that all 666 client tests pass
+under it, including the `dashboardStore.test.ts`/`windowLabel.test.ts` cases
+that fail under v25.6.1 for the `storage.setItem` reason recorded there.
+
+**The server figure carries one caveat, which is environmental and not a
+regression: it moves depending on whether the shared replica is free.**
 `services/generationService.test.ts` ends in an opportunistic `describe` against
 the read-only development replica at `C:/Code/able/data/energy_dashboard.db`.
-Its guard tested only `fs.existsSync`, but the open itself runs at *module
-evaluation*, so whenever the twice-daily DB sync (ABL-220, ABL-249) held that
-file — measured 2026-08-12 with a 3.6 GB rollback journal — the readonly open
-raised `SqliteError: database is locked` and the throw became a **collection**
-error that took the whole file down. The cost was not the two opportunistic
-cases; it was the **46 fixture-backed cases beside them**, which touch no
-replica at all and silently stopped running for the length of every sync
-window. That is the worst shape a test outage can take: the run says "no tests"
-for the file rather than naming an assertion, so a reader checking `predone`
-sees a green suite that is quietly 46 cases short. The guard now catches — a
-lock is not absence, and neither is a corrupt header or a permissions error —
-and skips the opportunistic block while the rest of the file runs. That is
-where 1,114 became 1,169: +9 new `release/` cases from ABL-311 and +46
-recovered.
+The 1,367 above was measured with that replica **reachable**, so those cases are
+included. When it is not reachable the file contributes fewer — and when it is
+*locked* rather than absent, the file does not collect at all and contributes
+none.
 
-That file contributes its replica-backed cases whenever the shared database is
-reachable, so a run against a free database reads **higher** than 1,114, and
-1,114 is a floor rather than a ceiling. The size of the gap is itself measured,
-not derived: the same PR-head tree read **1,148** when the replica was reachable
-and **1,100** when it was not, in two independent runs — a 48-case swing that is
-entirely this one opportunistic `describe`. Do not treat a number above 1,114 as
-drift, and do not "fix" this file by deleting the replica check.
+**The third state — locked — used to take the whole file down, and ABL-311
+fixed that.** The guard tested only `fs.existsSync`, but the open runs at module
+evaluation, so during the twice-daily DB sync (ABL-220, ABL-249 — a 3.6 GB
+rollback journal was observed on 2026-08-12) the readonly open raised
+`SqliteError: database is locked` and the throw became a **collection** error
+that took the whole file down, including the ~46 fixture-backed cases beside the
+opportunistic ones that touch no replica at all. That is the worst shape a test
+outage can take: the run reports "no tests" for the file rather than naming an
+assertion, so a green-looking suite is quietly dozens of cases short exactly
+when someone running `predone` is reading it as permission to ship. A lock is
+not absence — and neither is a corrupt header or a permissions error — so
+`replicaHasGenerationTable` now **catches** (`generationService.test.ts:734`)
+and skips the opportunistic block while the rest of the file runs.
+
+So a server count in the 1,300s is normal and a lower one may simply mean the
+replica was busy — but a *file count* below 75 is no longer explainable that
+way, because a locked replica now skips rather than fails to collect. Do not
+"fix" this file by deleting the replica check.
 
 (ABL-300 added four server files — `v1/keys/keyFormat.test.ts`,
 `v1/keys/sqliteApiKeyStore.test.ts`, `v1/keys/keysCli.test.ts` and
@@ -2784,13 +3098,13 @@ NODE_MODULE_VERSION 141.
 then nothing is broken in the code — the `node` first on your `PATH` is not
 the one `better-sqlite3` was compiled against in this checkout. On the able
 workstation `C:\Program Files\nodejs` (v25.6.1, ABI 141) shadows the nvm
-install, and `node_modules` is built for **v24.18.0** (ABI 137). Run the suite
-with the matching Node rather than rebuilding the native module, which would
-just move the breakage to whoever has the other one first on `PATH`:
+install. Run the suite with the matching Node rather than rebuilding the native
+module, which would just move the breakage to whoever has the other one first
+on `PATH`:
 
 ```bash
 export PATH="/c/Users/guill/AppData/Local/nvm/v24.18.0:$PATH"
-cd server && npx vitest run   # 66 files / 1,114 tests — see "Testing" above
+cd server && npx vitest run   # see "Testing" above for the current figure
 ```
 
 That `export` fixes the client suite too, for a different mechanism with the
@@ -2798,23 +3112,66 @@ same cause — see the `storage.setItem` note above. Set it once per shell and
 run both suites. (`/c/nvm4w/nodejs2/nodejs` is the nvm4w "current" symlink and
 also resolves to v24.18.0; either path works, the versioned one is stable.)
 
+**Since ABL-309 the suite tells you this itself.** A vitest `globalSetup`
+(`server/vitest.config.ts:16`) opens an in-memory database before any test file
+loads; on an ABI mismatch it halts the run with a single error naming both ABI
+numbers, the Node to re-run under, and why not to `npm rebuild`. So you get one
+explanatory failure instead of ~24 red files with a `bindings.js` stack and no
+assertion named. `SKIP_NATIVE_ABI_PRECHECK=1` bypasses it if you deliberately
+want the ABI-independent tests under a mismatched Node.
+
+**Which Node is correct flips, so do not memorise a version — read the error.**
+The binary is whatever the last `npm rebuild` in *any* checkout produced: it was
+ABI 137 on the morning of 2026-08-12, ABI 141 by 15:35, and back to 137 by
+15:36. The guard is deliberately written to report the numbers it finds rather
+than to name a version (`parseAbiMismatch`, `server/src/lib/nativeAbi.ts:68`),
+because a guard that hardcoded "use Node 24" would itself become the next wrong
+instruction. `137` is Node 24 and `141` is Node 25; the error states both.
+
 This is a standing instruction, not a suggestion, and it was re-tested under
 ABL-287: `npm rebuild better-sqlite3` under the v25.6.1 on `PATH` does fix the
 suite for that Node — and immediately breaks it for anyone following the
 `export PATH` line above, because an ABI-141 binary cannot load in v24.18.0.
-The rebuild was reverted the same run and the module is built for **v24.18.0**.
-If you want the default `node` to work without the export, that is a real
-decision about a shared workstation and needs the CEO, not a `npm rebuild` in
-passing.
+That rebuild was reverted the same run — and it has since happened again, which
+is why the section above says to read the error rather than trust any version
+written here. `server/node_modules` is junctioned into every per-issue worktree,
+so one `npm rebuild` re-points the ABI for all of them at once. If you want the
+default `node` to work without the export, that is a real decision about a
+shared workstation and needs the CEO, not a `npm rebuild` in passing.
 
-Verified 2026-08-12: the same tree reports `24 failed | 20 passed` under
-v25.6.1 and `45 passed (45)` under v24.18.0. Every failure is the same
-`bindings.js` import error, and none of them names a test assertion — a real
-regression names one. Pure helpers are deliberately insulated from this:
+Verified 2026-08-12 on ABL-309, ABI-137 binary: under v24.18.0 the tree is
+`61 passed (61)` / 988 tests; under v25.6.1 the guard halts the run with its
+one-error message and no test file loads. Bypassing the guard on that same Node
+(`SKIP_NATIVE_ABI_PRECHECK=1`) reproduces what everyone saw before it:
+`24 failed | 38 passed (62)`, 81 tests failed — matching the counts ABL-309 was
+filed with. Every failure is the same `bindings.js` import error and none names
+a test assertion, which is how you tell it from a real regression: a real one
+names an assertion. `require('better-sqlite3')` alone
+does *not* detect this — the addon is not loaded until a `Database` is
+constructed, which is why the failures scatter across DB-touching files instead
+of landing in one obvious place, and why the guard constructs one. Pure helpers
+are deliberately insulated from this:
 `services/combinedOpsStatusService.test.ts:17` mocks `config/database.js` out,
 and `lib/opsStatusThresholds.ts` imports only *types* from the DB-touching
 modules (type imports erase at compile time), so both suites run under either
 Node. Prefer that shape for new logic.
+
+(ABL-277 added the divergent-forecast-basis rule: **+19 server tests / +1
+server file**, measured against a stashed-changes baseline of 620/44 in this
+same worktree rather than derived — `services/loadForecastBasis.test.ts` is
+the new file at 11 cases, and `routes/tsoForecast.test.ts` goes 15 → 23. Plus
++5 client cases in
+`dashboard/modelComparison.test.ts` — no new client file. It also gave the
+shared fixture an **NL** country, on `NEXT_DAY` rather than `WINDOW`
+specifically because `crossCountryMetricsService.test.ts` seeds its own NL
+`T`/space conflict pair at `2026-07-01 01:00:00`; a second NL row at that
+timestamp would be an exact `(country_code, timestamp_utc)` duplicate, which
+is the one thing that test's no-fan-out property is measured against. The
+server figures here were measured in a **fresh worktree with dependencies
+installed from scratch** — note the repo-root `package.json` holds
+`@types/react-simple-maps`, so `npm install` in `client/` and `server/` alone
+leaves `npx tsc -b` failing on `react-simple-maps` with TS7016; install at the
+repo root too before diagnosing that as a code error.)
 
 (Both figures are a fresh `npx vitest run` on ABL-238 merged with `origin/main`
 at `0871259` — what `main` becomes when this lands — not arithmetic on the two
@@ -3068,6 +3425,36 @@ the push step belonging to nobody (ABL-311).
 Either way the branch-per-concern rule stands, and either way the issue is not
 `done` until the work is an ancestor of `origin/main`.
 
+**`state: MERGED` is not a publication check — only content on `origin/main`
+is.** A PR is merged into *its base branch*, and nothing requires that base to
+be `main`. Found on the sibling `energy-forecast` repo on 2026-08-13: PR #11
+reported `state: MERGED` on GitHub while its content was not on `main` at all,
+because it had been opened against another PR's branch; it took merging PR #10
+to actually publish it. So a green "Merged" badge answers *which branch did this
+land on*, not *did this ship*.
+
+This is a third stranding shape, distinct from the two above, and neither gate
+sees it. Gate 2 cannot: the content never reached local `main`, so `main` is not
+ahead of anything. Gate 1 can only see it while the head branch still exists
+locally — against `origin/main` the tip fails ancestry and `git cherry` reports
+`+` lines, so it is correctly named a gap — but merging a PR is exactly the
+moment the branch gets deleted, and a deleted branch is a tip gate 1 never
+enumerates. The merge destroys the evidence of its own incompleteness.
+
+Two rules follow, and both are local, which is why they are rules rather than a
+third gate. A gate that had to ask GitHub for a PR's base would fail open the
+moment the token expired, which is precisely the failure mode
+`gh`-token outages already produce here:
+
+- **Open PRs against `main`.** If you deliberately stack one on another branch,
+  the issue is not `done` when that PR merges — it is `done` when the bottom of
+  the stack reaches `origin/main`.
+- **Do not delete a branch until `git cherry origin/main <tip>` prints nothing.**
+  That command is the whole publication check in one line, it needs no network
+  and no board, and it is the same patch-identity test gate 1 runs. Empty output
+  means every commit's patch is on the remote; anything else means the branch is
+  still the only copy of something.
+
 **A commit on a branch is not shipping.** ABL-76 found five issues marked `done`
 whose branch was created, committed, and never merged — three of them absent
 from `main` *and* `origin/main`, including ABL-58, a live confidently-wrong-
@@ -3095,7 +3482,8 @@ Two conventions, and they are for different layers.
 `dashboard/degenerateForecastNote.ts`, `config/forecastModels.ts`,
 `server/src/utils/timestamp.ts`, `server/src/services/degenerateForecast.ts`
 (which now classifies both the forecast and the actuals series),
-`server/src/services/loadQuality.ts`, `lib/divergingStack.ts`,
+`server/src/services/loadQuality.ts`,
+`server/src/services/loadForecastBasis.ts`, `lib/divergingStack.ts`,
 `dashboard/generationSeries.ts`, `lib/priceWindow.ts`,
 `server/src/services/freshness.ts`, `layout/freshnessPill.ts`,
 `lib/forecastGap.ts`, `dashboard/forecastLineTokens.ts`,
@@ -3283,6 +3671,47 @@ and `production` if it should be the default). `ModelPicker`,
 validation all read this registry directly — nothing else needs to change for
 the model to appear, be servable, and be measurable by name.
 
+**A registry entry whose `model_name` nothing writes is dead.** Registering a
+model makes it *offerable*, not *served* — an explicit request is honoured
+strictly, so it resolves to that model, finds no rows, and draws an empty chart.
+Measured on the replica 2026-08-12, both wind shadow candidates are in exactly
+this state: `xgboost-retrain-v1` (`wind_offshore`) and `catboost-retrain-v1`
+(`wind_onshore`) are registered and pickable, and have **zero rows fleet-wide**.
+Check the `forecasts` table for the `model_name` before adding the entry.
+
+### Adding a country to a generation stream (ABL-319)
+
+**Serving is data-driven end to end — no country allowlist exists anywhere, so
+training a model is the whole job.** Traced DE `wind_offshore` on 2026-08-12:
+
+- `getForecastData` filters on `country_code` / `forecast_type` / `model_name`
+  only (`services/forecastService.ts:41-117`); `resolveModelCandidates` is keyed
+  by **stream** and never sees a country (`config/forecastModels.ts:224`).
+- `getAvailableForecastTypes` is a plain `SELECT DISTINCT forecast_type`
+  (`services/forecastService.ts:164-176`), so the first row written for a
+  country/stream adds the type to the picker with no code change.
+- No client component gates generation by country; `WindTab` is shared by both
+  wind streams and reads whatever the API returns.
+
+So the gate is the **write path**, not the picker. `wind_offshore` serves BE and
+FR and nobody else because only those two have a trained model — DE reports
+662-701 MW of real offshore generation every hour and forecasts none of it.
+`models/DE/wind_offshore` exists but holds only un-promoted variant
+subdirectories (`candidate/`, `centroid/`, `multipoint/`, `production/`) with no
+top-level `model.joblib`, which is the exact path `Forecaster.load` opens in the
+sibling `energy-forecast` repo (`../energy-forecast/src/forecaster.py:898`); it
+raises `FileNotFoundError` and `../energy-forecast/scripts/forecast_daily.py:452`
+counts the pair as *skipped*. Do not read a directory under
+`models/<CC>/<stream>/` as evidence that a stream is trained — check for
+`model.joblib` at its top level.
+
+A country with no rows degrades to `200` + an empty array, and the chart leaves
+`forecast: null` at every point rather than drawing a zero line
+(`buildSeriesGrid`, `client/src/lib/chartAdapters.ts:35`). Both directions are
+pinned by `routes/forecast.test.ts`'s "serving is data-driven, not
+country-gated" block and the two `adaptWindSeries` cases in
+`client/src/lib/chartAdapters.test.ts`.
+
 ### Modifying TSO or ML forecast display
 
 Key files:
@@ -3426,6 +3855,22 @@ interface TSOForecastAccuracyMetrics {
 **"Cannot connect to database":**
 - Verify the SQLite file at `ENERGY_DB_PATH` (or `server/.env`'s value) exists
 - Without `ENERGY_DB_PATH` set, the server defaults to `/data/energy_dashboard.db`, which won't exist on a workstation checkout
+
+**The Forecast-accuracy tab shows no MAE/MAPE/RMSE for a country, with a
+sentence instead of numbers:**
+- That is the signal working. A country whose ENTSO-E realized load and TSO
+  load forecast are published on different bases has every error measure
+  withheld, because their difference is a definitional gap rather than
+  forecast error — see the `ForecastTab` entry above. **NL** is the only
+  registered case; `services/loadForecastBasis.ts` carries the upstream
+  measurement behind it.
+- `dataPoints` stays non-zero on purpose: the points really did pair, and
+  reporting zero would claim we hold no data when we hold both series in full.
+  The TSO D+1/D+7 horizon bars are absent for the same reason.
+- Do not "fix" this by adding a threshold — the distribution has no gap to put
+  one in (FR reached 11.6% MAPE through ordinary error). Do not add a registry
+  entry for another country without probing the raw ENTSO-E `A65` documents
+  first; BA/MK/MD/LT/EE/IE are suspected and unestablished.
 
 **A country's load/price forecast is blank:**
 - Check whether a specific model is checked in `ModelPicker` — catboost and

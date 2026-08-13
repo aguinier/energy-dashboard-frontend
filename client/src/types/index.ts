@@ -43,6 +43,37 @@ export interface RenewableMix {
   renewable_percentage?: number | null;
 }
 
+/**
+ * Why the `solar` field below can, or cannot, carry an unqualified "Solar"
+ * label (ABL-325). Structural mirror of the server's `SolarCoverage`, which
+ * owns the rule and the thresholds - see `server/src/services/solarCoverage.ts`.
+ *
+ * `unknown` is a real verdict and is not `consistent`: it means the check
+ * could not run (too few paired hours, or a country that reports essentially
+ * no solar either side), so the label stands only because nothing contradicted
+ * it. The UI must render it as no caveat, never as a reassurance.
+ */
+export type SolarCoverageVerdict = 'consistent' | 'partial_subset' | 'unknown';
+
+export interface SolarCoverage {
+  verdict: SolarCoverageVerdict;
+  /** Paired hours the verdict rests on. */
+  pairs: number;
+  /** Summed MW of ENTSO-E's own day-ahead solar forecast over those hours. */
+  forecastSumMw: number;
+  /** Summed MW of the reported solar actuals over the same hours. */
+  actualSumMw: number;
+  /**
+   * `forecastSumMw / actualSumMw`, 1dp. Null when the actual sum is zero - the
+   * ratio does not exist. **Not a correction factor**: the day-ahead forecast
+   * is itself only what the TSO can see, so this is a lower bound on a
+   * discrepancy and must never be rendered as "solar is N times higher".
+   */
+  ratio: number | null;
+  /** Days of history the verdict was computed over. */
+  referenceDays: number;
+}
+
 // Full A75 generation mix, sourced server-side from `energy_generation` (the
 // complete ENTSO-E document) rather than the 8-column renewable-only
 // narrowing above. Every field is independently nullable: a production type
@@ -81,6 +112,13 @@ export interface GenerationMix {
   // country has no energy_generation rows yet, or total positive generation
   // is zero/negative.
   renewable_percentage: number | null;
+  // Whether `solar` above is this country's solar output or only the
+  // grid-metered part of it (ABL-325). Arrives in this payload rather than
+  // from a separate request specifically so the number and its caveat cannot
+  // be rendered apart. Optional on the wire so a client running against an
+  // older server degrades to "no verdict" rather than crashing; treat a
+  // missing value exactly like `unknown`.
+  solar_coverage?: SolarCoverage;
 }
 
 /**
@@ -255,6 +293,14 @@ export interface TSOForecastAccuracyDataPoint {
   error_pct: number | null; // null when actual_value <= 0 — unmeasurable as a percentage
 }
 
+/**
+ * Whether the country's realized load and its TSO load forecast measure the
+ * same quantity. `divergent_basis` is NOT a "no data" word — both series are
+ * held in full; it is the error measures derived from the pair that are not
+ * publishable. See `server/src/services/loadForecastBasis.ts` (ABL-277).
+ */
+export type LoadForecastBasis = 'comparable' | 'divergent_basis';
+
 export interface TSOForecastAccuracyMetrics {
   mae: number | null;
   mape: number | null;
@@ -262,6 +308,10 @@ export interface TSOForecastAccuracyMetrics {
   dataPoints: number;
   /** Count of points with a positive actual — may be lower than dataPoints; mape covers only these. */
   mapeSamples: number;
+  /** Absent on responses predating ABL-277; treat as 'comparable'. */
+  basis?: LoadForecastBasis;
+  /** Non-null exactly when `basis` is `divergent_basis`: why there are no numbers. */
+  basisNote?: string | null;
 }
 
 export interface ApiResponse<T> {
@@ -600,10 +650,16 @@ export type TSOHorizon = 'day_ahead' | 'week_ahead';
  * Accuracy metrics for a single forecast source/horizon
  */
 export interface AccuracyMetrics {
-  mae: number;      // Mean Absolute Error (MW or EUR/MWh)
+  /**
+   * Mean Absolute Error (MW or EUR/MWh). Nullable since ABL-277 — a country
+   * whose actuals and TSO forecast measure different quantities pairs points
+   * but has no publishable error, so `dataPoints > 0` does not imply a number.
+   */
+  mae: number | null;
   mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
-  rmse: number;     // Root Mean Square Error
-  bias: number;     // Mean Error (positive = over-forecast)
+  rmse: number | null;     // Root Mean Square Error
+  /** Mean Error (positive = over-forecast); null on a divergent basis, where the mean difference is definitional, not bias. */
+  bias: number | null;
   dataPoints: number;
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
-import { buildFixtureDb, WINDOW_QS } from '../test/fixtureDb.js';
+import { buildFixtureDb, WINDOW_QS, NEXT_DAY_QS } from '../test/fixtureDb.js';
 
 // Same pattern as dashboard.test.ts: the router's services open the shared
 // SQLite file at import time, so hand them the in-memory fixture instead.
@@ -18,6 +18,7 @@ beforeEach(() => clearResponseCache());
 
 const get = (path: string) => api.get(`tso-forecast/${path}`);
 const WINDOW = WINDOW_QS;
+const NEXT_DAY = NEXT_DAY_QS;
 
 describe('TSO accuracy routes — model parameter', () => {
   it('rejects an ml model on a tso accuracy endpoint', async () => {
@@ -77,13 +78,13 @@ describe('GET /accuracy/load/:countryCode — measured metrics', () => {
       { timestamp: '2026-07-01T02:00:00Z', forecast_value: 1150, actual_value: 1200, error: 50, error_pct: 4.17 },
       { timestamp: '2026-07-01T03:00:00Z', forecast_value: 1250, actual_value: 1300, error: 50, error_pct: 3.85 },
     ]);
-    expect(body.metrics).toEqual({ mae: 50, mape: 4.39, rmse: 50, dataPoints: 4, mapeSamples: 4 });
+    expect(body.metrics).toEqual({ mae: 50, mape: 4.39, rmse: 50, dataPoints: 4, mapeSamples: 4, basis: 'comparable', basisNote: null });
     expect(body.meta).toMatchObject({ count: 4, forecastType: 'day_ahead', model: 'tso-d1', modelRequested: null });
   });
 
   it('measures the week-ahead series when asked for it by model id', async () => {
     const { body } = await get(`accuracy/load/DE?${WINDOW}&model=tso-d7`);
-    expect(body.metrics).toEqual({ mae: 200, mape: 17.56, rmse: 200, dataPoints: 4, mapeSamples: 4 });
+    expect(body.metrics).toEqual({ mae: 200, mape: 17.56, rmse: 200, dataPoints: 4, mapeSamples: 4, basis: 'comparable', basisNote: null });
     expect((body.meta as Record<string, unknown>).forecastType).toBe('week_ahead');
   });
 
@@ -92,7 +93,7 @@ describe('GET /accuracy/load/:countryCode — measured metrics', () => {
     const { status, body } = await get(`accuracy/load/GR?${WINDOW}`);
     expect(status).toBe(200);
     expect(body.data).toEqual([]);
-    expect(body.metrics).toEqual({ mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 });
+    expect(body.metrics).toEqual({ mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0, basis: 'comparable', basisNote: null });
   });
 });
 
@@ -122,7 +123,7 @@ describe('GET /metrics/:countryCode', () => {
     expect(status).toBe(200);
 
     const data = body.data as Record<string, Record<string, unknown>>;
-    expect(data.load).toEqual({ mae: 50, mape: 4.39, rmse: 50, dataPoints: 4, mapeSamples: 4 });
+    expect(data.load).toEqual({ mae: 50, mape: 4.39, rmse: 50, dataPoints: 4, mapeSamples: 4, basis: 'comparable', basisNote: null });
     expect(data.solar).toEqual({ mae: 10, mape: 7.93, rmse: 10, dataPoints: 4, mapeSamples: 4 });
     expect(data.wind_onshore).toEqual({ mae: 10, mape: 5, rmse: 10, dataPoints: 4, mapeSamples: 4 });
     expect(data.wind_offshore).toEqual({ mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 });
@@ -132,7 +133,12 @@ describe('GET /metrics/:countryCode', () => {
     const { body } = await get(`metrics/GR?${WINDOW}`);
     const data = body.data as Record<string, Record<string, unknown>>;
     for (const type of ['load', 'solar', 'wind_onshore', 'wind_offshore']) {
-      expect(data[type]).toEqual({ mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 });
+      // `load` carries the basis verdict (ABL-277); the generation types have
+      // no such rule, so their shape is unchanged.
+      expect(data[type]).toEqual({
+        mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0,
+        ...(type === 'load' ? { basis: 'comparable', basisNote: null } : {}),
+      });
     }
   });
 });
@@ -160,5 +166,72 @@ describe('GET /load/:countryCode', () => {
       expect(point.forecast_min_mw).toBeNull();
       expect(point.forecast_max_mw).toBeNull();
     }
+  });
+});
+
+describe('divergent forecast basis (ABL-277)', () => {
+  it('publishes no error measure for NL, whose two series measure different quantities', async () => {
+    // NL pairs all four hours against a forecast at 2x the actual. Nothing is
+    // missing — the numbers are withheld because the difference is a
+    // definitional gap, not forecast error.
+    const { body } = await get(`accuracy/load/NL?${NEXT_DAY}`);
+    expect(body.metrics.mae).toBeNull();
+    expect(body.metrics.mape).toBeNull();
+    expect(body.metrics.rmse).toBeNull();
+  });
+
+  it('keeps the pairing counts, so the answer cannot read as "no data"', async () => {
+    const { body } = await get(`accuracy/load/NL?${NEXT_DAY}`);
+    expect(body.metrics.dataPoints).toBe(4);
+    expect(body.metrics.mapeSamples).toBe(4);
+    expect(body.data).toHaveLength(4);
+  });
+
+  it('says why, in words, on the response itself', async () => {
+    const { body } = await get(`accuracy/load/NL?${NEXT_DAY}`);
+    expect(body.meta.basis).toBe('divergent_basis');
+    expect(body.meta.basisNote).toContain('behind-the-meter solar');
+  });
+
+  it('still measures DE, so the rule is not a blanket kill switch', async () => {
+    const { body } = await get(`accuracy/load/DE?${WINDOW}`);
+    expect(body.meta.basis).toBe('comparable');
+    expect(body.meta.basisNote).toBeNull();
+    expect(body.metrics.mae).toBe(50);
+  });
+
+  it('suppresses the same country on the aggregate /metrics route', async () => {
+    // The rule lives in the service, not the route, so every consumer of
+    // getLoadForecastAccuracyMetrics inherits it.
+    const { body } = await get(`metrics/NL?${NEXT_DAY}`);
+    expect(body.data.load.mape).toBeNull();
+    expect(body.data.load.basis).toBe('divergent_basis');
+  });
+
+  it('keeps NL out of the horizon bars rather than drawing an uninterpretable one', async () => {
+    // /forecast-comparison/:cc/summary reads the same service; buildHorizonBars
+    // drops a bar whose mape is null, so the TSO D+1 bar simply is not there.
+    const { body } = await api.get(`forecast-comparison/NL?${NEXT_DAY}&forecastType=load`);
+    expect(body.data.tso.dayAhead.mape).toBeNull();
+  });
+
+  it('nulls MAE, RMSE and bias there too, rather than coercing them to a flawless 0', async () => {
+    // Measured on the replica before this fix: NL's summary reported
+    // `mae: 0, rmse: 0` beside `bias: 2435.22`. Bias is the worst of the four
+    // — a clean systematic over-forecast the TSO could supposedly correct,
+    // when it is the behind-the-meter solar the two series disagree about.
+    const { body } = await api.get(`forecast-comparison/NL?${NEXT_DAY}&forecastType=load`);
+    const da = body.data.tso.dayAhead;
+    expect(da.mae).toBeNull();
+    expect(da.rmse).toBeNull();
+    expect(da.bias).toBeNull();
+    expect(da.dataPoints).toBe(4);
+  });
+
+  it("keeps DE's summary numbers intact", async () => {
+    const { body } = await api.get(`forecast-comparison/DE?${WINDOW}&forecastType=load`);
+    const da = body.data.tso.dayAhead;
+    expect(da.mae).toBe(50);
+    expect(da.bias).toBe(-50); // forecast 50 MW under the actual at every hour
   });
 });

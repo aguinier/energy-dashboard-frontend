@@ -53,4 +53,9 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 )
 Button.displayName = "Button"
 
-export { Button, buttonVariants }
+// `buttonVariants` stays module-private: nothing outside this file imports
+// it, and exporting a non-component alongside a component is what breaks
+// react-refresh's fast-refresh boundary. Re-export it if a caller ever needs
+// the recipe (e.g. to style an <a> as a button), and move it to its own
+// module at that point rather than widening this one.
+export { Button }

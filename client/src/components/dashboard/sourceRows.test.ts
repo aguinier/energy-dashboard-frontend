@@ -59,6 +59,54 @@ describe('buildSourceRows', () => {
     expect(rows.find((r) => r.key === 'wind')!.mw).toBe(2568.73);
   });
 
+  // ABL-325. The Solar row's label is the fix for NL, whose reported solar is
+  // a ~2% grid-metered subset of its actual fleet.
+  describe('the Solar label', () => {
+    const solarRow = (mix: GenerationMix) => buildSourceRows(mix).rows.find((r) => r.key === 'solar')!;
+
+    it('is bare when the country reports its whole solar fleet', () => {
+      expect(solarRow(FR_MIX).label).toBe('Solar');
+      expect(
+        solarRow({
+          ...FR_MIX,
+          solar_coverage: {
+            verdict: 'consistent', pairs: 8692, forecastSumMw: 140_485_012,
+            actualSumMw: 140_034_443, ratio: 1, referenceDays: 90,
+          },
+        }).label,
+      ).toBe('Solar');
+    });
+
+    it('is qualified when the country reports only a metered subset', () => {
+      const row = solarRow({
+        ...FR_MIX,
+        solar_coverage: {
+          verdict: 'partial_subset', pairs: 8693, forecastSumMw: 12_447_625,
+          actualSumMw: 731_416, ratio: 17, referenceDays: 90,
+        },
+      });
+
+      expect(row.label).toBe('Solar (metered subset)');
+      // The value itself is untouched - the fix is the label, not the number.
+      expect(row.mw).toBe(18866.4);
+    });
+
+    it('is bare, not reassuring, when coverage could not be checked', () => {
+      // `unknown` renders exactly like a country we verified. Caveating every
+      // unchecked country would train readers to ignore the caveat on the one
+      // country that needs it.
+      expect(
+        solarRow({
+          ...FR_MIX,
+          solar_coverage: {
+            verdict: 'unknown', pairs: 8691, forecastSumMw: 0,
+            actualSumMw: 15_257, ratio: null, referenceDays: 90,
+          },
+        }).label,
+      ).toBe('Solar');
+    });
+  });
+
   it('sums hydro run-of-river and reservoir, but keeps pumped storage separate', () => {
     const { rows } = buildSourceRows(FR_MIX);
     expect(rows.find((r) => r.key === 'hydro')!.mw).toBe(4000);

@@ -96,6 +96,14 @@ const fx = vi.hoisted(() => {
 
 // Only the network boundary is mocked. The store, React Query, useModelSelection
 // and the series adapter all run for real — that chain is where the bug lived.
+//
+// `async` with no `await` is deliberate here and not an oversight: each of these
+// stands in for a real API function that returns a promise, and the code under
+// test awaits them. Dropping `async` would hand it a bare value and stop
+// exercising the await. (The two halves of ABL-282 — the flat config and this
+// file — were built on separate branches and first met when ABL-317 published
+// them together, which is why this disable is being added after the fact.)
+/* eslint-disable @typescript-eslint/require-await */
 vi.mock('@/services/api', () => ({
   fetchCountries: vi.fn(async () => [{ country_code: 'BE', country_name: 'Belgium' }]),
   fetchForecastModels: vi.fn(async () => fx.registry),
@@ -109,6 +117,7 @@ vi.mock('@/services/api', () => ({
     metrics: { mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 },
   })),
 }));
+/* eslint-enable @typescript-eslint/require-await */
 
 // The AbleLineChart mock exposes two data attributes so both rendering paths
 // are testable:
@@ -151,7 +160,7 @@ function renderLoadTab() {
 /** The forecast values the tab handed to AbleLineChart (single-model path). */
 async function forecastValuesOnChart(): Promise<number[]> {
   const chart = await screen.findByTestId('line-chart');
-  return JSON.parse(chart.getAttribute('data-forecast-values') ?? '[]');
+  return JSON.parse(chart.getAttribute('data-forecast-values') ?? '[]') as number[];
 }
 
 /** The forecastSeries ids handed to AbleLineChart (multi-model path). */

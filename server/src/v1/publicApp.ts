@@ -8,6 +8,7 @@ import { requireApiKey } from './auth/apiKeyAuth.js';
 import { publicErrorHandler, publicNotFoundHandler } from './publicErrors.js';
 import { assertPublicEnvironment, parsePublicCorsOrigins, type PublicEnv } from './publicEnv.js';
 import type { ApiKeyDirectory } from './keys/apiKeyStore.js';
+import type { UsageMeter } from './usage/usageMeter.js';
 
 /**
  * The public application, composed from scratch.
@@ -69,6 +70,26 @@ export interface PublicAppOptions {
   apiKeyDirectory: ApiKeyDirectory;
 
   /**
+   * The meter every authenticated request is counted by (ABL-301).
+   *
+   * **Required, with no default, for the same reason `apiKeyDirectory` is.** An
+   * app composed without a meter is an API that serves paid traffic and bills
+   * nobody — the silent under-count ABL-301 exists to prevent — and the failure
+   * would be invisible until the first invoice came out as zero. There is no way
+   * to spell that app, so it cannot be built by forgetting something.
+   *
+   * Injected rather than constructed here, so `publicApp.ts` names the *shape*
+   * of a meter and `publicIndex.ts` decides what backs it. The concrete store is
+   * the only thing that touches `better-sqlite3`, and it is not in this
+   * module's graph; `publicAppGraph.test.ts` pins that.
+   *
+   * The entrypoint owns the meter's lifecycle rather than the app doing it,
+   * because the buffer has to be flushed on shutdown and only the entrypoint
+   * knows when that is.
+   */
+  usageMeter: UsageMeter;
+
+  /**
    * The environment to configure from and to vet. Defaults to `process.env`.
    *
    * Injectable so tests can assert the refusal without mutating a global under
@@ -77,7 +98,11 @@ export interface PublicAppOptions {
   env?: PublicEnv;
 }
 
-export function createPublicApp({ apiKeyDirectory, env = process.env }: PublicAppOptions): Express {
+export function createPublicApp({
+  apiKeyDirectory,
+  usageMeter,
+  env = process.env,
+}: PublicAppOptions): Express {
   // First, before anything is wired: refuse to exist in a process that was
   // handed a write or ops capability. See FORBIDDEN_PUBLIC_ENV for why this is
   // a startup failure rather than a warning.
@@ -142,7 +167,8 @@ export function createPublicApp({ apiKeyDirectory, env = process.env }: PublicAp
 
   app.use(compression());
 
-  // Three mounts, and the order is the security property (ABL-300).
+  // Four mounts, and the order is the security property (ABL-300) and the
+  // billing property (ABL-301).
   //
   // `publicRootRoutes` is the entire unauthenticated surface — one discovery
   // endpoint returning two constants. It is a separate module rather than the
@@ -158,10 +184,26 @@ export function createPublicApp({ apiKeyDirectory, env = process.env }: PublicAp
   // CORS is deliberately ahead of the gate: the `cors` middleware answers a
   // preflight `OPTIONS` itself and ends the chain, so a browser's preflight —
   // which by specification carries no `Authorization` header — is never 401'd.
-  // ABL-301's meter and ABL-302's quota check slot in after the gate, in that
-  // order, both of them outside the cache (ABL-293 §2c).
+  //
+  // The meter goes **after the gate and before the routes**, and both halves of
+  // that matter:
+  //
+  // - *After* the gate, because a metered request must have a principal to be
+  //   metered to. `requireApiPrincipal` throws rather than counting to nobody,
+  //   so mounting it on the wrong side fails on the first request instead of
+  //   producing an invoice with a hole in it.
+  // - *Before* the routes and, when ABL-303 adds one, **outside the cache**.
+  //   This is the one ordering detail in ABL-293 §2c that is not negotiable:
+  //   `cacheMiddleware` returns early on a hit and never reaches the handler, so
+  //   a meter mounted inside the cache bills a customer polling a 5-minute-TTL
+  //   endpoint for 1 request in 300.
+  //
+  // ABL-302's quota check slots in between the meter and the routes: it needs
+  // the count this produces, and a request refused for quota is still a request
+  // that was made, so it must be counted before it can be refused.
   app.use('/v1', publicRootRoutes);
   app.use('/v1', requireApiKey({ directory: apiKeyDirectory }));
+  app.use('/v1', usageMeter.middleware);
   app.use('/v1', v1Routes);
 
   // Unconditional and last, in this order — `notFound` first so anything that

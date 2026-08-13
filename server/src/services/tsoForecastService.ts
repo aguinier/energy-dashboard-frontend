@@ -2,6 +2,7 @@ import db from '../config/database.js';
 import { Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { measuredLoadClause } from './loadQuality.js';
+import { applyLoadForecastBasis } from './loadForecastBasis.js';
 
 // Valid generation types for SQL column interpolation - prevents injection
 const VALID_GENERATION_TYPES = ['solar', 'wind_onshore', 'wind_offshore'] as const;
@@ -345,6 +346,16 @@ export function getGenerationForecastAccuracy(
 /**
  * Get aggregate accuracy metrics
  */
+/**
+ * Aggregate D+1/D+7 load accuracy for a country.
+ *
+ * The basis check is applied **here**, not in the routes, so that every caller
+ * gets it — `/accuracy/load/:cc`, `/metrics/:cc` and anything added later.
+ * A country whose realized load and TSO forecast measure different quantities
+ * comes back with `mae`/`mape`/`rmse` null and a `basisNote` saying why; see
+ * `loadForecastBasis.ts` for the measurement behind that. Putting the rule in
+ * the routes would have made it a convention someone has to remember.
+ */
 export function getLoadForecastAccuracyMetrics(
   countryCode: string,
   start: string,
@@ -352,7 +363,7 @@ export function getLoadForecastAccuracyMetrics(
   forecastType: TSOForecastType = 'day_ahead'
 ) {
   const data = getLoadForecastAccuracy(countryCode, start, end, forecastType, 'hourly');
-  return calculateMetrics(data);
+  return applyLoadForecastBasis(countryCode, calculateMetrics(data));
 }
 
 export function getGenerationForecastAccuracyMetrics(

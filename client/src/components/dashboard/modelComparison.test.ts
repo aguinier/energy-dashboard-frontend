@@ -358,3 +358,69 @@ describe('summariseComparison', () => {
     expect(summary.caveats).toEqual([]);
   });
 });
+
+describe('divergent forecast basis (ABL-277)', () => {
+  // What /tso-forecast/accuracy/load/NL returns: every point paired, but the
+  // realized series and the TSO forecast measure different quantities, so the
+  // server withholds the error measures and says why.
+  const NL_BASIS_NOTE =
+    'Not measurable here. ENTSO-E publishes the Dutch realized load net of ' +
+    'behind-the-meter solar and the day-ahead forecast without it, so the ' +
+    'difference between them is a definitional gap, not forecast error.';
+
+  const NL_TSO = measurementFromQuery({
+    isError: false,
+    data: {
+      metrics: {
+        mae: null, mape: null, rmse: null, dataPoints: 168, mapeSamples: 168,
+        basis: 'divergent_basis', basisNote: NL_BASIS_NOTE,
+      },
+    },
+  });
+
+  it('carries the server verdict through the measurement mapping', () => {
+    expect(NL_TSO).toMatchObject({ status: 'ok', basis: 'divergent_basis', basisNote: NL_BASIS_NOTE });
+  });
+
+  it('does not render as a measured row, despite 168 paired points', () => {
+    // The failure this prevents: all-em-dash metric cells beside "168 samples",
+    // which reads as a sparse measurement rather than as no measurement.
+    const rows = buildModelComparisonRows(
+      LOAD_MODELS, { 'tso-d1': NL_TSO }, { mlHorizon: 1, countryCode: 'NL' },
+    );
+    const row = rows.find((r) => r.id === 'tso-d1')!;
+    expect(row.state).toBe('divergent_basis');
+    expect(row.metrics).toBeNull();
+    expect(row.note).toBe(NL_BASIS_NOTE);
+  });
+
+  it('is not counted as comparable, so no ranking is built on it', () => {
+    const rows = buildModelComparisonRows(
+      LOAD_MODELS, { 'tso-d1': NL_TSO, catboost: { status: 'ok', metrics: metrics() } },
+      { mlHorizon: 1, countryCode: 'NL' },
+    );
+    expect(summariseComparison(rows).measuredCount).toBe(1);
+  });
+
+  it('is distinguished from "no coverage" — the points exist, the claim does not', () => {
+    const rows = buildModelComparisonRows(
+      LOAD_MODELS, { 'tso-d1': NL_TSO, xgboost: NO_COVERAGE },
+      { mlHorizon: 1, countryCode: 'NL' },
+    );
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expect(byId['tso-d1'].state).toBe('divergent_basis');
+    expect(byId.xgboost.state).toBe('no_model_coverage');
+    expect(byId['tso-d1'].note).not.toEqual(byId.xgboost.note);
+  });
+
+  it('leaves a comparable country measured — the rule is per country, not global', () => {
+    const rows = buildModelComparisonRows(
+      LOAD_MODELS,
+      { 'tso-d1': measurementFromQuery({ isError: false, data: { metrics: { ...metrics(), basis: 'comparable', basisNote: null } } }) },
+      { mlHorizon: 1, countryCode: 'DE' },
+    );
+    const row = rows.find((r) => r.id === 'tso-d1')!;
+    expect(row.state).toBe('measured');
+    expect(row.metrics?.mape).toBe(5.41);
+  });
+});

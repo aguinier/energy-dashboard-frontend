@@ -4,6 +4,8 @@ import type { Express } from 'express';
 import { createPublicApp } from './publicApp.js';
 import { FORBIDDEN_PUBLIC_ENV } from './publicEnv.js';
 import { createMemoryApiKeyDirectory } from './keys/memoryApiKeyDirectory.js';
+import { createMemoryUsageSink, type MemoryUsageSink } from './usage/memoryUsageSink.js';
+import { createUsageMeter, type UsageMeter } from './usage/usageMeter.js';
 
 /**
  * What the public composition does, from the outside.
@@ -78,12 +80,30 @@ let api: Awaited<ReturnType<typeof listen>>;
 const seeded = createMemoryApiKeyDirectory([{ accountName: 'Test Account' }]);
 const AUTH = { Authorization: `Bearer ${seeded.keys[0].key}` };
 
+/**
+ * A meter, for the same reason a key store is here: `createPublicApp` requires
+ * one, because an app that serves paid traffic and bills nobody is not an app
+ * anybody meant to build (ABL-301).
+ *
+ * In-memory, and `flushIntervalMs: 0` so flushing is something a test does
+ * rather than something it waits for. It keeps this file free of a database,
+ * which is the property the header describes.
+ */
+function meter(): { meter: UsageMeter; sink: MemoryUsageSink } {
+  const sink = createMemoryUsageSink();
+  return { meter: createUsageMeter({ sink, flushIntervalMs: 0 }), sink };
+}
+
+const mounted = meter();
+
 beforeAll(async () => {
   for (const name of FORBIDDEN_PUBLIC_ENV) {
     savedEnv.set(name, process.env[name]);
     delete process.env[name];
   }
-  api = await listen(createPublicApp({ apiKeyDirectory: seeded.directory }));
+  api = await listen(
+    createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: mounted.meter })
+  );
 });
 
 afterAll(async () => {
@@ -229,6 +249,7 @@ describe('hardened HTTP configuration', () => {
     const allowlisted = await listen(
       createPublicApp({
         apiKeyDirectory: seeded.directory,
+        usageMeter: meter().meter,
         env: { PUBLIC_CORS_ORIGINS: 'https://docs.example.com, https://app.example.com' },
       })
     );
@@ -263,16 +284,16 @@ describe('hardened HTTP configuration', () => {
 
 describe('the public app refuses a process holding write or ops capability', () => {
   it.each([...FORBIDDEN_PUBLIC_ENV])('refuses to build when %s is set', (name) => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
   });
 
   it('never puts the value in the message', () => {
     // An error message is the one place a secret reliably reaches a log file.
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
       /HELIO_WRITE_TOKEN/
     );
     try {
-      createPublicApp({ apiKeyDirectory: seeded.directory, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
+      createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
       expect.unreachable('should have thrown');
     } catch (err) {
       expect((err as Error).message).not.toContain('super-secret-value');
@@ -280,7 +301,61 @@ describe('the public app refuses a process holding write or ops capability', () 
   });
 
   it('builds when the environment is clean', () => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, env: {} })).not.toThrow();
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, env: {} })).not.toThrow();
+  });
+});
+
+describe('the meter is mounted where the composition says it is (ABL-301)', () => {
+  /** Wait for the response's `close` handler, which does not run inside `fetch`. */
+  async function settled(): Promise<void> {
+    for (let i = 0; i < 100; i += 1) {
+      if (mounted.meter.stats().pending > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
+  it('counts an authenticated request against the key that made it', async () => {
+    mounted.meter.flush();
+    mounted.sink.events.length = 0;
+
+    await probe(api.origin, '/v1/observations/load', { headers: AUTH });
+    await settled();
+    mounted.meter.flush();
+
+    const recorded = mounted.sink.events.filter((e) => e.routeTemplate !== '/v1');
+    expect(recorded.length).toBeGreaterThanOrEqual(1);
+    expect(recorded[0].keyId).toBe(seeded.keys[0].record.id);
+  });
+
+  it('does not count a request the gate refused', async () => {
+    mounted.meter.flush();
+    mounted.sink.events.length = 0;
+
+    // The mount order is the assertion: the meter sits *after* `requireApiKey`,
+    // so a 401 never reaches it. Metering an unauthenticated request would put
+    // rows in the billing table that no invoice could ever explain — and
+    // mounting the meter first is the obvious mistake, because it looks like it
+    // would give a more complete log.
+    const res = await probe(api.origin, '/v1/observations/load');
+    expect(res.status).toBe(401);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    mounted.meter.flush();
+    expect(mounted.sink.events).toHaveLength(0);
+  });
+
+  it('does not count the unauthenticated discovery root', async () => {
+    mounted.meter.flush();
+    mounted.sink.events.length = 0;
+
+    // `publicRootRoutes` is mounted ahead of the gate and ends the chain, so it
+    // never reaches the meter. It is the one endpoint with no key behind it, so
+    // there is nobody to bill for it.
+    expect((await probe(api.origin, '/v1')).status).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    mounted.meter.flush();
+    expect(mounted.sink.events).toHaveLength(0);
   });
 });
 

@@ -1,8 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openApiKeyAdminStore, openApiKeyDirectory, resolveApiKeysDbPath } from './sqliteApiKeyStore.js';
+import {
+  isRetryableCollision,
+  openApiKeyAdminStore,
+  openApiKeyDirectory,
+  resolveApiKeysDbPath,
+} from './sqliteApiKeyStore.js';
 import { MAX_LIVE_KEYS_PER_ACCOUNT, resolveKeyState, type ApiKeyAdminStore } from './apiKeyStore.js';
 import { hashKeySecret, parseApiKey } from './keyFormat.js';
 
@@ -169,6 +175,7 @@ describe('what reaches the disk', () => {
     const bytes = bytesOnDisk();
     expect(bytes).not.toContain('usage_events');
     expect(bytes).not.toContain('usage_rollup');
+    expect(bytes).not.toContain('usage_month_close');
   });
 
   it('has no last_used_at, which would be a write on every request', () => {
@@ -446,5 +453,70 @@ describe('the serving handle', () => {
     expect(() =>
       openApiKeyDirectory({ API_KEYS_DB_PATH: '/data/energy_dashboard.db' } as NodeJS.ProcessEnv)
     ).toThrow(/shared energy database/);
+  });
+});
+
+describe('isRetryableCollision — which insert failures are worth another draw', () => {
+  /**
+   * The two codes, taken from SQLite rather than assumed.
+   *
+   * This is the empirical half of the ABL-300 review's carry-over. The obvious
+   * `code === 'SQLITE_CONSTRAINT_UNIQUE'` is **narrower** than the message match
+   * it replaced, because a `PRIMARY KEY` collision reports a different code —
+   * and `insertMintedKey` draws a fresh `id` as well as a fresh prefix, so both
+   * are retryable and only one of them is `_UNIQUE`. Getting that wrong turns a
+   * recoverable collision into a customer-visible 500.
+   */
+  function errorCodeFor(sql: string): string {
+    const db = new Database(tmpDbPath('codes.db'));
+    db.exec('CREATE TABLE t (id TEXT PRIMARY KEY, prefix TEXT UNIQUE)');
+    db.prepare("INSERT INTO t (id, prefix) VALUES ('a', 'p')").run();
+    try {
+      db.prepare(sql).run();
+      throw new Error('expected a constraint violation');
+    } catch (err) {
+      return (err as { code?: string }).code ?? '(no code)';
+    } finally {
+      db.close();
+    }
+  }
+
+  it('a PRIMARY KEY collision reports SQLITE_CONSTRAINT_PRIMARYKEY', () => {
+    expect(errorCodeFor("INSERT INTO t (id, prefix) VALUES ('a', 'q')")).toBe(
+      'SQLITE_CONSTRAINT_PRIMARYKEY'
+    );
+  });
+
+  it('a UNIQUE collision reports SQLITE_CONSTRAINT_UNIQUE', () => {
+    expect(errorCodeFor("INSERT INTO t (id, prefix) VALUES ('b', 'p')")).toBe(
+      'SQLITE_CONSTRAINT_UNIQUE'
+    );
+  });
+
+  it('retries on both, so an id collision is not a 500', () => {
+    expect(isRetryableCollision({ code: 'SQLITE_CONSTRAINT_PRIMARYKEY' })).toBe(true);
+    expect(isRetryableCollision({ code: 'SQLITE_CONSTRAINT_UNIQUE' })).toBe(true);
+  });
+
+  it('does not swallow anything else', () => {
+    // Matching on the code rather than on the message is defence against a
+    // library wording change — but a code match that was too *broad* would be
+    // worse than the message match it replaced, because it would retry five
+    // times against a failure that was never going to succeed and then report
+    // the wrong cause.
+    expect(isRetryableCollision({ code: 'SQLITE_CONSTRAINT_NOTNULL' })).toBe(false);
+    expect(isRetryableCollision({ code: 'SQLITE_CONSTRAINT_FOREIGNKEY' })).toBe(false);
+    expect(isRetryableCollision({ code: 'SQLITE_READONLY' })).toBe(false);
+    expect(isRetryableCollision(new Error('UNIQUE constraint failed: t.prefix'))).toBe(false);
+    expect(isRetryableCollision(null)).toBe(false);
+    expect(isRetryableCollision(undefined)).toBe(false);
+  });
+
+  it('still issues a key, which is the behaviour all of the above protects', () => {
+    // The retry loop itself is not directly reachable without forcing a
+    // collision, so this is the end-to-end check that the refactor did not break
+    // the ordinary path.
+    expect(store.issueKey({ accountId, label: 'after the hardening', environment: 'live' }).key)
+      .toMatch(/^able_live_/);
   });
 });
