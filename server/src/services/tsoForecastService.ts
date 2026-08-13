@@ -3,6 +3,7 @@ import { Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { measuredLoadClause } from './loadQuality.js';
 import { applyLoadForecastBasis } from './loadForecastBasis.js';
+import { wape } from './wape.js';
 
 // Valid generation types for SQL column interpolation - prevents injection
 const VALID_GENERATION_TYPES = ['solar', 'wind_onshore', 'wind_offshore'] as const;
@@ -386,10 +387,44 @@ export function getGenerationForecastAccuracyMetrics(
  * `mape` covers only points with a positive actual — a percentage error is
  * undefined at zero. Those points previously contributed 0, which understated
  * mape wherever actuals legitimately hit zero (solar overnight).
+ *
+ * ## `wape` is the percentage error to read; `mape` is kept for continuity
+ *
+ * ABL-388. MAPE divides each point by its own actual, so it is dominated by
+ * whichever point had the smallest denominator. On a generation series that
+ * passes through near-zero at dawn and dusk every day, that is not a small
+ * effect — measured on the replica 2026-08-13 over full history, this exact
+ * function reported **HU solar 7,421.87%** and **NL solar 6,866.02%** while
+ * the same pairs give a WAPE of 13.12% and (see the caveat below) 1,727.81%.
+ * The `actual > 0` guard above prevents division *by zero*; nothing there
+ * prevents division by 0.4 MW.
+ *
+ * `wape` is served **beside** `mape` rather than replacing it, so an existing
+ * consumer of this shape keeps the field it reads. `mae` and `rmse` are
+ * magnitude measures and were never affected.
+ *
+ * Three things about the sample, because they differ per measure and a caller
+ * comparing them needs to know which rows each covers:
+ *
+ * - `dataPoints` is WAPE's sample — every paired row, including the
+ *   zero-actual ones MAPE must skip. There is no `wapeSamples` field because
+ *   it would be `dataPoints` by construction.
+ * - `mapeSamples` stays the MAPE sample (`actual > 0`), and is `<= dataPoints`.
+ * - `wape` is `null`, never `0`, when the window's actuals sum to zero — a
+ *   country must not read as a flawless 0% because it reported nothing.
+ *
+ * **A WAPE is only forecast skill where both series measure the same
+ * population.** Where they do not it is arithmetically correct and still not
+ * an accuracy figure: NL solar's ENTSO-E day-ahead forecast sums to 18.28x our
+ * metered actuals over full history, which is `solarCoverage.ts`'s established
+ * `partial_subset` finding rather than a forecast miss, and it survives the
+ * switch to WAPE unchanged. That is a basis question — the generation-side
+ * counterpart of what `loadForecastBasis.ts` already suppresses for NL load —
+ * and it is deliberately not answered here; see ABL-389.
  */
 export function calculateMetrics(data: ForecastAccuracyDataPoint[]) {
   if (data.length === 0) {
-    return { mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 };
+    return { mae: null, mape: null, wape: null, rmse: null, dataPoints: 0, mapeSamples: 0 };
   }
 
   const n = data.length;
@@ -403,9 +438,16 @@ export function calculateMetrics(data: ForecastAccuracyDataPoint[]) {
     ? pctPoints.reduce((sum, d) => sum + (d.error_pct as number), 0) / pctPoints.length
     : null;
 
+  // The one WAPE definition, shared with the cross-country heatmap. It does
+  // its own null/non-finite handling, so this passes every paired row.
+  const wapeValue = wape(
+    data.map((d) => ({ actual: d.actual_value, forecast: d.forecast_value }))
+  );
+
   return {
     mae: round2(mae),
     mape: mape == null ? null : round2(mape),
+    wape: wapeValue,
     rmse: round2(rmse),
     dataPoints: n,
     mapeSamples: pctPoints.length,

@@ -101,7 +101,7 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
       { timestamp: '2026-07-01T03:00:00', forecast_value: 1200, actual_value: 1300, error: 100, error_pct: 7.69, horizon_hours: 12 },
     ]);
     expect(body.metrics).toEqual({
-      mae: 100, mape: 8.78, rmse: 100, bias: 100, dataPoints: 4, mapeSamples: 4,
+      mae: 100, mape: 8.78, wape: 8.7, rmse: 100, bias: 100, dataPoints: 4, mapeSamples: 4,
     });
     expect(body.meta).toMatchObject({
       count: 4,
@@ -127,7 +127,7 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
   it('separates D+1 from D+2 by horizon band', async () => {
     const d2 = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load&horizon=2`);
     expect(d2.body.metrics).toEqual({
-      mae: 200, mape: 17.56, rmse: 200, bias: 200, dataPoints: 4, mapeSamples: 4,
+      mae: 200, mape: 17.56, wape: 17.39, rmse: 200, bias: 200, dataPoints: 4, mapeSamples: 4,
     });
   });
 
@@ -135,7 +135,7 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
     const { body } = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load`);
     // Four D+1 points at 100 MW error plus four D+2 points at 200 MW.
     expect(body.metrics).toEqual({
-      mae: 150, mape: 13.17, rmse: 158.11, bias: 150, dataPoints: 8, mapeSamples: 8,
+      mae: 150, mape: 13.17, wape: 13.04, rmse: 158.11, bias: 150, dataPoints: 8, mapeSamples: 8,
     });
     expect((body.meta as Record<string, unknown>).horizon).toBeUndefined();
   });
@@ -150,8 +150,12 @@ describe('GET /:countryCode/ml-accuracy — a window whose actuals are all zero'
     const { status, body } = await get(`BE/ml-accuracy?${WINDOW}&forecastType=solar&horizon=1`);
 
     expect(status).toBe(200);
+    // WAPE abstains here too, and for the same reason rather than a different
+    // one: its denominator is sum|actual|, which is 0. This is the one place
+    // WAPE's robustness must not be read as an answer — a magnitude-weighted
+    // error over zero magnitude is undefined, not 0% (ABL-388).
     expect(body.metrics).toEqual({
-      mae: 5, mape: null, rmse: 5, bias: -5, dataPoints: 4, mapeSamples: 0,
+      mae: 5, mape: null, wape: null, rmse: 5, bias: -5, dataPoints: 4, mapeSamples: 0,
     });
     // The points were measured — this is not a coverage gap.
     expect((body.meta as Record<string, unknown>).coverage).toBe('served');
@@ -179,7 +183,7 @@ describe('GET /:countryCode/ml-accuracy — disjoint model coverage', () => {
     expect(status).toBe(200);
     expect(body.data).toEqual([]);
     expect(body.metrics).toEqual({
-      mae: null, mape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0,
+      mae: null, mape: null, wape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0,
     });
     expect(body.meta).toMatchObject({
       model: 'catboost',

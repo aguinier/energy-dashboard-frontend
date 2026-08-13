@@ -67,21 +67,12 @@ interface MetricsRow {
 /**
  * Weighted absolute percentage error: 100 * sum|e| / sum|actual|.
  *
- * Replaces MAPE, which divided by the SIGNED actual (so negative day-ahead
- * prices cancelled error) and guarded only `!= 0` (so a single near-zero
- * actual dominated the mean — BE solar measured 148458%).
+ * Moved to `wape.ts` by ABL-388, which gave it a second caller
+ * (`tsoForecastService.calculateMetrics`). Re-exported here because this is
+ * where it has been imported from since ABL-19 — the definition, and the
+ * measurements that justify it, now live in that module.
  */
-export function wape(pairs: Array<{ actual: number; forecast: number }>): number | null {
-  let num = 0;
-  let den = 0;
-  for (const { actual, forecast } of pairs) {
-    if (!Number.isFinite(actual) || !Number.isFinite(forecast)) continue;
-    num += Math.abs(actual - forecast);
-    den += Math.abs(actual);
-  }
-  if (den === 0) return null;
-  return Math.round((100 * num / den) * 100) / 100;
-}
+export { wape } from './wape.js';
 
 /**
  * Get cross-country accuracy metrics for a single forecast type.

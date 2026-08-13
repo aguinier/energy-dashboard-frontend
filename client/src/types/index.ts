@@ -315,6 +315,23 @@ export type LoadForecastBasis = 'comparable' | 'divergent_basis';
 export interface TSOForecastAccuracyMetrics {
   mae: number | null;
   mape: number | null;
+  /**
+   * Weighted Absolute Percentage Error: `100 * sum|actual - forecast| /
+   * sum|actual|`, over every paired point — so its sample is `dataPoints`,
+   * not `mapeSamples`, and there is deliberately no separate `wapeSamples`.
+   *
+   * Prefer this over `mape` wherever an actual can pass near zero. MAPE
+   * divides each point by its own actual, so on a solar series that crosses
+   * near-zero at dawn and dusk it is unbounded: measured on the replica
+   * 2026-08-13 over full history, `/tso-forecast/accuracy/generation/HU`
+   * `?type=solar` reported a MAPE of 7,421.87% where WAPE is 13.12%
+   * (ABL-388).
+   *
+   * `null`, never `0`, when the window's actuals sum to zero.
+   *
+   * Absent on responses predating ABL-388.
+   */
+  wape?: number | null;
   rmse: number | null;
   dataPoints: number;
   /** Count of points with a positive actual — may be lower than dataPoints; mape covers only these. */

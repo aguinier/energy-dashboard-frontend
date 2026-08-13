@@ -5,7 +5,10 @@ import {
   DIVERGENT_LOAD_BASIS,
 } from './loadForecastBasis.js';
 
-const measured = { mae: 2443, mape: 73.4, rmse: 2890, dataPoints: 168, mapeSamples: 168 };
+// NL's real shape over 2026-08-04..11: a large, clean, systematic offset. The
+// WAPE is not an outlier the way the MAPE is — which is exactly why it has to
+// be suppressed deliberately rather than left to look harmless (ABL-388).
+const measured = { mae: 2443, mape: 73.4, wape: 41.2, rmse: 2890, dataPoints: 168, mapeSamples: 168 };
 
 describe('classifyLoadForecastBasis', () => {
   it('reports NL as divergent, with a reason', () => {
@@ -53,6 +56,12 @@ describe('applyLoadForecastBasis', () => {
     expect(out.mae).toBeNull();
     expect(out.mape).toBeNull();
     expect(out.rmse).toBeNull();
+    // ABL-388. WAPE is robust to the near-zero-actual problem that makes a
+    // MAPE unreadable, so it is the one measure someone might argue should
+    // survive here. It must not: this rule is about the two series measuring
+    // different quantities, and weighting by magnitude does not make a
+    // definitional gap into forecast error.
+    expect(out.wape).toBeNull();
     expect(out.basis).toBe('divergent_basis');
     expect(out.basisNote).toBeTruthy();
   });
@@ -75,7 +84,7 @@ describe('applyLoadForecastBasis', () => {
   });
 
   it('leaves an already-empty window empty rather than inventing a state', () => {
-    const empty = { mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 };
+    const empty = { mae: null, mape: null, wape: null, rmse: null, dataPoints: 0, mapeSamples: 0 };
     expect(applyLoadForecastBasis('NL', empty)).toEqual({
       ...empty,
       basis: 'divergent_basis',
