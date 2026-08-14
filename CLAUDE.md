@@ -79,6 +79,34 @@ node node_modules/vite/bin/vite.js           # client
 
 This bypasses the missing shims and was the ABL-362 workaround.
 
+**The same applies to `vitest`, and it matters more, because an unrunnable test
+command reads as "the tree is broken" and invites the `npm install` note 1
+forbids.** `.bin` was empty in the primary checkout on 2026-08-14 — `npx vitest`
+reported `'vitest' is not recognized` — while the suite itself was completely
+healthy. Dependencies hoist to the repo root under npm workspaces, so from
+`server/` or `client/` the entry point is one level up:
+
+```bash
+cd server && node ../node_modules/vitest/vitest.mjs run
+cd server && node ../node_modules/typescript/bin/tsc --noEmit
+```
+
+Measured that way on ABL-42 (branch tip `e1f849f`, `origin/main` + 2 files):
+**102 server test files / 1,944 tests, all passing**, `tsc --noEmit` exit 0 —
+identical to the figure `origin/main` was green at. So an empty `.bin` says
+nothing about the suite.
+
+**The client suite is separately and genuinely blocked here, and the two must
+not be conflated.** It fails to boot on `Cannot find package
+'@rolldown/pluginutils' imported from …@vitejs/plugin-react/dist/index.js`, and
+that package really is absent — `ls node_modules/@rolldown` finds nothing.
+Note 1's tell distinguishes the two: this error names the **bare specifier**, so
+it is a missing package, not the stale-process trap (which resolves to a path
+ending `@babel\core\index.js`). Restarting will not fix it, and `npm install` is
+still the wrong reflex in this shared checkout for note 1's reason. Verify a
+server-only change with the server suite and say the client half was not run —
+do not report the whole toolchain as broken.
+
 ## Project Structure
 
 ```
