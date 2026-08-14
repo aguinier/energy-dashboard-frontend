@@ -215,6 +215,23 @@ describe.each(ENTRIES)('$label', ({ file }) => {
       expect(graph.modules.filter((m) => m.startsWith(operatorOnly))).toEqual([]);
     }
   });
+
+  it('reaches no billing module at all — the whole directory, not a named list', () => {
+    // ABL-307. Asserted as a directory rather than module by module, which is
+    // stricter than the list above and is affordable here because **nothing**
+    // under `v1/billing/` has a request-path role. A subscription is never
+    // consulted to serve a request: ABL-302 gates on `accounts.plan`, which the
+    // gate already reads through the key store, so billing has no read the
+    // request path needs and no capability worth exposing to it.
+    //
+    // Two things this keeps true. `sqliteBillingStore.ts` opens a fourth handle
+    // on `API_KEYS_DB_PATH`, and it must never appear in the "exactly three
+    // modules open a database" assertion below — it is reached from
+    // `billingCli.ts` alone. And `invoice.ts` decides amounts of money; a
+    // pricing module on a serving path is a latency and a failure mode taken on
+    // for nothing.
+    expect(graph.modules.filter((m) => m.startsWith('v1/billing/'))).toEqual([]);
+  });
 });
 
 describe('the exact public module graph', () => {
