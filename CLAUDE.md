@@ -778,9 +778,19 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   2026-08-06, **543 of ~2,647,076 rows are exactly `0.0`** across 11 countries
   (BA 277, MK 99, ME 73, ES 46, PL 25, MD 10, RO 5, AL 4, NL 2, RS 1, SI 1) and
   **0 rows are negative**. The 543 count is unchanged; re-verified 2026-08-12 and
-  2026-08-14. (The denominator dropped from the 2026-08-06 census value of
-  2,762,517 — consistent with the `(country_code, timestamp_utc)` dedupe in
-  `server/src/v1/data/accuracyRepo.ts:54-56`; not investigated further, ABL-453.)
+  2026-08-14 (the denominator is exactly 2,647,076 on the replica that day).
+
+  (The denominator dropped from the 2026-08-06 census value of 2,762,517, and
+  **that drop is still unexplained** — ABL-453 flagged it "not investigated
+  further" and it stays open. This entry briefly attributed it to "the
+  `(country_code, timestamp_utc)` dedupe" in `server/src/v1/data/accuracyRepo.ts`,
+  which cannot be the cause in kind, never mind in line number: that module is a
+  **read path**, and a dedupe inside a `SELECT` cannot change how many rows a
+  table stores. The documented *writes* do not close the gap either — ABL-256
+  deleted 30,066 rows and ABL-257 a further 7,617, which is 37,683 of the 115,441
+  the census implies, against continuing ingest in the other direction. Do not
+  re-attribute this without measuring it; an explanation that is merely plausible
+  is what this file exists to stop.)
   It is ongoing, not historical — the newest were SI at
   `2026-08-06 00:00` and MK at `2026-08-02 21:00`.
 
@@ -841,9 +851,16 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     information. Withholding MK's whole series would destroy 56,510 good
     readings to suppress 99 bad ones.
   - **Exactly zero, not a magnitude floor.** 24 rows sit in `0 < load < 10` MW
-    (MK 17 with a minimum of 0.01, BA 6, ME 1) and are probably false too, but
-    `0.0` needs no calibration to be disprovable while any cutoff above it is a
-    number nobody has justified. That grey zone is deliberately still served.
+    and are probably false too, but `0.0` needs no calibration to be disprovable
+    while any cutoff above it is a number nobody has justified. That grey zone is
+    deliberately still served. Re-measured 2026-08-14: **MK 18** (0.005-9.715,
+    newest `2026-08-05`, MK's known stall date) and **BA 6** (0.44-9.25). The
+    total is unchanged at 24, but the composition is not what this entry
+    recorded on 2026-08-06 — it said MK 17 / BA 6 / **ME 1**, and ME now has
+    **none**. So the grey zone is not a fixed historical set: MK gained a row
+    and a new low, ME's lost one. Re-measure it rather than citing this line,
+    and note the total staying at 24 is a coincidence of two offsetting moves,
+    not evidence that nothing changed.
 
   Every `energy_load` read site in `server/src` applies one of the two
   helpers, with a single documented exception. The enumeration was wrong twice
@@ -937,12 +954,64 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   visible regression. Note the query params are `start`/`end`; `startDate`/
   `endDate` are silently ignored and the route falls back to the last 7 days.
 
-  Known gap, filed separately: `energy_renewable` has the same signature and is
-  **not** guarded, because there the rule is genuinely ambiguous — AT is exactly
-  `0.0` across solar, wind *and* hydro for all 96 rows of 2025-11-15 and 11-16,
-  sandwiched between days at 1,724-2,071 MW (impossible), while MD's near-zero
-  days sit inside a genuine 2-282 MW range and cannot be told apart by
-  magnitude. Do not extend `measuredLoadClause` to it without sizing that first.
+  **`energy_renewable` carries the same signature, and it needs no guard here —
+  the read path it would have protected no longer exists** (ABL-42, closed
+  2026-08-14 as resolved by the ABL-324/ABL-399 migration). This entry used to
+  say the rule was "genuinely ambiguous" and to warn against extending
+  `measuredLoadClause` without sizing a threshold first. Both halves are now
+  settled, and neither the way it expected.
+
+  The signature is real and reproduces exactly. Measured read-only on the
+  replica 2026-08-14, day-level rule (>=20 rows/day, every renewable column
+  exactly `0.0`): **11 country-days, AT 2 and MD 9** — AT `2025-11-15` and
+  `11-16` at 96 rows each, MD 9 days scattered over 2022-02-01..2023-01-25.
+
+  **The ambiguity is gone, and it was never a threshold question.** MD's days
+  were called undecidable because its genuine range is 2-282 MW, so a zero day
+  is not separable *by magnitude*. It does not have to be: `energy_generation`
+  records what actually happened at those same instants, and it says both
+  countries were generating.
+
+  | | `energy_renewable` | `energy_generation`, same country-days |
+  |---|---|---|
+  | AT 2025-11-15/16 | all columns `0.0`, 96 rows each | solar **948 / 1,548 MW**, wind 356 / 468, hydro run 2,500 / 2,572 |
+  | MD, all 9 days | all columns `0.0` | hydro run **19-54 MW**, biomass 1-3 MW, every day (solar and wind genuinely `0.0`) |
+
+  So **all 11 are fabrications**, MD included, and none is a real zero. That is
+  the frozen table's `DEFAULT 0` doing what it does everywhere else in this
+  file — see the ABL-399 and ABL-353 entries, where the identical mechanism
+  fabricated 477,846 and 9,192 accuracy pairs. Cross-reference against the
+  better table is the general answer here; sizing a floor per country was the
+  wrong tool and would have condemned MD's genuine 2 MW days.
+
+  **Nothing reads it, so there is nothing to guard.** ABL-324/ABL-399 moved
+  every dashboard read onto `energy_generation`; `server/src` now holds no read
+  of `energy_renewable` at all (see "Generation data" for the verification
+  command). A whole-day all-columns rule on that table would be a read-side
+  guard on a table this repo does not read — dead on arrival, and one more
+  thing to keep true.
+
+  **It was never actually served wrong either, for a second and independent
+  reason worth knowing before anyone "restores" it.** The fabricated rows are
+  **`T`-form** (verified: all 96+96+24 sampled), `energy_generation_forecast`
+  is 100% **space-form**, and the pre-ABL-353 accuracy join was a bare equality
+  with no normalisation — so the join *dropped* them rather than scoring them.
+  Two defects masked each other. That is the concrete case for why ABL-353
+  moved the table instead of taking this file's earlier advice to fix the
+  separator handling in place: a separator-only fix would have **activated**
+  192 fabricated `0.0` actuals against AT's real TSO solar and wind forecasts,
+  turning an invisible bug into a flawless-looking 0% error. The ML path was
+  never exposed at all — the earliest renewable-family forecast row of any type
+  is `2025-12-28` (`renewable` `2025-12-26`), a month after AT's zero days and
+  years after MD's, and AT has **zero** stored forecasts of any type before
+  2025-12-01.
+
+  `energy_renewable` itself is untouched and stays that way: it is frozen, the
+  rows are real history of what we stored, and deleting them is a shared-database
+  write decision that belongs to the Board, not to a read-side fix. What still
+  matters is that the sibling `energy-forecast` job and several backfill scripts
+  read this table — so the fabrications remain live *there*, and that is the one
+  place this finding is still actionable (filed separately).
 - **`PriceTab`** — same shape for day-ahead price (ml forecast only; price has
   no TSO forecast in the registry).
 
