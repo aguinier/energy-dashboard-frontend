@@ -842,7 +842,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   **0 rows are negative**. The 543 count is unchanged; re-verified 2026-08-12 and
   2026-08-14. (The denominator dropped from the 2026-08-06 census value of
   2,762,517 — consistent with the `(country_code, timestamp_utc)` dedupe in
-  `server/src/v1/data/accuracyRepo.ts:54-56`; not investigated further, ABL-453.)
+  `server/src/v1/data/accuracyRepo.ts:33-35`; not investigated further, ABL-453.)
   It is ongoing, not historical — the newest were SI at
   `2026-08-06 00:00` and MK at `2026-08-02 21:00`.
 
@@ -2468,10 +2468,10 @@ nobody has when they first need it. `OPS_SNAPSHOT_ENABLED=false` turns capture
 off; reads are still served.
 
 The `days` figure is a **projection, not a measurement**, and
-`computeDiskHeadroom` (`server/src/lib/diskHeadroom.ts:142`) is written to
+`computeDiskHeadroom` (`server/src/lib/diskHeadroom.ts:179`) is written to
 refuse far more often than it answers — a least-squares fit of used-percent
 against time that returns `days: null` with a machine-readable `reason` for
-seven distinct refusals: fewer than four readings, a span under 12 hours, a
+seven distinct refusals: fewer than four readings, a span under 72 hours, a
 flat or falling disk (`not_rising` — not "never", not a huge number), R² under
 0.5 (`noisy_fit`), already at the threshold (`already_breached` — the alarm is
 the current reading, not a countdown), and a crossing past a year
@@ -2481,7 +2481,49 @@ percent, never the fitted value at that instant. `basis` (readings, span,
 slope, R², current percent) is returned even for the refusals, and the page
 renders it, so a projection built on 42 readings with R²=0.97 and a refusal
 built on three readings are told apart by the reader rather than trusted.
-`DISK_THRESHOLD_PERCENT` (`server/src/lib/diskHeadroom.ts:77`) is not a number
+
+**The span bar is 72 hours because prod's disk is a sawtooth, not a ramp
+(ABL-459).** It was 12 hours, and on 2026-08-14 that rendered a ~170-day runway
+as **46.1 days with `reason: "ok"` and R²=0.88 beside it** — the page fabricating
+an emergency from a disk sitting at 49.3%. Decomposed, the 39.5h window is a flat
+**1.96 GiB/day** baseline plus nine step events, and the steps are infrastructure
+rather than growth. Attribution is confirmed **byte-exactly, not inferred**: prod's
+`ops_backup_cron.log` reads `2026-08-13 00:01:32 UTC wrote … 4.156 GiB` and
+`2026-08-14 00:01:18 UTC … 4.196 GiB`, matching the `+4.156` and `+4.196` steps in
+the snapshot series; the `+4.2` then `-4.2` pairs ~30 min later at 05:07 and 14:37
+UTC are the ABL-220 sync staging (07:00/16:30 Europe/Brussels — the box is CEST).
+
+A least-squares line over less than a couple of cycles of a 24h period is
+dominated by the phase it opens and closes on. Sweeping the start phase over a
+series rebuilt from those measured components, worst-case slope error was **+156%
+at 12h, +66% at 24h, +13% at 48h, +8% at 72h, +1% at 168h** — 72h (three cycles)
+is the first bar sound both while backups are pruned and while they accumulate.
+
+Two things this cost, worth not re-learning:
+
+- **R² cannot catch it, so do not reach for `noisy_fit`.** A daily staircase is
+  locally very well fitted by a rising line; at a 12h span R² ranged 0.00-0.99
+  while the error reached 156%. R² measures how well a line fits, never whether a
+  line is the right model. Span is the guard that works.
+- **A step-detection refusal was tried and rejected on measurement.** In the
+  pruned regime a *healthy* 72h window carries a larger single-step share
+  (0.67-0.82) than the misleading window did (0.46), because the sync pairs are
+  ±4.2 GiB against a small net. It does not separate the two cases, and a
+  threshold catching the bad one would refuse healthy windows permanently.
+
+`basis.minSpanHours` carries the bar on the wire so `describeHeadroom` can say how
+far short a refusal falls without keeping its own copy — the ABL-292 rule, whose
+failure mode here is a sentence confidently naming a threshold the server stopped
+using.
+
+**Related operational fact, not a projection bug:** the ABL-252 backups are
+**not yet net-zero**. Retention is daily×14 + weekly×8 and the log still reads
+`retained 3 of 3` — nothing has been pruned, so the directory is genuinely
+filling toward a bounded ~99 GiB steady state (~13 GiB on 2026-08-14). Until it
+saturates, disk growth is legitimately non-linear, which is a second reason a
+straight line is the wrong model right now.
+
+`DISK_THRESHOLD_PERCENT` (`server/src/lib/diskHeadroom.ts:86`) is not a number
 of its own — it is `DISK_ERROR_RATIO * 100`, imported from the single
 thresholds module above. The countdown and the badge cannot drift because
 there is only one constant to change; were it mirrored, the page would say a
@@ -2489,7 +2531,7 @@ disk is fine and that it crosses "full" tomorrow.
 
 Every one of those refusals is a *sentence*, not a blank cell: `describeHeadroom`
 (`client/src/lib/opsHistorySeries.ts:74`) maps all eight reasons to prose, and
-`describeStorage` (`:126`) separates "capture is switched off" from "nothing
+`describeStorage` (`:133`) separates "capture is switched off" from "nothing
 captured yet" from "the store could not be read" — three states that all render
 as an empty chart and have three different fixes. A side that was unreachable,
 or reported no disk, is a **hole in the line, never a zero**: `diskSeries`

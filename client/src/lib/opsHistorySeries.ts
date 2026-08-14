@@ -84,8 +84,15 @@ export function describeHeadroom(headroom: DiskHeadroom): string {
         ? `Not enough history yet — ${plural(basis.points, 'reading')} over ${formatSpan(basis.spanHours)}`
         : 'Not enough history yet';
     case 'insufficient_span':
+      // Names the bar as well as the shortfall (ABL-459). Disk usage here is a
+      // flat baseline plus a daily backup/sync sawtooth, so a window shorter
+      // than a few cycles fits the phase it opened on rather than the trend —
+      // and does it with a high R², which is why this refusal has to explain
+      // itself rather than read as "not enough data yet".
       return basis
-        ? `History too short to project — ${formatSpan(basis.spanHours)} so far`
+        ? `History too short to project — ${formatSpan(basis.spanHours)} of the ${formatSpan(
+            basis.minSpanHours,
+          )} needed to average out the daily backup and sync cycle`
         : 'History too short to project';
     case 'not_rising':
       return 'Not rising — no crossing to project';

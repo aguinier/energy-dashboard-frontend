@@ -59,13 +59,71 @@ describe('computeDiskHeadroom', () => {
     expect(result.basis?.spanHours).toBe(24);
   });
 
-  it('refuses to project from a span under 12 hours, however many readings', () => {
+  it('refuses to project from a span under 72 hours, however many readings', () => {
     // 12 readings 30 minutes apart: dense, but only 5.5h of history.
     const result = computeDiskHeadroom(ramp(80, 1, 12, 0.5));
 
     expect(result.days).toBeNull();
     expect(result.reason).toBe('insufficient_span');
     expect(result.basis?.points).toBe(12);
+  });
+
+  it('refuses a dense two-day window — density is not span (ABL-459)', () => {
+    // 193 readings 15 minutes apart on a flawless ramp: 48h, R2 exactly 1, and
+    // still refused. The bar is cycles of the daily sawtooth, not points or
+    // goodness of fit, so a perfect fit over too short a window does not buy a
+    // projection.
+    const result = computeDiskHeadroom(ramp(80, 1, 193, 0.25));
+
+    expect(result.days).toBeNull();
+    expect(result.reason).toBe('insufficient_span');
+    expect(result.basis?.spanHours).toBe(48);
+    expect(result.basis?.r2).toBeCloseTo(1, 6);
+  });
+
+  it('refuses the real prod sawtooth that projected 46 days against a ~170-day runway (ABL-459)', () => {
+    // The window `/api/ops/status/history` actually served on 2026-08-14: a flat
+    // 1.96 GiB/day baseline plus nine step events, of which the +4.2 GiB pairs
+    // are the ABL-252 backup write and the ABL-220 sync staging, not growth.
+    // Minutes from the first reading, and the step in GiB.
+    const steps: Array<[number, number]> = [
+      [30, -4.143],
+      [525, 4.156],
+      [960, 0.964],
+      [1395, 4.312],
+      [1425, -4.181],
+      [1965, 4.196],
+      [2265, 4.205],
+      [2280, -3.191],
+      [2295, -0.35],
+    ];
+    const stepAt = new Map(steps);
+    const TOTAL_GIB = 974021873664 / 1024 ** 3;
+    const BASELINE_GIB_PER_QUARTER = 1.957 / 96;
+
+    let used = 470128971776 / 1024 ** 3;
+    const points: DiskPoint[] = [];
+    for (let minute = 0; minute <= 2370; minute += 15) {
+      if (minute > 0) used += BASELINE_GIB_PER_QUARTER + (stepAt.get(minute) ?? 0);
+      points.push({ atMs: T0 + minute * 60 * 1000, percent: (used / TOTAL_GIB) * 100 });
+    }
+
+    const result = computeDiskHeadroom(points);
+
+    expect(result.days).toBeNull();
+    expect(result.reason).toBe('insufficient_span');
+    expect(result.basis?.spanHours).toBe(39.5);
+
+    // The point of the whole guard: the fit this window produces looks good and
+    // is wrong. R2 is high, so `noisy_fit` would have waved it through, and the
+    // slope is ~4x the 0.216 pts/day the baseline alone supports — which is how
+    // a ~170-day runway rendered as 46.1 days under `reason: 'ok'`.
+    expect(result.basis!.r2).toBeGreaterThan(0.8);
+    expect(result.basis!.slopePercentPerDay).toBeGreaterThan(3 * 0.216);
+
+    // And the evidence still reaches the page beside the refusal, so a reader
+    // sees what was rejected rather than an unexplained blank.
+    expect(result.basis!.points).toBe(159);
   });
 
   it('reports not_rising for a flat disk instead of an enormous or infinite countdown', () => {
