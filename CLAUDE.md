@@ -3265,6 +3265,24 @@ nothing in the result saying which is wrong.
   by 2, against 33 for `wind_onshore_mw` — a country showing `—` for Nuclear
   is normal, not a bug. See "Generation data" below for the NULL/0 and sign
   rules, and `dashboard/generationSeries.ts` for how the columns reach the UI.
+- **MK `energy_generation`, stalled upstream since 2026-08-05 21:00 UTC**
+  (ABL-451; prior confirmations ABL-112, ABL-152). MK `energy_generation` is
+  frozen at `2026-08-05 21:00` — prod `MAX(timestamp_utc)` matches the ENTSO-E
+  upstream max exactly. **Confirmed upstream three times:**
+  - 2026-08-07: prod DB vs. live pipeline probe — identical timestamp.
+  - 2026-08-10 (ABL-152): raw re-probe, newest still `2026-08-05 21:00`.
+  - 2026-08-14: raw-HTTP ENTSO-E probe — MK A75 upstream max = `2026-08-05
+    21:00`. Controls: BG A75 → `2026-08-13 19:00`, MK A65 → `2026-08-12
+    21:00`. Neither the query shape nor the MK domain is at fault; the
+    upstream document simply ends there.
+  **This is intermittent, not permanent.** MK is a chronically-late Balkan
+  zone that will re-enter live on its own — do not group with GB
+  (`2021-06-14`) or UA (`2022-02-25`), which are dead outright.
+  **ABL-115** (*"Restore MK ENTSO-E actual load, price, and generation
+  coverage"*) is **cancelled** — source coverage is a settled Board question.
+  **Re-file rule:** a stall at `2026-08-05 21:00` is known; if the cutoff
+  *moves and re-freezes at a new timestamp*, that is a genuinely new upstream
+  fact worth filing.
 - **A real publication time.** `publication_timestamp_utc` exists on eight
   tables and **does not mean what its name says**. It is filled from the ENTSO-E
   response's `createdDateTime`, but ENTSO-E builds the document *on request* and
@@ -3349,14 +3367,16 @@ nothing in the result saying which is wrong.
   GB stops at `2021-06-14` and UA at `2022-02-25`. **Before filing a
   "table X is stale for country Y" bug, probe upstream**, and judge freshness
   by `MAX(timestamp_utc)` on prod, never by `data_ingestion_log`. If your
-  remit is read-only (no ENTSO-E API access to probe), check first whether an
-  existing closed issue already carries the same frozen `MAX(timestamp_utc)` in
-  its title or body — the frozen timestamp is the fingerprint for an upstream
-  outage, and a match means the condition is already known (e.g. AL load frozen
-  at `2026-08-06 21:45` → ABL-84). that table
-  records an `INSERT OR REPLACE` rowcount, so rewriting rows that already
-  existed logs as inserts and a healthy ingest looks identical to a five-day
-  upstream stall.
+  remit is read-only (no ENTSO-E API access to probe), the frozen
+  `MAX(timestamp_utc)` is the fingerprint for an upstream outage. **First,
+  grep this file** — `grep "2026-XX-XX HH:MM" CLAUDE.md` with your frozen
+  timestamp — because the known-gap entries above record every confirmed
+  upstream outage with its exact cutoff; a hit means the condition is already
+  on file and you can stop. Only if the grep returns nothing should you fall
+  back to closed-issue archaeology (searching issue titles and bodies for the
+  same frozen timestamp). `data_ingestion_log` records an `INSERT OR REPLACE`
+  rowcount, so rewriting rows that already existed logs as inserts and a
+  healthy ingest looks identical to a five-day upstream stall.
 
   **Re-confirmed by direct measurement under ABL-295, and it is AL load.**
   Measured on the replica 2026-08-12: AL's `energy_load`
