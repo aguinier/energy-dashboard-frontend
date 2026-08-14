@@ -585,6 +585,74 @@ graph is one module. A plan buys more requests, never bigger ones — which is
 what makes requests-per-month a billing dimension that prices anything (brief
 §1.3).
 
+## `/v1` billing maps the meter onto an invoice, in test mode, and reconciles
+
+ABL-307, in `server/src/v1/billing/`, driven by `npm run billing -- <command>`.
+It models plan/subscription state, maps a closed month of metered usage onto the
+invoice we *would* raise, accounts for overage and EU VAT, and reconciles the
+three. **Nothing here issues, sends or charges anything**: every document carries
+`mode: 'test'` and a not-for-issue notice, and no code path removes either.
+
+**No price list is committed.** Board Decision 1 (tier structure and price
+points) is open, so `priceBook.ts` ships the *shape* and reads the values from
+`BILLING_PRICE_BOOK_PATH`. Unset — the correct setting today — the CLI names the
+open decision and prints the shape to fill in, and everything except the amounts
+still works. What makes that safe rather than merely compliant is
+`checkAgainstPlanLimits`: a configured book is validated against
+`quota/planLimits.ts` and **refused** if they disagree, because ABL-302 already
+enforces two numbers that are functions of price — the included allowance, and
+the request at which a Professional account is refused, which `softOverage()`
+derived from a base price and an overage rate. The gate serves against one set of
+figures and the invoice charges against the other; a price change has to move
+both in the same reviewed diff.
+
+**Subscription state is a history, not a column.** `accounts.plan` answers "what
+may this key do now", which is all a gate needs and is overwritten by an upgrade.
+An invoice asks what the account was entitled to on the 14th, so
+`billing_subscription_change` is append-only and `segmentsForMonth` replays it.
+Segments prorate by exact elapsed milliseconds, and their durations sum to
+exactly the month — which is what makes a whole month on one plan cost exactly
+the plan fee, with no remainder to explain. There is deliberately no `trialing`
+status: a trial is a plan priced at zero, which needs no branch in the
+arithmetic.
+
+**Money is integers and rounds one way.** Everything the customer owes rounds
+*down* (`floorDiv`) — prorated fees, whole-thousand overage — following the rule
+`usageStore.ts` states: an invoice slightly low is margin we absorb, one slightly
+high is a refund and a customer who checks every future invoice by hand. VAT is
+the single exception and rounds half-up, because it is collected on a tax
+authority's behalf and is not ours to absorb.
+
+**EU VAT refuses the reverse charge on an unvalidated number, on purpose.**
+Cross-border B2B is zero-rated only against a VAT number VIES confirms, and VIES
+is an outbound call this LAN-only deployment does not make — so no number here is
+validated and `vat.ts` charges destination VAT instead, saying so on the
+document. That over-charges, which is refundable; an unsupported reverse charge
+is a liability discovered at audit.
+
+**`billing:reconcile` is the acceptance bar, and its output is an attribution
+rather than a delta.** Every metered request lands in exactly one place:
+`rollup.billable + rollup.lateBillable + unrolled.billable`. Anything left over
+is `unexplained` and blocking; the three designed causes are reported separately
+and never netted off. Two things it deliberately reports rather than hides: a
+month past the 13-month event retention is `not_corroborable` (the check did not
+run — saying "0 discrepancies" would claim it did), and the meter's buffered-flush
+loss window is stated as unmeasured, because those requests never reached
+`usage_events` and no query can see them.
+
+**Billing is unreachable from the serving process, as a whole directory.**
+`publicAppGraph.test.ts` asserts `v1/billing/` is absent from both entrypoints —
+stricter than the module-by-module list beside it, and affordable because nothing
+here has a request-path role. `sqliteBillingStore.ts` opens a fourth handle on
+`API_KEYS_DB_PATH` and is reached from `billingCli.ts` alone, so the "exactly
+three modules open a database" assertion is unaffected.
+
+**Webhooks are design only** — Board ruling 2026-08-12, LAN-only. See
+`WEBHOOKS-DESIGN.md` beside the code. Its useful conclusion: the constraint costs
+latency, not correctness. `PaymentProvider.fetchSubscription` polls for the same
+state a callback would push, and ABL-297 §6.5 already puts a human between a
+failed payment and any suspension.
+
 ## The `/v1` OpenAPI document is generated from the code and checked against it
 
 ABL-305. `docs/api/v1/openapi.json` is the published OpenAPI 3.1 document — the
@@ -852,7 +920,12 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   deleted 30,066 rows and ABL-257 a further 7,617, which is 37,683 of the 115,441
   the census implies, against continuing ingest in the other direction. Do not
   re-attribute this without measuring it; an explanation that is merely plausible
-  is what this file exists to stop.)
+  is what this file exists to stop. The citation is deliberately left as a bare
+  path with **no line number**: `accuracyRepo.ts`'s header comment does record
+  the 2026-08-11 no-duplicates measurement, so citing it reads as support for
+  the attribution this paragraph retracts. Do not restore the line number, and
+  do not re-add the `COMMENT_CITATION_ALLOWLIST` entry that a line number would
+  then require — the measurement is real, the inference from it was not.)
   It is ongoing, not historical — the newest were SI at
   `2026-08-06 00:00` and MK at `2026-08-02 21:00`.
 
@@ -2537,10 +2610,10 @@ nobody has when they first need it. `OPS_SNAPSHOT_ENABLED=false` turns capture
 off; reads are still served.
 
 The `days` figure is a **projection, not a measurement**, and
-`computeDiskHeadroom` (`server/src/lib/diskHeadroom.ts:142`) is written to
+`computeDiskHeadroom` (`server/src/lib/diskHeadroom.ts:179`) is written to
 refuse far more often than it answers — a least-squares fit of used-percent
 against time that returns `days: null` with a machine-readable `reason` for
-seven distinct refusals: fewer than four readings, a span under 12 hours, a
+seven distinct refusals: fewer than four readings, a span under 72 hours, a
 flat or falling disk (`not_rising` — not "never", not a huge number), R² under
 0.5 (`noisy_fit`), already at the threshold (`already_breached` — the alarm is
 the current reading, not a countdown), and a crossing past a year
@@ -2550,7 +2623,49 @@ percent, never the fitted value at that instant. `basis` (readings, span,
 slope, R², current percent) is returned even for the refusals, and the page
 renders it, so a projection built on 42 readings with R²=0.97 and a refusal
 built on three readings are told apart by the reader rather than trusted.
-`DISK_THRESHOLD_PERCENT` (`server/src/lib/diskHeadroom.ts:77`) is not a number
+
+**The span bar is 72 hours because prod's disk is a sawtooth, not a ramp
+(ABL-459).** It was 12 hours, and on 2026-08-14 that rendered a ~170-day runway
+as **46.1 days with `reason: "ok"` and R²=0.88 beside it** — the page fabricating
+an emergency from a disk sitting at 49.3%. Decomposed, the 39.5h window is a flat
+**1.96 GiB/day** baseline plus nine step events, and the steps are infrastructure
+rather than growth. Attribution is confirmed **byte-exactly, not inferred**: prod's
+`ops_backup_cron.log` reads `2026-08-13 00:01:32 UTC wrote … 4.156 GiB` and
+`2026-08-14 00:01:18 UTC … 4.196 GiB`, matching the `+4.156` and `+4.196` steps in
+the snapshot series; the `+4.2` then `-4.2` pairs ~30 min later at 05:07 and 14:37
+UTC are the ABL-220 sync staging (07:00/16:30 Europe/Brussels — the box is CEST).
+
+A least-squares line over less than a couple of cycles of a 24h period is
+dominated by the phase it opens and closes on. Sweeping the start phase over a
+series rebuilt from those measured components, worst-case slope error was **+156%
+at 12h, +66% at 24h, +13% at 48h, +8% at 72h, +1% at 168h** — 72h (three cycles)
+is the first bar sound both while backups are pruned and while they accumulate.
+
+Two things this cost, worth not re-learning:
+
+- **R² cannot catch it, so do not reach for `noisy_fit`.** A daily staircase is
+  locally very well fitted by a rising line; at a 12h span R² ranged 0.00-0.99
+  while the error reached 156%. R² measures how well a line fits, never whether a
+  line is the right model. Span is the guard that works.
+- **A step-detection refusal was tried and rejected on measurement.** In the
+  pruned regime a *healthy* 72h window carries a larger single-step share
+  (0.67-0.82) than the misleading window did (0.46), because the sync pairs are
+  ±4.2 GiB against a small net. It does not separate the two cases, and a
+  threshold catching the bad one would refuse healthy windows permanently.
+
+`basis.minSpanHours` carries the bar on the wire so `describeHeadroom` can say how
+far short a refusal falls without keeping its own copy — the ABL-292 rule, whose
+failure mode here is a sentence confidently naming a threshold the server stopped
+using.
+
+**Related operational fact, not a projection bug:** the ABL-252 backups are
+**not yet net-zero**. Retention is daily×14 + weekly×8 and the log still reads
+`retained 3 of 3` — nothing has been pruned, so the directory is genuinely
+filling toward a bounded ~99 GiB steady state (~13 GiB on 2026-08-14). Until it
+saturates, disk growth is legitimately non-linear, which is a second reason a
+straight line is the wrong model right now.
+
+`DISK_THRESHOLD_PERCENT` (`server/src/lib/diskHeadroom.ts:86`) is not a number
 of its own — it is `DISK_ERROR_RATIO * 100`, imported from the single
 thresholds module above. The countdown and the badge cannot drift because
 there is only one constant to change; were it mirrored, the page would say a
@@ -2558,7 +2673,7 @@ disk is fine and that it crosses "full" tomorrow.
 
 Every one of those refusals is a *sentence*, not a blank cell: `describeHeadroom`
 (`client/src/lib/opsHistorySeries.ts:74`) maps all eight reasons to prose, and
-`describeStorage` (`:126`) separates "capture is switched off" from "nothing
+`describeStorage` (`:133`) separates "capture is switched off" from "nothing
 captured yet" from "the store could not be read" — three states that all render
 as an empty chart and have three different fixes. A side that was unreachable,
 or reported no disk, is a **hole in the line, never a zero**: `diskSeries`

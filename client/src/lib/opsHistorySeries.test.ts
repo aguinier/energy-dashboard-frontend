@@ -137,22 +137,39 @@ describe('describeHeadroom', () => {
     const result = describeHeadroom(
       headroom({
         reason: 'insufficient_history',
-        basis: { points: 3, spanHours: 18, slopePercentPerDay: 1, r2: 0.99, currentPercent: 80 },
+        basis: { points: 3, spanHours: 18, slopePercentPerDay: 1, r2: 0.99, currentPercent: 80, minSpanHours: 72 },
       }),
     );
 
     expect(result).toBe('Not enough history yet — 3 readings over 18h');
   });
 
-  it('names the span when the window is too short', () => {
+  it('names both the span it has and the span it needs when the window is too short', () => {
     const result = describeHeadroom(
       headroom({
         reason: 'insufficient_span',
-        basis: { points: 12, spanHours: 5.5, slopePercentPerDay: 1, r2: 0.99, currentPercent: 80 },
+        basis: { points: 12, spanHours: 5.5, slopePercentPerDay: 1, r2: 0.99, currentPercent: 80, minSpanHours: 72 },
       }),
     );
 
-    expect(result).toBe('History too short to project — 6h so far');
+    expect(result).toBe(
+      'History too short to project — 6h of the 3.0 days needed to average out the daily backup and sync cycle',
+    );
+  });
+
+  it('takes the required span from the server rather than restating it (ABL-459)', () => {
+    // The bar lives in `MIN_SPAN_HOURS` on the server. If it moves, the sentence
+    // moves with it — a hardcoded "3 days" here would be a confidently wrong
+    // number on the one page whose job is to be trustworthy (the ABL-292 rule).
+    const result = describeHeadroom(
+      headroom({
+        reason: 'insufficient_span',
+        basis: { points: 400, spanHours: 100, slopePercentPerDay: 1, r2: 0.99, currentPercent: 80, minSpanHours: 168 },
+      }),
+    );
+
+    expect(result).toContain('7.0 days needed');
+    expect(result).not.toContain('3.0 days');
   });
 
   it('never renders a headroom sentence as an empty string', () => {
@@ -179,7 +196,7 @@ describe('describeHeadroomBasis', () => {
       headroom({
         reason: 'ok',
         days: 7,
-        basis: { points: 42, spanHours: 149, slopePercentPerDay: 1.234, r2: 0.9712, currentPercent: 83.25 },
+        basis: { points: 42, spanHours: 149, slopePercentPerDay: 1.234, r2: 0.9712, currentPercent: 83.25, minSpanHours: 72 },
       }),
     );
 
@@ -190,7 +207,7 @@ describe('describeHeadroomBasis', () => {
     const result = describeHeadroomBasis(
       headroom({
         reason: 'not_rising',
-        basis: { points: 20, spanHours: 24, slopePercentPerDay: -0.5, r2: 0.8, currentPercent: 60 },
+        basis: { points: 20, spanHours: 24, slopePercentPerDay: -0.5, r2: 0.8, currentPercent: 60, minSpanHours: 72 },
       }),
     );
 

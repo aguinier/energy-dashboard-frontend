@@ -633,6 +633,8 @@ export interface DiskHeadroomBasis {
   slopePercentPerDay: number;
   r2: number;
   currentPercent: number;
+  /** Hours of history a projection needs — the server's bar, never restated here (ABL-459). */
+  minSpanHours: number;
 }
 
 export interface DiskHeadroom {

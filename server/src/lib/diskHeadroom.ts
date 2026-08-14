@@ -8,7 +8,8 @@
  * `reason` the UI states out loud, and never a fallback figure:
  *
  *   - fewer than `MIN_POINTS` readings, or a span under `MIN_SPAN_HOURS`
- *     → we are fitting a line to noise; no projection.
+ *     → we are fitting a line to noise, or to one turn of a sawtooth; no
+ *     projection. See `MIN_SPAN_HOURS` for why that bar is three days.
  *   - usage flat or falling → no crossing to project. Not "never", not a huge
  *     number — `not_rising`, which the UI says in words.
  *   - a poor fit (R² below `MIN_R2`) → the readings do not describe a trend,
@@ -56,6 +57,14 @@ export interface DiskHeadroomBasis {
   r2: number;
   /** The most recent *measured* percent — never the fitted value at `now`. */
   currentPercent: number;
+  /**
+   * Hours of history a projection needs (`MIN_SPAN_HOURS`).
+   *
+   * On the wire so the page can say how far short a refusal falls without
+   * keeping its own copy of the bar — the ABL-292 rule, whose failure mode here
+   * is a sentence confidently naming a threshold the server stopped using.
+   */
+  minSpanHours: number;
 }
 
 export interface DiskHeadroom {
@@ -77,7 +86,35 @@ export interface DiskHeadroom {
 export const DISK_THRESHOLD_PERCENT = DISK_ERROR_RATIO * 100;
 
 const MIN_POINTS = 4;
-const MIN_SPAN_HOURS = 12;
+/**
+ * Three full cycles of the 24h periodicity in this signal (ABL-459).
+ *
+ * Prod's disk is not a ramp — it is a flat baseline plus a daily sawtooth, and
+ * least squares over less than a couple of cycles is dominated by wherever in
+ * the cycle the window happens to open and close. Measured on prod 2026-08-14
+ * and reproduced by sweeping the start phase over a series rebuilt from the
+ * measured components (baseline 1.96 GiB/day; the ABL-252 backup's +4.2 GiB at
+ * 00:00 UTC; the ABL-220 sync's +4.2/-4.2 staging pairs at 05:00 and 14:30
+ * UTC), worst-case slope error against the true rate was:
+ *
+ *   span   backups pruned   backups accumulating
+ *    12h        +156%              +182%     <- the old bar
+ *    24h         +66%               -77%
+ *    48h         +13%               -18%
+ *    72h          +8%                -9%     <- first span sound in both
+ *   168h          +1%                -2%
+ *
+ * 12h let a 167-day runway render as 46.1 days with `reason: 'ok'` beside it.
+ * R2 cannot catch this — a daily staircase is locally very well fitted by a
+ * rising line (0.88 on the real window), so the `noisy_fit` guard passes
+ * precisely when the model is wrong. Span is the guard that works.
+ *
+ * A step-detection refusal was tried and rejected on the same measurement: in
+ * the pruned regime a *healthy* 72h window carries a larger single-step share
+ * (0.67-0.82) than the misleading window did (0.46), because the sync staging
+ * pairs are +/-4.2 GiB against a small net. It does not separate the two cases.
+ */
+const MIN_SPAN_HOURS = 72;
 /** Below this the crossing is always past `MAX_HORIZON_DAYS` anyway; it also keeps the divide well away from zero. */
 const MIN_SLOPE_PERCENT_PER_DAY = 0.01;
 const MIN_R2 = 0.5;
@@ -172,6 +209,7 @@ export function computeDiskHeadroom(
     slopePercentPerDay: round(slopePerDay, 4),
     r2: round(r2, 4),
     currentPercent: round(currentPercent, 2),
+    minSpanHours: MIN_SPAN_HOURS,
   };
   const withBasis = (reason: DiskHeadroomReason, days: number | null = null): DiskHeadroom => ({
     thresholdPercent,
