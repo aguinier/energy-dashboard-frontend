@@ -3240,31 +3240,25 @@ nothing in the result saying which is wrong.
   same day-by-day pattern. *Note: "It will never fill" and "publishes no A75
   document at all" were written on 2026-08-06/07 right across the resumption
   boundary and were false from that moment.*
-- **AL load, stalled upstream since 2026-08-06 21:45 UTC** (ABL-84, ABL-152).
-  *Distinct from the AL generation gap above, and a different shape: this is
-  intermittent, not permanent.* AL does normally publish `energy_load`; it
-  stopped here upstream. Re-confirmed on prod 2026-08-11 05:45 UTC:
-  `/api/data-freshness/AL` → `load.latest 2026-08-06 21:45:00`, `ageHours
-  103.859`, `status stale`. Both prod and the CAT replica show the same frozen
-  timestamp — not a replica-sync artifact.
-  **Upstream, confirmed twice.** ABL-84 queried ENTSO-E `A65`/`processType=A16`
-  with the pipeline's own client: the document **ends at `2026-08-06T22:00Z`**,
-  exactly our newest row. Control `A65`/`A01` (day-ahead load forecast) over the
-  same window returned 94 points through 2026-08-09, confirming the token, the
-  `10YAL-KESH-----5` domain, and the endpoint are all healthy. ABL-152
-  re-probed 2026-08-10: 327 rows, newest still `2026-08-06 21:45`, zero
-  transport errors.
+- **AL load outage 2026-08-06 – ~2026-08-11, resolved and fully backfilled**
+  (ABL-84, ABL-152). AL does normally publish `energy_load`; it stalled
+  upstream at `2026-08-06 21:45 UTC` and remained frozen through at least
+  2026-08-11. **Measured prod 2026-08-14:** `energy_load` AL spans
+  `2026-08-05 00:00 → 2026-08-14 00:30` (867 rows, 96 rows/day = complete
+  15-minute coverage); `/api/data-freshness/AL` → `load.latest 2026-08-14
+  00:30`, `ageHours 5.2`, `status live`. The hole backfilled completely.
+  **Upstream probe findings (ABL-84):** ENTSO-E `A65`/`processType=A16` ended
+  at `2026-08-06T22:00Z` exactly (our newest row at the time). Control
+  `A65`/`A01` (day-ahead load forecast) returned 94 points through 2026-08-09,
+  confirming the token, domain `10YAL-KESH-----5`, and endpoint were all
+  healthy. ABL-152 re-probed 2026-08-10: 327 rows, newest still
+  `2026-08-06 21:45`, zero transport errors. The outage was purely upstream.
   **The `cron_update.log` 400/503 lines are a trap** (ABL-84): `cron_update.log`
-  shows sporadic errors against AL load on 08-06 13:30, 08-08 00:30, 08-09
-  00:30. They are not the cause — passes on either side succeeded and
-  `MAX(timestamp_utc)` never moved. Do not re-diagnose this from the error lines
-  alone; it produces a confident, wrong answer.
-  **This is not permanent.** Unlike AL generation, this stream is `stale` not
-  `ended` — Albania will resume publishing and the verdict will return to `live`
-  on its own. Do not promote it to a dead-zone entry. If you see this stream
-  stale with `latest = 2026-08-06 21:45` and are about to file a bug, first
-  check whether the frozen timestamp already matches a closed issue (ABL-84's
-  title carries it) — that is the fingerprint for this specific outage.
+  showed sporadic errors against AL load on 08-06 13:30, 08-08 00:30, 08-09
+  00:30. They were not the cause — passes on either side succeeded and
+  `MAX(timestamp_utc)` never moved. Do not re-diagnose from error lines alone;
+  it produces a confident, wrong answer. This trap warning still applies to any
+  future AL load stall.
   What *is* routinely absent is a **production type a given country never
   reports**: that is `NULL`, per column, and must stay NULL rather than become
   0. Measured, `nuclear_mw` is reported by 14 of 34 countries and `marine_mw`
