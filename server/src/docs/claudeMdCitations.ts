@@ -103,12 +103,6 @@ export const COMMENT_CITATION_ALLOWLIST: CommentAllowance[] = [
     reason:
       "CLAUDE.md's ABL-287 section cites this comment as the precedent for why the ops alert scheduler imports `combinedOpsStatusService` dynamically: importing it statically would open a database handle as a side effect. The comment is itself the explanation being pointed at.",
   },
-  {
-    file: 'server/src/v1/data/accuracyRepo.ts',
-    excerpt: 'zero exact `(country_code,',
-    reason:
-      "CLAUDE.md's LoadTab section cites the measured 2026-08-11 fact that the actuals tables hold no exact `(country_code, timestamp_utc)` duplicates, when explaining why the `energy_load` row-count denominator moved (ABL-453). That measurement is recorded only in this comment — it is the evidence being pointed at, not code.",
-  },
 ];
 
 const SOURCE_EXTENSIONS = new Set([
