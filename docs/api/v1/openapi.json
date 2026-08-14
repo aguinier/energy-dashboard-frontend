@@ -1,0 +1,2959 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Able Energy /v1",
+    "version": "1.0.0",
+    "summary": "European electricity observations, forecasts and forecast accuracy.",
+    "description": "A read-only JSON API over European electricity data: ENTSO-E-derived observations (load, day-ahead price, generation by production type), our own forecasts, forecast accuracy against actuals, and a catalogue that says what we hold.\n\n### Four rules that hold everywhere\n\n1. **Every series names its source and licence.** `meta.series[].source` carries the origin, the licence and the exact attribution line to render. It is on our own output too, marked `attribution_required: false`, so you can branch on one field instead of maintaining a list of which of our fields came from where.\n2. **Absence is never a silent zero.** A production type a zone does not report is `null`, not `0`. A gap is a gap: nothing is interpolated, forward-filled or carried across a missing interval. An empty page carries a `coverage` reason saying whose absence it is.\n3. **Windows are half-open and always UTC.** `from` is included, `to` is not. Every timestamp on the wire is RFC 3339 UTC with an explicit `Z` at second precision, and each labels the start of its interval.\n4. **Every response is paged and capped.** `meta.row_limit` states the cap that was applied and `meta.truncated` says whether it bit; follow `links.next` until it is `null`.\n\n### Attribution\n\nObservation series are derived from the ENTSO-E Transparency Platform and are licensed CC-BY-4.0. Where `attribution_required` is `true`, render the `attribution` string as given — that obligation flows from the upstream licence and cannot be waived by us. Forecast output is ours."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Relative to the host you reach this API on. No absolute server URL is published: the deployment address is not settled, and a URL in a published document is one a client will hardcode."
+    }
+  ],
+  "tags": [
+    {
+      "name": "Discovery",
+      "description": "The one resource that needs no key."
+    },
+    {
+      "name": "Observations",
+      "description": "ENTSO-E-derived history."
+    },
+    {
+      "name": "Forecasts",
+      "description": "Our own model output."
+    },
+    {
+      "name": "Accuracy",
+      "description": "How that output performed against actuals."
+    },
+    {
+      "name": "Catalog",
+      "description": "What we hold, stated rather than inferred."
+    }
+  ],
+  "security": [
+    {
+      "apiKey": []
+    }
+  ],
+  "paths": {
+    "/v1": {
+      "get": {
+        "operationId": "getRoot",
+        "summary": "Discovery root",
+        "description": "Two constants, and the only resource on this API that needs no key: a client checking that it is pointed at a `/v1` at all should not need a credential to find out. It deliberately reports nothing operational — not whether a key store is configured, not a build, not a database — because answering that to an unauthenticated caller turns a liveness probe into reconnaissance. Every other path under `/v1` answers 401 without a key, **including paths that do not exist**, so the surface cannot be enumerated without one.",
+        "tags": [
+          "Discovery"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The API version this server speaks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/observations/load": {
+      "get": {
+        "operationId": "getObservationsLoad",
+        "summary": "Actual electricity consumption",
+        "description": "ENTSO-E-derived history for one zone over a half-open window. Timestamps label the **start** of each interval. Rows are never interpolated, forward-filled or carried across a gap, and an empty page always says why in `meta.coverage`. Stored zeros are excluded rather than served: a national grid never draws 0 MW, and those rows are an ingest placeholder rather than a measurement.",
+        "tags": [
+          "Observations"
+        ],
+        "parameters": [
+          {
+            "name": "zone",
+            "in": "query",
+            "required": true,
+            "description": "Bidding-zone code, two letters — `DE`. One zone per request. Validated by shape rather than against a list: a well-formed zone we hold nothing for returns an empty page with a coverage reason rather than a 400, so you never have to hardcode our zone list to avoid one. `GET /v1/catalog/zones` is the list.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2}$"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "description": "Start of the window, inclusive. RFC 3339 UTC with an explicit `Z`, or a bare date (`2026-08-01`, read as midnight UTC). Fractional seconds are accepted and truncated. Local times and UTC offsets are refused: a naive timestamp is the one input where being wrong is invisible — it parses, it returns rows, and the rows are shifted by your offset.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "description": "End of the window, **exclusive**. Both bounds are required and neither defaults: a default ending at \"now\" would silently truncate tomorrow from every day-ahead series. A single request may span at most 366 days.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum rows to return. Defaults to the cap of 10000, which is also the ceiling — asking for more returns the cap rather than a 400, with `meta.row_limit` stating what was applied. The cap is a term of the contract, not a plan setting.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 10000
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from a previous response’s `links.next`. It is fingerprinted against the query that minted it, so replaying one against different parameters is a 400 rather than a page of unrelated rows presented as page two.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of load observations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationsLoadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be understood. `error.code` names the parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API key, or a key that is missing, malformed, invalid, revoked or expired. Carries `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is valid but the account is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-minute rate limit, the monthly quota, or the overage cap. `error.code` says which, and it matters: a rate limit is transient and `Retry-After` is seconds, while a monthly quota is not and retrying with backoff will fail for the rest of the month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/observations/price": {
+      "get": {
+        "operationId": "getObservationsPrice",
+        "summary": "Day-ahead electricity prices",
+        "description": "ENTSO-E-derived history for one zone over a half-open window. Timestamps label the **start** of each interval. Rows are never interpolated, forward-filled or carried across a gap, and an empty page always says why in `meta.coverage`.",
+        "tags": [
+          "Observations"
+        ],
+        "parameters": [
+          {
+            "name": "zone",
+            "in": "query",
+            "required": true,
+            "description": "Bidding-zone code, two letters — `DE`. One zone per request. Validated by shape rather than against a list: a well-formed zone we hold nothing for returns an empty page with a coverage reason rather than a 400, so you never have to hardcode our zone list to avoid one. `GET /v1/catalog/zones` is the list.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2}$"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "description": "Start of the window, inclusive. RFC 3339 UTC with an explicit `Z`, or a bare date (`2026-08-01`, read as midnight UTC). Fractional seconds are accepted and truncated. Local times and UTC offsets are refused: a naive timestamp is the one input where being wrong is invisible — it parses, it returns rows, and the rows are shifted by your offset.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "description": "End of the window, **exclusive**. Both bounds are required and neither defaults: a default ending at \"now\" would silently truncate tomorrow from every day-ahead series. A single request may span at most 366 days.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum rows to return. Defaults to the cap of 10000, which is also the ceiling — asking for more returns the cap rather than a 400, with `meta.row_limit` stating what was applied. The cap is a term of the contract, not a plan setting.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 10000
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from a previous response’s `links.next`. It is fingerprinted against the query that minted it, so replaying one against different parameters is a 400 rather than a page of unrelated rows presented as page two.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of price observations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationsPriceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be understood. `error.code` names the parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API key, or a key that is missing, malformed, invalid, revoked or expired. Carries `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is valid but the account is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-minute rate limit, the monthly quota, or the overage cap. `error.code` says which, and it matters: a rate limit is transient and `Retry-After` is seconds, while a monthly quota is not and retrying with backoff will fail for the rest of the month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/observations/generation": {
+      "get": {
+        "operationId": "getObservationsGeneration",
+        "summary": "Actual generation by production type",
+        "description": "ENTSO-E-derived history for one zone over a half-open window. Timestamps label the **start** of each interval. Rows are never interpolated, forward-filled or carried across a gap, and an empty page always says why in `meta.coverage`.",
+        "tags": [
+          "Observations"
+        ],
+        "parameters": [
+          {
+            "name": "zone",
+            "in": "query",
+            "required": true,
+            "description": "Bidding-zone code, two letters — `DE`. One zone per request. Validated by shape rather than against a list: a well-formed zone we hold nothing for returns an empty page with a coverage reason rather than a 400, so you never have to hardcode our zone list to avoid one. `GET /v1/catalog/zones` is the list.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2}$"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "description": "Start of the window, inclusive. RFC 3339 UTC with an explicit `Z`, or a bare date (`2026-08-01`, read as midnight UTC). Fractional seconds are accepted and truncated. Local times and UTC offsets are refused: a naive timestamp is the one input where being wrong is invisible — it parses, it returns rows, and the rows are shifted by your offset.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "description": "End of the window, **exclusive**. Both bounds are required and neither defaults: a default ending at \"now\" would silently truncate tomorrow from every day-ahead series. A single request may span at most 366 days.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "production_type",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated subset of production types. Omit for all 21. Narrowing is the only thing it does: a type the zone does not report is still present and `null` when you ask for it by name. An unknown member is a 400 rather than an ignored filter — silently dropping a typo returns all 21 types, which reads as success and bills as success.",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "solar",
+                  "wind_onshore",
+                  "wind_offshore",
+                  "hydro_run",
+                  "hydro_reservoir",
+                  "hydro_pumped",
+                  "biomass",
+                  "geothermal",
+                  "marine",
+                  "other_renewable",
+                  "energy_storage",
+                  "nuclear",
+                  "fossil_gas",
+                  "fossil_hard_coal",
+                  "fossil_brown_coal",
+                  "fossil_oil",
+                  "fossil_oil_shale",
+                  "fossil_peat",
+                  "fossil_coal_derived_gas",
+                  "waste",
+                  "other"
+                ]
+              }
+            },
+            "style": "form",
+            "explode": false
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum rows to return. Defaults to the cap of 10000, which is also the ceiling — asking for more returns the cap rather than a 400, with `meta.row_limit` stating what was applied. The cap is a term of the contract, not a plan setting.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 10000
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from a previous response’s `links.next`. It is fingerprinted against the query that minted it, so replaying one against different parameters is a 400 rather than a page of unrelated rows presented as page two.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of generation observations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObservationsGenerationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be understood. `error.code` names the parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API key, or a key that is missing, malformed, invalid, revoked or expired. Carries `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is valid but the account is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-minute rate limit, the monthly quota, or the overage cap. `error.code` says which, and it matters: a rate limit is transient and `Retry-After` is seconds, while a monthly quota is not and retrying with backoff will fail for the rest of the month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/forecasts": {
+      "get": {
+        "operationId": "getForecasts",
+        "summary": "Our forecasts over a window",
+        "description": "One value per target interval, from the newest run that covers it — never a stitch of several runs, which would produce discontinuities at the seams that no model ever emitted. Three constraints are published rather than left to be discovered: the horizon stops at 64 hours (there is no D+3), the history is about seven and a half months deep, and coverage is per type and per zone and is thin for most of the beta types. `GET /v1/catalog/models` publishes the measured coverage.",
+        "tags": [
+          "Forecasts"
+        ],
+        "parameters": [
+          {
+            "name": "zone",
+            "in": "query",
+            "required": true,
+            "description": "Bidding-zone code, two letters — `DE`. One zone per request. Validated by shape rather than against a list: a well-formed zone we hold nothing for returns an empty page with a coverage reason rather than a 400, so you never have to hardcode our zone list to avoid one. `GET /v1/catalog/zones` is the list.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2}$"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": true,
+            "description": "Which forecast type. Stability per type is published by `GET /v1/catalog/models`: `load` (stable), `price` (stable), `solar` (beta), `wind_onshore` (beta), `wind_offshore` (beta), `renewable` (beta), `biomass` (beta), `hydro_total` (beta). `net_position` is not served.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "load",
+                "price",
+                "solar",
+                "wind_onshore",
+                "wind_offshore",
+                "renewable",
+                "biomass",
+                "hydro_total"
+              ]
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "description": "Start of the window, inclusive. RFC 3339 UTC with an explicit `Z`, or a bare date (`2026-08-01`, read as midnight UTC). Fractional seconds are accepted and truncated. Local times and UTC offsets are refused: a naive timestamp is the one input where being wrong is invisible — it parses, it returns rows, and the rows are shifted by your offset.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "description": "End of the window, **exclusive**. Both bounds are required and neither defaults: a default ending at \"now\" would silently truncate tomorrow from every day-ahead series. A single request may span at most 366 days.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "horizon",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to one forecast horizon, in hours. Hours rather than \"D+1\"/\"D+2\" bands, which would freeze a UI shorthand into a contract. The longest horizon this data reaches is 64 hours; there is no D+3, and we do not manufacture one.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 64
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "description": "Pin the model. Honoured **strictly**: if the model you named has no rows for this zone and window you get an empty page with a coverage reason, never the other model’s numbers under the name you asked for. Omit it to get whichever model actually covers your zone, named back to you in `meta.model`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "catboost",
+                "xgboost"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum rows to return. Defaults to the cap of 10000, which is also the ceiling — asking for more returns the cap rather than a 400, with `meta.row_limit` stating what was applied. The cap is a term of the contract, not a plan setting.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000,
+              "default": 10000
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor from a previous response’s `links.next`. It is fingerprinted against the query that minted it, so replaying one against different parameters is a 400 rather than a page of unrelated rows presented as page two.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of forecast values.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be understood. `error.code` names the parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API key, or a key that is missing, malformed, invalid, revoked or expired. Carries `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is valid but the account is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-minute rate limit, the monthly quota, or the overage cap. `error.code` says which, and it matters: a rate limit is transient and `Retry-After` is seconds, while a monthly quota is not and retrying with backoff will fail for the rest of the month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/forecasts/latest": {
+      "get": {
+        "operationId": "getLatestForecast",
+        "summary": "The newest complete run, whole",
+        "description": "The newest **run**, not the newest value per target hour. Takes no window and is never paged: one run is bounded by the horizon, so at most 64 rows. Every row carries `generated_at`, which is what makes this honest at 03:00 UTC when the newest vintage is eight hours old — our runs stop at 19:00 and resume at 07:00.",
+        "tags": [
+          "Forecasts"
+        ],
+        "parameters": [
+          {
+            "name": "zone",
+            "in": "query",
+            "required": true,
+            "description": "Bidding-zone code, two letters — `DE`. One zone per request. Validated by shape rather than against a list: a well-formed zone we hold nothing for returns an empty page with a coverage reason rather than a 400, so you never have to hardcode our zone list to avoid one. `GET /v1/catalog/zones` is the list.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2}$"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": true,
+            "description": "Which forecast type. Stability per type is published by `GET /v1/catalog/models`: `load` (stable), `price` (stable), `solar` (beta), `wind_onshore` (beta), `wind_offshore` (beta), `renewable` (beta), `biomass` (beta), `hydro_total` (beta). `net_position` is not served.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "load",
+                "price",
+                "solar",
+                "wind_onshore",
+                "wind_offshore",
+                "renewable",
+                "biomass",
+                "hydro_total"
+              ]
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "description": "Pin the model. Honoured **strictly**: if the model you named has no rows for this zone and window you get an empty page with a coverage reason, never the other model’s numbers under the name you asked for. Omit it to get whichever model actually covers your zone, named back to you in `meta.model`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "catboost",
+                "xgboost"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One complete forecast run.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForecastsLatestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be understood. `error.code` names the parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API key, or a key that is missing, malformed, invalid, revoked or expired. Carries `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is valid but the account is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-minute rate limit, the monthly quota, or the overage cap. `error.code` says which, and it matters: a rate limit is transient and `Retry-After` is seconds, while a monthly quota is not and retrying with backoff will fail for the rest of the month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accuracy": {
+      "get": {
+        "operationId": "getAccuracy",
+        "summary": "How our forecasts actually performed",
+        "description": "Forecast-versus-actual metrics over a window, reduced to one row. Read `meta.coverage` before the numbers: a window we could not measure returns `null` metrics, never `0`, because `0` means a flawless forecast. `meta.forecast_hours` is the denominator `sample_size` is the numerator of — a metric computed over a third of a window should not look like one computed over all of it.\n\nWhere our database holds the same country-hour under two stored timestamp forms with different values, the space-form row is the one scored, and `meta.conflict_convention` says so on every response. Which of a conflicting pair is authoritative is an open question internally; publishing the convention means a later ruling is a documented change rather than a silent correction to numbers you have already used.\n\nSome forecast types this API serves are refused here — `renewable`, `hydro_total` — because which stored column their actual *is* is not settled, and picking one in order to return a number would be answering that question by accident.",
+        "tags": [
+          "Accuracy"
+        ],
+        "parameters": [
+          {
+            "name": "zone",
+            "in": "query",
+            "required": true,
+            "description": "Bidding-zone code, two letters — `DE`. One zone per request. Validated by shape rather than against a list: a well-formed zone we hold nothing for returns an empty page with a coverage reason rather than a 400, so you never have to hardcode our zone list to avoid one. `GET /v1/catalog/zones` is the list.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2}$"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": true,
+            "description": "Which forecast type. Narrower than the forecast type list: a type whose actual is not settled is refused rather than scored against a guessed column.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "load",
+                "price",
+                "solar",
+                "wind_onshore",
+                "wind_offshore",
+                "biomass"
+              ]
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "description": "Start of the window, inclusive. RFC 3339 UTC with an explicit `Z`, or a bare date (`2026-08-01`, read as midnight UTC). Fractional seconds are accepted and truncated. Local times and UTC offsets are refused: a naive timestamp is the one input where being wrong is invisible — it parses, it returns rows, and the rows are shifted by your offset.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "description": "End of the window, **exclusive**. Both bounds are required and neither defaults: a default ending at \"now\" would silently truncate tomorrow from every day-ahead series. A single request may span at most 366 days.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "horizon",
+            "in": "query",
+            "required": false,
+            "description": "Restrict to one forecast horizon, in hours. Hours rather than \"D+1\"/\"D+2\" bands, which would freeze a UI shorthand into a contract. The longest horizon this data reaches is 64 hours; there is no D+3, and we do not manufacture one.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 64
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "description": "Pin the model. Honoured **strictly**: if the model you named has no rows for this zone and window you get an empty page with a coverage reason, never the other model’s numbers under the name you asked for. Omit it to get whichever model actually covers your zone, named back to you in `meta.model`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "catboost",
+                "xgboost"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One row of metrics, measurable or explicitly not.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccuracyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be understood. `error.code` names the parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API key, or a key that is missing, malformed, invalid, revoked or expired. Carries `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is valid but the account is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-minute rate limit, the monthly quota, or the overage cap. `error.code` says which, and it matters: a rate limit is transient and `Retry-After` is seconds, while a monthly quota is not and retrying with backoff will fail for the rest of the month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/catalog/zones": {
+      "get": {
+        "operationId": "getCatalogZones",
+        "summary": "Every zone we hold, and the span of each stream",
+        "description": "Zones we hold nothing for are listed with `status: \"none\"` rather than omitted. A zone list alone would not do this job — a stream that stopped years ago and one that is live look identical in a list, and both look like coverage.",
+        "tags": [
+          "Catalog"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Every zone, with per-stream span and status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogZonesResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be understood. `error.code` names the parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API key, or a key that is missing, malformed, invalid, revoked or expired. Carries `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is valid but the account is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-minute rate limit, the monthly quota, or the overage cap. `error.code` says which, and it matters: a rate limit is transient and `Retry-After` is seconds, while a monthly quota is not and retrying with backoff will fail for the rest of the month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/catalog/models": {
+      "get": {
+        "operationId": "getCatalogModels",
+        "summary": "Forecast types and models, filtered by measured coverage",
+        "description": "A query over the rows, not a reading of a registry: a model with no rows cannot appear in the output of a group-by over its rows. A type for which no model has written is omitted entirely rather than listed with an empty zone array — an entry with no zones is an offer with nothing behind it.",
+        "tags": [
+          "Catalog"
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Every (type, model) pair that has rows, with its zone list.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogModelsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be understood. `error.code` names the parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API key, or a key that is missing, malformed, invalid, revoked or expired. Carries `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is valid but the account is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-minute rate limit, the monthly quota, or the overage cap. `error.code` says which, and it matters: a rate limit is transient and `Retry-After` is seconds, while a monthly quota is not and retrying with backoff will fail for the rest of the month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/catalog/coverage": {
+      "get": {
+        "operationId": "getCatalogCoverage",
+        "summary": "Coverage of one zone and stream, with the holes enumerated",
+        "description": "Without `from`/`to`, the cheap question: what period do we hold, and is it live. With them, the expensive one: exactly where the holes are. Both must be given together — one alone is a request that cannot be honoured either way, and guessing the other end is how you end up billed for a window you did not ask for.",
+        "tags": [
+          "Catalog"
+        ],
+        "parameters": [
+          {
+            "name": "zone",
+            "in": "query",
+            "required": true,
+            "description": "Bidding-zone code, two letters — `DE`. One zone per request. Validated by shape rather than against a list: a well-formed zone we hold nothing for returns an empty page with a coverage reason rather than a 400, so you never have to hardcode our zone list to avoid one. `GET /v1/catalog/zones` is the list.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2}$"
+            }
+          },
+          {
+            "name": "stream",
+            "in": "query",
+            "required": true,
+            "description": "Which observation stream to report coverage for.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "load",
+                "price",
+                "generation"
+              ]
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "description": "Start of the window, inclusive. RFC 3339 UTC with an explicit `Z`, or a bare date (`2026-08-01`, read as midnight UTC). Fractional seconds are accepted and truncated. Local times and UTC offsets are refused: a naive timestamp is the one input where being wrong is invisible — it parses, it returns rows, and the rows are shifted by your offset.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "description": "End of the window, **exclusive**. Both bounds are required and neither defaults: a default ending at \"now\" would silently truncate tomorrow from every day-ahead series. A single request may span at most 366 days.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One coverage record, with a `window` block when a window was given.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogCoverageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request could not be understood. `error.code` names the parameter.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No API key, or a key that is missing, malformed, invalid, revoked or expired. Carries `WWW-Authenticate: Bearer`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The key is valid but the account is disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The per-minute rate limit, the monthly quota, or the overage cap. `error.code` says which, and it matters: a rate limit is transient and `Retry-After` is seconds, while a monthly quota is not and retrying with backoff will fail for the rest of the month.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "An API key, sent as `Authorization: Bearer able_live_<prefix>_<secret>`. Never a cookie and never a query parameter — a credential in a URL ends up in logs, browser history and referrer headers. Every path under `/v1` except the discovery root requires one, including paths that do not exist."
+      }
+    },
+    "schemas": {
+      "SeriesSource": {
+        "type": "object",
+        "title": "SeriesSource",
+        "description": "Where this series came from and under what licence you may redistribute it. Required on every series and every catalogue entry: Terms of Service §7.3 promises that attribution can be rendered programmatically rather than remembered, and §8.1 is why it is per series rather than per response — one response can mix provenance, and a generation response carries 21 series at once.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "enum": [
+              "entsoe",
+              "able"
+            ],
+            "description": "Stable machine handle for the origin. Branch on this, not on `name`: `entsoe` is data ingested from the ENTSO-E Transparency Platform, `able` is our own model output."
+          },
+          "name": {
+            "type": "string",
+            "enum": [
+              "ENTSO-E Transparency Platform",
+              "Able Energy"
+            ],
+            "description": "Display name of the origin. For rendering, not for branching."
+          },
+          "licence": {
+            "type": "string",
+            "enum": [
+              "CC-BY-4.0",
+              "proprietary"
+            ],
+            "description": "`CC-BY-4.0` for ENTSO-E-derived observations; `proprietary` for our forecast output, which is licensed to you by your subscription rather than by a public deed."
+          },
+          "licence_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The public licence deed, or `null` where the licence is your subscription rather than a public one. Deliberately not a link to our Terms: a use licence granted under contract is not the same kind of thing as a public deed a downstream recipient can rely on."
+          },
+          "attribution_required": {
+            "type": "boolean",
+            "description": "Whether you must attribute when you republish this series. **This is the field to branch on.** It is deliberately not derivable from `licence` without hardcoding a licence table, which is exactly the remembering §7.3 exists to remove. It is present and `false` on our own series too, so that \"no attribution needed\" and \"we forgot the field\" are not the same shape."
+          },
+          "attribution": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The exact line to render, or `null` when none is required. Rendering this string verbatim discharges the obligation; it is taken word for word from Terms of Service §7.1 so that what we ask you to render and what we hand you cannot drift."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "licence",
+          "licence_url",
+          "attribution_required",
+          "attribution"
+        ],
+        "additionalProperties": false,
+        "examples": [
+          {
+            "id": "entsoe",
+            "name": "ENTSO-E Transparency Platform",
+            "licence": "CC-BY-4.0",
+            "licence_url": "https://creativecommons.org/licenses/by/4.0/",
+            "attribution_required": true,
+            "attribution": "Source: ENTSO-E Transparency Platform, licensed under CC-BY 4.0, via Able Energy."
+          },
+          {
+            "id": "able",
+            "name": "Able Energy",
+            "licence": "proprietary",
+            "licence_url": null,
+            "attribution_required": false,
+            "attribution": null
+          }
+        ]
+      },
+      "SeriesDescriptor": {
+        "type": "object",
+        "title": "SeriesDescriptor",
+        "description": "One entry per numeric field on a data row: what the number is, what unit it is in, whether negatives are meaningful, and whose data it is.",
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "The key this series appears under on a data row. Carries no unit suffix by design — a unit in a field name is a unit that silently becomes wrong the day the series changes unit."
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "MW",
+              "EUR/MWh",
+              "%"
+            ],
+            "description": "The unit of every value in this series."
+          },
+          "signed": {
+            "type": "boolean",
+            "description": "Whether a negative value is meaningful rather than an error. Published so a client can validate without guessing: negative day-ahead prices are ordinary and a client that filters them has deleted the hours it most wanted, while load is strictly positive and a negative would be a defect."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SeriesSource"
+          }
+        },
+        "required": [
+          "field",
+          "unit",
+          "signed",
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "Freshness": {
+        "type": "object",
+        "title": "Freshness",
+        "description": "How current this series is, on every response. Three different clocks are kept apart deliberately: when we last hold data for, when we last went and looked upstream, and when this payload was computed.",
+        "properties": {
+          "data_through": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest row we hold for this series. **Legitimately in the future** for a day-ahead price or a forecast, which is why age alone is not a freshness verdict. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "source_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When we last attempted an upstream pass for this series. An attempt, not a success claim. `null` for our own forecast output, which has no upstream to have checked. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "live",
+              "stale",
+              "ended",
+              "none"
+            ],
+            "description": "`live` — current. `stale` — behind where it should be. `ended` — the series has received no newer row across many passes; the upstream publisher appears to have stopped. `none` — we hold nothing for this zone and stream. The rule that decides this differs by series family: a measured series is judged on age, a day-ahead series on whether it reaches the market day it should."
+          },
+          "generated_at": {
+            "type": "string",
+            "description": "When this response body was computed. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          }
+        },
+        "required": [
+          "data_through",
+          "source_checked_at",
+          "status",
+          "generated_at"
+        ],
+        "additionalProperties": false
+      },
+      "ExcludedNote": {
+        "type": "object",
+        "title": "ExcludedNote",
+        "description": "A class of row this API deliberately does not serve, named on the response that would otherwise have contained it. Reconciling our counts against ENTSO-E’s should not require a support thread.",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Stable machine handle for the exclusion."
+          },
+          "detail": {
+            "type": "string",
+            "description": "What was excluded and why, in prose."
+          }
+        },
+        "required": [
+          "reason",
+          "detail"
+        ],
+        "additionalProperties": false
+      },
+      "CoverageGap": {
+        "type": "object",
+        "title": "CoverageGap",
+        "description": "A hole in the window, measured from the returned timestamps rather than assumed.",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "First missing interval, inclusive. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "to": {
+            "type": "string",
+            "description": "First present interval after the gap, exclusive. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "missing_intervals": {
+            "type": "integer",
+            "description": "How many intervals of the observed resolution are missing."
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "missing_intervals"
+        ],
+        "additionalProperties": false
+      },
+      "Links": {
+        "type": "object",
+        "title": "Links",
+        "properties": {
+          "self": {
+            "type": "string",
+            "description": "This request, canonicalised. Relative unless an absolute public base URL is configured — never built from the Host header, so a link we hand you cannot bake our current address into your stored URLs."
+          },
+          "next": {
+            "type": "null",
+            "description": "Always `null` — this resource is never paged. `null` rather than absent, so a client looping on `links.next` terminates instead of running forever on an optional-chained `undefined`."
+          }
+        },
+        "required": [
+          "self",
+          "next"
+        ],
+        "additionalProperties": false
+      },
+      "PagedLinks": {
+        "type": "object",
+        "title": "PagedLinks",
+        "properties": {
+          "self": {
+            "type": "string",
+            "description": "This request, canonicalised. Relative unless an absolute public base URL is configured — never built from the Host header, so a link we hand you cannot bake our current address into your stored URLs."
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The next page, or `null` when this is the last one. Emitted only when a next page exists: following a `next` that leads to an empty page would bill you for discovering there was nothing there."
+          }
+        },
+        "required": [
+          "self",
+          "next"
+        ],
+        "additionalProperties": false
+      },
+      "Error": {
+        "type": "object",
+        "title": "Error",
+        "description": "The error body, on every non-2xx response. Failure is signalled by the HTTP status; there is no `success` flag inside a 200 to forget to check. **No message ever echoes what you sent** — every string is a constant that describes the expected form, so a body you paste into a public issue tracker carries nothing of yours and nothing of ours.",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Stable machine handle for the failure. Branch on this rather than on `message`. Authentication and authorisation: `key_missing`, `key_malformed`, `key_invalid`, `key_revoked`, `key_expired`, `account_disabled`. Throttling: `rate_limit_exceeded`, `quota_exceeded`, `overage_cap_exceeded`. Request validation codes name the parameter — `zone_required`, `invalid_from`, `window_too_large`, `empty_window`, `invalid_cursor` and so on."
+              },
+              "message": {
+                "type": "string",
+                "description": "Written for a person to read. Never parsed."
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false
+      },
+      "DiscoveryResponse": {
+        "type": "object",
+        "title": "DiscoveryResponse",
+        "properties": {
+          "version": {
+            "type": "string",
+            "const": "v1"
+          },
+          "status": {
+            "type": "string",
+            "const": "ok"
+          }
+        },
+        "required": [
+          "version",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "LoadRow": {
+        "type": "object",
+        "title": "LoadRow",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "description": "The **start** of the interval this row describes; the window is half-open, so a row labelled 14:00 covers 14:00 up to but not including the next interval. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "load": {
+            "type": "number",
+            "description": "Actual electricity consumption. In MW."
+          }
+        },
+        "required": [
+          "timestamp",
+          "load"
+        ],
+        "additionalProperties": false
+      },
+      "PriceRow": {
+        "type": "object",
+        "title": "PriceRow",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "description": "The **start** of the interval this row describes; the window is half-open, so a row labelled 14:00 covers 14:00 up to but not including the next interval. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "price": {
+            "type": "number",
+            "description": "Day-ahead price. **Negative values are real** and are not errors. In EUR/MWh."
+          }
+        },
+        "required": [
+          "timestamp",
+          "price"
+        ],
+        "additionalProperties": false
+      },
+      "GenerationRow": {
+        "type": "object",
+        "title": "GenerationRow",
+        "description": "One hour (or quarter-hour) of generation by production type, in MW. Every requested type is present as a key on every row: `null` means the zone does not report that type, and `0` means it reported zero. Those are different facts and this API never collapses them — nuclear is reported by 14 of 34 zones and marine by 2, while solar at 03:00 is a measured zero. Nothing is interpolated, forward-filled or carried across a gap.",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "description": "The **start** of the interval this row describes; the window is half-open, so a row labelled 14:00 covers 14:00 up to but not including the next interval. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "solar": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "solar generation in MW, or null where this zone does not report it."
+          },
+          "wind_onshore": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "wind onshore generation in MW, or null where this zone does not report it."
+          },
+          "wind_offshore": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "wind offshore generation in MW, or null where this zone does not report it."
+          },
+          "hydro_run": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "hydro run generation in MW, or null where this zone does not report it."
+          },
+          "hydro_reservoir": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "hydro reservoir generation in MW, or null where this zone does not report it."
+          },
+          "hydro_pumped": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "hydro pumped generation in MW, or null where this zone does not report it."
+          },
+          "biomass": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "biomass generation in MW, or null where this zone does not report it."
+          },
+          "geothermal": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "geothermal generation in MW, or null where this zone does not report it."
+          },
+          "marine": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "marine generation in MW, or null where this zone does not report it."
+          },
+          "other_renewable": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "other renewable generation in MW, or null where this zone does not report it."
+          },
+          "energy_storage": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "energy storage generation in MW, or null where this zone does not report it."
+          },
+          "nuclear": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "nuclear generation in MW, or null where this zone does not report it."
+          },
+          "fossil_gas": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "fossil gas generation in MW, or null where this zone does not report it."
+          },
+          "fossil_hard_coal": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "fossil hard coal generation in MW, or null where this zone does not report it."
+          },
+          "fossil_brown_coal": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "fossil brown coal generation in MW, or null where this zone does not report it."
+          },
+          "fossil_oil": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "fossil oil generation in MW, or null where this zone does not report it."
+          },
+          "fossil_oil_shale": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "fossil oil shale generation in MW, or null where this zone does not report it."
+          },
+          "fossil_peat": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "fossil peat generation in MW, or null where this zone does not report it."
+          },
+          "fossil_coal_derived_gas": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "fossil coal derived gas generation in MW, or null where this zone does not report it."
+          },
+          "waste": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "waste generation in MW, or null where this zone does not report it."
+          },
+          "other": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "other generation in MW, or null where this zone does not report it."
+          }
+        },
+        "required": [
+          "timestamp"
+        ],
+        "additionalProperties": false
+      },
+      "ForecastRow": {
+        "type": "object",
+        "title": "ForecastRow",
+        "description": "One forecast value for one target interval, from the newest run that covers it.",
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "description": "The **start** of the interval this row describes; the window is half-open, so a row labelled 14:00 covers 14:00 up to but not including the next interval. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "value": {
+            "type": "number",
+            "description": "The forecast value, in the unit `meta.series[0].unit` states — MW for every type except `price`, which is EUR/MWh."
+          },
+          "generated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the run that produced this value was generated. On every row rather than behind an opt-in: at 03:00 UTC the newest vintage is eight hours old because our runs stop at 19:00 and resume at 07:00, and the forecast is not stale — the silence about its age would have been. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "horizon_hours": {
+            "type": "integer",
+            "description": "Hours between the run and the target interval. 2 to 64 observed; there is no D+3."
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "catboost",
+              "xgboost"
+            ],
+            "description": "Which model produced this value. Echoed per row as well as in `meta`, so a fallback to the model that actually covers your zone is visible in the data."
+          }
+        },
+        "required": [
+          "timestamp",
+          "value",
+          "generated_at",
+          "horizon_hours",
+          "model"
+        ],
+        "additionalProperties": false
+      },
+      "AccuracyRow": {
+        "type": "object",
+        "title": "AccuracyRow",
+        "description": "Forecast-versus-actual metrics over the requested window. **Every metric is `null` rather than `0` when it is not measurable**, and `meta.coverage` says which kind of not-measurable it was: `0` means a flawless forecast, and an unmeasurable window must never be reported as one. Exactly one of these rows is returned on every response, including an unmeasurable one — an empty array would invite `data[0]?.mape ?? 0`, which is the defect.",
+        "properties": {
+          "mape": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Mean absolute percentage error, 0-100. `null` when no paired point had a positive actual — the denominator would have been zero."
+          },
+          "wape": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Weighted absolute percentage error, 0-100. `null` when the actuals sum to zero."
+          },
+          "smape": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Symmetric MAPE, 0-100, defined as `100 * mean(|a - f| / (|a| + |f|))`. Note there are two definitions of sMAPE in circulation and they differ by a factor of two; this is the one bounded on 0-100. `null` when no point had a non-zero magnitude."
+          },
+          "mae": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Mean absolute error, **in the unit of the target** — MW, or EUR/MWh for price. Charting this across forecast types without reading `meta.series` charts megawatts against euros. `null` when nothing paired."
+          },
+          "rmse": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Root mean square error, in the unit of the target. `null` when nothing paired."
+          },
+          "sample_size": {
+            "type": "integer",
+            "description": "Paired forecast hours. The sample behind `mae`, `rmse` and `wape`."
+          },
+          "mape_samples": {
+            "type": "integer",
+            "description": "Of those, the ones with a positive actual — the sample behind `mape`."
+          },
+          "smape_samples": {
+            "type": "integer",
+            "description": "Of those, the ones with a non-zero magnitude — the sample behind `smape`."
+          }
+        },
+        "required": [
+          "mape",
+          "wape",
+          "smape",
+          "mae",
+          "rmse",
+          "sample_size",
+          "mape_samples",
+          "smape_samples"
+        ],
+        "additionalProperties": false
+      },
+      "ObservationsLoadResponse": {
+        "type": "object",
+        "title": "ObservationsLoadResponse",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LoadRow"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "resource": {
+                "type": "string",
+                "const": "observations.load"
+              },
+              "zone": {
+                "type": "string",
+                "description": "The bidding-zone code this response is about, echoed from the request."
+              },
+              "from": {
+                "type": "string",
+                "description": "Start of the served window, inclusive. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "to": {
+                "type": "string",
+                "description": "End of the served window, **exclusive**. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "coverage": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "no_data",
+                  "out_of_scope",
+                  "upstream_gap"
+                ],
+                "description": "Why `data` looks the way it does — and, when it is empty, **whose** absence this is. `ok` — rows were returned. `upstream_gap` — we hold this zone and stream and the window falls inside the period we hold, and upstream did not publish it; this is not our outage. `no_data` — the window falls outside the period we hold. `out_of_scope` — we hold nothing for this pair at any time, and no window will help."
+              },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows in `data`."
+              },
+              "row_limit": {
+                "type": "integer",
+                "description": "The row cap that was applied. Stated on every response even when it did not bite. All plans share the same cap of 10000."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Whether the cap bit. A fact, not `row_count === row_limit` — a window holding exactly the cap many rows is not truncated, and treating it as such hands you a `next` link to an empty page forever."
+              },
+              "resolution": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The **observed** modal spacing of the rows returned, as an ISO 8601 duration (`PT15M`, `PT1H`). Reported, not promised: this API does not aggregate and accepts no resolution parameter. `null` on a page of fewer than two rows, where there is no spacing to observe."
+              },
+              "resolution_uniform": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Whether every gap in the returned rows equals `resolution`. `false` means there are holes — this API never interpolates across one. `null` where `resolution` is."
+              },
+              "series": {
+                "type": "array",
+                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. One entry: load in MW.",
+                "items": {
+                  "$ref": "#/components/schemas/SeriesDescriptor"
+                },
+                "minItems": 1
+              },
+              "freshness": {
+                "$ref": "#/components/schemas/Freshness"
+              },
+              "excluded": {
+                "type": "array",
+                "description": "Row classes deliberately not served, named rather than dropped silently.",
+                "items": {
+                  "$ref": "#/components/schemas/ExcludedNote"
+                }
+              }
+            },
+            "required": [
+              "resource",
+              "zone",
+              "from",
+              "to",
+              "coverage",
+              "row_count",
+              "row_limit",
+              "truncated",
+              "resolution",
+              "resolution_uniform",
+              "series",
+              "freshness",
+              "excluded"
+            ],
+            "additionalProperties": false
+          },
+          "links": {
+            "$ref": "#/components/schemas/PagedLinks"
+          }
+        },
+        "required": [
+          "data",
+          "meta",
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "ObservationsPriceResponse": {
+        "type": "object",
+        "title": "ObservationsPriceResponse",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PriceRow"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "resource": {
+                "type": "string",
+                "const": "observations.price"
+              },
+              "zone": {
+                "type": "string",
+                "description": "The bidding-zone code this response is about, echoed from the request."
+              },
+              "from": {
+                "type": "string",
+                "description": "Start of the served window, inclusive. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "to": {
+                "type": "string",
+                "description": "End of the served window, **exclusive**. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "coverage": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "no_data",
+                  "out_of_scope",
+                  "upstream_gap"
+                ],
+                "description": "Why `data` looks the way it does — and, when it is empty, **whose** absence this is. `ok` — rows were returned. `upstream_gap` — we hold this zone and stream and the window falls inside the period we hold, and upstream did not publish it; this is not our outage. `no_data` — the window falls outside the period we hold. `out_of_scope` — we hold nothing for this pair at any time, and no window will help."
+              },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows in `data`."
+              },
+              "row_limit": {
+                "type": "integer",
+                "description": "The row cap that was applied. Stated on every response even when it did not bite. All plans share the same cap of 10000."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Whether the cap bit. A fact, not `row_count === row_limit` — a window holding exactly the cap many rows is not truncated, and treating it as such hands you a `next` link to an empty page forever."
+              },
+              "resolution": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The **observed** modal spacing of the rows returned, as an ISO 8601 duration (`PT15M`, `PT1H`). Reported, not promised: this API does not aggregate and accepts no resolution parameter. `null` on a page of fewer than two rows, where there is no spacing to observe."
+              },
+              "resolution_uniform": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Whether every gap in the returned rows equals `resolution`. `false` means there are holes — this API never interpolates across one. `null` where `resolution` is."
+              },
+              "series": {
+                "type": "array",
+                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. One entry: price in EUR/MWh, and it is signed — negative prices are real.",
+                "items": {
+                  "$ref": "#/components/schemas/SeriesDescriptor"
+                },
+                "minItems": 1
+              },
+              "freshness": {
+                "$ref": "#/components/schemas/Freshness"
+              },
+              "excluded": {
+                "type": "array",
+                "description": "Row classes deliberately not served, named rather than dropped silently.",
+                "items": {
+                  "$ref": "#/components/schemas/ExcludedNote"
+                }
+              }
+            },
+            "required": [
+              "resource",
+              "zone",
+              "from",
+              "to",
+              "coverage",
+              "row_count",
+              "row_limit",
+              "truncated",
+              "resolution",
+              "resolution_uniform",
+              "series",
+              "freshness",
+              "excluded"
+            ],
+            "additionalProperties": false
+          },
+          "links": {
+            "$ref": "#/components/schemas/PagedLinks"
+          }
+        },
+        "required": [
+          "data",
+          "meta",
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "ObservationsGenerationResponse": {
+        "type": "object",
+        "title": "ObservationsGenerationResponse",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GenerationRow"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "resource": {
+                "type": "string",
+                "const": "observations.generation"
+              },
+              "zone": {
+                "type": "string",
+                "description": "The bidding-zone code this response is about, echoed from the request."
+              },
+              "from": {
+                "type": "string",
+                "description": "Start of the served window, inclusive. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "to": {
+                "type": "string",
+                "description": "End of the served window, **exclusive**. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "coverage": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "no_data",
+                  "out_of_scope",
+                  "upstream_gap"
+                ],
+                "description": "Why `data` looks the way it does — and, when it is empty, **whose** absence this is. `ok` — rows were returned. `upstream_gap` — we hold this zone and stream and the window falls inside the period we hold, and upstream did not publish it; this is not our outage. `no_data` — the window falls outside the period we hold. `out_of_scope` — we hold nothing for this pair at any time, and no window will help."
+              },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows in `data`."
+              },
+              "row_limit": {
+                "type": "integer",
+                "description": "The row cap that was applied. Stated on every response even when it did not bite. All plans share the same cap of 10000."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Whether the cap bit. A fact, not `row_count === row_limit` — a window holding exactly the cap many rows is not truncated, and treating it as such hands you a `next` link to an empty page forever."
+              },
+              "resolution": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The **observed** modal spacing of the rows returned, as an ISO 8601 duration (`PT15M`, `PT1H`). Reported, not promised: this API does not aggregate and accepts no resolution parameter. `null` on a page of fewer than two rows, where there is no spacing to observe."
+              },
+              "resolution_uniform": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Whether every gap in the returned rows equals `resolution`. `false` means there are holes — this API never interpolates across one. `null` where `resolution` is."
+              },
+              "series": {
+                "type": "array",
+                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. Up to 21 entries, one per production type returned — the case ToS §8.1 exists for.",
+                "items": {
+                  "$ref": "#/components/schemas/SeriesDescriptor"
+                },
+                "minItems": 1
+              },
+              "freshness": {
+                "$ref": "#/components/schemas/Freshness"
+              },
+              "excluded": {
+                "type": "array",
+                "description": "Row classes deliberately not served, named rather than dropped silently.",
+                "items": {
+                  "$ref": "#/components/schemas/ExcludedNote"
+                }
+              }
+            },
+            "required": [
+              "resource",
+              "zone",
+              "from",
+              "to",
+              "coverage",
+              "row_count",
+              "row_limit",
+              "truncated",
+              "resolution",
+              "resolution_uniform",
+              "series",
+              "freshness",
+              "excluded"
+            ],
+            "additionalProperties": false
+          },
+          "links": {
+            "$ref": "#/components/schemas/PagedLinks"
+          }
+        },
+        "required": [
+          "data",
+          "meta",
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "ForecastsResponse": {
+        "type": "object",
+        "title": "ForecastsResponse",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ForecastRow"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "resource": {
+                "type": "string",
+                "const": "forecasts"
+              },
+              "zone": {
+                "type": "string",
+                "description": "The bidding-zone code this response is about, echoed from the request."
+              },
+              "forecast_type": {
+                "type": "string",
+                "enum": [
+                  "load",
+                  "price",
+                  "solar",
+                  "wind_onshore",
+                  "wind_offshore",
+                  "renewable",
+                  "biomass",
+                  "hydro_total"
+                ],
+                "description": "The forecast type this response is about, echoed from the request."
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "catboost",
+                  "xgboost",
+                  null
+                ],
+                "description": "The model that actually served. When you did not name one, this is the first served model with rows for your zone, type and window — the two models cover disjoint zone sets, so a fixed choice would blank zones rather than harmonise them. `null` when no model has rows for this zone and type at all. An explicit `model=` is honoured strictly and never substituted."
+              },
+              "horizon_hours": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "The horizon filter applied, or `null` for every horizon in the window."
+              },
+              "from": {
+                "type": "string",
+                "description": "Start of the served window, inclusive. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "to": {
+                "type": "string",
+                "description": "End of the served window, **exclusive**. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "coverage": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "no_data",
+                  "out_of_scope"
+                ],
+                "description": "`ok` — rows were returned. `no_data` — we hold this series and this window is empty. `out_of_scope` — this model has never written for this zone and type. `upstream_gap` is deliberately never returned here: there is no upstream for our own model output, and a hole in it would be our run that did not happen."
+              },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows in `data`."
+              },
+              "row_limit": {
+                "type": "integer",
+                "description": "The row cap that was applied. Stated on every response even when it did not bite. All plans share the same cap of 10000."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Whether the cap bit. A fact, not `row_count === row_limit` — a window holding exactly the cap many rows is not truncated, and treating it as such hands you a `next` link to an empty page forever."
+              },
+              "resolution": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The **observed** modal spacing of the rows returned, as an ISO 8601 duration (`PT15M`, `PT1H`). Reported, not promised: this API does not aggregate and accepts no resolution parameter. `null` on a page of fewer than two rows, where there is no spacing to observe."
+              },
+              "resolution_uniform": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Whether every gap in the returned rows equals `resolution`. `false` means there are holes — this API never interpolates across one. `null` where `resolution` is."
+              },
+              "series": {
+                "type": "array",
+                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. One entry: our forecast value, marked as ours with `attribution_required: false`.",
+                "items": {
+                  "$ref": "#/components/schemas/SeriesDescriptor"
+                },
+                "minItems": 1
+              },
+              "latest_vintage_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "When the newest run for this zone, type and model was generated — how recently the model behind these numbers ran, regardless of which vintages the window selected. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "freshness": {
+                "$ref": "#/components/schemas/Freshness"
+              }
+            },
+            "required": [
+              "resource",
+              "zone",
+              "forecast_type",
+              "model",
+              "horizon_hours",
+              "from",
+              "to",
+              "coverage",
+              "row_count",
+              "row_limit",
+              "truncated",
+              "resolution",
+              "resolution_uniform",
+              "series",
+              "latest_vintage_at",
+              "freshness"
+            ],
+            "additionalProperties": false
+          },
+          "links": {
+            "$ref": "#/components/schemas/PagedLinks"
+          }
+        },
+        "required": [
+          "data",
+          "meta",
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "ForecastsLatestResponse": {
+        "type": "object",
+        "title": "ForecastsLatestResponse",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ForecastRow"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "resource": {
+                "type": "string",
+                "const": "forecasts.latest"
+              },
+              "zone": {
+                "type": "string",
+                "description": "The bidding-zone code this response is about, echoed from the request."
+              },
+              "forecast_type": {
+                "type": "string",
+                "enum": [
+                  "load",
+                  "price",
+                  "solar",
+                  "wind_onshore",
+                  "wind_offshore",
+                  "renewable",
+                  "biomass",
+                  "hydro_total"
+                ],
+                "description": "The forecast type this response is about, echoed from the request."
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "catboost",
+                  "xgboost",
+                  null
+                ],
+                "description": "The model that actually served. When you did not name one, this is the first served model with rows for your zone, type and window — the two models cover disjoint zone sets, so a fixed choice would blank zones rather than harmonise them. `null` when no model has rows for this zone and type at all. An explicit `model=` is honoured strictly and never substituted."
+              },
+              "horizon_hours": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "The horizon filter applied, or `null` for every horizon in the window."
+              },
+              "from": {
+                "type": "string",
+                "description": "First target interval in this run. Reported from the rows: this resource takes no window. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "to": {
+                "type": "string",
+                "description": "Last target interval in this run. Reported from the rows, and **inclusive** here — unlike the window on the paged resources, this is an observed edge rather than a requested bound. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "coverage": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "no_data",
+                  "out_of_scope"
+                ],
+                "description": "`ok` — rows were returned. `no_data` — we hold this series and this window is empty. `out_of_scope` — this model has never written for this zone and type. `upstream_gap` is deliberately never returned here: there is no upstream for our own model output, and a hole in it would be our run that did not happen."
+              },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows in `data`."
+              },
+              "row_limit": {
+                "type": "integer",
+                "description": "The row cap that was applied. Stated on every response even when it did not bite. All plans share the same cap of 10000."
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Whether the cap bit. A fact, not `row_count === row_limit` — a window holding exactly the cap many rows is not truncated, and treating it as such hands you a `next` link to an empty page forever."
+              },
+              "resolution": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The **observed** modal spacing of the rows returned, as an ISO 8601 duration (`PT15M`, `PT1H`). Reported, not promised: this API does not aggregate and accepts no resolution parameter. `null` on a page of fewer than two rows, where there is no spacing to observe."
+              },
+              "resolution_uniform": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Whether every gap in the returned rows equals `resolution`. `false` means there are holes — this API never interpolates across one. `null` where `resolution` is."
+              },
+              "series": {
+                "type": "array",
+                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. One entry: our forecast value, marked as ours with `attribution_required: false`.",
+                "items": {
+                  "$ref": "#/components/schemas/SeriesDescriptor"
+                },
+                "minItems": 1
+              },
+              "latest_vintage_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "When the newest run for this zone, type and model was generated — how recently the model behind these numbers ran, regardless of which vintages the window selected. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "freshness": {
+                "$ref": "#/components/schemas/Freshness"
+              }
+            },
+            "required": [
+              "resource",
+              "zone",
+              "forecast_type",
+              "model",
+              "horizon_hours",
+              "from",
+              "to",
+              "coverage",
+              "row_count",
+              "row_limit",
+              "truncated",
+              "resolution",
+              "resolution_uniform",
+              "series",
+              "latest_vintage_at",
+              "freshness"
+            ],
+            "additionalProperties": false
+          },
+          "links": {
+            "$ref": "#/components/schemas/Links"
+          }
+        },
+        "required": [
+          "data",
+          "meta",
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "AccuracyResponse": {
+        "type": "object",
+        "title": "AccuracyResponse",
+        "properties": {
+          "data": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/AccuracyRow"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "resource": {
+                "type": "string",
+                "const": "accuracy"
+              },
+              "zone": {
+                "type": "string",
+                "description": "The bidding-zone code this response is about, echoed from the request."
+              },
+              "forecast_type": {
+                "type": "string",
+                "enum": [
+                  "load",
+                  "price",
+                  "solar",
+                  "wind_onshore",
+                  "wind_offshore",
+                  "biomass"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "catboost",
+                  "xgboost",
+                  null
+                ],
+                "description": "The model these numbers are about. Accuracy without the model is not a fact: the two models cover disjoint zone sets, so \"our load forecast for a zone\" and \"this model’s load forecast for that zone\" are different claims and only one of them may be measurable."
+              },
+              "horizon_hours": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "The horizon filter applied, or `null` for every horizon."
+              },
+              "from": {
+                "type": "string",
+                "description": "Start of the measured window, inclusive. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "to": {
+                "type": "string",
+                "description": "End of the measured window, **exclusive**. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "coverage": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "no_model_coverage",
+                  "no_paired_actuals"
+                ],
+                "description": "**Read this before the metrics.** `ok` — something paired. `no_model_coverage` — this model has no forecast rows for this zone, type and window at all; a normal answer, not an error, because the two models cover disjoint zones. `no_paired_actuals` — we forecast this window and no actual lined up against it: a window in the future, or actuals not ingested yet. The remedies differ — ask a different model, versus wait."
+              },
+              "forecast_hours": {
+                "type": "integer",
+                "description": "Distinct target hours the model forecast in this window — the denominator `sample_size` is the numerator of. The two are routinely far apart and the gap is information: `forecast_hours: 744, sample_size: 500` means the figure covers two thirds of the window."
+              },
+              "row_count": {
+                "type": "integer",
+                "const": 1
+              },
+              "row_limit": {
+                "type": "integer",
+                "const": 1
+              },
+              "truncated": {
+                "type": "boolean",
+                "const": false
+              },
+              "resolution": {
+                "type": "null",
+                "description": "Always `null`: an aggregate has no observed spacing, and reporting the window’s nominal resolution would describe the rows that went in rather than the row that comes out."
+              },
+              "resolution_uniform": {
+                "type": "null",
+                "description": "Always `null`, as `resolution` is."
+              },
+              "series": {
+                "type": "array",
+                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. Five entries and **two units** in one response — `mape`/`wape`/`smape` are percentages, `mae`/`rmse` are in the unit of whatever was forecast. All five are marked as our output: the reduction is our computation, and the ENTSO-E observation it was computed against is separately available under its own CC-BY series block at `/v1/observations`.",
+                "items": {
+                  "$ref": "#/components/schemas/SeriesDescriptor"
+                },
+                "minItems": 1
+              },
+              "latest_vintage_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "When the newest run of this model for this zone and type was generated. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "conflict_convention": {
+                "type": "string",
+                "const": "space_preferred",
+                "description": "How a conflicting stored-timestamp pair is resolved when scoring. Published on every response so that a later change is a documented change to a stated convention rather than a silent correction."
+              },
+              "freshness": {
+                "$ref": "#/components/schemas/Freshness",
+                "description": "The **actuals** stream, not the forecast one: accuracy cannot be measured past the newest actual we hold, so that is the edge that bounds this answer. `latest_vintage_at` carries the forecast side."
+              }
+            },
+            "required": [
+              "resource",
+              "zone",
+              "forecast_type",
+              "model",
+              "horizon_hours",
+              "from",
+              "to",
+              "coverage",
+              "forecast_hours",
+              "row_count",
+              "row_limit",
+              "truncated",
+              "resolution",
+              "resolution_uniform",
+              "series",
+              "latest_vintage_at",
+              "conflict_convention",
+              "freshness"
+            ],
+            "additionalProperties": false
+          },
+          "links": {
+            "$ref": "#/components/schemas/Links"
+          }
+        },
+        "required": [
+          "data",
+          "meta",
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "CatalogZone": {
+        "type": "object",
+        "title": "CatalogZone",
+        "description": "One zone, with the span and status of each observation stream. Zones we hold nothing for are **kept**, with `status: \"none\"` on each stream: dropping them would answer \"do you cover XX\" with silence, and an absence you cannot distinguish from an omission is not an answer.",
+        "properties": {
+          "zone": {
+            "type": "string",
+            "description": "Two-letter bidding-zone code."
+          },
+          "streams": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "title": "CatalogZoneStream",
+              "properties": {
+                "stream": {
+                  "type": "string",
+                  "enum": [
+                    "load",
+                    "price",
+                    "generation"
+                  ]
+                },
+                "data_from": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Oldest row we hold. `null` when we hold none. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+                },
+                "data_through": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Newest row we hold. `null` when we hold none, and legitimately in the future for a day-ahead series. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+                },
+                "source_checked_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "When we last attempted an upstream pass for this pair. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "live",
+                    "stale",
+                    "ended",
+                    "none"
+                  ],
+                  "description": "As on `meta.freshness.status`. `none` where we hold nothing for this pair."
+                },
+                "source": {
+                  "$ref": "#/components/schemas/SeriesSource"
+                }
+              },
+              "required": [
+                "stream",
+                "data_from",
+                "data_through",
+                "source_checked_at",
+                "status",
+                "source"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "zone",
+          "streams"
+        ],
+        "additionalProperties": false
+      },
+      "CatalogModel": {
+        "type": "object",
+        "title": "CatalogModel",
+        "description": "One (forecast type, model) pair and the zones it actually has rows for. Built from the rows rather than from a registry, so a model that returns nothing cannot appear here — which is the one thing a catalogue exists to prevent.",
+        "properties": {
+          "forecast_type": {
+            "type": "string",
+            "enum": [
+              "load",
+              "price",
+              "solar",
+              "wind_onshore",
+              "wind_offshore",
+              "renewable",
+              "biomass",
+              "hydro_total"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "catboost",
+              "xgboost"
+            ]
+          },
+          "stability": {
+            "type": "string",
+            "enum": [
+              "stable",
+              "beta"
+            ],
+            "description": "How confident the offer is, from measured coverage. `stable` types carry a production-model forecast across most zones we hold; `beta` types reach a handful. Published rather than hidden behind a type list so that a plan bought for a market we barely cover is a visible decision."
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "MW",
+              "EUR/MWh",
+              "%"
+            ]
+          },
+          "zone_count": {
+            "type": "integer",
+            "description": "Length of `zones`."
+          },
+          "zones": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Zones with at least one row for this type and model, sorted."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SeriesSource"
+          }
+        },
+        "required": [
+          "forecast_type",
+          "model",
+          "stability",
+          "unit",
+          "zone_count",
+          "zones",
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "CatalogCoverage": {
+        "type": "object",
+        "title": "CatalogCoverage",
+        "description": "Coverage of one zone and stream: the span always, the holes on request. This is the resource that stops you inferring \"this zone had no load\" from an empty array when the truth is \"the publisher stopped on a particular date\" — absence a data response cannot narrate without inventing rows.",
+        "properties": {
+          "zone": {
+            "type": "string"
+          },
+          "stream": {
+            "type": "string",
+            "enum": [
+              "load",
+              "price",
+              "generation"
+            ]
+          },
+          "data_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Oldest row we hold. `null` when we hold none. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "data_through": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Newest row we hold. `null` when we hold none, and legitimately in the future for a day-ahead series. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "source_checked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When we last attempted an upstream pass for this pair. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "live",
+              "stale",
+              "ended",
+              "none"
+            ],
+            "description": "As on `meta.freshness.status`. `none` where we hold nothing for this pair."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SeriesSource"
+          },
+          "window": {
+            "type": "object",
+            "title": "CatalogCoverageWindow",
+            "description": "Present only when `from` and `to` were both given. Without them this resource answers the cheap question from a memoized map; with them it reads the window’s timestamps and enumerates every hole.",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "Start of the examined window, inclusive. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "to": {
+                "type": "string",
+                "description": "End of the examined window, **exclusive**. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows we hold and would serve in this window."
+              },
+              "resolution": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The **observed** modal spacing of the rows returned, as an ISO 8601 duration (`PT15M`, `PT1H`). Reported, not promised: this API does not aggregate and accepts no resolution parameter. `null` on a page of fewer than two rows, where there is no spacing to observe."
+              },
+              "excluded_row_count": {
+                "type": "integer",
+                "description": "Rows in this window we decline to serve — see `meta.excluded` on the data resources for why. Counted rather than silently dropped, so this resource and the data resources cannot disagree about the same hour."
+              },
+              "gaps": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CoverageGap"
+                }
+              },
+              "gaps_truncated": {
+                "type": "boolean",
+                "description": "Whether gap enumeration was cut short at `max_gaps`. Stated rather than left to be inferred from a list of exactly 500."
+              },
+              "max_gaps": {
+                "type": "integer",
+                "const": 500,
+                "description": "The most gaps one response will enumerate."
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "row_count",
+              "resolution",
+              "excluded_row_count",
+              "gaps",
+              "gaps_truncated",
+              "max_gaps"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "zone",
+          "stream",
+          "data_from",
+          "data_through",
+          "source_checked_at",
+          "status",
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "CatalogZonesResponse": {
+        "type": "object",
+        "title": "CatalogZonesResponse",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogZone"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "description": "Lighter than the data endpoints’ envelope on purpose: these three return metadata rather than a time series, so there is no window, no resolution and no row cap to report, and fields that would be `null` on every response are absent rather than inviting a client to branch on them.",
+            "properties": {
+              "resource": {
+                "type": "string",
+                "const": "catalog.zones"
+              },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows in `data`."
+              },
+              "generated_at": {
+                "type": "string",
+                "description": "When this payload was computed. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "map_built_at": {
+                "type": "string",
+                "description": "When the memoized fleet map behind this response was built. Distinct from `generated_at`: the map refreshes on a timer, so a freshly computed response can rest on a map that is up to that old, and saying so is cheaper than implying a per-request scan we deliberately do not do. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              }
+            },
+            "required": [
+              "resource",
+              "row_count",
+              "generated_at",
+              "map_built_at"
+            ],
+            "additionalProperties": false
+          },
+          "links": {
+            "$ref": "#/components/schemas/Links"
+          }
+        },
+        "required": [
+          "data",
+          "meta",
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "CatalogModelsResponse": {
+        "type": "object",
+        "title": "CatalogModelsResponse",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogModel"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "description": "Lighter than the data endpoints’ envelope on purpose: these three return metadata rather than a time series, so there is no window, no resolution and no row cap to report, and fields that would be `null` on every response are absent rather than inviting a client to branch on them.",
+            "properties": {
+              "resource": {
+                "type": "string",
+                "const": "catalog.models"
+              },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows in `data`."
+              },
+              "generated_at": {
+                "type": "string",
+                "description": "When this payload was computed. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "map_built_at": {
+                "type": "string",
+                "description": "When the memoized fleet map behind this response was built. Distinct from `generated_at`: the map refreshes on a timer, so a freshly computed response can rest on a map that is up to that old, and saying so is cheaper than implying a per-request scan we deliberately do not do. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              }
+            },
+            "required": [
+              "resource",
+              "row_count",
+              "generated_at",
+              "map_built_at"
+            ],
+            "additionalProperties": false
+          },
+          "links": {
+            "$ref": "#/components/schemas/Links"
+          }
+        },
+        "required": [
+          "data",
+          "meta",
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "CatalogCoverageResponse": {
+        "type": "object",
+        "title": "CatalogCoverageResponse",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogCoverage"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "description": "Lighter than the data endpoints’ envelope on purpose: these three return metadata rather than a time series, so there is no window, no resolution and no row cap to report, and fields that would be `null` on every response are absent rather than inviting a client to branch on them.",
+            "properties": {
+              "resource": {
+                "type": "string",
+                "const": "catalog.coverage"
+              },
+              "row_count": {
+                "type": "integer",
+                "description": "Rows in `data`."
+              },
+              "generated_at": {
+                "type": "string",
+                "description": "When this payload was computed. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              },
+              "map_built_at": {
+                "type": "string",
+                "description": "When the memoized fleet map behind this response was built. Distinct from `generated_at`: the map refreshes on a timer, so a freshly computed response can rest on a map that is up to that old, and saying so is cheaper than implying a per-request scan we deliberately do not do. RFC 3339 UTC with an explicit Z, at second precision — 2026-08-12T14:00:00Z. Never a local time, never an offset."
+              }
+            },
+            "required": [
+              "resource",
+              "row_count",
+              "generated_at",
+              "map_built_at"
+            ],
+            "additionalProperties": false
+          },
+          "links": {
+            "$ref": "#/components/schemas/Links"
+          }
+        },
+        "required": [
+          "data",
+          "meta",
+          "links"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}
