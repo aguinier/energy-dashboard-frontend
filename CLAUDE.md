@@ -2665,7 +2665,10 @@ Three things to know before touching this:
   A measured zero (solar overnight) is `0.0`. `energy_generation` deliberately
   has **no `DEFAULT 0`**, and the mapping avoids `fillna(0)`. Note
   `groupby().sum()` collapses an all-NaN group to `0.0` unless you pass
-  `min_count=1`.
+  `min_count=1`. **Since ABL-268 that column has a second source of `NULL`** —
+  a position the TSO published no `Point` for, blanked at ingest instead of
+  being stored as a forward-filled `0.0`. See "More of `energy_generation` is
+  about to read NULL" below before reading a new gap as a defect.
 - **Values can be negative, legitimately — including solar and wind (ABL-412).**
   ENTSO-E reports `Actual Aggregated` and `Actual Consumption` separately; the
   full mapping nets them (`aggregated - consumption`), so `hydro_pumped_mw` is
@@ -2728,6 +2731,70 @@ Three things to know before touching this:
   gap is negligible; for **NL solar it is the whole story** — the reported
   series peaks at 428.8 MW against a Dutch fleet well over 20 GW, and renders
   as 0.93% of NL's generation mix in high summer. See the next section.
+
+### More of `energy_generation` is about to read NULL (ABL-268)
+
+The A75 ingest ran entsoe-py's sparse-document forward-fill unguarded on every
+country every day — the same mechanism ABL-50 fixed for load and ABL-55 for net
+position, third occurrence. `query_generation_and_renewable_with_metadata` now
+applies `blank_unpublished_zeros_by_series`
+(`../energy-data-gathering/src/published_points.py`) to the MultiIndex frame
+**before either flatten**, so a position the TSO published no `Point` for is
+written as `NULL` rather than as a measured `0.0`.
+
+**It is not deployed, so this describes a change that has not happened yet.**
+Checked the way this file insists on rather than inferred from git ancestry: on
+prod 2026-08-14, `docker exec energy-data-gathering grep -c
+blank_unpublished_zeros_by_series /app/src/published_points.py` returns **0**,
+and that container had been up 45 hours, predating the merge. The guard is
+**forward-only** — it changes what future passes write and backfills or deletes
+nothing, so every row in the table today is unaffected either way.
+
+Scale, measured on the sibling side through the real fetch path for market day
+2026-08-12 across 15 zones: **2,357 values blanked, and the only transition
+anywhere is `0.0` → `NULL`** — no non-zero value changed, appeared or
+disappeared. It is not indiscriminate; SI and DK blanked nothing. Expect
+`marine_mw`, `fossil_oil_shale_mw` and `fossil_coal_derived_gas_mw` to go
+substantially `NULL`, being 100%, 73.9% and 36.3% exact-`0.0` today.
+
+Three read-side consequences, each checked against this repo rather than
+assumed:
+
+- **Renewable share does not move at all.** Both sums clamp through a
+  `COALESCE` — `RENEWABLE_MW_SUM` (`generationService.ts:206`) and
+  `TOTAL_POSITIVE_MW_SUM` (`generationService.ts:238`) are
+  `MAX(COALESCE(col, 0), 0)` per column per row — so a cell contributes exactly
+  0 whether it holds `0.0` or `NULL`. With the only transition being
+  `0.0` → `NULL`, numerator and denominator are both unchanged. There is
+  nothing to re-baseline.
+- **No accuracy figure can count a blanked cell as a measured zero.** Every
+  path joining a forecast to `energy_generation` already filters the actual:
+  `tsoForecastService.ts:366` (hourly) and `tsoForecastService.ts:392`
+  (aggregated), `mlForecastService.ts:246` and `mlForecastService.ts:290`,
+  `crossCountryMetricsService.ts:142`, and `forecastService.ts:255`. A blanked
+  cell becomes an **absent point**, so `dataPoints` shrinks honestly instead of
+  overstating a sample whose metrics silently skipped it.
+- **The generation mix will show gaps where it used to show zeros, and that is
+  the existing rule firing more often rather than a rendering bug.**
+  `buildGenerationMixSeries` (`generationSeries.ts:146`) drops a group that is
+  null at every point from the series, the legend and the tooltip. The visible
+  case is overnight solar: 206 of the blanks fall in UTC hours 20–05, where a
+  fill from a genuinely published overnight `0.0` is entirely plausible — and
+  is refused anyway, because the document cannot say which case it is.
+
+**`energy_renewable` is deliberately untouched.** `_map_renewable_columns`
+`fillna(0)`s what it maps, so a blanked cell reaches the frozen table as the
+same `0.0` it held before, pinned byte-identical for all 15 zones by that
+repo's `test_energy_renewable_output_is_byte_identical`. The known gap recorded
+under `LoadTab` above — that `energy_renewable` has the same signature and is
+not guarded — therefore still stands, now by decision rather than by omission.
+
+**Comparability, and it is narrower than ABL-353's or ABL-399's.** Those moved
+which table the actual is read from and so changed history; this changes only
+what is written from the deploy onward. A generation accuracy figure over a
+window straddling that deploy mixes two ingest regimes and should be
+re-measured rather than reconciled; one over a window entirely before it is
+unaffected.
 
 ### The ML accuracy path scored forecasts against actuals that never happened (ABL-399)
 
