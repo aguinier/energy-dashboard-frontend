@@ -1,0 +1,11 @@
+# The published OpenAPI artifact is compared byte for byte against a freshly
+# built document by `server/src/v1/openapi/drift.test.ts`. `core.autocrlf` is
+# `true` on the Windows checkouts this repository is developed on, which would
+# otherwise hand that comparison a CRLF file to match against an LF string —
+# a drift failure that is really a line-ending failure, on a fresh clone, with
+# a message about the contract being stale.
+#
+# The check normalises line endings anyway, so this is the other half: it keeps
+# the *published* document byte-stable across platforms, which matters for a
+# file a docs pipeline and a client generator both consume.
+docs/api/v1/openapi.json text eol=lf

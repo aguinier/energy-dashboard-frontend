@@ -1,6 +1,9 @@
+import { useState } from 'react';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useDataFreshness } from '@/hooks/useDashboardData';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { describeFreshness, freshnessPulses, type FreshnessTone } from './freshnessPill';
+import { LastRefreshedPanel } from './LastRefreshedPanel';
 
 // Single top bar used on every view — replaces the older MapHeader / CountryHeader pair.
 // Mirrors the structure of the able prototype: triangle logo, "able energy" wordmark,
@@ -20,6 +23,7 @@ const REPO_URL = 'https://github.com/aguinier/energy-dashboard-frontend';
 export function AbleHeader() {
   const { currentView, goToMap, goToComparison } = useDashboardStore();
   const { data: freshness } = useDataFreshness();
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const navItems: { key: 'map' | 'compare'; label: string; onClick: () => void }[] = [
     { key: 'map', label: 'Map', onClick: goToMap },
@@ -79,19 +83,38 @@ export function AbleHeader() {
 
       <div className="flex-1" />
 
-      <span
-        className={
-          'flex items-center gap-1.5 font-mono-num text-micro ' +
-          (pill.tone === 'stale' ? 'text-dirty' : 'text-ink-muted')
-        }
-        title={pill.title}
-      >
-        <Pulse tone={pill.tone} />
-        <span className="sr-only">{pill.title}</span>
-        <span aria-hidden="true" className="hidden whitespace-nowrap sm:inline">
-          {pill.label}
-        </span>
-      </span>
+      {/*
+        The pill is also the door to the per-stream detail (ABL-295). It states
+        one verdict for the country; behind it, "Last refreshed" says when our
+        ingest last stored new rows for each stream, and separately when it last
+        ran. Those are two different numbers — every country is checked four
+        times a day, while GB and UA load have never had a pass return a row —
+        and the pill has no room to say so.
+
+        A button rather than a hover card: the content is a list a keyboard user
+        must be able to reach and read at their own pace, and `title` already
+        carries the one-line version for a pointer user.
+      */}
+      <Popover open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <PopoverTrigger asChild>
+          <button
+            aria-label={`${pill.title}. Show when each stream was last refreshed.`}
+            className={
+              'flex cursor-pointer items-center gap-1.5 rounded-md border-none bg-transparent px-1 py-0.5 font-mono-num text-micro hover:bg-secondary ' +
+              (pill.tone === 'stale' ? 'text-dirty' : 'text-ink-muted')
+            }
+            title={pill.title}
+          >
+            <Pulse tone={pill.tone} />
+            <span aria-hidden="true" className="hidden whitespace-nowrap sm:inline">
+              {pill.label}
+            </span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-80">
+          <LastRefreshedPanel open={detailsOpen} />
+        </PopoverContent>
+      </Popover>
 
       <button
         onClick={() => window.open(`${REPO_URL}#readme`, '_blank')}

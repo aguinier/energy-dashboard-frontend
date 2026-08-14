@@ -185,3 +185,128 @@ describe('GET /api/data-freshness/:cc — the pipeline states its own health', (
     ]);
   });
 });
+
+/**
+ * ABL-295 — `GET /api/data-freshness/:cc/ingest`.
+ *
+ * The suite above asks "how old is the newest row we hold". This one asks a
+ * different question with a different source: "when did we last go and look,
+ * and did anything arrive". The whole reason it is a separate endpoint is that
+ * those two answers routinely disagree, and merging them produces a confident
+ * claim nobody measured.
+ */
+
+type Refresh = {
+  lastChecked: string | null;
+  lastStoredRows: string | null;
+  delivery: string;
+  pipelines: string[];
+};
+type Ingest = {
+  load: Refresh;
+  price: Refresh;
+  generation: Refresh;
+  tsoLoadForecast: Refresh;
+  tsoGenerationForecast: Refresh;
+  netPosition: Refresh;
+  logStartsAt: string | null;
+};
+
+const getIngest = async (cc: string) => {
+  const { status, body } = await api.get(`data-freshness/${cc}/ingest`);
+  return { status, data: body.data as Ingest };
+};
+
+describe('GET /api/data-freshness/:cc/ingest — when did we last refresh it', () => {
+  it('reports the same instant for both stamps when the last pass delivered', async () => {
+    const { status, data } = await getIngest('DE');
+    expect(status).toBe(200);
+
+    expect(data.load.delivery).toBe('flowing');
+    expect(data.load.lastStoredRows).toBe(data.load.lastChecked);
+    expect(data.load.lastChecked).toBe('2026-07-02T00:30:15.882895+00:00');
+  });
+
+  it('keeps "checked" and "brought data" apart when the last passes brought nothing', async () => {
+    // THE case this endpoint exists for. GR was checked on the newest pass and
+    // last actually delivered a day earlier. A UI showing only `lastChecked`
+    // would say GR's load was refreshed on 2026-07-02; it was not.
+    const { data } = await getIngest('GR');
+
+    expect(data.load.delivery).toBe('checked_no_data');
+    expect(data.load.lastChecked).toBe('2026-07-02T00:40:15.882895+00:00');
+    expect(data.load.lastStoredRows).toBe('2026-07-01T00:40:15.882895+00:00');
+    expect(data.load.lastStoredRows).not.toBe(data.load.lastChecked);
+  });
+
+  it('says never_delivered — with a null stamp — rather than showing the check time', async () => {
+    // AT's net position passes run and have never returned a row; 14 of 36
+    // production zones are in this state. There is no "last refreshed" instant
+    // to render, so the field must be null and not quietly the check time.
+    const { data } = await getIngest('AT');
+
+    expect(data.netPosition.delivery).toBe('never_delivered');
+    expect(data.netPosition.lastStoredRows).toBeNull();
+    expect(data.netPosition.lastChecked).not.toBeNull();
+  });
+
+  it('reports not_logged for a country the log does not cover', async () => {
+    // Distinct from never_delivered: the log has no record, which says nothing
+    // about whether the pipeline ran.
+    const { data } = await getIngest('BE');
+
+    expect(data.load.delivery).toBe('not_logged');
+    expect(data.load.lastChecked).toBeNull();
+    expect(data.load.lastStoredRows).toBeNull();
+  });
+
+  it('bounds not_logged with the log\'s own start, so it cannot read as "never ran"', async () => {
+    const { data } = await getIngest('BE');
+    expect(data.logStartsAt).toBe('2026-07-01T00:30:15.882895+00:00');
+  });
+
+  it('merges D+1 and D+7 into the one table they both write', async () => {
+    // DE's week-ahead pass has never delivered while its day-ahead twin has.
+    // `energy_load_forecast` WAS refreshed, so the stream is flowing — the
+    // stream describes the table, and the tab reads the table.
+    const { data } = await getIngest('DE');
+
+    expect(data.tsoLoadForecast.pipelines).toEqual([
+      'load_forecast_day_ahead',
+      'load_forecast_week_ahead',
+    ]);
+    expect(data.tsoLoadForecast.delivery).toBe('flowing');
+  });
+
+  it('ignores failed and running passes when dating the last check', async () => {
+    // Both are dated after every completed DE pass. Counting a failed pass
+    // would let a stream erroring four times a day report itself freshly
+    // checked; counting an in-flight one would report a check that has not
+    // finished.
+    const { data } = await getIngest('DE');
+
+    expect(data.load.lastChecked).toBe('2026-07-02T00:30:15.882895+00:00');
+    expect(data.price.lastChecked).toBe('2026-07-02T00:31:15.882895+00:00');
+  });
+
+  it('names the pipelines behind every stream, so the answer is auditable', async () => {
+    const { data } = await getIngest('DE');
+
+    expect(data.generation.pipelines).toEqual(['renewable']);
+    expect(data.tsoGenerationForecast.pipelines).toEqual(['wind_solar_forecast']);
+    expect(data.netPosition.pipelines).toEqual(['net_position']);
+  });
+
+  it('returns every stream plus the log bound', async () => {
+    const { data } = await getIngest('DE');
+    expect(Object.keys(data).sort()).toEqual([
+      'generation',
+      'load',
+      'logStartsAt',
+      'netPosition',
+      'price',
+      'tsoGenerationForecast',
+      'tsoLoadForecast',
+    ]);
+  });
+});

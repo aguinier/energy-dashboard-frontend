@@ -20,10 +20,30 @@ services:
       # acceptance and vice versa. Unset → the status page reports "not
       # configured" rather than attempting a request.
       - OPS_PEER_URL=${OPS_PEER_URL:-}
+      # Ops-status snapshot capture (ABL-288) behind GET /api/ops/status/history
+      # — the trend and disk-headroom half of the status page. Appends one JSONL
+      # line per capture to /data/ops-status-snapshots.jsonl: its own file, NOT a
+      # table in the shared database. On by default (it writes only that file);
+      # set OPS_SNAPSHOT_ENABLED=false to stop capturing while still serving
+      # reads. Unset → the defaults, 15m interval and 14d retention.
+      - OPS_SNAPSHOT_ENABLED=${OPS_SNAPSHOT_ENABLED:-}
+      - OPS_SNAPSHOT_INTERVAL_MINUTES=${OPS_SNAPSHOT_INTERVAL_MINUTES:-}
+      - OPS_SNAPSHOT_RETENTION_DAYS=${OPS_SNAPSHOT_RETENTION_DAYS:-}
+      - OPS_SNAPSHOT_PATH=${OPS_SNAPSHOT_PATH:-}
+      # Ops alert engine (ABL-287): notifies on transition into warn/error and
+      # on recovery. The log is the only channel, so nothing here configures
+      # delivery. On unless explicitly false. Its last-notified state persists
+      # to ops-alert-state.json in the same /data volume — a separate, much
+      # smaller file than the snapshots above, holding what was last announced
+      # rather than what was read, so a container restart does not re-announce
+      # everything already reported.
+      - OPS_ALERTS_ENABLED=${OPS_ALERTS_ENABLED:-}
+      - OPS_ALERT_INTERVAL_MINUTES=${OPS_ALERT_INTERVAL_MINUTES:-}
     volumes:
       # DB volume is now read-write so POST /api/weather/snapshot can
       # insert. All existing GET routes use a separate readonly connection
       # (server/src/config/database.ts); writes go only via the token-
-      # authenticated /api/weather/snapshot endpoint.
+      # authenticated /api/weather/snapshot endpoint. ABL-288's snapshot file
+      # also lands here, next to the database — same mount, separate file.
       - ${DB_DIR:-../../data_gathering}:/data
     restart: unless-stopped

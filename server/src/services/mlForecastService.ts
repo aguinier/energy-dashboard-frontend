@@ -2,6 +2,8 @@ import db from '../config/database.js';
 import { ForecastType, Granularity } from '../types/index.js';  
 import { timestampRange, rangeClause, rangeArgs, timestampFormOnClause } from '../utils/timestamp.js';
 import { loadActualGuard } from './loadQuality.js';
+import { actualsSourceFor, type ActualsSource } from './actualsSource.js';
+import { wape } from './wape.js';
 
 /**
  * ML Forecast Accuracy Service
@@ -16,17 +18,10 @@ const VALID_FORECAST_TYPES: ForecastType[] = [
   'wind_onshore', 'wind_offshore', 'hydro_total', 'biomass'
 ];
 
-// Mapping from forecast type to actual data source
-const ACTUAL_DATA_MAPPING: Record<string, { table: string; column: string; timestampCol: string }> = {
-  load: { table: 'energy_load', column: 'load_mw', timestampCol: 'timestamp_utc' },
-  price: { table: 'energy_price', column: 'price_eur_mwh', timestampCol: 'timestamp_utc' },
-  solar: { table: 'energy_renewable', column: 'solar_mw', timestampCol: 'timestamp_utc' },
-  wind_onshore: { table: 'energy_renewable', column: 'wind_onshore_mw', timestampCol: 'timestamp_utc' },
-  wind_offshore: { table: 'energy_renewable', column: 'wind_offshore_mw', timestampCol: 'timestamp_utc' },
-  hydro_total: { table: 'energy_renewable', column: 'hydro_run_mw + hydro_reservoir_mw', timestampCol: 'timestamp_utc' },
-  biomass: { table: 'energy_renewable', column: 'biomass_mw', timestampCol: 'timestamp_utc' },
-  renewable: { table: 'energy_renewable', column: 'total_renewable_mw', timestampCol: 'timestamp_utc' },
-};
+// Which table and column an actual is read from lives in `actualsSource.ts`
+// (ABL-399). This module used to keep its own copy of that mapping, as did
+// `crossCountryMetricsService` and `forecastService` — three literals that a
+// comment asked to be kept in step. They are now one.
 
 export interface MLForecastAccuracyDataPoint {
   timestamp: string;
@@ -41,6 +36,13 @@ export interface MLForecastAccuracyDataPoint {
 export interface MLForecastAccuracyMetrics {
   mae: number | null;      // Mean Absolute Error — null only when dataPoints is 0
   mape: number | null;     // Mean Absolute Percentage Error — null when no point had a measurable (positive) actual
+  /**
+   * Weighted Absolute Percentage Error — `100 * sum|e| / sum|actual|`, over
+   * every paired point (so its sample is `dataPoints`, not `mapeSamples`).
+   * `null` when the window's actuals sum to zero. Added by ABL-388 beside
+   * `mape`, which a near-zero actual can dominate without bound.
+   */
+  wape: number | null;
   rmse: number | null;     // Root Mean Square Error — null only when dataPoints is 0
   bias: number | null;     // Mean Error (positive = over-forecast) — null only when dataPoints is 0
   dataPoints: number;
@@ -102,9 +104,21 @@ export function modelFilterSql(alias: string, modelName?: string): string {
  * The actuals-side JOIN for an accuracy query, resolving whichever separator
  * form the row happens to be stored in (ABL-214) — see `timestampFormOnClause`
  * for why this is two LEFT JOINs and a COALESCE rather than one join matching
- * either form: `energy_load`/`energy_price`/`energy_renewable` all hold
- * country-hours where a 'T' row and a space row both exist with CONFLICTING
- * values, and a single join would silently return both.
+ * either form: `energy_load` and `energy_price` both hold country-hours where a
+ * 'T' row and a space row exist with CONFLICTING values, and a single join
+ * would silently return both.
+ *
+ * The two-join shape is kept for **every** type, including the six that ABL-399
+ * moved onto `energy_generation` — a table measured at 0 'T'-form rows out of
+ * 3,180,752, where the fallback join therefore matches nothing today. It is
+ * retained rather than specialised away for two reasons: it stays correct
+ * without a code change if a future ingest ever writes a 'T'-form generation
+ * row (the silent-drop trap ABL-353 had to document for its single-join site),
+ * and one join shape for all types is what makes the mapping consolidation
+ * worth having. It is not costing anything measurable — moving these types onto
+ * the four-times-larger `energy_generation` left the whole cross-country query
+ * at 1,908 ms against 1,974 ms before, measured warm on the replica, dead
+ * fallback joins included.
  *
  * `alias` lets a correlated `EXISTS`/subquery reuse this against a different
  * outer alias (none does today, but the two aliases this always introduces —
@@ -112,22 +126,20 @@ export function modelFilterSql(alias: string, modelName?: string): string {
  * collide with anything else in the surrounding query).
  */
 function resolvedActualJoin(
-  mapping: { table: string; column: string; timestampCol: string },
-  forecastType: ForecastType,
+  source: ActualsSource,
   alias = 'a'
 ): { actualColumn: string; joinClause: string } {
-  const rawColumn = (a: string) =>
-    forecastType === 'hydro_total' ? `(${a}.hydro_run_mw + ${a}.hydro_reservoir_mw)` : `${a}.${mapping.column}`;
+  const rawColumn = (a: string) => source.valueExpr(`${a}.`);
   const fallbackAlias = `${alias}2`;
   return {
     actualColumn: `COALESCE(${rawColumn(alias)}, ${rawColumn(fallbackAlias)})`,
     joinClause: `
-      LEFT JOIN ${mapping.table} ${alias}
+      LEFT JOIN ${source.table} ${alias}
         ON ${alias}.country_code = ?
-        AND ${timestampFormOnClause(`${alias}.${mapping.timestampCol}`, 'f.target_timestamp_utc', 'space')}
-      LEFT JOIN ${mapping.table} ${fallbackAlias}
+        AND ${timestampFormOnClause(`${alias}.${source.timestampCol}`, 'f.target_timestamp_utc', 'space')}
+      LEFT JOIN ${source.table} ${fallbackAlias}
         ON ${fallbackAlias}.country_code = ?
-        AND ${timestampFormOnClause(`${fallbackAlias}.${mapping.timestampCol}`, 'f.target_timestamp_utc', 't')}`,
+        AND ${timestampFormOnClause(`${fallbackAlias}.${source.timestampCol}`, 'f.target_timestamp_utc', 't')}`,
   };
 }
 
@@ -160,8 +172,8 @@ export function getMLForecastAccuracy(
     throw new Error(`Invalid forecast type: ${forecastType}`);
   }
 
-  const mapping = ACTUAL_DATA_MAPPING[forecastType];
-  if (!mapping) {
+  const source = actualsSourceFor(forecastType);
+  if (!source) {
     return [];
   }
 
@@ -195,7 +207,7 @@ export function getMLForecastAccuracy(
 
   // For hourly granularity, join forecasts with actuals
   if (granularity === 'hourly') {
-    const { actualColumn, joinClause } = resolvedActualJoin(mapping, forecastType);
+    const { actualColumn, joinClause } = resolvedActualJoin(source);
 
     const stmt = db.prepare(`
       WITH latest_forecasts AS (
@@ -243,7 +255,7 @@ export function getMLForecastAccuracy(
 
   // For aggregated granularity (daily, weekly, monthly)
   const groupByClause = getGroupByClause(granularity);
-  const { actualColumn, joinClause } = resolvedActualJoin(mapping, forecastType);
+  const { actualColumn, joinClause } = resolvedActualJoin(source);
 
   const stmt = db.prepare(`
     WITH latest_forecasts AS (
@@ -352,10 +364,18 @@ export function hasMLForecastRowsInWindow(
  * undefined at zero. Those points previously contributed 0, which understated
  * mape wherever actuals legitimately hit zero (solar overnight) or negative
  * (price). Mirrors tsoForecastService.calculateMetrics — same bug, same fix.
+ *
+ * `wape` is served beside `mape` for the same reason and by the same shared
+ * definition (ABL-388). This function is a deliberate mirror of the TSO one,
+ * so the two get the measure together: a percentage error that exists on one
+ * accuracy endpoint and not its twin is how the two come to disagree about
+ * the same forecast. Note MAPE's unboundedness is a property of the *actuals*
+ * passing near zero, not of who produced the forecast, so it reaches the ml
+ * side identically wherever the forecast type is solar or wind.
  */
 export function calculateMetrics(data: MLForecastAccuracyDataPoint[]): MLForecastAccuracyMetrics {
   if (data.length === 0) {
-    return { mae: null, mape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0 };
+    return { mae: null, mape: null, wape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0 };
   }
 
   const n = data.length;
@@ -377,9 +397,16 @@ export function calculateMetrics(data: MLForecastAccuracyDataPoint[]): MLForecas
   // Bias: Mean Error (positive = actual > forecast = under-forecast)
   const bias = data.reduce((sum, d) => sum + d.error, 0) / n;
 
+  // WAPE: the one shared definition. It handles its own null/non-finite and
+  // zero-denominator cases, so every paired point goes in.
+  const wapeValue = wape(
+    data.map((d) => ({ actual: d.actual_value, forecast: d.forecast_value }))
+  );
+
   return {
     mae: round2(mae),
     mape: mape == null ? null : round2(mape),
+    wape: wapeValue,
     rmse: round2(rmse),
     bias: round2(bias),
     dataPoints: n,

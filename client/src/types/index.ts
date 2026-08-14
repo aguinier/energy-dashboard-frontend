@@ -20,27 +20,69 @@ export interface PriceDataPoint {
   price: number;
 }
 
+// Renewable generation by source. Served from `energy_generation` since
+// ABL-324 tranche 1, not the frozen `energy_renewable`. Every field is
+// independently nullable for the same reason GenerationMix's are: a
+// production type this country does not report reaches the client as `null`,
+// never a fabricated `0`. It is a real change - the frozen table carried
+// `DEFAULT 0` and the old queries wrapped every column in `COALESCE(x, 0)`,
+// so these used to arrive as a confident `0 MW`. Do not render a null as a
+// zero; render it as a gap.
 export interface RenewableDataPoint {
   timestamp: string;
-  solar: number;
-  wind_onshore: number;
-  wind_offshore: number;
-  hydro: number;
-  biomass: number;
-  geothermal: number;
-  other: number;
+  solar: number | null;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+  hydro: number | null;
+  biomass: number | null;
+  geothermal: number | null;
+  other: number | null;
 }
 
+// `total` is null only when all seven fields are null - the sum of whichever
+// were reported otherwise, and `0` when every reported value is a measured
+// zero. The whole object is null when the window holds no rows at all.
 export interface RenewableMix {
-  solar: number;
-  wind_onshore: number;
-  wind_offshore: number;
-  hydro: number;
-  biomass: number;
-  geothermal: number;
-  other: number;
-  total: number;
+  solar: number | null;
+  wind_onshore: number | null;
+  wind_offshore: number | null;
+  hydro: number | null;
+  biomass: number | null;
+  geothermal: number | null;
+  other: number | null;
+  total: number | null;
   renewable_percentage?: number | null;
+}
+
+/**
+ * Why the `solar` field below can, or cannot, carry an unqualified "Solar"
+ * label (ABL-325). Structural mirror of the server's `SolarCoverage`, which
+ * owns the rule and the thresholds - see `server/src/services/solarCoverage.ts`.
+ *
+ * `unknown` is a real verdict and is not `consistent`: it means the check
+ * could not run (too few paired hours, or a country that reports essentially
+ * no solar either side), so the label stands only because nothing contradicted
+ * it. The UI must render it as no caveat, never as a reassurance.
+ */
+export type SolarCoverageVerdict = 'consistent' | 'partial_subset' | 'unknown';
+
+export interface SolarCoverage {
+  verdict: SolarCoverageVerdict;
+  /** Paired hours the verdict rests on. */
+  pairs: number;
+  /** Summed MW of ENTSO-E's own day-ahead solar forecast over those hours. */
+  forecastSumMw: number;
+  /** Summed MW of the reported solar actuals over the same hours. */
+  actualSumMw: number;
+  /**
+   * `forecastSumMw / actualSumMw`, 1dp. Null when the actual sum is zero - the
+   * ratio does not exist. **Not a correction factor**: the day-ahead forecast
+   * is itself only what the TSO can see, so this is a lower bound on a
+   * discrepancy and must never be rendered as "solar is N times higher".
+   */
+  ratio: number | null;
+  /** Days of history the verdict was computed over. */
+  referenceDays: number;
 }
 
 // Full A75 generation mix, sourced server-side from `energy_generation` (the
@@ -81,6 +123,13 @@ export interface GenerationMix {
   // country has no energy_generation rows yet, or total positive generation
   // is zero/negative.
   renewable_percentage: number | null;
+  // Whether `solar` above is this country's solar output or only the
+  // grid-metered part of it (ABL-325). Arrives in this payload rather than
+  // from a separate request specifically so the number and its caveat cannot
+  // be rendered apart. Optional on the wire so a client running against an
+  // older server degrades to "no verdict" rather than crashing; treat a
+  // missing value exactly like `unknown`.
+  solar_coverage?: SolarCoverage;
 }
 
 /**
@@ -255,13 +304,42 @@ export interface TSOForecastAccuracyDataPoint {
   error_pct: number | null; // null when actual_value <= 0 — unmeasurable as a percentage
 }
 
+/**
+ * Whether the country's realized load and its TSO load forecast measure the
+ * same quantity. `divergent_basis` is NOT a "no data" word — both series are
+ * held in full; it is the error measures derived from the pair that are not
+ * publishable. See `server/src/services/loadForecastBasis.ts` (ABL-277).
+ */
+export type LoadForecastBasis = 'comparable' | 'divergent_basis';
+
 export interface TSOForecastAccuracyMetrics {
   mae: number | null;
   mape: number | null;
+  /**
+   * Weighted Absolute Percentage Error: `100 * sum|actual - forecast| /
+   * sum|actual|`, over every paired point — so its sample is `dataPoints`,
+   * not `mapeSamples`, and there is deliberately no separate `wapeSamples`.
+   *
+   * Prefer this over `mape` wherever an actual can pass near zero. MAPE
+   * divides each point by its own actual, so on a solar series that crosses
+   * near-zero at dawn and dusk it is unbounded: measured on the replica
+   * 2026-08-13 over full history, `/tso-forecast/accuracy/generation/HU`
+   * `?type=solar` reported a MAPE of 7,421.87% where WAPE is 13.12%
+   * (ABL-388).
+   *
+   * `null`, never `0`, when the window's actuals sum to zero.
+   *
+   * Absent on responses predating ABL-388.
+   */
+  wape?: number | null;
   rmse: number | null;
   dataPoints: number;
   /** Count of points with a positive actual — may be lower than dataPoints; mape covers only these. */
   mapeSamples: number;
+  /** Absent on responses predating ABL-277; treat as 'comparable'. */
+  basis?: LoadForecastBasis;
+  /** Non-null exactly when `basis` is `divergent_basis`: why there are no numbers. */
+  basisNote?: string | null;
 }
 
 export interface ApiResponse<T> {
@@ -320,6 +398,66 @@ export interface DataFreshness {
 }
 
 // ============================================================================
+// Ingest passes — "Last refreshed" (ABL-295)
+// ============================================================================
+// Mirrors server/src/services/ingestLog.ts. Sourced from `data_ingestion_log`,
+// NOT from `publication_timestamp_utc`: that column is stamped with our own
+// fetch time and drifts up to 39.1 days from the row carrying it, so no stream
+// in this database can honestly show an upstream production time. That is why
+// the copy is "Last refreshed" and never "Published" or "Generated".
+
+/** The streams the dashboard draws, as the server's `INGEST_PIPELINES` maps them. */
+export type IngestStreamKey =
+  | 'load'
+  | 'price'
+  | 'generation'
+  | 'tsoLoadForecast'
+  | 'tsoGenerationForecast'
+  | 'netPosition';
+
+/**
+ * How the last pass relates to the last pass that actually brought rows.
+ *
+ * Four separate claims. `checked_no_data` and `never_delivered` in particular
+ * are not the same thing — measured 2026-08-12, GB load has never had a pass
+ * return a row in 453 attempts, while AL generation last got one on 2026-06-30
+ * and is still checked four times a day.
+ */
+export type IngestDelivery =
+  | 'flowing'
+  | 'checked_no_data'
+  | 'never_delivered'
+  | 'not_logged';
+
+export interface StreamRefresh {
+  /** Newest completed pass. When we last went and looked. */
+  lastChecked: string | null;
+  /**
+   * Newest completed pass that wrote at least one row.
+   *
+   * Never fall back to `lastChecked` when this is null. And not a claim that
+   * the data got newer — the ingest upserts a rolling 7-day window, so a
+   * rewrite of a row we already held counts here. The freshness pill's
+   * `MAX(timestamp_utc)` verdict is what answers data age.
+   */
+  lastStoredRows: string | null;
+  delivery: IngestDelivery;
+  /** Which `pipeline_type` rows the server folded in. */
+  pipelines: string[];
+}
+
+export interface IngestFreshness {
+  load: StreamRefresh;
+  price: StreamRefresh;
+  generation: StreamRefresh;
+  tsoLoadForecast: StreamRefresh;
+  tsoGenerationForecast: StreamRefresh;
+  netPosition: StreamRefresh;
+  /** Earliest pass anywhere in the log — what bounds a `not_logged` verdict. */
+  logStartsAt: string | null;
+}
+
+// ============================================================================
 // Ops status (ABL-237 host/process KPIs, ABL-238 acceptance/prod comparison)
 // ============================================================================
 // Mirrors server/src/services/opsStatusService.ts, peerOpsStatus.ts and
@@ -352,6 +490,20 @@ export interface ProcessMetrics {
     heapTotalBytes: number;
     externalBytes: number;
   };
+}
+
+/**
+ * One interface's counters and derived rates (ABL-290). The `BytesPerSec` pair
+ * is `null` until the server has two samples to difference, and again whenever
+ * a counter resets under it — never a fabricated rate.
+ */
+export interface NetworkInterfaceThroughput {
+  name: string;
+  rxBytes: number;
+  txBytes: number;
+  rxBytesPerSec: number | null;
+  txBytesPerSec: number | null;
+  sampleWindowMs: number | null;
 }
 
 /** Fleet-wide worst-case rollup over every country's `DataFreshness` — see `freshnessRollup.ts`. */
@@ -399,6 +551,12 @@ export interface OpsStatus {
     platform: string;
     disk: DiskUsage | null;
     cpuLoad: CpuLoad | null;
+    /**
+     * `null` on a platform with no counters to read; **absent** when the peer
+     * runs a build older than ABL-290. The two are rendered differently and
+     * neither is zero — see `lib/networkRows.ts`.
+     */
+    network?: NetworkInterfaceThroughput[] | null;
   };
   process: ProcessMetrics;
   freshness: FreshnessRollup;
@@ -422,12 +580,121 @@ export interface SyncBlackoutStatus {
   label: string | null;
 }
 
+/**
+ * The server's warn/error verdict for one KPI (ABL-292).
+ *
+ * This union used to be the client's own `lib/opsStatusThresholds.ts`, which
+ * also owned `DISK_WARN_RATIO`/`DISK_ERROR_RATIO`. The thresholds now live in
+ * `server/src/lib/opsStatusThresholds.ts` — a scheduled alert job (ABL-287)
+ * cannot import browser code, and two copies of a threshold is how a page
+ * reads "fine" while a pager reads "critical". Only the type is mirrored here,
+ * the same way every other type in this block mirrors a server response;
+ * nothing on the client decides where a threshold sits any more.
+ */
+export type ThresholdState = 'ok' | 'warn' | 'error' | 'unknown';
+
+/** Per-KPI verdicts for one lane, plus the worst-wins roll-up the badge renders. */
+export interface OpsSideDerived {
+  environment: ThresholdState;
+  disk: ThresholdState;
+  freshness: ThresholdState;
+}
+
 export interface CombinedOpsStatus {
   timestamp: string;
   local: OpsSideStatus;
   peer: OpsSideStatus;
   peerConfigured: boolean;
   syncBlackout: SyncBlackoutStatus;
+  /** Server-derived state for both lanes (ABL-292) — see `ThresholdState`. */
+  derived: {
+    local: OpsSideDerived;
+    peer: OpsSideDerived;
+    /**
+     * Whether the lanes are on the same build (ABL-287). A cross-lane
+     * comparison, so it sits beside the per-side verdicts rather than inside
+     * either. `unknown` whenever there is nothing to compare — a side
+     * unreachable, or a side reporting no commit (a dev server) — which is why
+     * the banner keys on `'warn'` rather than on inequality.
+     */
+    commitDrift: ThresholdState;
+  };
+}
+
+// ----------------------------------------------------------------------------
+// Ops status history (ABL-288)
+// ----------------------------------------------------------------------------
+// Mirrors server/src/services/opsSnapshot.ts, opsHistoryService.ts and
+// lib/diskHeadroom.ts. Snapshots of the combined reading, stored on a timer,
+// so the page can show a trend and a disk projection rather than only "now".
+
+/**
+ * One side of one stored reading. Every metric is `| null`, and `null` means
+ * that reading did not contain it — the side was unreachable, or the host
+ * could not measure it. It never means zero.
+ */
+export interface OpsSideSnapshot {
+  reachable: boolean;
+  latencyMs: number | null;
+  diskUsedBytes: number | null;
+  diskTotalBytes: number | null;
+  rssBytes: number | null;
+  uptimeSeconds: number | null;
+  freshnessStatus: FreshnessStatus | null;
+  staleCountryCount: number | null;
+  commit: string | null;
+}
+
+export interface OpsSnapshot {
+  /** ISO-8601 UTC instant the reading was taken. */
+  t: string;
+  local: OpsSideSnapshot;
+  peer: OpsSideSnapshot;
+}
+
+/** Why a headroom projection is absent — the page states this rather than showing a number. */
+export type DiskHeadroomReason =
+  | 'ok'
+  | 'no_readings'
+  | 'insufficient_history'
+  | 'insufficient_span'
+  | 'not_rising'
+  | 'noisy_fit'
+  | 'already_breached'
+  | 'beyond_horizon';
+
+export interface DiskHeadroomBasis {
+  points: number;
+  spanHours: number;
+  slopePercentPerDay: number;
+  r2: number;
+  currentPercent: number;
+  /** Hours of history a projection needs — the server's bar, never restated here (ABL-459). */
+  minSpanHours: number;
+}
+
+export interface DiskHeadroom {
+  thresholdPercent: number;
+  /** Days until the threshold is crossed, or `null` — see `reason`. */
+  days: number | null;
+  reason: DiskHeadroomReason;
+  basis: DiskHeadroomBasis | null;
+}
+
+export interface OpsStatusHistory {
+  timestamp: string;
+  /** Hours actually served — the request's `hours` clamped to retention. */
+  windowHours: number;
+  snapshots: OpsSnapshot[];
+  headroom: { local: DiskHeadroom; peer: DiskHeadroom };
+  storage: {
+    captureEnabled: boolean;
+    intervalMinutes: number;
+    retentionDays: number;
+    storedSnapshots: number;
+    skippedLines: number;
+    error: string | null;
+  };
 }
 
 // ============================================================================
@@ -449,10 +716,16 @@ export type TSOHorizon = 'day_ahead' | 'week_ahead';
  * Accuracy metrics for a single forecast source/horizon
  */
 export interface AccuracyMetrics {
-  mae: number;      // Mean Absolute Error (MW or EUR/MWh)
+  /**
+   * Mean Absolute Error (MW or EUR/MWh). Nullable since ABL-277 — a country
+   * whose actuals and TSO forecast measure different quantities pairs points
+   * but has no publishable error, so `dataPoints > 0` does not imply a number.
+   */
+  mae: number | null;
   mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
-  rmse: number;     // Root Mean Square Error
-  bias: number;     // Mean Error (positive = over-forecast)
+  rmse: number | null;     // Root Mean Square Error
+  /** Mean Error (positive = over-forecast); null on a divergent basis, where the mean difference is definitional, not bias. */
+  bias: number | null;
   dataPoints: number;
 }
 

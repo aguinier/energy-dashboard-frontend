@@ -12,8 +12,8 @@ vi.mock('../config/database.js', () => ({ default: null }));
 
 const {
   getGenerationMix, GENERATION_MIX_SQL, getRenewableShare, RENEWABLE_SHARE_SQL,
-  getGenerationSeries, generationSeriesSql, GENERATION_GROUPS,
-  getWindGenerationSeries, windGenerationSeriesSql,
+  getGenerationSeries, generationSeriesSql, GENERATION_GROUPS, RENEWABLE_MW_SUM,
+  TOTAL_POSITIVE_MW_SUM, getWindGenerationSeries, windGenerationSeriesSql,
 } = await import('./generationService.js');
 
 // Mirrors the real energy_generation schema (Task 1 of the A75 plan),
@@ -52,6 +52,23 @@ const SCHEMA = `
   );
   CREATE UNIQUE INDEX idx_generation_country_time ON energy_generation(country_code, timestamp_utc);
   CREATE INDEX idx_generation_time ON energy_generation(timestamp_utc);
+
+  -- getGenerationMix attaches a solar-coverage verdict (ABL-325), which pairs
+  -- energy_generation against ENTSO-E's own day-ahead solar forecast. Present
+  -- but deliberately left empty: none of the tests below seed a forecast, so
+  -- every mix they build carries the 'unknown' verdict - which is exactly what
+  -- a country we cannot check should produce, and is asserted as such below.
+  -- The verdict's own behaviour is covered in solarCoverage.test.ts.
+  CREATE TABLE energy_generation_forecast (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_code TEXT NOT NULL,
+    target_timestamp_utc TIMESTAMP NOT NULL,
+    solar_mw REAL,
+    wind_onshore_mw REAL,
+    wind_offshore_mw REAL
+  );
+  CREATE INDEX idx_gen_forecast_country_ts
+    ON energy_generation_forecast(country_code, target_timestamp_utc);
 `;
 
 function buildDb(): DatabaseType {
@@ -102,7 +119,11 @@ function expectedRenewableShare(rows: Array<Record<string, number | null | undef
   let renewableSum = 0;
   let totalPositiveSum = 0;
   for (const row of rows) {
-    for (const key of RENEWABLE_KEYS) renewableSum += row[key] ?? 0;
+    // Both sides clamp each column to >=0 per row (ABL-412). They have to
+    // measure a negative reading the same way or the fraction mixes two
+    // definitions of one - the numerator letting it subtract while the
+    // denominator ignores it.
+    for (const key of RENEWABLE_KEYS) renewableSum += Math.max(row[key] ?? 0, 0);
     for (const key of ALL_GENERATION_KEYS) totalPositiveSum += Math.max(row[key] ?? 0, 0);
   }
   if (totalPositiveSum <= 0) return null;
@@ -259,6 +280,31 @@ describe('RENEWABLE_SHARE_SQL shape', () => {
   it('has no JOIN - the definition this replaces needed one (energy_renewable to energy_load), and the join was the whole performance problem', () => {
     expect(RENEWABLE_SHARE_SQL).not.toMatch(/JOIN/i);
   });
+
+  it('builds the numerator from renewableTotal.RENEWABLE_MW_COLUMNS, and from nothing else', () => {
+    // ABL-324 tranche 1: the /renewables breakdown's seven fields and this
+    // numerator are served side by side on one /renewables/mix object, so
+    // they are generated from one column list. RENEWABLE_KEYS above is this
+    // file's independent mirror of that list; asserting against it here is
+    // what would fail if the shared constant drifted from the definition the
+    // Board signed off, rather than both moving together silently.
+    const inSum = [...RENEWABLE_MW_SUM.matchAll(/COALESCE\((\w+), 0\)/g)].map((m) => m[1]);
+    expect(inSum.sort()).toEqual([...RENEWABLE_KEYS].sort());
+    expect(RENEWABLE_MW_SUM).not.toMatch(/hydro_pumped_mw|energy_storage_mw/);
+  });
+
+  it('clamps every numerator column to >=0, exactly as the denominator does (ABL-412)', () => {
+    // The two halves of one fraction must measure a negative reading the same
+    // way. Asserted on the SQL text, not only through a query, because the
+    // failure mode is silent: an unclamped numerator still returns a
+    // plausible number, just a slightly smaller one.
+    for (const column of RENEWABLE_KEYS) {
+      expect(RENEWABLE_MW_SUM).toContain(`MAX(COALESCE(${column}, 0), 0)`);
+      expect(TOTAL_POSITIVE_MW_SUM).toContain(`MAX(COALESCE(${column}, 0), 0)`);
+    }
+    // No bare `COALESCE(c, 0)` term survives outside a MAX().
+    expect(RENEWABLE_MW_SUM.replace(/MAX\(COALESCE\(\w+, 0\), 0\)/g, '')).not.toMatch(/COALESCE/);
+  });
 });
 
 describe('getRenewableShare', () => {
@@ -350,6 +396,64 @@ describe('getRenewableShare', () => {
     const pct = getRenewableShare('FR', '2026-07-29 12:00:00', '2026-07-29 14:00:00', db);
 
     expect(pct).toBeNull();
+  });
+
+  // ABL-412. `energy_generation` holds a signed net-of-consumption value: the
+  // ingest subtracts ENTSO-E's 'Actual Consumption' sub-series from 'Actual
+  // Aggregated' for every production type, not only for the store-like ones
+  // (energy-data-gathering `_net_generation_consumption`, ABL-34). Seven of
+  // the nine renewable columns are negative somewhere on the replica; NL's
+  // solar is negative at every night hour because its A75 solar is a small
+  // grid-metered subset (ABL-325) whose own metered auxiliary load is a large
+  // fraction of it.
+  it('does not let a negative renewable reading subtract from the numerator while the denominator ignores it', () => {
+    const db = buildDb();
+    // NL-shaped: solar reads a small negative overnight, wind is generating.
+    const row = {
+      country_code: 'NL', timestamp_utc: '2026-07-29 01:00:00',
+      solar_mw: -1.2, wind_onshore_mw: 100, nuclear_mw: 100,
+    };
+    insertRow(db, row);
+
+    const pct = getRenewableShare('NL', '2026-07-29 00:00:00', '2026-07-29 02:00:00', db);
+
+    // Denominator clamps solar to 0, so the total is 100 + 100 = 200. The
+    // numerator must clamp it too: 100/200 = 50%, not (100 - 1.2)/200.
+    expect(pct).toBeCloseTo(50, 2);
+    expect(pct).toBeCloseTo(expectedRenewableShare([row])!, 2);
+    // Guard the specific wrong answer, so a revert reads as this test failing
+    // rather than as a rounding wobble.
+    expect(pct).not.toBeCloseTo(((100 - 1.2) / 200) * 100, 2);
+  });
+
+  it('clamps every negative renewable column, not just solar', () => {
+    const db = buildDb();
+    // Each of the seven columns measured negative on the replica, at once.
+    const row = {
+      country_code: 'NL', timestamp_utc: '2026-07-29 01:00:00',
+      solar_mw: -1.2, biomass_mw: -3, wind_offshore_mw: -2, other_renewable_mw: -4,
+      hydro_reservoir_mw: -5, hydro_run_mw: -6, wind_onshore_mw: -7,
+      geothermal_mw: 40, marine_mw: 10, nuclear_mw: 50,
+    };
+    insertRow(db, row);
+
+    const pct = getRenewableShare('NL', '2026-07-29 00:00:00', '2026-07-29 02:00:00', db);
+
+    // Only the two columns that are genuinely never negative contribute:
+    // (40 + 10) / (40 + 10 + 50) = 50%.
+    expect(pct).toBeCloseTo(50, 2);
+  });
+
+  it('never returns a share above 100% or below 0 - numerator terms are a subset of the denominator terms', () => {
+    const db = buildDb();
+    // Every renewable column negative and nothing else generating: the
+    // denominator is 0, so this is "a share of nothing", not -Infinity or 0%.
+    insertRow(db, {
+      country_code: 'NL', timestamp_utc: '2026-07-29 01:00:00',
+      solar_mw: -1.2, biomass_mw: -3, wind_offshore_mw: -2,
+    });
+
+    expect(getRenewableShare('NL', '2026-07-29 00:00:00', '2026-07-29 02:00:00', db)).toBeNull();
   });
 });
 
@@ -684,23 +788,42 @@ describe('getWindGenerationSeries query plan', () => {
 
 /**
  * Opportunistic check against the read-only replica used for development on
- * this workstation. Skipped when the replica or the energy_generation table
- * is absent, so this suite never depends on either existing - CI and any
- * checkout without a local replica simply skip it.
+ * this workstation. Skipped when the replica is absent, unreadable or lacks the
+ * energy_generation table, so this suite never depends on any of those - CI and
+ * any checkout without a local replica simply skip it.
+ *
+ * **Unavailable includes locked, and that is the whole reason this is a
+ * try/catch rather than an `fs.existsSync` alone.** This runs at module
+ * evaluation, so anything it throws is a *collection* error that takes the
+ * entire file down - all ~60 fixture-backed cases in it, none of which touch
+ * the replica. Measured on 2026-08-12: the twice-daily DB sync (ABL-220,
+ * ABL-249) held the replica with a 3.6 GB rollback journal, the readonly open
+ * raised `SqliteError: database is locked`, and the file reported "no tests"
+ * for a full sync window - silently dropping the generation-mix NULL-vs-zero
+ * and diverging-stack coverage exactly when someone running `predone` would
+ * read the suite as green-but-short. A lock is not absence, and neither is a
+ * corrupt header or a permissions error; all of them mean the same thing here,
+ * which is that the opportunistic check cannot run and the rest of the file
+ * still must.
  */
 const REPLICA_PATH = 'C:/Code/able/data/energy_dashboard.db';
 const replicaAvailable = fs.existsSync(REPLICA_PATH);
 
 function replicaHasGenerationTable(): boolean {
   if (!replicaAvailable) return false;
-  const db = new Database(REPLICA_PATH, { readonly: true });
+  let db: InstanceType<typeof Database> | undefined;
   try {
+    db = new Database(REPLICA_PATH, { readonly: true });
     const row = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='energy_generation'")
       .get();
     return !!row;
+  } catch {
+    // Locked, mid-refresh, or otherwise unopenable. Skip the opportunistic
+    // block; never fail the file for it.
+    return false;
   } finally {
-    db.close();
+    db?.close();
   }
 }
 

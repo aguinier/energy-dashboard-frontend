@@ -36,7 +36,10 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
  *   measured 0.0 while `wind_onshore_mw` is NULL: zero and unknown side by side
  *   in one row, which must stay distinguishable on the wire.
  * - `BE` — negative day-ahead prices, and a window whose solar actuals are all a
- *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null.
+ *   measured zero. Sum of actuals is 0, so WAPE and MAPE must be null. Also the
+ *   only country with a `wind_offshore` forecast, against DE which has none
+ *   (ABL-319) — the pair that pins serving as data-driven rather than
+ *   country-gated.
  * - `PT` — rows exist but every generation column is NULL (a country reporting
  *   nothing). Must read as "no data", never 0%. On the day after WINDOW it also
  *   carries MK's and SI's live `energy_load` shape: impossible exact-`0.0`
@@ -247,6 +250,24 @@ CREATE TABLE energy_generation_forecast (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(country_code, target_timestamp_utc, forecast_type)
 );
+
+CREATE TABLE data_ingestion_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pipeline_type TEXT NOT NULL,
+    country_code TEXT,
+    start_time TIMESTAMP NOT NULL,
+    end_time TIMESTAMP,
+    status TEXT NOT NULL,
+    records_inserted INTEGER DEFAULT 0,
+    records_updated INTEGER DEFAULT 0,
+    records_failed INTEGER DEFAULT 0,
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_ingestion_log_pipeline
+    ON data_ingestion_log(pipeline_type, start_time DESC);
+CREATE INDEX idx_ingestion_log_status ON data_ingestion_log(status);
 `;
 
 /** Every `*_mw` column on `energy_generation`, in table order. */
@@ -293,6 +314,21 @@ function seed(db: DatabaseType): void {
   HOURS.forEach((h) => load.run('PT', at(h), 200));
   // AT: 600 / 620 / 640 / 660.
   HOURS.forEach((h, i) => load.run('AT', at(h), 600 + i * 20));
+  // NL — the ABL-277 shape: realized load and the TSO day-ahead forecast are
+  // published on different bases (ENTSO-E nets behind-the-meter solar out of
+  // the Dutch realized series and not out of the forecast), so their
+  // difference is a definitional gap, not forecast error. Every row is a real
+  // measurement and no guard drops it; it is the *aggregate accuracy* derived
+  // from the pair that must not be published.
+  //
+  // On NEXT_DAY, not WINDOW, and deliberately: `crossCountryMetricsService`'s
+  // ABL-214 test seeds its own NL conflict pair at `2026-07-01 01:00:00` to
+  // prove the two-LEFT-JOIN shape cannot fan out. A second NL row at that
+  // timestamp here would be an exact `(country_code, timestamp_utc)`
+  // duplicate — the one thing that join's no-fan-out property is measured
+  // against (verified 2026-08-11: zero such duplicates in the real table) —
+  // and would break it for a reason that has nothing to do with separators.
+  HOURS.forEach((h, i) => load.run('NL', at(h, 2), 900 - i * 200));
   // GR went silent after 01:00. The last two hours of the window simply are
   // not there — the shape GR and IE have had since 2026-03-14.
   load.run('GR', at(0), 300);
@@ -475,6 +511,28 @@ function seed(db: DatabaseType): void {
     forecast.run('BE', 'solar', atT(h), GENERATED_AT, 12, 5, 'catboost', 'v1')
   );
 
+  // BE wind_offshore, xgboost — the SERVED half of the ABL-319 natural
+  // experiment, and the only country here that has an offshore model at all.
+  //
+  // Its partner case is DE, which has offshore *generation* but no
+  // `wind_offshore` forecast row anywhere in this database — deliberately not
+  // written, because that absence IS the fixture. Measured on the replica
+  // 2026-08-12, that is production exactly: `wind_offshore` forecasts exist for
+  // BE (33,024 rows) and FR (32,664) and no one else, while DE reports 662-701
+  // MW of real offshore generation every hour. DE has a `models/DE/wind_offshore`
+  // directory, but no promoted top-level `model.joblib` in it, so
+  // `Forecaster.load` raises FileNotFoundError and `forecast_daily.py` counts
+  // the pair as skipped rather than writing rows.
+  //
+  // Nothing on the serving side knows any of that, and the pair pins it: the
+  // country that has rows serves, the country that does not degrades to an
+  // empty series rather than erroring or drawing a zero line. When ABL-316
+  // trains ~40 new per-country generation models, this is the behaviour that
+  // has to make them appear without a code change.
+  HOURS.forEach((h, i) =>
+    forecast.run('BE', 'wind_offshore', atT(h), GENERATED_AT, 12, 700 + i * 10, 'xgboost', 'v1')
+  );
+
   // FR hydro_total and renewable, catboost. These are the two forecast types
   // whose actual-column mapping in forecastService named a column that does not
   // exist (`hydro_mw`, `total_mw`), so /forecasts/compare 500'd for both. Paired
@@ -546,6 +604,13 @@ function seed(db: DatabaseType): void {
   HOURS.forEach((h, i) =>
     loadForecast.run('DE', at(h), 800 + i * 100, 'week_ahead', 700 + i * 100, 900 + i * 100)
   );
+  // NL day-ahead, ~2x the realized load at every hour. Pairs perfectly — four
+  // points, no gaps — so the ONLY thing that can suppress its MAE/MAPE/RMSE is
+  // the divergent-basis rule, not an empty window (ABL-277). Deliberately far
+  // outside any plausible forecast error, mirroring the measured 73% MAPE.
+  HOURS.forEach((h, i) =>
+    loadForecast.run('NL', at(h, 2), 2 * (900 - i * 200), 'day_ahead', null, null)
+  );
 
   const generationForecast = db.prepare(
     `INSERT INTO energy_generation_forecast
@@ -558,6 +623,100 @@ function seed(db: DatabaseType): void {
   );
   // BE solar day-ahead against the all-zero overnight actuals.
   HOURS.forEach((h) => generationForecast.run('BE', at(h), 3, 0, null, 3, 'day_ahead'));
+
+  seedIngestionLog(db);
+}
+
+/**
+ * `data_ingestion_log` — when each pipeline last ran, and what it brought back.
+ *
+ * ABL-295. Unlike every other age-sensitive fixture in this file, these rows can
+ * be fixed timestamps: `getIngestFreshness` returns the stamps verbatim and
+ * classifies on the ORDER of two of them, never on their distance from `now`.
+ * Nothing here changes verdict as the suite ages.
+ *
+ * The four delivery states are spread over the existing countries rather than
+ * inventing new ones, each landing on the country whose shape it already stands
+ * for:
+ *
+ * - `DE` — `flowing` everywhere. The ordinary case.
+ * - `GR` — `checked_no_data`: still checked four times a day, last actually
+ *   delivered before the window. That is GR's whole identity in this fixture,
+ *   and its real shape — measured 2026-08-12, GR's `net_position` was checked
+ *   at 00:40 and last brought a row on 2026-07-31.
+ * - `AT` — `never_delivered` on net position: passes on record, not one has
+ *   ever returned a row. Real and common, not an edge case: 14 of 36 zones are
+ *   in exactly this state (AL BA CH CY DK GB IT MD ME MK NO RS SE UA).
+ * - `BE` — `not_logged`, by carrying no rows at all. The log starts
+ *   2025-12-23 and cannot speak for anything before it.
+ *
+ * `FR`, `PT` and `LU` are deliberately left unlogged too; only `BE` is asserted
+ * on, so adding rows for the others later will not break a test.
+ */
+function seedIngestionLog(db: DatabaseType): void {
+  const pass = db.prepare(
+    `INSERT INTO data_ingestion_log
+       (pipeline_type, country_code, start_time, end_time, status,
+        records_inserted, records_updated, records_failed, error_message)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  // The log's real stamp format: Python `datetime.now(pytz.UTC).isoformat()`.
+  // Measured 2026-08-12, all 114,982 non-null `end_time` values are exactly
+  // this shape — 32 chars, microseconds, always `+00:00`. Copied verbatim
+  // because string ordering over this fixed width is what the service relies on.
+  const logAt = (day: number, minute: number): string =>
+    `2026-07-${String(day).padStart(2, '0')}T00:${String(minute).padStart(2, '0')}:15.882895+00:00`;
+
+  /** A pass that brought rows back. */
+  const delivered = (pipeline: string, cc: string, day: number, minute: number) =>
+    pass.run(pipeline, cc, logAt(day, minute), logAt(day, minute), 'completed', 24, 0, 0, null);
+
+  /** A completed pass that inserted and updated nothing — the trap. */
+  const empty = (pipeline: string, cc: string, day: number, minute: number) =>
+    pass.run(pipeline, cc, logAt(day, minute), logAt(day, minute), 'completed', 0, 0, 0, null);
+
+  const EVERY_STREAM = [
+    'load',
+    'price',
+    'renewable',
+    'load_forecast_day_ahead',
+    'wind_solar_forecast',
+    'net_position',
+  ];
+
+  // DE — delivered on the most recent pass for every stream.
+  EVERY_STREAM.forEach((p, i) => {
+    delivered(p, 'DE', 1, 30 + i);
+    delivered(p, 'DE', 2, 30 + i);
+  });
+  // DE's week-ahead load forecast has NEVER delivered while its day-ahead
+  // twin has. Both write `energy_load_forecast`, so the merged stream must
+  // still read `flowing` — the table was refreshed. Six of 36 countries have
+  // exactly this split in production (BA, GB, MD, MK, SI, UA).
+  empty('load_forecast_week_ahead', 'DE', 1, 41);
+  empty('load_forecast_week_ahead', 'DE', 2, 41);
+
+  // GR — checked on the newest pass, delivered only on the older one. This is
+  // the state that would read as "refreshed 2 minutes ago" if the two
+  // timestamps were ever collapsed into one.
+  delivered('load', 'GR', 1, 40);
+  empty('load', 'GR', 2, 40);
+  delivered('net_position', 'GR', 1, 40);
+  empty('net_position', 'GR', 2, 40);
+
+  // AT — the passes run and have never once returned a net position.
+  empty('net_position', 'AT', 1, 32);
+  empty('net_position', 'AT', 2, 32);
+
+  // A `failed` pass and an in-flight `running` one, both of which must be
+  // excluded from "last checked". `failed` is producible by the sibling writer
+  // (`status = "failed" if error_message else "completed"`,
+  // `../energy-data-gathering/src/db.py:1192`) though no production row has ever
+  // carried it; `running` has exactly one live row. Dated AFTER every DE pass
+  // above, so a service that counted either would visibly move DE's answer.
+  pass.run('load', 'DE', logAt(3, 30), logAt(3, 30), 'failed', 0, 0, 12, 'HTTP 503');
+  pass.run('price', 'DE', logAt(3, 31), null, 'running', 0, 0, 0, null);
 }
 
 /**

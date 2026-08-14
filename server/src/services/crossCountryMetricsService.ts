@@ -2,6 +2,7 @@ import db from '../config/database.js';
 import { ForecastType } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs, timestampFormOnClause } from '../utils/timestamp.js';
 import { loadActualGuard } from './loadQuality.js';
+import { actualsSourceFor } from './actualsSource.js';
 import { runReadQueryInWorker } from './readQueryWorker.js';
 import { computeSkillVsSeasonalNaive, type SkillVsSeasonalNaive } from './skillScore.js';
 
@@ -19,17 +20,10 @@ export const VALID_FORECAST_TYPES: ForecastType[] = [
   'wind_onshore', 'wind_offshore', 'hydro_total', 'biomass'
 ];
 
-// Mapping from forecast type to actual data source (same as mlForecastService)
-const ACTUAL_DATA_MAPPING: Record<string, { table: string; column: string; timestampCol: string }> = {
-  load: { table: 'energy_load', column: 'load_mw', timestampCol: 'timestamp_utc' },
-  price: { table: 'energy_price', column: 'price_eur_mwh', timestampCol: 'timestamp_utc' },
-  solar: { table: 'energy_renewable', column: 'solar_mw', timestampCol: 'timestamp_utc' },
-  wind_onshore: { table: 'energy_renewable', column: 'wind_onshore_mw', timestampCol: 'timestamp_utc' },
-  wind_offshore: { table: 'energy_renewable', column: 'wind_offshore_mw', timestampCol: 'timestamp_utc' },
-  hydro_total: { table: 'energy_renewable', column: 'hydro_run_mw + hydro_reservoir_mw', timestampCol: 'timestamp_utc' },
-  biomass: { table: 'energy_renewable', column: 'biomass_mw', timestampCol: 'timestamp_utc' },
-  renewable: { table: 'energy_renewable', column: 'total_renewable_mw', timestampCol: 'timestamp_utc' },
-};
+// The actuals mapping this module used to keep its own copy of — annotated
+// "same as mlForecastService", which is a promise a literal cannot keep — now
+// lives once in `actualsSource.ts` (ABL-399), which is also what moved these
+// six types off the frozen `energy_renewable`.
 
 export interface CountryMetrics {
   mae: number;
@@ -67,21 +61,12 @@ interface MetricsRow {
 /**
  * Weighted absolute percentage error: 100 * sum|e| / sum|actual|.
  *
- * Replaces MAPE, which divided by the SIGNED actual (so negative day-ahead
- * prices cancelled error) and guarded only `!= 0` (so a single near-zero
- * actual dominated the mean — BE solar measured 148458%).
+ * Moved to `wape.ts` by ABL-388, which gave it a second caller
+ * (`tsoForecastService.calculateMetrics`). Re-exported here because this is
+ * where it has been imported from since ABL-19 — the definition, and the
+ * measurements that justify it, now live in that module.
  */
-export function wape(pairs: Array<{ actual: number; forecast: number }>): number | null {
-  let num = 0;
-  let den = 0;
-  for (const { actual, forecast } of pairs) {
-    if (!Number.isFinite(actual) || !Number.isFinite(forecast)) continue;
-    num += Math.abs(actual - forecast);
-    den += Math.abs(actual);
-  }
-  if (den === 0) return null;
-  return Math.round((100 * num / den) * 100) / 100;
-}
+export { wape } from './wape.js';
 
 /**
  * Get cross-country accuracy metrics for a single forecast type.
@@ -106,9 +91,11 @@ export function getCrossCountryMetrics(
 }
 
 function metricSelect(forecastType: ForecastType): string {
-  const mapping = ACTUAL_DATA_MAPPING[forecastType];
-  const rawColumn = (alias: string) =>
-    forecastType === 'hydro_total' ? `(${alias}.hydro_run_mw + ${alias}.hydro_reservoir_mw)` : `${alias}.${mapping.column}`;
+  const source = actualsSourceFor(forecastType);
+  if (!source) {
+    throw new Error(`No actuals source for forecast type: ${forecastType}`);
+  }
+  const rawColumn = (alias: string) => source.valueExpr(`${alias}.`);
 
   // Actuals: prefer the space-form row (`a`), falling back to the 'T'-form-only
   // row (`a2`) only when no space row exists for that country-hour at all — see
@@ -137,19 +124,19 @@ function metricSelect(forecastType: ForecastType): string {
       SUM(CASE WHEN ${baselineColumn} IS NOT NULL THEN ABS(${actualColumn} - f.forecast_value) ELSE 0 END) AS skill_model_err_abs_sum,
       SUM(CASE WHEN ${baselineColumn} IS NOT NULL THEN ABS(${actualColumn} - ${baselineColumn}) ELSE 0 END) AS skill_baseline_err_abs_sum
     FROM latest_forecasts f
-    LEFT JOIN ${mapping.table} a
+    LEFT JOIN ${source.table} a
       ON a.country_code = f.country_code
-      AND ${timestampFormOnClause(`a.${mapping.timestampCol}`, 'f.target_timestamp_utc', 'space')}
-    LEFT JOIN ${mapping.table} a2
+      AND ${timestampFormOnClause(`a.${source.timestampCol}`, 'f.target_timestamp_utc', 'space')}
+    LEFT JOIN ${source.table} a2
       ON a2.country_code = f.country_code
-      AND ${timestampFormOnClause(`a2.${mapping.timestampCol}`, 'f.target_timestamp_utc', 't')}
-    LEFT JOIN ${mapping.table} s
+      AND ${timestampFormOnClause(`a2.${source.timestampCol}`, 'f.target_timestamp_utc', 't')}
+    LEFT JOIN ${source.table} s
       ON s.country_code = f.country_code
-      AND ${timestampFormOnClause(`s.${mapping.timestampCol}`, dayAgoExpr, 'space')}
+      AND ${timestampFormOnClause(`s.${source.timestampCol}`, dayAgoExpr, 'space')}
       ${loadActualGuard(forecastType, rawColumn('s'))}
-    LEFT JOIN ${mapping.table} s2
+    LEFT JOIN ${source.table} s2
       ON s2.country_code = f.country_code
-      AND ${timestampFormOnClause(`s2.${mapping.timestampCol}`, dayAgoExpr, 't')}
+      AND ${timestampFormOnClause(`s2.${source.timestampCol}`, dayAgoExpr, 't')}
       ${loadActualGuard(forecastType, rawColumn('s2'))}
     WHERE f.forecast_type = '${forecastType}'
       AND ${actualColumn} IS NOT NULL

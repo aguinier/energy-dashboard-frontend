@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { getOpsStatus } from '../services/opsStatusService.js';
 import { getCombinedOpsStatus } from '../services/combinedOpsStatusService.js';
+import { getOpsStatusHistory } from '../services/opsHistoryService.js';
+import { AppError } from '../middleware/errorHandler.js';
 
 const router = Router();
 
@@ -40,6 +42,13 @@ router.get('/status', (_req, res) => {
  * blank this environment's own KPIs, and a locked local DB during the ABL-220
  * sync blackout must never blank the peer's. `syncBlackout` tells the client
  * when to render that as a known, expected state instead of a red alarm.
+ *
+ * `derived` (ABL-292) carries the warn/error verdict per KPI for both lanes,
+ * computed from `lib/opsStatusThresholds.ts` — the single home of
+ * `DISK_WARN_RATIO`/`DISK_ERROR_RATIO` since the derivation moved off the
+ * client, where a server-side scheduled job (ABL-287's alert engine) could not
+ * reach it. Purely additive: every raw field above is unchanged, so anything
+ * still reading the old shape is unaffected.
  */
 router.get('/status/combined', async (_req, res, next) => {
   try {
@@ -47,6 +56,38 @@ router.get('/status/combined', async (_req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+/**
+ * GET /ops/status/history?hours=168
+ *
+ * The stored snapshots of `/ops/status/combined` inside a trailing window,
+ * plus the disk headroom projection derived from them (ABL-288). Snapshots are
+ * captured on a timer by `opsSnapshotScheduler.ts` into a JSONL file, not into
+ * the shared database — see `opsSnapshotStore.ts` for why.
+ *
+ * Unlike the two routes above this one does NOT touch the database, so it is
+ * unaffected by the ABL-220 sync blackout: during the window where
+ * `/status/combined` degrades this side to `reachable: false`, the history
+ * endpoint still answers, and the snapshots it returns are the record of that
+ * degradation rather than a hole.
+ *
+ * `hours` is clamped to what is actually retained and echoed back as
+ * `windowHours`, so a client asking for 90 days of a 14-day file is told it
+ * got 14 rather than being handed 14 days labelled 90.
+ */
+router.get('/status/history', (req, res) => {
+  const raw = req.query.hours;
+  let hours: number | undefined;
+  if (raw !== undefined) {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new AppError('hours must be a positive number', 400, 'INVALID_HOURS');
+    }
+    hours = parsed;
+  }
+
+  res.json({ success: true, data: getOpsStatusHistory(new Date(), hours) });
 });
 
 export default router;

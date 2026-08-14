@@ -8,8 +8,14 @@ import {
   toIsoUtc,
   type TimestampRange,
 } from '../utils/timestamp.js';
-import { getRenewableShare, RENEWABLE_MW_SUM, TOTAL_POSITIVE_MW_SUM } from './generationService.js';
+import {
+  getRenewableShare,
+  generationGroupByClause,
+  RENEWABLE_MW_SUM,
+  TOTAL_POSITIVE_MW_SUM,
+} from './generationService.js';
 import { measuredLoadClause } from './loadQuality.js';
+import { RENEWABLE_COMPONENTS, nullAwareSumSql, WINDOW_AVERAGE } from './renewableTotal.js';
 
 function getTimeRangeDates(timeRange: TimeRange): { start: string; end: string } {
   const end = new Date().toISOString();
@@ -284,6 +290,69 @@ function getMapRenewableData(range: TimestampRange): MapDataPoint[] {
   return stmt.all(...rangeArgs(range)) as MapDataPoint[];
 }
 
+/**
+ * The six renewable fields `/dashboard/timeseries` has always served. It is
+ * `renewableTotal.RENEWABLE_FIELDS` minus `other`, and stays that way
+ * deliberately: `other` (marine + other renewable) is part of the `/renewables`
+ * contract, not this one, and adding a seventh key here would be a wire change
+ * nobody asked for. Naming them as a subset of the shared map rather than
+ * re-listing columns is what keeps this endpoint's idea of "solar" or "hydro"
+ * from drifting away from `/renewables`' — the second-mapping failure ABL-324
+ * exists to prevent.
+ */
+const TIMESERIES_RENEWABLE_FIELDS = [
+  'solar',
+  'wind_onshore',
+  'wind_offshore',
+  'hydro',
+  'biomass',
+  'geothermal',
+] as const satisfies ReadonlyArray<keyof typeof RENEWABLE_COMPONENTS>;
+
+/** Shared with `getGenerationSeries`, so the two cannot bucket a day differently. */
+const TIMESERIES_BUCKET = generationGroupByClause('daily');
+
+const TIMESERIES_RENEWABLE_SELECTS = TIMESERIES_RENEWABLE_FIELDS.map((field) =>
+  nullAwareSumSql(RENEWABLE_COMPONENTS[field], field, WINDOW_AVERAGE)
+).join(',\n      ');
+
+/**
+ * Load, price and renewable output merged onto one row per day.
+ *
+ * ## The renewable leg reads `energy_generation` (ABL-324, tranche 2 of 3)
+ *
+ * It used to read the frozen `energy_renewable`, and it `AVG()`s over a
+ * `date()` bucket — which is the worst thing to do to a table that stores one
+ * instant under several timestamp spellings. A duplicated hour contributed
+ * both of its disagreeing values to one mean, so the rendered daily point
+ * equalled neither stored reading. Measured on the replica 2026-08-13, the
+ * inflation is 34,440 rows table-wide and is not evenly spread: **BA holds
+ * 65,868 rows for 48,766 distinct instants** (26% duplicated), against
+ * **0 duplicate instants across `energy_generation`'s 3,178,270 rows**.
+ *
+ * ## `COALESCE(x, 0)` is gone, and every field is now `number | null`
+ *
+ * The old query wrapped all six columns in `COALESCE(…, 0)`, so a type a
+ * country does not report was served as a confident `0 MW`. That was not
+ * theoretical: `energy_renewable` carries `DEFAULT 0`, and measured on the
+ * replica 2026-08-13, Germany's newest row (`2026-08-12 13:00:00`) stores
+ * `solar_mw = 0`, `wind_onshore_mw = 0`, `total_renewable_mw = 0` where
+ * `energy_generation`'s row for the same instant holds NULL in every column —
+ * a leading-edge A75 document that has not been filled in yet. The sum rule
+ * is `renewableTotal.nullAwareSumSql`, shared with `/renewables`, so `hydro`
+ * is NULL only when run-of-river *and* reservoir are both unreported and not
+ * when one of the two is.
+ *
+ * ## The FR hole must stay a hole
+ *
+ * `energy_generation` does not cover every hour `energy_renewable` does:
+ * measured 2026-08-13, France holds 2,208 rows across all 23 days of
+ * 2026-06-30..2026-07-22 in the frozen table against 135 rows across **2** of
+ * them here (ABL-323, ABL-328). Because this query groups, a day with no rows
+ * produces no bucket at all and the merge below never invents one — verified
+ * on the replica, an FR 30-day window ending 2026-08-12 returns 22 buckets
+ * where the frozen table returned 31. Nine absent days, not nine zeros.
+ */
 export function getCombinedTimeseries(
   countryCode: string,
   start: string,
@@ -322,32 +391,22 @@ export function getCombinedTimeseries(
   // Get renewable data
   const renewableStmt = db.prepare(`
     SELECT
-      date(timestamp_utc) as date,
-      ROUND(AVG(COALESCE(solar_mw, 0)), 2) as solar,
-      ROUND(AVG(COALESCE(wind_onshore_mw, 0)), 2) as wind_onshore,
-      ROUND(AVG(COALESCE(wind_offshore_mw, 0)), 2) as wind_offshore,
-      -- energy_renewable has no hydro_mw column; it splits hydro into
-      -- run-of-river and reservoir. Selecting the non-existent name made this
-      -- statement fail to compile, so GET /api/dashboard/timeseries answered
-      -- every request with a 500. Summed the same way every other consumer of
-      -- "hydro total" does (renewableService.ts:22, mlForecastService.ts:24).
-      ROUND(AVG(COALESCE(hydro_run_mw, 0) + COALESCE(hydro_reservoir_mw, 0)), 2) as hydro,
-      ROUND(AVG(COALESCE(biomass_mw, 0)), 2) as biomass,
-      ROUND(AVG(COALESCE(geothermal_mw, 0)), 2) as geothermal
-    FROM energy_renewable
+      ${TIMESERIES_BUCKET} as date,
+      ${TIMESERIES_RENEWABLE_SELECTS}
+    FROM energy_generation
     WHERE country_code = ?
       AND ${rangeClause('timestamp_utc')}
-    GROUP BY date(timestamp_utc)
+    GROUP BY ${TIMESERIES_BUCKET}
     ORDER BY date
   `);
   interface RenewableRow {
     date: string;
-    solar: number;
-    wind_onshore: number;
-    wind_offshore: number;
-    hydro: number;
-    biomass: number;
-    geothermal: number;
+    solar: number | null;
+    wind_onshore: number | null;
+    wind_offshore: number | null;
+    hydro: number | null;
+    biomass: number | null;
+    geothermal: number | null;
   }
   const renewableData = renewableStmt.all(upperCode, ...rangeArgs(range)) as RenewableRow[];
 

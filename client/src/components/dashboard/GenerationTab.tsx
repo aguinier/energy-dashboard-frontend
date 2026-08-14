@@ -10,7 +10,9 @@ import {
   GENERATION_GROUP_COLORS,
   GENERATION_GROUP_LABELS,
 } from './generationSeries';
+import { describeSolarCoverage } from './solarCoverageNote';
 import { getDateRangeForPreset, useGenerationMix, useGenerationSeries } from '@/hooks/useDashboardData';
+import { useCountries } from '@/hooks/useCountries';
 import { useDashboardStore } from '@/store/dashboardStore';
 
 // Which arcs AbleDonut colors green - cosmetic only. The printed "% RENEWABLE"
@@ -34,6 +36,10 @@ export function GenerationTab() {
   const { data: mix, isLoading: mixLoading, isError: mixError } = useGenerationMix();
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
+  const selectedCountry = useDashboardStore((s) => s.selectedCountry);
+  const { data: countries } = useCountries();
+  const countryLabel =
+    countries?.find((c) => c.country_code === selectedCountry)?.country_name ?? selectedCountry;
   const todayWindow = useMemo(
     () => (timePreset === 'today' ? getDateRangeForPreset(timePreset, timeOffset) : undefined),
     [timePreset, timeOffset],
@@ -49,6 +55,28 @@ export function GenerationTab() {
   // buildSourceRows so the two can never disagree about what's measured or
   // what each row's share means.
   const { rows, totalMw } = useMemo(() => buildSourceRows(mix ?? undefined), [mix]);
+
+  // ABL-325. Sits above every mark on this tab because it qualifies all of
+  // them at once: the Solar band in the trend, the solar arc in the donut, the
+  // Solar row in the table, and - because solar sums into the server's
+  // renewable numerator - the donut's centre percentage too. Null for every
+  // country whose reported solar matches ENTSO-E's own forecast of it, which
+  // measured on 2026-08-12 is all of Europe except NL.
+  const solarNote = useMemo(
+    () => describeSolarCoverage(mix ?? undefined, countryLabel),
+    [mix, countryLabel],
+  );
+
+  // The legend and the trend chart have to agree with the by-source table,
+  // which qualifies its own Solar row inside buildSourceRows. One override
+  // rather than two copies of the string.
+  const groupLabels = useMemo(
+    () =>
+      solarNote
+        ? { ...GENERATION_GROUP_LABELS, solar: `Solar (${solarNote.labelQualifier})` }
+        : GENERATION_GROUP_LABELS,
+    [solarNote],
+  );
 
   // `totalMw` is null until the mix loads, and (in the degenerate case of no
   // positive generation at all) can be zero — either way buildSourceRows
@@ -71,6 +99,23 @@ export function GenerationTab() {
 
   return (
     <div className="space-y-3.5">
+      {/*
+        Above the charts, not tucked under them. This is the one thing a reader
+        of this card has to know before reading any number on it — a Solar band
+        at 0.9% of the Dutch mix in high summer is not a small solar fleet, it
+        is a partial measurement, and a caveat placed after the chart is a
+        caveat read second.
+      */}
+      {solarNote && (
+        <div
+          role="note"
+          className="rounded-md border border-input bg-secondary/40 px-3.5 py-3 text-meta text-ink-dim"
+        >
+          <p className="font-medium text-ink">{solarNote.headline}</p>
+          <p className="mt-1 text-micro text-ink-muted">{solarNote.detail}</p>
+        </div>
+      )}
+
       <AbleCard title="Generation mix" subtitle="GW · stacked by source · ENTSO-E">
         {isLoading ? (
           <div className="flex h-[220px] items-center justify-center text-meta text-ink-muted">
@@ -85,7 +130,7 @@ export function GenerationTab() {
             <AbleStackedMix
               series={points}
               keys={groups}
-              labels={GENERATION_GROUP_LABELS}
+              labels={groupLabels}
               colors={GENERATION_GROUP_COLORS}
               nowIndex={nowIndex}
               preset={timePreset}
@@ -103,7 +148,7 @@ export function GenerationTab() {
                     className="h-0.5 w-3.5"
                     style={{ background: GENERATION_GROUP_COLORS[key] }}
                   />
-                  <span>{GENERATION_GROUP_LABELS[key]}</span>
+                  <span>{groupLabels[key]}</span>
                 </div>
               ))}
             </div>

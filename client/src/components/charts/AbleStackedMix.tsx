@@ -333,7 +333,7 @@ export function AbleStackedMix({
               <span className="h-2 w-2 rounded-sm" style={{ background: colors[k] }} />
               <span className="flex-1 opacity-85">{labels[k] ?? k}</span>
               <span className="font-semibold">
-                {h.values[k] == null ? '—' : ((h.values[k] as number) / 1000).toFixed(2)}
+                {h.values[k] == null ? '—' : (h.values[k] / 1000).toFixed(2)}
               </span>
               <span className="text-micro opacity-55">GW</span>
             </div>

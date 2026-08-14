@@ -49,11 +49,29 @@ router.get('/mix', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknown, u
   const endDate = end || new Date().toISOString();
   const startDate = start || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
+  // Both halves now read energy_generation, and both are built from one
+  // column list (renewableTotal.RENEWABLE_MW_COLUMNS), so `total` and
+  // `renewable_percentage` on this one object cannot define "renewable"
+  // differently - ABL-324 tranche 1. Before it, `mix` came from the frozen
+  // energy_renewable while only the percentage came from the reconciled
+  // source.
   const mix = renewableService.getRenewableMix(country, startDate, endDate);
-  // Same definition as the Generation tab's donut and the header stat card -
-  // see generationService.getRenewableShare. `mix` above still comes from
-  // energy_renewable (an unrelated, older breakdown this endpoint has always
-  // served); only the percentage now comes from the reconciled source.
+
+  // No rows in this window at all: `data` is null rather than a zero-filled
+  // breakdown. A country we hold no A75 rows for (the FR 2026-07-01..21 hole,
+  // ABL-323) must render as a gap, and a zero-filled object with a share
+  // beside it would render as a country that generated no renewable power.
+  if (!mix) {
+    res.json({
+      success: true,
+      data: null,
+      meta: {
+        timeRange: { start: startDate, end: endDate },
+      },
+    });
+    return;
+  }
+
   const percentage = getRenewableShare(country, startDate, endDate);
 
   res.json({

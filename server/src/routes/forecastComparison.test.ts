@@ -6,6 +6,42 @@ import { buildFixtureDb, WINDOW_QS, NEXT_DAY_QS } from '../test/fixtureDb.js';
 // harness is imported dynamically, below, so these mocks are registered before
 // the router graph loads.
 const fixtureDb = buildFixtureDb();
+
+// ABL-399's offshore-wind case, added to THIS file's own fixture instance
+// rather than to `fixtureDb.ts`.
+//
+// `/renewables/latest` reports each country's newest row and
+// `/countries/:code/summary` counts every row it holds, so neither is bounded
+// by a query window — putting these rows in the shared builder moved BE's
+// "every reading is a measured zero" assertion and its record count in two
+// other files. `routes/prices.test.ts` and `routes/dataFreshness.test.ts` seed
+// their own rows for the same reason.
+//
+// The shape, measured on the replica: BE's offshore fleet draws auxiliary load,
+// so the real value is NEGATIVE (BE 2026-01-14 08:00, -26.2625 MW). The frozen
+// `energy_renewable` carries `DEFAULT 0` and stores a flat `0.0` instead, and
+// ENTSO-E publishes a `0.0` forecast for such a zone — so the pair was `0 - 0`
+// and the endpoint published a flawless offshore forecast over a full window.
+{
+  const gen = fixtureDb.prepare(
+    'INSERT INTO energy_generation (country_code, timestamp_utc, wind_offshore_mw) VALUES (?, ?, ?)'
+  );
+  const frozen = fixtureDb.prepare(
+    'INSERT INTO energy_renewable (country_code, timestamp_utc, wind_offshore_mw) VALUES (?, ?, ?)'
+  );
+  const fc = fixtureDb.prepare(
+    `INSERT INTO forecasts
+       (country_code, forecast_type, target_timestamp_utc, generated_at, horizon_hours, forecast_value, model_name, model_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  for (let h = 0; h < 4; h++) {
+    const hh = String(h).padStart(2, '0');
+    gen.run('BE', `2026-07-02 ${hh}:00:00`, -26.26);
+    frozen.run('BE', `2026-07-02 ${hh}:00:00`, 0);
+    fc.run('BE', 'wind_offshore', `2026-07-02T${hh}:00:00`, '2026-06-30 12:00:00', 12, 0, 'xgboost', 'v1');
+  }
+}
+
 vi.mock('../config/database.js', () => ({ default: fixtureDb }));
 vi.mock('../config/writeDatabase.js', async () => (await import('../test/noWriteDb.js')).forbidWriteDb());
 
@@ -101,7 +137,7 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
       { timestamp: '2026-07-01T03:00:00', forecast_value: 1200, actual_value: 1300, error: 100, error_pct: 7.69, horizon_hours: 12 },
     ]);
     expect(body.metrics).toEqual({
-      mae: 100, mape: 8.78, rmse: 100, bias: 100, dataPoints: 4, mapeSamples: 4,
+      mae: 100, mape: 8.78, wape: 8.7, rmse: 100, bias: 100, dataPoints: 4, mapeSamples: 4,
     });
     expect(body.meta).toMatchObject({
       count: 4,
@@ -112,6 +148,45 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
       modelRequested: null,
       coverage: 'served',
     });
+  });
+
+  // ABL-399. The defect this issue exists for, end to end.
+  //
+  // BE's offshore fleet draws auxiliary load, so the real measurement is
+  // NEGATIVE. The frozen `energy_renewable` carries `DEFAULT 0` on every
+  // `*_mw` column and cannot express that, storing a flat `0.0`; ENTSO-E
+  // publishes a `0.0` forecast for such a zone. Scored against the frozen
+  // table this pair was `0 - 0`, and the endpoint published `mae: 0, rmse: 0`
+  // over a full window of `dataPoints` — a flawless offshore-wind forecast, and
+  // top of any ranking sorted by error. Measured on the replica 2026-08-13,
+  // 3,895 offshore pairs were fabricated exactly this way and NOT ONE agreed
+  // with what `energy_generation` recorded at the same instant.
+  it('scores an offshore-wind pair against the real negative actual, not a fabricated zero', async () => {
+    const { status, body } = await get(
+      `BE/ml-accuracy?${NEXT_DAY_QS}&forecastType=wind_offshore`
+    );
+
+    expect(status).toBe(200);
+    expect(body.data).toHaveLength(4);
+    for (const point of body.data) {
+      expect(point.actual_value).toBe(-26.26);
+      expect(point.actual_value).not.toBe(0);
+      // A percentage error is undefined at a non-positive actual, and must be
+      // null rather than 0 — the same rule that keeps solar overnight honest.
+      expect(point.error_pct).toBeNull();
+    }
+
+    // The headline: a real error, where the frozen table published none.
+    expect(body.metrics.mae).toBe(26.26);
+    expect(body.metrics.mae).not.toBe(0);
+    expect(body.metrics.rmse).toBe(26.26);
+    expect(body.metrics.bias).toBe(-26.26);
+    // MAPE has no measurable sample here (no positive actual) and must be null,
+    // never 0. WAPE is defined, because it divides by sum|actual|.
+    expect(body.metrics.mape).toBeNull();
+    expect(body.metrics.mapeSamples).toBe(0);
+    expect(body.metrics.wape).toBe(100);
+    expect(body.meta.coverage).toBe('served');
   });
 
   it('measures the newest vintage only, never a superseded run', async () => {
@@ -127,7 +202,7 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
   it('separates D+1 from D+2 by horizon band', async () => {
     const d2 = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load&horizon=2`);
     expect(d2.body.metrics).toEqual({
-      mae: 200, mape: 17.56, rmse: 200, bias: 200, dataPoints: 4, mapeSamples: 4,
+      mae: 200, mape: 17.56, wape: 17.39, rmse: 200, bias: 200, dataPoints: 4, mapeSamples: 4,
     });
   });
 
@@ -135,7 +210,7 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
     const { body } = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load`);
     // Four D+1 points at 100 MW error plus four D+2 points at 200 MW.
     expect(body.metrics).toEqual({
-      mae: 150, mape: 13.17, rmse: 158.11, bias: 150, dataPoints: 8, mapeSamples: 8,
+      mae: 150, mape: 13.17, wape: 13.04, rmse: 158.11, bias: 150, dataPoints: 8, mapeSamples: 8,
     });
     expect((body.meta as Record<string, unknown>).horizon).toBeUndefined();
   });
@@ -150,8 +225,12 @@ describe('GET /:countryCode/ml-accuracy — a window whose actuals are all zero'
     const { status, body } = await get(`BE/ml-accuracy?${WINDOW}&forecastType=solar&horizon=1`);
 
     expect(status).toBe(200);
+    // WAPE abstains here too, and for the same reason rather than a different
+    // one: its denominator is sum|actual|, which is 0. This is the one place
+    // WAPE's robustness must not be read as an answer — a magnitude-weighted
+    // error over zero magnitude is undefined, not 0% (ABL-388).
     expect(body.metrics).toEqual({
-      mae: 5, mape: null, rmse: 5, bias: -5, dataPoints: 4, mapeSamples: 0,
+      mae: 5, mape: null, wape: null, rmse: 5, bias: -5, dataPoints: 4, mapeSamples: 0,
     });
     // The points were measured — this is not a coverage gap.
     expect((body.meta as Record<string, unknown>).coverage).toBe('served');
@@ -179,7 +258,7 @@ describe('GET /:countryCode/ml-accuracy — disjoint model coverage', () => {
     expect(status).toBe(200);
     expect(body.data).toEqual([]);
     expect(body.metrics).toEqual({
-      mae: null, mape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0,
+      mae: null, mape: null, wape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0,
     });
     expect(body.meta).toMatchObject({
       model: 'catboost',

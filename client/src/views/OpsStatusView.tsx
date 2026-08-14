@@ -1,10 +1,19 @@
 import { AlertTriangle, CheckCircle2, Clock, HelpCircle, XCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { OpsHistoryCard } from '@/components/ops/OpsHistoryCard';
 import { useOpsStatus } from '@/hooks/useOpsStatus';
-import { deriveEnvironmentState, type ThresholdState } from '@/lib/opsStatusThresholds';
+import { useOpsStatusHistory } from '@/hooks/useOpsStatusHistory';
+import { buildNetworkRows } from '@/lib/networkRows';
 import { buildTrafficBlock } from '@/lib/opsTrafficRows';
-import { formatTimeAgo } from '@/lib/formatters';
-import type { CombinedOpsStatus, FreshnessRollup, OpsSideStatus, VisitorCounters } from '@/types';
+import { formatBytes, formatTimeAgo } from '@/lib/formatters';
+import type {
+  CombinedOpsStatus,
+  FreshnessRollup,
+  OpsSideDerived,
+  OpsSideStatus,
+  ThresholdState,
+  VisitorCounters,
+} from '@/types';
 
 /**
  * Internal acceptance/prod status comparison (ABL-238). Reachable only by
@@ -16,9 +25,21 @@ import type { CombinedOpsStatus, FreshnessRollup, OpsSideStatus, VisitorCounters
  * this side, a locked local DB during the ABL-220 sync blackout must never
  * blank the peer's) lives server-side in `combinedOpsStatusService.ts`. This
  * component only renders the `{ local, peer }` shape it already produces.
+ *
+ * As of ABL-292 the same is true of the warn/error verdicts: this view no
+ * longer derives them. `data.derived` arrives from the server, computed in
+ * `server/src/lib/opsStatusThresholds.ts`, so the badge here, ABL-287's alert
+ * engine and ABL-288's trend view cannot disagree about what 85% disk means.
+ * Everything below is presentation — labels, icons, colours — and the moment
+ * something here starts deciding a threshold again, that is the bug.
  */
 export default function OpsStatusView() {
   const { data, isLoading, isError, refetch, isFetching } = useOpsStatus();
+  // Separate query, separate failure: the live KPIs must still render when the
+  // snapshot store is unreadable, and the trend must still render during the
+  // ABL-220 blackout that degrades the live call (the history endpoint does
+  // not touch the database).
+  const historyQuery = useOpsStatusHistory();
 
   return (
     <div className="flex-1 overflow-auto bg-background">
@@ -34,21 +55,33 @@ export default function OpsStatusView() {
         </p>
 
         {isLoading && <SkeletonBlock />}
-        {isError && <ErrorBlock onRetry={() => refetch()} />}
+        {isError && <ErrorBlock onRetry={() => { void refetch(); }} />}
 
         {data && (
           <div className="space-y-4">
             {shouldShowBlackoutBanner(data) && <BlackoutBanner label={data.syncBlackout.label} />}
-            <CommitDriftBanner local={data.local} peer={data.peer} />
+            <CommitDriftBanner local={data.local} peer={data.peer} state={data.derived.commitDrift} />
             <div className="grid gap-4 md:grid-cols-2">
-              <EnvironmentCard title="This environment" side={data.local} blackoutActive={data.syncBlackout.active} />
+              <EnvironmentCard title="This environment" side={data.local} derived={data.derived.local} />
               <EnvironmentCard
                 title="Peer environment"
                 side={data.peer}
-                blackoutActive={data.syncBlackout.active}
+                derived={data.derived.peer}
                 peerConfigured={data.peerConfigured}
               />
             </div>
+            {historyQuery.data && <OpsHistoryCard history={historyQuery.data} />}
+            {historyQuery.isError && (
+              <p className="text-meta text-ink-dim">
+                Could not load the snapshot history.{' '}
+                <button
+                  onClick={() => { void historyQuery.refetch(); }}
+                  className="cursor-pointer underline underline-offset-2 hover:text-foreground"
+                >
+                  Retry
+                </button>
+              </p>
+            )}
             <p className="text-micro text-ink-faint">
               As of {formatTimeAgo(data.timestamp)}{isFetching ? ' · refreshing…' : ''}
             </p>
@@ -82,12 +115,28 @@ function BlackoutBanner({ label }: { label: string | null }) {
  * unremarkable default and says nothing worth a banner for. Silent (not
  * "unavailable") when either side has no commit to compare, since a `null`
  * commit means a dev server, not drift.
+ *
+ * The *verdict* is the server's (`derived.commitDrift`, ABL-287), not this
+ * component's: the alert engine notifies on the same comparison, and a page
+ * that decided for itself whether the lanes agree is exactly the second copy
+ * ABL-292 removed. Both silent cases above are `'unknown'` server-side, so
+ * keying on `'warn'` reproduces them without restating the rule. The commit
+ * values are still read here — only to render them.
  */
-function CommitDriftBanner({ local, peer }: { local: OpsSideStatus; peer: OpsSideStatus }) {
+function CommitDriftBanner({
+  local,
+  peer,
+  state,
+}: {
+  local: OpsSideStatus;
+  peer: OpsSideStatus;
+  state: ThresholdState;
+}) {
+  if (state !== 'warn') return null;
   if (!local.reachable || !peer.reachable) return null;
   const localCommit = local.status.provenance.commit;
   const peerCommit = peer.status.provenance.commit;
-  if (!localCommit || !peerCommit || localCommit === peerCommit) return null;
+  if (!localCommit || !peerCommit) return null;
 
   return (
     <div className="flex items-center gap-2 rounded-lg border border-dirty/40 bg-dirty/5 px-4 py-3 text-body text-foreground">
@@ -104,16 +153,17 @@ function CommitDriftBanner({ local, peer }: { local: OpsSideStatus; peer: OpsSid
 function EnvironmentCard({
   title,
   side,
-  blackoutActive,
+  derived,
   peerConfigured,
 }: {
   title: string;
   side: OpsSideStatus;
-  blackoutActive: boolean;
+  /** The server's verdict for this lane (ABL-292) — never recomputed here. */
+  derived: OpsSideDerived;
   /** Only meaningful for the peer card — `undefined` for the local card, which is always configured. */
   peerConfigured?: boolean;
 }) {
-  const state = deriveEnvironmentState(side, blackoutActive);
+  const state = derived.environment;
   const notConfigured = peerConfigured === false;
 
   if (!side.reachable) {
@@ -157,14 +207,18 @@ function EnvironmentCard({
           label="Commit"
           value={status.provenance.commit ? status.provenance.commit.slice(0, 7) : `— (${status.provenance.runtime})`}
         />
-        <Row label="Freshness" value={describeFreshnessRollup(status.freshness)} />
+        <Row label="Freshness" value={describeFreshnessRollup(status.freshness)} state={derived.freshness} />
         <Row
           label="Disk"
           value={disk ? `${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)} (${diskPercent}%)` : 'not measured'}
+          state={derived.disk}
         />
         <Row label="Memory (RSS)" value={formatBytes(status.process.memory.rssBytes)} />
         <Row label="Uptime" value={formatUptime(status.process.uptimeSeconds)} />
         <Row label="CPU load (1m)" value={status.host.cpuLoad ? status.host.cpuLoad.load1.toFixed(2) : 'not measured on Windows'} />
+        {buildNetworkRows(status.host).map((row) => (
+          <Row key={row.label} label={row.label} value={row.value} />
+        ))}
         {status.freshness.staleCountries.length > 0 && (
           <p className="pt-1 text-meta text-ink-dim">Stale: {status.freshness.staleCountries.join(', ')}</p>
         )}
@@ -231,14 +285,29 @@ function TrafficFootnote() {
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+/**
+ * `state` tints only the two KPIs the server actually derives a verdict for
+ * (ABL-292's `derived.disk` / `derived.freshness`). The rows without one —
+ * latency, commit, memory, uptime, CPU load — stay neutral rather than
+ * borrowing the card's overall colour: there is no threshold behind them, and
+ * colouring a number implies a judgement we have not made about it.
+ */
+function Row({ label, value, state }: { label: string; value: string; state?: ThresholdState }) {
   return (
     <div className="flex items-center justify-between gap-4">
       <span className="text-meta text-ink-dim">{label}</span>
-      <span className="font-mono-num text-body text-foreground">{value}</span>
+      <span className={`font-mono-num text-body ${state ? ROW_VALUE_CLASS[state] : 'text-foreground'}`}>{value}</span>
     </div>
   );
 }
+
+const ROW_VALUE_CLASS: Record<ThresholdState, string> = {
+  ok: 'text-foreground',
+  warn: 'text-amber-700 dark:text-amber-400',
+  error: 'text-dirty',
+  // Unmeasured reads as muted, never as a healthy value.
+  unknown: 'text-ink-faint',
+};
 
 const STATE_LABEL: Record<ThresholdState, string> = {
   ok: 'OK',
@@ -278,13 +347,6 @@ function describeFreshnessRollup(freshness: FreshnessRollup): string {
   if (freshness.status === 'live') return 'live';
   if (freshness.status === 'ended') return 'ended (not an alarm)';
   return 'no data held';
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / 1024 ** exp).toFixed(exp === 0 ? 0 : 1)} ${units[exp]}`;
 }
 
 function formatUptime(seconds: number): string {

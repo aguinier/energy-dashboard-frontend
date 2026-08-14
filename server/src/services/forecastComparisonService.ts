@@ -1,6 +1,7 @@
 import { ForecastType } from '../types/index.js';
 import * as tsoForecastService from './tsoForecastService.js';
 import * as mlForecastService from './mlForecastService.js';
+import type { LoadForecastBasis } from './loadForecastBasis.js';
 
 /**
  * Forecast Comparison Service
@@ -14,10 +15,24 @@ const TSO_FORECAST_TYPES = ['load', 'solar', 'wind_onshore', 'wind_offshore'] as
 type TSOForecastableType = typeof TSO_FORECAST_TYPES[number];
 
 export interface AccuracyMetrics {
-  mae: number;      // Mean Absolute Error (MW or EUR/MWh)
+  /**
+   * Mean Absolute Error (MW or EUR/MWh).
+   *
+   * Nullable since ABL-277: a country whose actuals and TSO forecast measure
+   * different quantities pairs points but has no publishable error, so
+   * `dataPoints > 0` no longer implies a number here. It must stay null — the
+   * `?? 0` this replaced published the Netherlands as a flawless 0 MW while
+   * the two series were 2,435 MW apart on average.
+   */
+  mae: number | null;
   mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
-  rmse: number;     // Root Mean Square Error
-  bias: number;     // Mean Error (positive = over-forecast)
+  rmse: number | null;     // Root Mean Square Error
+  /**
+   * Mean Error (positive = over-forecast), null on a divergent basis — there
+   * the mean difference is the definitional gap between two quantities, and
+   * reporting it as forecast bias is the same false claim as reporting MAE.
+   */
+  bias: number | null;
   dataPoints: number;
 }
 
@@ -224,12 +239,23 @@ function getTSOMetrics(
  * TSO service doesn't calculate bias, so we compute it from accuracy data
  */
 function addBiasToTSOMetrics(
-  metrics: { mae: number | null; mape: number | null; rmse: number | null; dataPoints: number },
+  metrics: {
+    mae: number | null; mape: number | null; rmse: number | null; dataPoints: number;
+    basis?: LoadForecastBasis;
+  },
   countryCode: string,
   start: string,
   end: string,
   forecastType: 'day_ahead' | 'week_ahead'
 ): AccuracyMetrics {
+  // Nothing derived from the pair survives a divergent basis — including bias,
+  // which is the *most* misleading of the four here: for NL it is a clean
+  // +2,435 MW that reads as a systematic over-forecast the TSO could correct,
+  // when it is the behind-the-meter solar the two series disagree about.
+  if (metrics.basis === 'divergent_basis') {
+    return { mae: null, mape: null, rmse: null, bias: null, dataPoints: metrics.dataPoints };
+  }
+
   // Get accuracy data to calculate bias
   const data = tsoForecastService.getLoadForecastAccuracy(
     countryCode, start, end, forecastType, 'hourly'
@@ -305,7 +331,14 @@ function addBiasToMetrics(metrics: mlForecastService.MLForecastAccuracyMetrics):
 
 export interface RollingAccuracyDataPoint {
   date: string;  // YYYY-MM-DD format
-  tso?: { mape: number | null; mae: number };
+  /**
+   * `mae` is nullable on the TSO side since ABL-277: a country whose realized
+   * load and TSO forecast measure different quantities has its error measures
+   * suppressed while still pairing points, so `dataPoints > 0` no longer
+   * implies a publishable MAE. It must stay null — the `?? 0` that used to sit
+   * here would have rendered the Netherlands as a flawless 0 MW.
+   */
+  tso?: { mape: number | null; mae: number | null };
   ml_d1?: { mape: number | null; mae: number };
   ml_d2?: { mape: number | null; mae: number };
 }
@@ -370,16 +403,17 @@ export function getRollingAccuracy(
           const tsoMetrics = tsoForecastService.getLoadForecastAccuracyMetrics(
             upperCode, windowStartISO, windowEndISO, 'day_ahead'
           );
-          // mae is only null when dataPoints === 0, excluded by the guard above.
+          // Passed through, never coerced: a divergent-basis country pairs
+          // points but publishes no error measure (ABL-277).
           if (tsoMetrics.dataPoints > 0) {
-            dataPoint.tso = { mape: tsoMetrics.mape, mae: tsoMetrics.mae ?? 0 };
+            dataPoint.tso = { mape: tsoMetrics.mape, mae: tsoMetrics.mae };
           }
         } else {
           const tsoMetrics = tsoForecastService.getGenerationForecastAccuracyMetrics(
             upperCode, windowStartISO, windowEndISO, forecastType as 'solar' | 'wind_onshore' | 'wind_offshore'
           );
           if (tsoMetrics.dataPoints > 0) {
-            dataPoint.tso = { mape: tsoMetrics.mape, mae: tsoMetrics.mae ?? 0 };
+            dataPoint.tso = { mape: tsoMetrics.mape, mae: tsoMetrics.mae };
           }
         }
       } catch {

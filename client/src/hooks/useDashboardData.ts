@@ -3,15 +3,15 @@ import {
   fetchMapData,
   fetchGenerationMix,
   fetchGenerationSeries,
-  fetchLatestForecast,
   fetchDataFreshness,
+  fetchIngestFreshness,
   fetchForecastComparisonSummary,
   fetchCrossCountryMetrics,
 } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { getTodayBrussels, getNextDayBrussels } from '@/lib/timezone';
-import type { TimePreset, TimeAnchor, Granularity, MetricType, ForecastType } from '@/types';
+import type { TimePreset, TimeAnchor, Granularity, MetricType } from '@/types';
 
 // ============================================================================
 // New time navigation functions
@@ -236,20 +236,6 @@ export function useGenerationSeries() {
   });
 }
 
-export function useLatestForecast(forecastType?: ForecastType) {
-  const { selectedCountry, showForecast } = useDashboardStore();
-
-  return useQuery({
-    queryKey: ['forecast', 'latest', selectedCountry, forecastType],
-    queryFn: () => fetchLatestForecast({
-      country: selectedCountry,
-      type: forecastType,
-    }),
-    enabled: showForecast,
-    staleTime: REFRESH_INTERVALS.dashboard,
-  });
-}
-
 // ML Forecast date range helper (mirrors TSO pattern)
 // Uses window start to include historical forecasts, extends end to always include future forecasts
 export function getMLForecastDateRange(
@@ -276,6 +262,28 @@ export function useDataFreshness() {
     queryFn: () => fetchDataFreshness(selectedCountry),
     staleTime: 60000, // 1 minute - data freshness doesn't change very often
     refetchInterval: 60000, // Refetch every minute
+  });
+}
+
+/**
+ * When each stream was last refreshed by an ingest pass (ABL-295).
+ *
+ * Gated on `enabled` because its only consumer is a disclosure the user opens:
+ * the header pill's own verdict comes from `useDataFreshness` above, and this
+ * detail is not needed until someone asks for it. Nothing is fetched on a page
+ * load where the panel is never opened.
+ *
+ * No `refetchInterval`: the ingest runs four times a day, so a per-minute poll
+ * would issue ~1,440 requests to observe at most 4 changes.
+ */
+export function useIngestFreshness(enabled: boolean) {
+  const { selectedCountry } = useDashboardStore();
+
+  return useQuery({
+    queryKey: ['ingest-freshness', selectedCountry],
+    queryFn: () => fetchIngestFreshness(selectedCountry),
+    enabled,
+    staleTime: 5 * 60 * 1000,
   });
 }
 

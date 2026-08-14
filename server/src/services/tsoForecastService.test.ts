@@ -19,7 +19,7 @@ const pt = (actual: number, forecast: number) => ({
 describe('calculateMetrics', () => {
   it('returns null metrics when there are no paired points', () => {
     const m = calculateMetrics([]);
-    expect(m).toEqual({ mae: null, mape: null, rmse: null, dataPoints: 0, mapeSamples: 0 });
+    expect(m).toEqual({ mae: null, mape: null, wape: null, rmse: null, dataPoints: 0, mapeSamples: 0 });
   });
 
   it('computes mae and rmse over every paired point', () => {

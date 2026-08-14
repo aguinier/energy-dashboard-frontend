@@ -12,7 +12,8 @@
     "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",
     "build": "npm run build -w client && npm run build -w server",
-    "start": "npm run start -w server"
+    "start": "npm run start -w server",
+    "predone": "npm run check:unmerged -w server"
   },
   "devDependencies": {
     "@types/react-simple-maps": "^3.0.6",

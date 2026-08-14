@@ -169,13 +169,24 @@ export function ForecastTab() {
             count={4}
           />
         </div>
-        {loadMetrics?.dataPoints != null && loadMetrics.dataPoints < MIN_RELIABLE_SAMPLES && (
+        {/* A divergent basis has to say so in words. Left to the strip alone it
+            renders as three em-dashes beside a healthy sample count, which
+            reads as a transient gap rather than as a number that does not
+            exist for this country (ABL-277). Checked before the sparse-window
+            and MAPE-coverage notes below, which describe a measurement that
+            was taken; this one says none was possible. */}
+        {loadMetrics?.basis === 'divergent_basis' && loadMetrics.basisNote && (
+          <p className="mt-2 text-micro text-ink-muted">{loadMetrics.basisNote}</p>
+        )}
+        {loadMetrics?.basis !== 'divergent_basis' &&
+          loadMetrics?.dataPoints != null && loadMetrics.dataPoints < MIN_RELIABLE_SAMPLES && (
           <p className="mt-2 text-micro text-ink-muted">
             Only {loadMetrics.dataPoints} paired points in this window — these figures are
             indicative, not a stable estimate. Widen the range for a firmer read.
           </p>
         )}
-        {loadMetrics != null && loadMetrics.mapeSamples < loadMetrics.dataPoints && (
+        {loadMetrics?.basis !== 'divergent_basis' &&
+          loadMetrics != null && loadMetrics.mapeSamples < loadMetrics.dataPoints && (
           <p className="mt-2 text-micro text-ink-muted">
             MAPE covers {loadMetrics.mapeSamples} of {loadMetrics.dataPoints} points — the rest
             had a zero or negative actual, where percentage error is undefined.

@@ -44,37 +44,84 @@ describe('GET /api/forecasts/compare — actual-column mapping', () => {
     expect(body.success).toBe(true);
   });
 
-  it('sums the two hydro columns rather than reading a nonexistent hydro_mw', async () => {
+  // ABL-399 moved these actuals from the frozen `energy_renewable` onto
+  // `energy_generation`. FR's generation rows report `hydro_run_mw` 100 and no
+  // `hydro_reservoir_mw` at all — the shape Belgium has fleet-wide, where
+  // `hydro_reservoir_mw` is NULL in all 49,213 rows because BE has no reservoir
+  // fleet.
+  it('sums the reported hydro components rather than reading a nonexistent hydro_mw', async () => {
     const { status, body } = await get(`compare?country=FR&type=hydro_total&${WINDOW_QS}`);
 
     expect(status).toBe(200);
     const data = body.data as Compare;
-    // 30+70, 35+75, 40+NULL, 45+85.
     expect(data.actuals).toEqual([
       { timestamp: '2026-07-01 00:00:00', value: 100 },
-      { timestamp: '2026-07-01 01:00:00', value: 110 },
-      { timestamp: '2026-07-01 02:00:00', value: null },
-      { timestamp: '2026-07-01 03:00:00', value: 130 },
+      { timestamp: '2026-07-01 01:00:00', value: 100 },
+      { timestamp: '2026-07-01 02:00:00', value: 100 },
+      { timestamp: '2026-07-01 03:00:00', value: 100 },
     ]);
   });
 
-  it('leaves an unknown hydro component null instead of treating it as zero', async () => {
+  // The reduction is null-aware in BOTH directions, and each half is the fix
+  // for the other's failure. This is the half that keeps a real reading:
+  // a NULL-propagating `a + b` would answer NULL for every one of BE's 49,213
+  // hours and drop Belgium's hydro accuracy from 5,121 pairs to zero —
+  // discarding real run-of-river measurements to express an absence that is a
+  // property of Belgium's fleet, not of our data.
+  it('keeps a reported hydro component when its sibling is not reported', async () => {
     const { body } = await get(`compare?country=FR&type=hydro_total&${WINDOW_QS}`);
     const data = body.data as Compare;
 
-    const unknown = data.actuals[2];
-    expect(unknown.value).toBeNull();
-    // The specific failure guarded against: NULL + 40 reading as 40, which
-    // would render a run-of-river-only hour as the whole hydro fleet.
-    expect(unknown.value).not.toBe(40);
-    expect(unknown.value).not.toBe(0);
+    // hydro_run_mw = 100 is reported; hydro_reservoir_mw is not.
+    expect(data.actuals[2].value).toBe(100);
+    expect(data.actuals[2].value).not.toBeNull();
   });
 
-  it('reads renewable from total_renewable_mw', async () => {
+  // ...and this is the other half. PT's `energy_generation` rows exist but
+  // every column is NULL — the country reports no production type at all. That
+  // must not reduce to a confident `0`, and with the `IS NOT NULL` filter it is
+  // an absent point rather than a `{ value: null }` one, so no consumer writing
+  // `value ?? 0` can turn "we hold no reading" into "it generated nothing".
+  it('serves no actual at all where every component is unreported', async () => {
+    for (const type of ['renewable', 'hydro_total']) {
+      const { status, body } = await get(`compare?country=PT&type=${type}&${WINDOW_QS}`);
+      expect(status).toBe(200);
+      expect((body.data as Compare).actuals, type).toEqual([]);
+    }
+  });
+
+  // A measured zero is a value, not a missing reading — the distinction the
+  // frozen table's `DEFAULT 0` destroyed in the other direction. BE's solar is
+  // 0.0 at every hour (overnight), and must survive as 0.
+  it('keeps a measured zero rather than dropping it as missing', async () => {
+    const { body } = await get(`compare?country=BE&type=renewable&${WINDOW_QS}`);
+    const data = body.data as Compare;
+
+    expect(data.actuals).toHaveLength(4);
+    expect(data.actuals.map((a) => a.value)).toEqual([0, 0, 0, 0]);
+  });
+
+  // `renewable` is the type with no counterpart column: `total_renewable_mw`
+  // was a stored computed column on the frozen table. FR reports solar 0 and
+  // hydro_run 100 and nothing else renewable, so the total is 100 — pumped
+  // storage (-300) is a store and is excluded, which is what keeps this figure
+  // equal to the one /renewables serves for the same hour.
+  it('derives renewable as a null-aware sum over energy_generation', async () => {
     const { body } = await get(`compare?country=FR&type=renewable&${WINDOW_QS}`);
     const data = body.data as Compare;
 
-    expect(data.actuals.map((a) => a.value)).toEqual([130, 145, null, 160]);
+    expect(data.actuals.map((a) => a.value)).toEqual([100, 100, 100, 100]);
+  });
+
+  // The cost of the move, and it must render as a gap. AT has no
+  // `energy_generation` rows at all — the shape of the FR 2026-07-01..22 hole
+  // (ABL-323/ABL-328), where the frozen table holds 2,073 rows and
+  // energy_generation holds none. Never a zero, never carried forward.
+  it('renders an energy_generation coverage hole as absent, never as zero', async () => {
+    const { status, body } = await get(`compare?country=AT&type=solar&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    expect((body.data as Compare).actuals).toEqual([]);
   });
 
   // ABL-21. `forecasts` stores `target_timestamp_utc` with a 'T' separator for
@@ -193,5 +240,103 @@ describe('GET /api/forecasts/compare — impossible zero load actuals', () => {
 
     const data = body.data as Compare;
     expect(data.actuals.map((a) => a.value)).toEqual([1000, 1100, 1200, 1300]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ABL-319. Serving-readiness probe for ABL-316, which trains up to ~40 new
+// per-country generation models. The question this block answers is whether a
+// newly trained country/stream pair reaches the dashboard on its own, or whether
+// something between the `forecasts` table and the chart gates by country.
+//
+// Traced end to end on 2026-08-12 against the replica, DE `wind_offshore`:
+// nothing on the serving side gates by country. `getForecastData` filters on
+// country_code / forecast_type / model_name only, `resolveModelCandidates` is
+// keyed by stream and never sees a country, `getAvailableForecastTypes` is a
+// plain SELECT DISTINCT over the rows that exist, and no client component
+// carries a country allowlist. DE offshore is missing because it was never
+// written: `models/DE/wind_offshore` holds only un-promoted variant
+// subdirectories, with no top-level `model.joblib` for `Forecaster.load` to
+// open, so `forecast_daily.py` skips the pair. The gate is the write path.
+//
+// So there is no fix to land, and these tests pin the property instead — the
+// one that has to hold for the ABL-316 retrains to light up without a code
+// change, and the one whose silent loss would be found only after 40 retrains.
+//
+// Both directions are asserted, because "serves when rows exist" is only half of
+// it. The other half is what a country WITHOUT rows does, and the failure this
+// dashboard exists to prevent is the confident wrong number: an offshore chart
+// that renders a flat zero line for Germany, or a 500, rather than nothing.
+// ---------------------------------------------------------------------------
+
+describe('GET /api/forecasts — serving is data-driven, not country-gated', () => {
+  it('serves a country that has rows for the stream', async () => {
+    const { status, body } = await get(`?country=BE&type=wind_offshore&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    expect(body.data).toHaveLength(4);
+    expect(body.data.map((p: { value: number }) => p.value)).toEqual([700, 710, 720, 730]);
+    // Nothing in the registry pins offshore per country — BE resolves through
+    // the same stream-keyed ladder every other country would.
+    expect(body.data.every((p: { model_name: string }) => p.model_name === 'xgboost')).toBe(true);
+  });
+
+  it('degrades to an empty series for a country with no rows, rather than erroring', async () => {
+    // DE, the production case. A 500 here would be a bug; a zero-valued point
+    // would be an incident.
+    const { status, body } = await get(`?country=DE&type=wind_offshore&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.data).toEqual([]);
+    expect(body.meta.count).toBe(0);
+    // No model is claimed to have served, because none did.
+    expect(body.meta.model).toBeNull();
+  });
+
+  it('does not gate the country — the same country serves a stream it does have', async () => {
+    // The control. If DE's empty offshore response came from a country-level
+    // block rather than from absent rows, this would be empty too. Length is
+    // deliberately not pinned: unfiltered by horizon this returns DE's D+1 and
+    // D+2 vintages both, which is a separate property with its own tests.
+    const { status, body } = await get(`?country=DE&type=load&${WINDOW_QS}`);
+
+    expect(status).toBe(200);
+    expect(body.data.length).toBeGreaterThan(0);
+  });
+
+  it('derives the available-type list from the rows that exist', async () => {
+    // This is the mechanism by which a newly trained model becomes reachable:
+    // `getAvailableForecastTypes` is SELECT DISTINCT over `forecasts`, so the
+    // first row written for DE/wind_offshore adds the type with no code change.
+    // It also had no test at all before this one.
+    const be = await get(`types?country=BE`);
+    const de = await get(`types?country=DE`);
+
+    expect(be.status).toBe(200);
+    expect(be.body.data).toContain('wind_offshore');
+    expect(de.body.data).not.toContain('wind_offshore');
+    // ...and DE is a fully served country otherwise, so absence is per-stream.
+    expect(de.body.data).toContain('load');
+  });
+
+  it('returns nothing for a registered model that nothing has ever written', async () => {
+    // A registry entry whose `model_name` no writer produces is dead: an
+    // explicit request is honoured strictly (`resolveModelCandidates`), so it
+    // resolves to that model and finds no rows. Measured on the replica
+    // 2026-08-12, both wind shadow candidates are in exactly this state —
+    // `xgboost-retrain-v1` and `catboost-retrain-v1` have zero rows fleet-wide.
+    //
+    // Pinned as an empty series rather than a substitution: answering with
+    // xgboost's numbers under the retrain-v1 label is the failure mode
+    // `resolveAccuracyModel` already refuses for accuracy.
+    const { status, body } = await get(
+      `?country=BE&type=wind_offshore&model=xgboost-retrain-v1&${WINDOW_QS}`
+    );
+
+    expect(status).toBe(200);
+    expect(body.data).toEqual([]);
+    expect(body.meta.modelRequested).toBe('xgboost-retrain-v1');
+    expect(body.meta.model).toBeNull();
   });
 });

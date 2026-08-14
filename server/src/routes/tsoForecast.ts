@@ -178,6 +178,11 @@ router.get(
         model: resolvedForecastType === 'week_ahead' ? 'tso-d7'
           : resolvedForecastType === 'day_ahead' ? 'tso-d1' : null,
         modelRequested: model ?? null,
+        // Whether realized load and this forecast measure the same quantity.
+        // `data` is still the real paired series either way — it is only the
+        // aggregate error in `metrics` that a divergent basis invalidates.
+        basis: metrics.basis,
+        basisNote: metrics.basisNote,
       },
     });
   }

@@ -126,6 +126,25 @@ export function hoverCardClearsSelector(containerWidth: number): boolean {
 }
 
 /**
+ * One feature as handed to the `<Geographies>` render prop.
+ *
+ * `@types/react-simple-maps` types that callback's `geographies` as `any[]`,
+ * so every property read off a feature — `properties.NAME`, `rsmKey` — is an
+ * unchecked `any` that silently defeats type checking in the two components
+ * that draw maps. This is the narrow, honest shape those components actually
+ * depend on; annotating the callback parameter with it confines the library's
+ * `any` to a single seam per file instead of letting it spread.
+ *
+ * Only the fields we read are declared: features carry more (geometry, id),
+ * but nothing here touches them.
+ */
+export interface GeoFeature {
+  /** react-simple-maps' per-feature React key. */
+  rsmKey: string;
+  properties: Record<string, string>;
+}
+
+/**
  * Accessible name for a single `<Geography>` path.
  *
  * The map used to carry the data a sighted mouse user sees in the hover

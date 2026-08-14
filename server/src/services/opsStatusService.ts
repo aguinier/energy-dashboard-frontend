@@ -3,7 +3,14 @@ import { getHealthProvenance, type HealthProvenance } from '../lib/healthProvena
 import { getAllCountries } from './countryService.js';
 import { getDataFreshness } from './dataFreshnessService.js';
 import { computeFreshnessRollup, type FreshnessRollup } from './freshnessRollup.js';
-import { getDiskUsage, getCpuLoad, type DiskUsage, type CpuLoad } from './hostMetrics.js';
+import {
+  getDiskUsage,
+  getCpuLoad,
+  getNetworkThroughput,
+  type DiskUsage,
+  type CpuLoad,
+  type NetworkInterfaceThroughput,
+} from './hostMetrics.js';
 import { visitorCounters, type VisitorCounters } from './visitorCounters.js';
 
 export interface ProcessMetrics {
@@ -23,6 +30,15 @@ export interface OpsStatus {
     platform: NodeJS.Platform;
     disk: DiskUsage | null;
     cpuLoad: CpuLoad | null;
+    /**
+     * Per-interface throughput (ABL-290). `null` where the platform has no
+     * counters to read (anything but Linux — see `hostMetrics.ts`).
+     *
+     * Optional, not just nullable: a peer environment on a build that predates
+     * this field sends a `host` object without the key at all, and the combined
+     * view must render that as "not reported", never as zero traffic.
+     */
+    network?: NetworkInterfaceThroughput[] | null;
   };
   process: ProcessMetrics;
   freshness: FreshnessRollup;
@@ -77,9 +93,14 @@ function getFleetFreshness(now: Date) {
  * that is `/data`, the mounted DB volume; on a dev checkout, wherever the
  * local replica lives.
  *
- * Every field under `host` is best-effort: `disk` and `cpuLoad` are `null`
- * when this process cannot measure them (see `hostMetrics.ts`), never a
+ * Every field under `host` is best-effort: `disk`, `cpuLoad` and `network` are
+ * `null` when this process cannot measure them (see `hostMetrics.ts`), never a
  * fabricated number.
+ *
+ * `network` is additionally the one field whose *rates* need two readings —
+ * the ops page's ~30s poll supplies the second — so its `bytesPerSec` fields
+ * are `null` on the first request after a restart while the cumulative counters
+ * beside them are real from the first call.
  *
  * `visitors` (ABL-289) is the one section that is not a reading of the host: it
  * is what `middleware/requestCounter.ts` has tallied since this process
@@ -97,6 +118,7 @@ export function getOpsStatus(now: Date = new Date()): OpsStatus {
       platform: process.platform,
       disk: getDiskUsage(path.dirname(provenance.db_path)),
       cpuLoad: getCpuLoad(),
+      network: getNetworkThroughput(),
     },
     process: getProcessMetrics(),
     freshness: getFleetFreshness(now),

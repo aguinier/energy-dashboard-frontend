@@ -1,4 +1,4 @@
-import { useQueryClient } from '@tanstack/react-query';
+﻿import { useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 import {
   fetchPriceData,
@@ -26,8 +26,17 @@ export function usePrefetchCountry() {
       const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
       const granularity = getGranularityForPreset(timePreset);
 
+      // Every prefetch below is deliberately fire-and-forget: this runs on
+      // click/hover to warm the cache, and the caller must not be blocked on
+      // it. `void` marks that intent explicitly. Dropping the promise is safe
+      // here specifically because `prefetchQuery` never rejects â€” it resolves
+      // to void whether the fetch succeeded or failed, leaving the error on
+      // the query itself for the real `useQuery` consumer to surface. Any
+      // failure therefore replays through the normal loading/error path when
+      // the component mounts; it is not swallowed.
+
       // Prefetch countries list (usually cached, but ensure it's ready)
-      queryClient.prefetchQuery({
+      void queryClient.prefetchQuery({
         queryKey: ['countries'],
         queryFn: fetchCountries,
         staleTime: 3600000, // 1 hour
@@ -35,12 +44,12 @@ export function usePrefetchCountry() {
 
       // Use combined endpoint to fetch overview + load in one request.
       // This is faster than two separate requests, and the server always
-      // returns both fields together — but only `loadData` still has a
-      // client-side reader (useLoadChartData's ['load', …] key) since
+      // returns both fields together â€” but only `loadData` still has a
+      // client-side reader (useLoadChartData's ['load', â€¦] key) since
       // AbleStatRow, the only consumer of the overview half, was removed
       // (ABL-221). `result.overview` is fetched and discarded rather than
       // seeded into a cache nothing looks up.
-      queryClient.prefetchQuery({
+      void queryClient.prefetchQuery({
         queryKey: ['dashboard', 'initial', countryCode, timePreset, timeOffset, granularity],
         queryFn: async () => {
           const result = await fetchInitialCountryData({
@@ -64,7 +73,7 @@ export function usePrefetchCountry() {
       });
 
       // Prefetch price and renewable data for other tabs (lower priority)
-      queryClient.prefetchQuery({
+      void queryClient.prefetchQuery({
         queryKey: ['prices', countryCode, timePreset, timeOffset, granularity],
         queryFn: () =>
           fetchPriceData({
@@ -76,12 +85,12 @@ export function usePrefetchCountry() {
         staleTime: REFRESH_INTERVALS.dashboard,
       });
 
-      // The Generation tab's own trend (['generation','series',…]) is
-      // deliberately NOT prefetched on hover — it is a second full-window
+      // The Generation tab's own trend (['generation','series',â€¦]) is
+      // deliberately NOT prefetched on hover â€” it is a second full-window
       // query for a tab the user may never open, and the tab has its own
-      // loading state. (A ['renewables',…] prefetch used to run here too,
+      // loading state. (A ['renewables',â€¦] prefetch used to run here too,
       // warming AbleStatRow's renewable stat; both the query and the
-      // component it warmed are gone — ABL-221.)
+      // component it warmed are gone â€” ABL-221.)
     },
     [queryClient, timePreset, timeOffset]
   );

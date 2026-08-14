@@ -9,5 +9,10 @@ export default defineConfig({
     // silently blocked its own script for a whole release (ABL-244) is exactly
     // what an unrun test surface produces.
     include: ['src/**/*.test.ts', '../scripts/**/*.test.ts'],
+
+    // Halt the run with one explanatory error when the compiled better-sqlite3
+    // binary cannot load under this Node, rather than letting ~16-24 files fail
+    // at import with a `bindings.js` stack that names no assertion (ABL-309).
+    globalSetup: ['src/test/nativeAbiPreflight.ts'],
   },
 });
