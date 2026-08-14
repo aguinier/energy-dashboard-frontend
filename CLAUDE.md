@@ -775,10 +775,34 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   national grid never draws 0 MW** (ABL-35). This is the same "published a
   placeholder as a measurement" defect as GR's net position below, in a
   different table, and it was live: measured read-only against the replica
-  2026-08-06, **543 of 2,762,517 rows are exactly `0.0`** across 11 countries
+  2026-08-06, **543 of ~2,647,076 rows are exactly `0.0`** across 11 countries
   (BA 277, MK 99, ME 73, ES 46, PL 25, MD 10, RO 5, AL 4, NL 2, RS 1, SI 1) and
-  **0 rows are negative**. It is ongoing, not historical — the newest were SI at
+  **0 rows are negative**. The 543 count is unchanged; re-verified 2026-08-12 and
+  2026-08-14. (The denominator dropped from the 2026-08-06 census value of
+  2,762,517 — consistent with the `(country_code, timestamp_utc)` dedupe in
+  `server/src/v1/data/accuracyRepo.ts:54-56`; not investigated further, ABL-453.)
+  It is ongoing, not historical — the newest were SI at
   `2026-08-06 00:00` and MK at `2026-08-02 21:00`.
+
+  **SI's zero roams and self-repairs** (ABL-453). SI always has **exactly one**
+  zero row, and it sits at the newest stored timestamp — the leading edge of
+  ingest. Once ENTSO-E publishes the Point, the row is overwritten with the real
+  value. Verified on prod 2026-08-14: rows at `08-10 00:15`, `08-11 06:15`,
+  `08-12 00:15`, and `08-13 00:15` were all previously `0.0` and have since
+  repaired to `941.75`, `1556.77`, `1078.11`, and `1066.00` MW. Only `08-14 00:15`
+  was still `0.0`, and it was the newest row.
+
+  A leading-edge SI zero is **"not published yet," not "fabricated."** It is
+  expected, contained, and must **not** be re-filed. Cf. ABL-67/ABL-181: a
+  Board-approved 392-row delete was aborted when 189 rows self-repaired within
+  four minutes — a 48% false-positive rate.
+
+  **The correct test of the ABL-157 guard is the total count, not a date filter.**
+  A `COUNT(*) WHERE load_mw = 0 AND timestamp_utc > <recent date>` returning `1`
+  is the SI leading edge and is expected. File a bug only if:
+  - the **total** across all countries grows above 543, or
+  - a zero appears at a timestamp that is **not** the newest row for that country
+    and does not self-repair within ~24 h.
 
   **Where they come from, and why this guard still earns its keep** (ABL-50).
   At least MK's are manufactured by our own ingest. An ENTSO-E `Period`
@@ -792,7 +816,9 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   path, 2026-08-06).
   **That fix shipped 2026-08-10** (ABL-157 redeployed the `energy-data-gathering`
   container at 15:34Z; `published_points.py` is present and the guard fired on
-  the 18:30 pass, dropping 191 of 667 LU load rows). The count stops growing.
+  the 18:30 pass, dropping 191 of 667 LU load rows). The **fabricated** zero
+  count stops growing (the SI leading-edge zero described above is not fabricated
+  and is not counted by this fix).
   And it does not make this read-side guard redundant: MK's `position 1` **was**
   genuinely published as `0.0`,
   so it is still stored on purpose, and `measuredLoadClause()` is the only
@@ -2216,7 +2242,7 @@ rounding error — it is the permanent state of whole streams:
 - `net_position` — **14 of 36 zones have never had one pass store a row** (AL BA
   CH CY DK GB IT MD ME MK NO RS SE UA); GR and IE last did on 2026-07-31.
 - `load` — GB and UA never have, matching their dead series.
-- `renewable` — AL last did on 2026-06-30 (Albania publishes no A75 at all).
+- `renewable` — AL last did on 2026-06-30 within the historical gap (2026-06-24 – 2026-08-05); Albania resumed A75 publication on 2026-08-06 and `energy_renewable` now runs through 2026-08-12 21:00.
 - `load_forecast_week_ahead` — ME last did 2026-05-24; BA GB MD MK SI UA never.
 
 Every one of those was "checked" during the 00:30–00:48 UTC pass that morning.
@@ -3196,22 +3222,24 @@ nothing in the result saying which is wrong.
   above. A `+02:00` row is displayed two hours from where it belongs. This is
   the sibling module's ingest, not ours; do not "fix" it here and do not
   backfill it. Escalated under ABL-21.
-- **Nothing, for generation — except Albania.** This entry used to say nuclear
-  and fossil were unavailable. They are not: `energy_generation` holds the
-  complete ENTSO-E A75 document — nuclear, all seven fossil sub-types (gas,
-  hard coal, brown coal, oil, oil shale, peat, coal-derived gas), waste,
-  pumped storage and battery storage, ENTSO-E's own unclassified "Other", and
-  the renewables — 21 `*_mw` columns. Measured 2026-08-04 against the replica:
-  all 34 countries present, 33 of them spanning 2021-01-01 → now. **AL** is
-  the sole gap (672 rows, 2026-05-26 → 2026-06-23, nothing since), and it is
-  an *upstream publication* gap rather than an unfinished backfill —
-  `energy_renewable` holds exactly the same 672 rows — so AL renders as "no
-  data" in every window the UI can reach. **It will never fill:** Albania
-  publishes no A75 document at all, and the API answers `No matching data
-  found for AGGREGATED_GENERATION_PER_TYPE_R3` for every window including
-  today (probed on prod with the pipeline's own client, 2026-08-06 and
-  2026-08-07). Those 672 June rows are the anomaly, not the gap. Do not file
-  a backfill for it.
+- **Nothing, for generation — except Albania (historical gap, now resolved).**
+  This entry used to say nuclear and fossil were unavailable. They are not:
+  `energy_generation` holds the complete ENTSO-E A75 document — nuclear, all
+  seven fossil sub-types (gas, hard coal, brown coal, oil, oil shale, peat,
+  coal-derived gas), waste, pumped storage and battery storage, ENTSO-E's own
+  unclassified "Other", and the renewables — 21 `*_mw` columns. Measured
+  2026-08-04 against the replica: all 34 countries present, 33 of them spanning
+  2021-01-01 → now. **AL** had a gap (672 rows, 2026-05-26 → 2026-06-23, then
+  nothing through 2026-08-05) — an *upstream publication* gap, not an
+  unfinished backfill; `energy_renewable` held exactly the same 672 rows.
+  **Albania resumed publishing A75 on 2026-08-06** (confirmed prod read,
+  2026-08-14): `energy_generation` AL now spans through 2026-08-12 21:00 UTC,
+  with complete 24-row days from 08-06 onward. The closed gap
+  (2026-06-24 – 2026-08-05, ~6 weeks) was an upstream publication outage; the
+  stream is alive. `energy_renewable` mirrors it exactly — same 246 new rows,
+  same day-by-day pattern. *Note: "It will never fill" and "publishes no A75
+  document at all" were written on 2026-08-06/07 right across the resumption
+  boundary and were false from that moment.*
 - **AL load, stalled upstream since 2026-08-06 21:45 UTC** (ABL-84, ABL-152).
   *Distinct from the AL generation gap above, and a different shape: this is
   intermittent, not permanent.* AL does normally publish `energy_load`; it
