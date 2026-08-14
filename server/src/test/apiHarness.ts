@@ -35,8 +35,14 @@ export interface JsonResponse {
 }
 
 export interface TestApi {
-  /** GET a path relative to `/api`, e.g. `dashboard/overview?country=DE`. */
-  get(path: string): Promise<JsonResponse>;
+  /**
+   * GET a path relative to `/api`, e.g. `dashboard/overview?country=DE`.
+   *
+   * `headers` exists for the request-lane counters (ABL-289), which classify on
+   * the user agent: `fetch`'s own UA is an automated one, so a test that means
+   * "a browser asked for this" has to say so.
+   */
+  get(path: string, headers?: Record<string, string>): Promise<JsonResponse>;
   /** POST a JSON body to a path relative to `/api`, with optional extra headers. */
   post(path: string, body: unknown, headers?: Record<string, string>): Promise<JsonResponse>;
   close(): Promise<void>;
@@ -58,8 +64,8 @@ export async function startTestApi(): Promise<TestApi> {
   const base = `http://127.0.0.1:${addr.port}/api`;
 
   return {
-    async get(path: string) {
-      const res = await fetch(`${base}/${path}`);
+    async get(path: string, headers: Record<string, string> = {}) {
+      const res = await fetch(`${base}/${path}`, { headers });
       return { status: res.status, body: (await res.json()) as Record<string, unknown> };
     },
     async post(path: string, body: unknown, headers: Record<string, string> = {}) {

@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import routes from './routes/index.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { requestCounter } from './middleware/requestCounter.js';
 
 /**
  * The built client, or `null` when this checkout has none.
@@ -74,6 +75,12 @@ export function createApp({ clientDist = null }: AppOptions = {}): Express {
     credentials: true,
   }));
   app.use(compression());
+
+  // Traffic counters for /ops-status (ABL-289). Mounted here — after CORS so a
+  // preflight OPTIONS is answered and gone before it can be counted, ahead of
+  // both the API router and the static mount so SPA document loads and assets
+  // are counted too. Never answers, never throws (`requestCounter.ts`).
+  app.use(requestCounter());
 
   // Bulk forecast ingest needs a bigger body than the 100kb default: one
   // net-position run is ~456 points with nine quantiles each, roughly 250kb.

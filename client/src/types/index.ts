@@ -515,6 +515,35 @@ export interface FreshnessRollup {
   staleCountries: string[];
 }
 
+/**
+ * Per-lane request counts — see `server/src/lib/classifyRequest.ts` for what
+ * separates them. `automated` is the health/ops polling, the ingest writes and
+ * recognised bot/CLI user agents: the traffic that hits both environments
+ * constantly whether or not a person ever visits.
+ */
+export interface RequestLaneCounts {
+  page: number;
+  api: number;
+  asset: number;
+  automated: number;
+}
+
+/** ABL-289. Mirrors `server/src/services/visitorCounters.ts`. */
+export interface VisitorCounters {
+  /** ISO instant this process started counting. Every figure below is "since" this. */
+  countingSince: string;
+  /** UTC day `today` belongs to, `YYYY-MM-DD`. */
+  day: string;
+  today: RequestLaneCounts;
+  /** The seven UTC days ending on `day`, inclusive. */
+  window: RequestLaneCounts;
+  windowDaysCovered: number;
+  /** False when the process is younger than the window — `window` is then a partial count. */
+  windowComplete: boolean;
+  /** Distinct hashed ip+ua keys seen today, or `null` once the server's per-day cap is hit. */
+  distinctClientsToday: number | null;
+}
+
 export interface OpsStatus {
   timestamp: string;
   provenance: HealthProvenance;
@@ -531,6 +560,13 @@ export interface OpsStatus {
   };
   process: ProcessMetrics;
   freshness: FreshnessRollup;
+  /**
+   * Optional on purpose. The peer side of this payload is whatever build is
+   * running over there (`peerOpsStatus.ts`), and every build from before
+   * ABL-289 answers without this key — so the page has to be able to say "this
+   * build does not report it" rather than render a missing object as zero.
+   */
+  visitors?: VisitorCounters;
 }
 
 /** One environment's status, or why it could not be reached — never a thrown error. */

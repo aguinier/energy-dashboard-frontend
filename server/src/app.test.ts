@@ -23,6 +23,7 @@ vi.mock('./config/writeDatabase.js', async () => (await import('./test/noWriteDb
 
 const { createApp, resolveClientDist } = await import('./app.js');
 const { clearResponseCache } = await import('./test/apiHarness.js');
+const { visitorCounters } = await import('./services/visitorCounters.js');
 
 const SPA_MARKER = '<!doctype html><title>able-spa-fixture</title><div id="root"></div>';
 const HASHED_ASSET = 'assets/index.1a2b3c4d.js';
@@ -182,6 +183,76 @@ describe('createApp without a built client', () => {
 
     expect(res.status).toBe(404);
     expect(res.json().code).toBe('NOT_FOUND');
+  });
+});
+
+/**
+ * The request counters, through the app that actually ships (ABL-289).
+ *
+ * `classifyRequest.test.ts` pins the rules and `visitorCounters.test.ts` pins
+ * the arithmetic; both are pure. What neither can prove is that the middleware
+ * is *mounted*, ahead of the static mount and the SPA fallback, and therefore
+ * sees a document load at all — which is the whole feature. That is the same
+ * gap ABL-13 fell through, so it is asserted here, against `createApp`.
+ */
+describe('request lane counters on the shipped app', () => {
+  const BROWSER_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  const browser = { headers: { 'user-agent': BROWSER_UA } };
+
+  const today = () => visitorCounters.snapshot(new Date()).today;
+
+  it('counts an SPA document load as a page view', async () => {
+    const before = today();
+    await probe(spa.origin, '/country/DE', browser);
+    const after = today();
+
+    expect(after.page - before.page).toBe(1);
+    expect(after.api).toBe(before.api);
+  });
+
+  it('counts a hashed asset as an asset, not as another page view', async () => {
+    // One real visit fans out into a dozen of these. In the `page` lane they
+    // would multiply the headline visitor figure by a cache-dependent factor.
+    const before = today();
+    await probe(spa.origin, `/${HASHED_ASSET}`, browser);
+    const after = today();
+
+    expect(after.asset - before.asset).toBe(1);
+    expect(after.page).toBe(before.page);
+  });
+
+  it('counts the health check as automated even though it is a GET from a browser UA', async () => {
+    const before = today();
+    await probe(spa.origin, '/api/health', browser);
+    const after = today();
+
+    expect(after.automated - before.automated).toBe(1);
+    expect(after.page).toBe(before.page);
+    expect(after.api).toBe(before.api);
+  });
+
+  it('counts a request the app answers with a 404 too — the counter runs before routing', async () => {
+    const before = today();
+    await probe(spa.origin, '/api/does-not-exist', browser);
+    const after = today();
+
+    expect(after.api - before.api).toBe(1);
+  });
+
+  it('never fails a request when the store throws', async () => {
+    // The counter is the least important thing this server does. A page load
+    // must not 500 because a tally failed.
+    const spy = vi.spyOn(visitorCounters, 'record').mockImplementation(() => {
+      throw new Error('counter exploded');
+    });
+    try {
+      const res = await probe(spa.origin, '/country/DE', browser);
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('able-spa-fixture');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

@@ -35,13 +35,74 @@ beforeAll(() => {
   load.run('BE', hoursAgo(20), 8_800);
 });
 
+/** A real desktop Chrome UA — `fetch`'s own lands in the automated lane (ABL-289). */
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+/** Today's per-lane counts, read through the endpoint itself. */
+async function lanes(): Promise<Record<string, number>> {
+  const { body } = await api.get('ops/status');
+  return (body.data as any).visitors.today as Record<string, number>;
+}
+
 describe('GET /api/ops/status', () => {
-  it('returns provenance, host, process and freshness sections', async () => {
+  it('returns provenance, host, process, freshness and visitor sections', async () => {
     const { status, body } = await api.get('ops/status');
     expect(status).toBe(200);
 
     const data = body.data as Record<string, unknown>;
-    expect(Object.keys(data).sort()).toEqual(['freshness', 'host', 'process', 'provenance', 'timestamp']);
+    expect(Object.keys(data).sort()).toEqual([
+      'freshness', 'host', 'process', 'provenance', 'timestamp', 'visitors',
+    ]);
+  });
+
+  it('carries the visitor counters with the coverage fields that keep them honest (ABL-289)', async () => {
+    const { body } = await api.get('ops/status');
+    const visitors = (body.data as any).visitors;
+
+    // `countingSince` and `windowComplete` are not decoration: this store is
+    // in-memory, so a restart zeroes it, and the payload has to say that rather
+    // than let a reader take "3 this week" for an all-time total.
+    expect(typeof visitors.countingSince).toBe('string');
+    expect(visitors.windowComplete).toBe(false); // this process started seconds ago
+    expect(visitors.windowDaysCovered).toBe(1);
+    expect(Object.keys(visitors.today).sort()).toEqual(['api', 'asset', 'automated', 'page']);
+    expect(Object.keys(visitors.window).sort()).toEqual(['api', 'asset', 'automated', 'page']);
+  });
+
+  it('counts its own /api/ops and /api/health polling as automated, never as app traffic', async () => {
+    // The whole point of the split (ABL-289). Both environments sit under
+    // constant self-inflicted traffic — the docker healthcheck, the peer poll,
+    // this page's own 30s refetch — and none of it may read as a visit. Asserted
+    // as a delta so it holds whatever else the suite has already sent.
+    const before = await lanes();
+    await api.get('health', { 'user-agent': BROWSER_UA });
+    await api.get('ops/status', { 'user-agent': BROWSER_UA });
+    const after = await lanes();
+
+    // Three requests: the two above plus the /ops/status that read `after`.
+    expect(after.automated - before.automated).toBe(3);
+    expect(after.page).toBe(before.page);
+    expect(after.api).toBe(before.api);
+  });
+
+  it('counts an ordinary data call as app api traffic', async () => {
+    // A browser UA, because the lane also turns on the user agent and `fetch`'s
+    // own is an automated one — the point under test here is the path.
+    const before = await lanes();
+    await api.get('countries', { 'user-agent': BROWSER_UA });
+    const after = await lanes();
+
+    expect(after.api - before.api).toBe(1);
+  });
+
+  it('does not count a bot user agent as a visitor, whatever it asks for', async () => {
+    const before = await lanes();
+    await api.get('countries', { 'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)' });
+    const after = await lanes();
+
+    expect(after.api).toBe(before.api);
+    expect(after.automated - before.automated).toBe(2); // the bot call, plus the read
   });
 
   it("reuses getHealthProvenance for commit/runtime/db_path, matching /api/health's own contract", async () => {

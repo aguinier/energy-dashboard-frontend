@@ -11,6 +11,7 @@ import {
   type CpuLoad,
   type NetworkInterfaceThroughput,
 } from './hostMetrics.js';
+import { visitorCounters, type VisitorCounters } from './visitorCounters.js';
 
 export interface ProcessMetrics {
   uptimeSeconds: number;
@@ -41,6 +42,13 @@ export interface OpsStatus {
   };
   process: ProcessMetrics;
   freshness: FreshnessRollup;
+  /**
+   * Per-lane request counts for this process (ABL-289). In-memory and reset by
+   * a restart — `countingSince` is part of the payload precisely so no reader
+   * can mistake it for an all-time total. Older peer builds predate this field,
+   * so the client types it optional.
+   */
+  visitors: VisitorCounters;
 }
 
 function getProcessMetrics(): ProcessMetrics {
@@ -93,6 +101,12 @@ function getFleetFreshness(now: Date) {
  * the ops page's ~30s poll supplies the second — so its `bytesPerSec` fields
  * are `null` on the first request after a restart while the cumulative counters
  * beside them are real from the first call.
+ *
+ * `visitors` (ABL-289) is the one section that is not a reading of the host: it
+ * is what `middleware/requestCounter.ts` has tallied since this process
+ * started, split so the constant health/peer polling does not read as visits.
+ * It carries its own `countingSince` — a restart zeroes it, and the payload
+ * has to say so rather than let a reader assume an all-time count.
  */
 export function getOpsStatus(now: Date = new Date()): OpsStatus {
   const provenance = getHealthProvenance();
@@ -108,5 +122,6 @@ export function getOpsStatus(now: Date = new Date()): OpsStatus {
     },
     process: getProcessMetrics(),
     freshness: getFleetFreshness(now),
+    visitors: visitorCounters.snapshot(now),
   };
 }
