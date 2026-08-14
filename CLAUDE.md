@@ -1,5 +1,7 @@
 # CLAUDE.md - Frontend Module
 
+**Canonical copy rule:** The authoritative version of this file is the one on `origin/main`. Every worktree freezes a local copy at its branch point — that copy drifts silently as corrections land on main. Always fetch the current `origin/main:CLAUDE.md` when onboarding or cross-referencing; never treat a worktree-local copy as current. This is why corrections land on `origin/main` before they reach any agent's context.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with the Energy Dashboard frontend.
 
 ## Project Overview
