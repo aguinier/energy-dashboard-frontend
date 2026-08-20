@@ -145,6 +145,26 @@ That prints `0` on a healthy tree, needs no install to run, and is the check
 that would have caught this on day one. A non-zero count calls for the additive
 repair above — it is still not a licence to run `npm install` in place.
 
+**What is safe to run while other processes hold this checkout**, since "do not
+install" was read as "do not touch it" and left Ops with no move at all:
+`npm install --dry-run` (reports the plan, writes nothing to `node_modules`),
+`npm ls`, and the completeness check above. What is not: `npm install`, `npm ci`
+and `npm rebuild`, all of which rewrite modules in place, plus
+`npm approve-scripts`, which also dirties `package.json`. Run `npm ci` only
+into a scratch directory **outside** the checkout, as the repair above does, and
+with `--ignore-scripts` — `better-sqlite3`'s install script is a `node-gyp
+rebuild` that re-points the native ABI for every worktree at once, which is the
+trap under "NODE_MODULE_VERSION mismatch" below reached by a different route.
+
+**`node_modules/.package-lock.json` is absent after this repair, and that is
+cosmetic rather than a hazard.** npm writes that hidden lockfile from its own
+reify step, so copying directories in does not produce one. The worry it invites
+— that a tree npm does not consider installed gets partially rewritten by the
+next command to touch it — does not occur, because npm falls back to reading the
+real tree from disk: verified 2026-08-20, `npm install --dry-run` reports
+`up to date` with the file absent. The next legitimate install writes it. Do not
+hand-author one.
+
 ## Project Structure
 
 ```
