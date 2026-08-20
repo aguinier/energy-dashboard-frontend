@@ -396,11 +396,31 @@ export function classifyForecastSeriesBasis(
  * alternative and was rejected: the caveat is a sentence, the 2x gap is the
  * picture, and the picture is what gets read and screenshotted.
  *
- * Returns the rows **by identity** when there is no finding, so a comparable
- * country's response is byte-identical to its pre-ABL-501 shape — the same
- * property `suppressIfDivergentBasis` keeps for the same reason: it preserves
- * the cheapest check available on a change like this, which is to diff the
- * payload and confirm nothing moved but the country named.
+ * Returns the rows **by identity** when there is no finding, so the series a
+ * comparable country draws is unchanged point for point. Measured through a
+ * local server on the replica 2026-08-20, sweeping 39 countries × 9 forecast
+ * types: exactly 1 of 351 cells withholds (NL load, 168 points, catboost), the
+ * other 85 non-empty cells serve what they served before, and NL keeps its
+ * price and net-position overlays.
+ *
+ * The *response* is a different matter, and the difference from
+ * `suppressIfDivergentBasis` is deliberate rather than an inconsistency. That
+ * function returns a comparable entry wholly untouched, so 271 of 272
+ * cross-country cells stay byte-identical and the payload diff stays the
+ * cheapest available check on the change. The four route callers here instead
+ * stamp `basis`/`basisNote`/`withheldPoints` onto `meta` on **every** response,
+ * comparable ones included — so a comparable response's data array does not
+ * move while its `meta` gains three keys. `routes/forecast.ts` carries the
+ * reason: this response is one series rather than 272 entries, so naming the
+ * verdict always costs nothing, and a consumer reading `basis` is then never
+ * left to distinguish "comparable" from "this build predates the rule" — which
+ * is a live distinction here, since the two deployed environments do run
+ * different builds and the ops page tracks the drift.
+ *
+ * Note what `'comparable'` means on the wire, because the word is friendlier
+ * than the claim: it is the registry reporting **no finding**, exactly as
+ * `classifyLoadForecastBasis` documents, and never that the pair has been
+ * examined and cleared. Nothing has been probed upstream except NL.
  */
 export function withholdDivergentBasisSeries<T>(
   countryCode: string,
