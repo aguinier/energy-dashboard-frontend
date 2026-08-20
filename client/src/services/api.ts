@@ -35,6 +35,7 @@ import type {
   NetPositionResponse,
   CoreNetPositionResponse,
   ForecastModelRegistry,
+  RecommendedModel,
   CombinedOpsStatus,
   OpsStatusHistory,
 } from '@/types';
@@ -529,6 +530,33 @@ export async function fetchCoreNetPositionMap(params: {
 export async function fetchForecastModels(): Promise<ForecastModelRegistry> {
   const { data } = await api.get<ApiResponse<ForecastModelRegistry>>('/forecasts/models');
   return unwrap(data, '/forecasts/models');
+}
+
+/**
+ * The best available forecast for one (country, forecast type) pair, measured
+ * server-side over a rolling window across both sources (ABL-469).
+ *
+ * A separate call from `fetchForecastModels` on purpose. The registry is the
+ * same for every country and is cached for the session; a recommendation is
+ * per pair and has to be re-asked whenever the country or the tab changes.
+ * Folding the two together would either make the registry uncacheable or make
+ * the recommendation stale.
+ *
+ * Returns `undefined` when the server sends no `recommended` key — an older
+ * build, or a forecast type it declines to rank. The caller then keeps today's
+ * production default rather than rendering an absence as a recommendation.
+ */
+export async function fetchRecommendedModel(params: {
+  country: string;
+  type: string;
+}): Promise<RecommendedModel | undefined> {
+  const { data } = await api.get<ApiResponse<ForecastModelRegistry>>('/forecasts/models', {
+    params: { type: params.type, country: params.country },
+  });
+  // `unwrap`'s body parameter is `unknown`, so `T` is only inferable from the
+  // return position — and this one indexes into the result rather than
+  // returning it, which would leave `T` as `unknown`. Named explicitly.
+  return unwrap<ForecastModelRegistry>(data, '/forecasts/models')[params.type]?.recommended;
 }
 
 // ============================================================================

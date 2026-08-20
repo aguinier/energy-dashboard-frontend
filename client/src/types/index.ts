@@ -1005,9 +1005,67 @@ export interface ForecastModel {
   tsoHorizon?: 'day_ahead' | 'week_ahead';
 }
 
+/**
+ * Why a registered model is not in the ranking (ABL-469). Mirrors the server's
+ * `CandidateExclusion`. Deliberately five words rather than one "unavailable":
+ * "we hold no forecast from it here" and "it forecast plenty and the pair is
+ * not measurable" are different claims, and the picker says which.
+ */
+export type ModelExclusion =
+  | 'not_measurable'
+  | 'no_pairs'
+  | 'too_few_points'
+  | 'sparse_coverage'
+  | 'unmeasurable_wape';
+
+/** One registered model as measured over the recommendation window. */
+export interface RankedModelCandidate {
+  id: string;
+  label: string;
+  source: ForecastSource;
+  /** `null` whenever not measurable — never coerced to 0. */
+  wape: number | null;
+  dataPoints: number;
+  hoursCovered: number;
+  /** `null` when the candidate is in the ranking. */
+  excluded: ModelExclusion | null;
+}
+
+/**
+ * The best available forecast for one (country, forecast type) pair, measured
+ * over a rolling window across both our ML models and the ENTSO-E series
+ * (ABL-469). Present only when `GET /forecasts/models` was asked with both
+ * `type` and `country`.
+ */
+export interface RecommendedModel {
+  modelId: string;
+  label: string;
+  source: ForecastSource;
+  /** The winning WAPE, or `null` when this is the no-history fallback. */
+  wape: number | null;
+  dataPoints: number;
+  /**
+   * `true` when nothing had a measurable track record and this is the type's
+   * hand-picked production model — i.e. the pair resolves exactly as it did
+   * before auto-selection existed. An unmeasured default must never be
+   * presented as a measured one, so nothing renders a WAPE beside it.
+   */
+  fallback: boolean;
+  windowStart: string;
+  windowEnd: string;
+  windowDays: number;
+  candidates: RankedModelCandidate[];
+}
+
 export interface ForecastTypeConfig {
   production: string;
   models: ForecastModel[];
+  /**
+   * Optional, and it is the absence that carries meaning: the registry request
+   * the picker makes for the session does not ask for a recommendation, and a
+   * server on code older than ABL-469 sends no such key at all.
+   */
+  recommended?: RecommendedModel;
 }
 
 export type ForecastModelRegistry = Record<string, ForecastTypeConfig>;

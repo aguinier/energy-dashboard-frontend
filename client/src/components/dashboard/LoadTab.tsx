@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { AbleCard } from './AbleCard';
 import { ForecastGapNotice } from './ForecastGapNotice';
 import { ForecastVintageNote } from './ForecastVintageNote';
+import { describeAutoSelection } from './autoSelection';
 import { AbleLineChart } from '@/components/charts/AbleLineChart';
 import { AblePriceHeatmap } from '@/components/charts/AblePriceHeatmap';
 import { useLoadChartData } from '@/hooks/useLoadChartData';
@@ -97,9 +98,12 @@ function LoadDefaultView({
   timePreset: string;
   todayWindow: TodayWindow;
 }) {
-  const { selected, hidden } = useModelSelection('load');
+  const { selected, hidden, autoSelected } = useModelSelection('load');
   const useMl = !hidden && selected?.source === 'ml';
   const useTso = !hidden && selected?.source === 'tso';
+  // Non-null only when this default was auto-selected on measured accuracy
+  // (ABL-469) — never for a user pin and never for the no-history fallback.
+  const autoNote = hidden ? null : describeAutoSelection(autoSelected, countryLabel);
 
   const { series, nowIndex } = useMemo(
     () =>
@@ -155,6 +159,7 @@ function LoadDefaultView({
               points={useMl ? forecastData : undefined}
               chartWindow={todayWindow}
             />
+            {autoNote && <p className="mt-2 text-micro text-ink-muted">{autoNote}</p>}
           </>
         )}
       </AbleCard>

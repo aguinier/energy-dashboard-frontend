@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardStore } from '@/store/dashboardStore';
-import { useMultiModelSelection, useActiveForecastType } from '@/hooks/useForecastModels';
+import { useMultiModelSelection, useActiveForecastType, useRecommendedModel } from '@/hooks/useForecastModels';
 import { forecastLineToken } from './forecastLineTokens';
+import { describeAutoSelectionHint } from './autoSelection';
 import { cn } from '@/lib/utils';
 
 /**
@@ -35,6 +36,13 @@ import { cn } from '@/lib/utils';
  * `toggleSelectedModel` already returns to it automatically when the last
  * checked box is unchecked (store/dashboardStore.ts).
  *
+ * Since ABL-469 that "Default" is auto-selected per (country, forecast type)
+ * from measured accuracy across both sources, so the row says which model it
+ * currently resolves to and on what evidence (`describeAutoSelectionHint`).
+ * Naming it is the point: on the pairs where the ENTSO-E series wins, the
+ * default silently changes source, and a reader who assumes the dashed line is
+ * always ours would be wrong without anything on screen to correct them.
+ *
  * Deliberately not applied here: a per-row "not available in <country>"
  * hint while the dropdown is open. That needs this component to know the
  * current query results, which today live in the tab's own data hook, not
@@ -46,6 +54,10 @@ import { cn } from '@/lib/utils';
 export function ModelPicker() {
   const forecastType = useActiveForecastType();
   const { models, selectedIds, hidden, isLoading } = useMultiModelSelection(forecastType);
+  // The measured best forecast for this (country, type) pair — what "Default"
+  // actually resolves to since ABL-469. Undefined until it lands, and on an
+  // older server, in which case the row keeps its pre-ABL-469 wording.
+  const { data: recommended } = useRecommendedModel(forecastType);
   const toggleSelectedModel = useDashboardStore((s) => s.toggleSelectedModel);
   const clearSelectedModel = useDashboardStore((s) => s.clearSelectedModel);
   const setForecastHidden = useDashboardStore((s) => s.setForecastHidden);
@@ -140,7 +152,9 @@ export function ModelPicker() {
             </span>
             <span>
               <span className="block text-body font-medium text-foreground">Default — automatic</span>
-              <span className="block text-micro text-ink-muted">Production, then next available</span>
+              <span className="block text-micro text-ink-muted">
+                {describeAutoSelectionHint(recommended)}
+              </span>
             </span>
           </button>
 
@@ -184,8 +198,9 @@ export function ModelPicker() {
           })}
 
           <div className="mt-1 border-t border-input px-2.5 py-2 text-micro text-ink-muted">
-            Check one or more to compare them on one chart. <span className="text-foreground">Default</span> lets
-            the server pick — the production model first, then the next registered one that has data.
+            Check one or more to compare them on one chart. <span className="text-foreground">Default</span> shows
+            whichever forecast — ours or the TSO&rsquo;s — has measured most accurately for this country
+            over the last 30 days, and falls back to the production model where there is no track record yet.
             A checked model with nothing to show for this country stays listed, marked unavailable.
           </div>
         </div>
