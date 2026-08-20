@@ -9,11 +9,12 @@ import {
   fetchTSOLoadForecast,
   fetchTSOLoadForecastAccuracy,
 } from '@/services/api';
-import type { ForecastFetchResult } from '@/services/api';
+import type { ForecastFetchResult, TSOLoadForecastFetchResult } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
 import { maskServedModel } from '@/lib/servedModel';
 import { useModelSelection, useMultiModelSelection } from './useForecastModels';
 import { forecastLineToken } from '@/components/dashboard/forecastLineTokens';
+import { withheldForecastNote } from '@/components/dashboard/forecastBasisNote';
 import type { NormalizedForecastPoint } from '@/lib/multiForecastSeries';
 import {
   getDateRangeForPreset,
@@ -29,6 +30,7 @@ import type {
   TSOForecastAccuracyDataPoint,
   TSOForecastAccuracyMetrics,
   TSOHorizon,
+  LoadForecastBasis,
 } from '@/types';
 
 /** One explicitly-checked model's normalized forecast, for the multi-select picker (ABL-204). */
@@ -40,6 +42,13 @@ export interface LoadModelQuery {
   points: NormalizedForecastPoint[] | undefined;
   isLoading: boolean;
   isError: boolean;
+  /**
+   * Whether this model's series may be drawn against this country's actuals
+   * (ABL-501). A withheld entry has zero points and is **not** a coverage gap —
+   * see `forecastBasisNote.ts` for why the two must not share copy.
+   */
+  basis: LoadForecastBasis | null;
+  basisNote: string | null;
 }
 
 // Helper to extend date range for forecast overlay
@@ -74,6 +83,17 @@ export interface LoadChartData {
   // TSO forecast data
   tsoForecastData: TSOLoadForecastDataPoint[] | undefined;
   isLoadingTSOForecast: boolean;
+
+  /**
+   * Set when the overlay that *would* be drawn was withheld because it is not
+   * on the same basis as this country's realized load (ABL-501) — the sentence
+   * to print in place of the dashed line.
+   *
+   * Reads off whichever source the picker has active, since only one is active
+   * in the default view. Never both, and never a merged sentence: the note
+   * describes the series that is missing from the chart, and there is only one.
+   */
+  forecastBasisNote: string | null;
 
   // TSO accuracy data
   tsoAccuracyData: { data: TSOForecastAccuracyDataPoint[]; metrics: TSOForecastAccuracyMetrics } | undefined;
@@ -219,9 +239,20 @@ export function useLoadChartData(): LoadChartData {
   const [loadQuery, forecastQuery, comparisonQuery, multiHorizonQuery, tsoForecastQuery, tsoAccuracyQuery] = queries;
 
   const forecastData = forecastQuery.data?.points;
+  const tsoForecastData = tsoForecastQuery.data?.points;
   // Masked by the same flag that gates the query above (`enabled: showForecast`)
   // — see maskServedModel's doc comment for why this can't just read the data.
   const servedModelId = maskServedModel(showForecast, forecastQuery.data?.servedModelId);
+
+  // Gated on the same flags the queries are, for the same reason `servedModelId`
+  // is masked: React Query keeps a disabled query's last data, so an unmasked
+  // read would keep printing "the TSO forecast was withheld" after the user
+  // switched the overlay to a model whose series is on screen.
+  const forecastBasisNote = showForecast
+    ? withheldForecastNote(forecastQuery.data)
+    : showTSOForecast
+    ? withheldForecastNote(tsoForecastQuery.data)
+    : null;
 
   useEffect(() => {
     setServedModel('load', servedModelId);
@@ -275,9 +306,11 @@ export function useLoadChartData(): LoadChartData {
     const q = selectionQueries[i];
     const token = forecastLineToken(id);
     let points: NormalizedForecastPoint[] | undefined;
+    let result: ForecastFetchResult | TSOLoadForecastFetchResult | undefined;
     if (model?.source === 'tso') {
-      const tso = q.data as TSOLoadForecastDataPoint[] | undefined;
-      points = tso?.map((p) => ({
+      const tso = q.data as TSOLoadForecastFetchResult | undefined;
+      result = tso;
+      points = tso?.points.map((p) => ({
         timestamp: p.timestamp,
         value: p.forecast_value_mw,
         min: p.forecast_min_mw,
@@ -285,6 +318,7 @@ export function useLoadChartData(): LoadChartData {
       }));
     } else {
       const ml = q.data as ForecastFetchResult | undefined;
+      result = ml;
       points = ml?.points.map((p) => ({ timestamp: p.timestamp, value: p.value }));
     }
     return {
@@ -295,6 +329,11 @@ export function useLoadChartData(): LoadChartData {
       points,
       isLoading: q.isLoading,
       isError: q.isError,
+      // Per model, because a selection can mix ml and tso and each response
+      // carries its own verdict — even though today they agree, the finding
+      // being a property of the country rather than of a producer.
+      basis: result?.basis ?? null,
+      basisNote: result?.basisNote ?? null,
     };
   });
 
@@ -317,8 +356,10 @@ export function useLoadChartData(): LoadChartData {
     isLoadingComparison: comparisonQuery.isLoading,
 
     // TSO forecast data
-    tsoForecastData: tsoForecastQuery.data,
+    tsoForecastData,
     isLoadingTSOForecast: tsoForecastQuery.isLoading,
+
+    forecastBasisNote,
 
     // TSO accuracy data
     tsoAccuracyData: tsoAccuracyQuery.data,

@@ -78,7 +78,7 @@ router.get(
     const startDate = start || now.toISOString();
     const endDate = end || new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
-    const data = tsoForecastService.getLoadForecast(
+    const series = tsoForecastService.getServedLoadForecast(
       countryCode,
       startDate,
       endDate,
@@ -88,12 +88,18 @@ router.get(
 
     res.json({
       success: true,
-      data,
+      data: series.data,
       meta: {
-        count: data.length,
+        count: series.data.length,
         timeRange: { start: startDate, end: endDate },
         forecastType,
         granularity,
+        // See `/api/forecasts`' meta for why the verdict is on every response
+        // rather than only on a withheld one, and why `withheldPoints` cannot
+        // be folded into `count`.
+        basis: series.basis,
+        basisNote: series.basisNote,
+        withheldPoints: series.withheldPoints,
       },
     });
   }

@@ -340,3 +340,111 @@ describe('GET /api/forecasts — serving is data-driven, not country-gated', () 
     expect(body.meta.model).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ABL-501 — a forecast on a different basis from the actuals it is drawn
+// against is withheld, not plotted.
+//
+// The live defect: `GET /api/forecasts?country=NL&type=load` served catboost's
+// gross-basis prediction, and `LoadTab` drew it as a dashed line over a
+// realized series published net of behind-the-meter solar. Measured through a
+// local server on the replica 2026-08-20 for market day 2026-08-05, that put
+// 9,431 MW on the chart against a realized 4,361 MW at 12:00 — while the same
+// model at 03:00 the same day read 9,801 against 9,909, which is what makes it
+// a basis gap and not a bad model.
+// ---------------------------------------------------------------------------
+describe('GET /api/forecasts — divergent forecast basis (ABL-501)', () => {
+  it('withholds NL load and says how many rows it is holding', async () => {
+    const { status, body } = await get(`?country=NL&type=load&${NEXT_DAY_QS}`);
+
+    expect(status).toBe(200);
+    expect(body.data).toEqual([]);
+    expect(body.meta.basis).toBe('divergent_basis');
+    expect(body.meta.basisNote).toContain('behind-the-meter solar');
+    // Four rows exist and are being held back. `count: 0` alone would be
+    // indistinguishable from a country nobody forecasts.
+    expect(body.meta.withheldPoints).toBe(4);
+    expect(body.meta.count).toBe(0);
+  });
+
+  it('still names the model whose rows were withheld', async () => {
+    // The honest half of the answer, and what separates this from the no-rows
+    // case where there is no model to name. Read before the withholding, not
+    // off the empty array afterwards.
+    const { body } = await get(`?country=NL&type=load&${NEXT_DAY_QS}`);
+    expect(body.meta.model).toBe('catboost');
+  });
+
+  it('leaves NL price alone — the finding is about the load pair only', async () => {
+    // Gated on the forecast type. Nothing has been measured about NL's price
+    // pair, and blanking it would be a second false claim in the other
+    // direction (generation-side divergence is ABL-400, still open).
+    const { status, body } = await get(`?country=NL&type=price&${NEXT_DAY_QS}`);
+
+    expect(status).toBe(200);
+    expect((body.data as unknown[]).length).toBe(4);
+    expect(body.meta.basis).toBe('comparable');
+    expect(body.meta.basisNote).toBeNull();
+    expect(body.meta.withheldPoints).toBe(0);
+  });
+
+  it('leaves every other country\'s load alone', async () => {
+    const { status, body } = await get(`?country=DE&type=load&${NEXT_DAY_QS}`);
+
+    expect(status).toBe(200);
+    expect((body.data as unknown[]).length).toBeGreaterThan(0);
+    expect(body.meta.basis).toBe('comparable');
+    expect(body.meta.withheldPoints).toBe(0);
+  });
+
+  it('withholds a pinned model too, not just the ladder\'s pick', async () => {
+    // The rule is a property of NL's realized series, so it cannot be escaped
+    // by naming a model — which is also why the picker's comparison mode is
+    // covered without a second code path.
+    const { body } = await get(`?country=NL&type=load&model=catboost&${NEXT_DAY_QS}`);
+    expect(body.data).toEqual([]);
+    expect(body.meta.withheldPoints).toBe(4);
+  });
+});
+
+describe('GET /api/forecasts/compare — divergent forecast basis (ABL-501)', () => {
+  it('withholds the forecast and keeps the realized series', async () => {
+    // The forecasts go, the actuals stay: this endpoint's claim is that the
+    // two arrays are the same quantity, so it is the pairing that is false.
+    // The realized load is a true measurement, and dropping it would assert a
+    // gap in data we hold in full.
+    const { status, body } = await get(`compare?country=NL&type=load&${NEXT_DAY_QS}`);
+
+    expect(status).toBe(200);
+    const data = body.data as Compare;
+    expect(data.forecasts).toEqual([]);
+    expect(data.actuals.map((a) => a.value)).toEqual([900, 700, 500, 300]);
+    expect(body.meta.basis).toBe('divergent_basis');
+    expect(body.meta.withheldPoints).toBe(4);
+  });
+
+  it('is unchanged for a comparable country', async () => {
+    const { body } = await get(`compare?country=DE&type=load&${WINDOW_QS}`);
+    const data = body.data as Compare;
+    expect(data.forecasts.length).toBeGreaterThan(0);
+    expect(body.meta.basis).toBe('comparable');
+    expect(body.meta.withheldPoints).toBe(0);
+  });
+});
+
+describe('GET /api/forecasts/multi-horizon — divergent forecast basis (ABL-501)', () => {
+  it('withholds NL load — splitting by horizon does not make either half comparable', async () => {
+    const { status, body } = await get(`multi-horizon?country=NL&type=load&${NEXT_DAY_QS}`);
+
+    expect(status).toBe(200);
+    expect(body.data).toEqual([]);
+    expect(body.meta.basis).toBe('divergent_basis');
+    expect(body.meta.withheldPoints).toBeGreaterThan(0);
+  });
+
+  it('is unchanged for a comparable country', async () => {
+    const { body } = await get(`multi-horizon?country=DE&type=load&${NEXT_DAY_QS}`);
+    expect(body.meta.basis).toBe('comparable');
+    expect(body.meta.withheldPoints).toBe(0);
+  });
+});

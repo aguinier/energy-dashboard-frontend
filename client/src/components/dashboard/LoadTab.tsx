@@ -12,6 +12,12 @@ import { useModelSelection } from '@/hooks/useForecastModels';
 import { adaptLoadSeries, buildHeatmapCells } from '@/lib/chartAdapters';
 import { buildMultiForecastSeries } from '@/lib/multiForecastSeries';
 import { describeForecastGapsForSelection } from '@/lib/forecastGap';
+import {
+  groupWithheldModels,
+  isWithheld,
+  joinModelLabels,
+  WITHHELD_LEGEND_NOTE,
+} from './forecastBasisNote';
 import { formatGwAxis } from '@/lib/chartTicks';
 import { getDateRangeForPreset } from '@/hooks/useDashboardData';
 import type { LoadDataPoint, ForecastDataPoint, TSOLoadForecastDataPoint } from '@/types';
@@ -62,6 +68,7 @@ export function LoadTab() {
       loadData={chartData.loadData}
       forecastData={chartData.forecastData}
       tsoForecastData={chartData.tsoForecastData}
+      basisNote={chartData.forecastBasisNote}
       isLoading={chartData.isLoading}
       countryLabel={countryLabel}
       timePreset={timePreset}
@@ -84,6 +91,7 @@ function LoadDefaultView({
   loadData,
   forecastData,
   tsoForecastData,
+  basisNote,
   isLoading,
   countryLabel,
   timePreset,
@@ -92,14 +100,20 @@ function LoadDefaultView({
   loadData: LoadDataPoint[] | undefined;
   forecastData: ForecastDataPoint[] | undefined;
   tsoForecastData: TSOLoadForecastDataPoint[] | undefined;
+  basisNote: string | null;
   isLoading: boolean;
   countryLabel: string;
   timePreset: string;
   todayWindow: TodayWindow;
 }) {
   const { selected, hidden } = useModelSelection('load');
-  const useMl = !hidden && selected?.source === 'ml';
-  const useTso = !hidden && selected?.source === 'tso';
+  // A withheld series draws no line, so every claim made about one has to be
+  // switched off with it (ABL-501) — the subtitle's "dashed = …", the
+  // heatmap's "+ next 2d", and the vintage footnote, which would otherwise be
+  // describing a line that is not on the chart.
+  const withheld = basisNote !== null;
+  const useMl = !hidden && !withheld && selected?.source === 'ml';
+  const useTso = !hidden && !withheld && selected?.source === 'tso';
 
   const { series, nowIndex } = useMemo(
     () =>
@@ -155,6 +169,12 @@ function LoadDefaultView({
               points={useMl ? forecastData : undefined}
               chartWindow={todayWindow}
             />
+            {/* Says why there is no forecast line, in the server's own words
+                (ABL-501). Withholding it silently would trade a chart wrong by
+                more than 2x for a chart that looks like the model never ran —
+                and this repo's rule is that a withheld number is replaced by
+                what it would have claimed, never merely deleted. */}
+            {basisNote && <p className="mt-2 text-micro text-ink-muted">{basisNote}</p>}
           </>
         )}
       </AbleCard>
@@ -198,24 +218,37 @@ function LoadSelectionView({
       buildMultiForecastSeries({
         actual: loadData,
         actualValue: (p) => p.load ?? p.avg_load ?? null,
-        entries,
+        entries: entries.map((e) => ({
+          ...e,
+          withheldNote: isWithheld(e) ? WITHHELD_LEGEND_NOTE : null,
+        })),
         countryLabel,
         window: todayWindow,
       }),
     [loadData, entries, countryLabel, todayWindow],
   );
 
+  // Withheld models are held out of the gap list entirely, not relabelled
+  // inside it (ABL-501). `describeForecastGapsForSelection` says "<model> has
+  // no forecast for <country> in this window", which is false here — the rows
+  // exist and we are choosing not to draw them — and it offers a "Remove from
+  // comparison" button whose premise is that another model might cover the
+  // country. Keeping the two lists separate is what stops this fix from
+  // introducing a fresh confidently-wrong sentence.
+  const withheldGroups = useMemo(() => groupWithheldModels(entries), [entries]);
   const gaps = useMemo(
     () =>
       describeForecastGapsForSelection(
-        entries.map((e) => ({
-          id: e.id,
-          label: e.label,
-          color: e.color,
-          isLoading: e.isLoading,
-          isError: e.isError,
-          pointCount: e.points?.length ?? 0,
-        })),
+        entries
+          .filter((e) => !isWithheld(e))
+          .map((e) => ({
+            id: e.id,
+            label: e.label,
+            color: e.color,
+            isLoading: e.isLoading,
+            isError: e.isError,
+            pointCount: e.points?.length ?? 0,
+          })),
         countryLabel,
       ),
     [entries, countryLabel],
@@ -270,6 +303,12 @@ function LoadSelectionView({
             )}
           </>
         )}
+
+        {withheldGroups.map((group) => (
+          <p key={group.note} className="mt-2 text-micro text-ink-muted">
+            {joinModelLabels(group.labels)}: {group.note}
+          </p>
+        ))}
 
         {gaps.length > 0 && (
           <p className="mt-2 text-micro text-ink-muted">

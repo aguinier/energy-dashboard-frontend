@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyLoadForecastBasis,
+  classifyForecastSeriesBasis,
   applyLoadForecastBasis,
   suppressIfDivergentBasis,
+  withholdDivergentBasisSeries,
   DIVERGENT_LOAD_BASIS,
   ERROR_MEASURES,
 } from './loadForecastBasis.js';
@@ -44,9 +46,14 @@ describe('classifyLoadForecastBasis', () => {
   });
 
   it('states what the gap is rather than claiming data is missing', () => {
-    // The whole point of a separate word: we hold both series in full.
+    // The whole point of a separate word: we hold both series in full. Applies
+    // to the series sentence too (ABL-501) — a withheld chart line is even
+    // easier to mistake for absent data than a withheld number, because an
+    // empty overlay is what a genuine coverage gap looks like.
     for (const entry of Object.values(DIVERGENT_LOAD_BASIS)) {
-      expect(entry.reason).not.toMatch(/no data|missing|not available|unavailable/i);
+      for (const note of [entry.reason, entry.seriesReason]) {
+        expect(note).not.toMatch(/no data|missing|not available|unavailable/i);
+      }
       expect(entry.measuredOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     }
   });
@@ -179,5 +186,99 @@ describe('suppressIfDivergentBasis', () => {
     const input = { ...crossCountry, skillVsSeasonalNaive: { ...crossCountry.skillVsSeasonalNaive } };
     suppressIfDivergentBasis('NL', input);
     expect(input).toEqual(crossCountry);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ABL-501 — the same finding applied to the forecast SERIES, not to a measure
+// derived from it. What the two halves protect is different: the metric rule
+// stops a wrong number being published, this stops a wrong picture being drawn.
+// ---------------------------------------------------------------------------
+
+const rows = [{ timestamp: '2026-08-05 10:00:00', value: 9311.5 }, { timestamp: '2026-08-05 12:00:00', value: 9430.5 }];
+
+describe('classifyForecastSeriesBasis', () => {
+  it('reports NL load as divergent, with the series wording', () => {
+    const v = classifyForecastSeriesBasis('NL', 'load');
+    expect(v.basis).toBe('divergent_basis');
+    expect(v.basisNote).toBe(DIVERGENT_LOAD_BASIS.NL.seriesReason);
+  });
+
+  it('uses a different sentence from the metric rule', () => {
+    // Not cosmetic. `reason` opens "Not measurable here", which is the answer
+    // to "why is this accuracy cell empty"; on a chart nothing was being
+    // measured, so that lead would be answering a question nobody asked.
+    expect(DIVERGENT_LOAD_BASIS.NL.seriesReason).not.toBe(DIVERGENT_LOAD_BASIS.NL.reason);
+    expect(classifyForecastSeriesBasis('NL', 'load').basisNote)
+      .not.toBe(classifyLoadForecastBasis('NL').basisNote);
+  });
+
+  it('states the finding in both sentences', () => {
+    for (const note of [DIVERGENT_LOAD_BASIS.NL.reason, DIVERGENT_LOAD_BASIS.NL.seriesReason]) {
+      expect(note).toContain('behind-the-meter solar');
+    }
+  });
+
+  it('is gated on the forecast type — NL price and generation are untouched', () => {
+    // The registry records a *load* finding. This service path serves eight
+    // types off one handler, so an ungated rule would blank NL's price and
+    // wind overlays too: nothing has been measured about those pairs, and
+    // withholding them would be a second false claim pointing the other way.
+    for (const type of ['price', 'solar', 'wind_onshore', 'wind_offshore', 'renewable', 'biomass', 'hydro_total', 'net_position']) {
+      expect(classifyForecastSeriesBasis('NL', type)).toEqual({ basis: 'comparable', basisNote: null });
+    }
+  });
+
+  it('is case-insensitive on the country', () => {
+    expect(classifyForecastSeriesBasis('nl', 'load').basis).toBe('divergent_basis');
+  });
+
+  it('treats an unregistered country as comparable — absence is no finding, not a clean bill', () => {
+    for (const cc of ['DE', 'BE', 'FR', 'ZZ', '']) {
+      expect(classifyForecastSeriesBasis(cc, 'load')).toEqual({ basis: 'comparable', basisNote: null });
+    }
+  });
+});
+
+describe('withholdDivergentBasisSeries', () => {
+  it('withholds every row and counts them', () => {
+    const out = withholdDivergentBasisSeries('NL', 'load', rows);
+    expect(out.data).toEqual([]);
+    expect(out.withheldPoints).toBe(2);
+    expect(out.basis).toBe('divergent_basis');
+    expect(out.basisNote).toBe(DIVERGENT_LOAD_BASIS.NL.seriesReason);
+  });
+
+  it('distinguishes a withheld series from a country with no forecast', () => {
+    // The whole reason `withheldPoints` exists. Both answers carry `data: []`,
+    // and they are different claims: one says we are not drawing what we hold,
+    // the other says there is nothing to draw. Collapsing them is how a
+    // withheld series gets reported to a reader as "no forecast published".
+    expect(withholdDivergentBasisSeries('NL', 'load', []).withheldPoints).toBe(0);
+    expect(withholdDivergentBasisSeries('NL', 'load', rows).withheldPoints).toBe(2);
+    expect(withholdDivergentBasisSeries('DE', 'load', []).withheldPoints).toBe(0);
+  });
+
+  it('returns a comparable series by identity', () => {
+    // Keeps the payload diffable: on a change like this the cheapest available
+    // check is to capture the response before and after and confirm nothing
+    // moved but the country named.
+    const out = withholdDivergentBasisSeries('DE', 'load', rows);
+    expect(out.data).toBe(rows);
+    expect(out).toEqual({ data: rows, basis: 'comparable', basisNote: null, withheldPoints: 0 });
+  });
+
+  it('does not mutate its input', () => {
+    const input = [...rows];
+    withholdDivergentBasisSeries('NL', 'load', input);
+    expect(input).toEqual(rows);
+  });
+
+  it('takes no model argument — the finding binds every forecast of the series', () => {
+    // ABL-501's measurement: our own catboost carries the same gross basis as
+    // ENTSO-E's day-ahead, and larger (+173.7% midday bias against +123.2%).
+    // The rule is a property of what ENTSO-E nets out of the *realized* series,
+    // so it cannot be scoped to a producer.
+    expect(withholdDivergentBasisSeries.length).toBe(3);
   });
 });

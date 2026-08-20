@@ -169,3 +169,56 @@ describe('buildMultiForecastSeries', () => {
     ).toEqual({ series: [], nowIndex: 0, forecastSeries: [] });
   });
 });
+
+// ABL-501 — "empty" has two causes and they get two legends.
+describe('buildMultiForecastSeries — withheld entries', () => {
+  const ACTUAL = [actualPoint('2026-08-11T00:00:00Z', 100), actualPoint('2026-08-11T01:00:00Z', 110)];
+  const base = { id: 'catboost', label: 'able-ml · catboost', color: '#2C8A6B', dash: '8 3' };
+
+  const build = (entries: MultiForecastEntry[]) =>
+    buildMultiForecastSeries({
+      actual: ACTUAL,
+      actualValue: (p) => p.load,
+      entries,
+      countryLabel: 'the Netherlands',
+      now: NOW,
+    });
+
+  it('marks a withheld entry uncovered with its own wording', () => {
+    const { forecastSeries } = build([{ ...base, points: [], withheldNote: 'Withheld — different basis' }]);
+    expect(forecastSeries[0].covered).toBe(false);
+    expect(forecastSeries[0].coverageNote).toBe('Withheld — different basis');
+  });
+
+  it('never labels a withheld entry "Not available in <country>"', () => {
+    // That copy is for a coverage gap. Here the rows exist and the server is
+    // declining to serve them, so the sentence would be false.
+    const { forecastSeries } = build([{ ...base, points: [], withheldNote: 'Withheld — different basis' }]);
+    expect(forecastSeries[0].coverageNote).not.toContain('Not available');
+  });
+
+  it('is uncovered even if rows somehow arrive alongside the note', () => {
+    // Belt and braces: the server sends no rows with a withheld verdict, but
+    // if the two ever disagreed the verdict has to win — drawing the line is
+    // the failure this whole rule exists to stop.
+    const { forecastSeries, series } = build([
+      { ...base, points: [{ timestamp: '2026-08-11T00:00:00Z', value: 9400 }], withheldNote: 'Withheld — different basis' },
+    ]);
+    expect(forecastSeries[0].covered).toBe(false);
+    expect(series.every((p) => p.forecasts?.catboost == null)).toBe(true);
+  });
+
+  it('leaves an ordinary uncovered entry on the existing wording', () => {
+    const { forecastSeries } = build([{ ...base, points: [] }]);
+    expect(forecastSeries[0].covered).toBe(false);
+    expect(forecastSeries[0].coverageNote).toBe('Not available in the Netherlands');
+  });
+
+  it('leaves a covered entry untouched', () => {
+    const { forecastSeries } = build([
+      { ...base, points: [{ timestamp: '2026-08-11T00:00:00Z', value: 90 }], withheldNote: null },
+    ]);
+    expect(forecastSeries[0].covered).toBe(true);
+    expect(forecastSeries[0].coverageNote).toBeUndefined();
+  });
+});

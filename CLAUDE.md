@@ -843,7 +843,7 @@ query really is model-agnostic.
 already been misread once (ABL-285 was filed on the premise that a `/forecasts`
 batch can mix models), so state it plainly: `getForecastData` walks the
 candidate ladder and **returns the first candidate that has rows**
-(`forecastService.ts:33-37`), and `queryForecasts` always applies
+(`forecastService.ts:52-56`), and `queryForecasts` always applies
 `AND model_name = ?` (`:53`). One `/forecasts` response therefore carries
 **exactly one `model_name`**, pinned or not. What it *can* mix, because neither
 is pinned, is `model_version` and `generated_at` — the hourly branch takes
@@ -886,7 +886,7 @@ mirroring net position's `mode: 'default' | 'selection'` split
 `useMl` / `useTso` / `tsoHorizon` straight from the unpinned candidate the
 server's ladder would try first — always ml, since `load` and `price` both
 register an ml model as production (`selected.source`, `selected.tsoHorizon`,
-`useLoadChartData.ts:112-114`). With one or more models checked, the hook
+`useLoadChartData.ts:133-135`). With one or more models checked, the hook
 instead returns a `modelSelection: LoadModelQuery[]` (or `PriceModelQuery[]`)
 array, one entry per checked model, and the tab renders through
 `lib/multiForecastSeries.ts` instead of the single-series adapters — see
@@ -935,6 +935,77 @@ for the stacked mix — which feeds an `Able*` chart primitive.
 
 - **`LoadTab`** — `AbleLineChart` (actual + one dashed forecast series, ml or
   TSO per the picker) and an `AblePriceHeatmap` of load by hour x day.
+
+  **A forecast that is not on the same basis as the actuals is withheld
+  server-side, and the card says why** (ABL-501). This is the divergent-basis
+  rule one level up from the accuracy measures ABL-277 and ABL-493 suppressed:
+  those stopped a wrong *number* being published, this stops a wrong *picture*
+  being drawn. It was live — measured through a local server on the replica
+  2026-08-20, NL's Load tab drew a dashed line at **9,431 MW over a realized
+  4,361 MW** at 12:00 on market day 2026-08-05, with nothing on the card
+  saying the two were different quantities. The tell that it is a basis gap and
+  not a weak model is one day at two hours: the same catboost run reads 9,801
+  against a realized 9,909 at 03:00, and 9,431 against 4,361 at 12:00.
+
+  Four endpoints withhold, all through `withholdDivergentBasisSeries`
+  (`server/src/services/loadForecastBasis.ts`) and all gated on the forecast
+  type so NL's price and wind overlays are untouched: `/api/forecasts`,
+  `/api/forecasts/compare`, `/api/forecasts/multi-horizon` and
+  `/api/tso-forecast/load/:cc`. Each answers `data: []` with
+  `meta.basis: 'divergent_basis'`, `meta.basisNote` (the sentence) and
+  `meta.withheldPoints`.
+
+  Five properties, in rough order of how expensive each would be to
+  rediscover:
+
+  - **`withheldPoints` is not decoration.** A withheld series and a country
+    nobody forecasts both answer `data: []`, and they are different claims.
+    Without a count, a consumer — including our own client — reads the first as
+    the second and reports "no forecast published for the Netherlands", which
+    is false: catboost publishes a full day. This is the same distinction
+    `dataPoints` surviving suppression draws for the measures, and the same one
+    `degenerate_zero` draws against `no_actuals` on the net-position side.
+  - **`meta.model` still names the withheld model**, read before the
+    withholding rather than off the empty array afterwards — the honest half of
+    the answer, and what separates this from the no-rows case where there is no
+    model to name (`netPositionService.ts` keeps `model_name` for the same
+    reason).
+  - **`/compare` withholds the forecasts and keeps the actuals.** That
+    endpoint's claim is that the two arrays are the same quantity, so the
+    *pairing* is what is false; the realized series is a true measurement and
+    dropping it would assert a gap in data we hold in full.
+  - **The rule takes no model argument.** It is a property of what ENTSO-E nets
+    out of NL's *realized* series, so it binds every forecast of that series —
+    the TSO's, ours, and any future one. That is also why a pin cannot escape
+    it and why the multi-select picker needed no second code path.
+  - **`getForecastData` and `getLoadForecast` are no longer exported.**
+    `getForecastSeries` and `getServedLoadForecast` are the entry points, so a
+    caller cannot obtain a forecast series without the verdict on whether it may
+    be drawn. That is the structural version of the rule ABL-493 cost us once
+    already, when the metric rule sat in one service and the endpoint that
+    mattered most lived in another.
+
+  Client side, `components/dashboard/forecastBasisNote.ts` (pure, colocated
+  test) owns the words, the way `comparison/basisNotice.ts` does for a withheld
+  measure. **The trap it exists for was created by the fix itself**: once the
+  server withholds, a withheld overlay and an uncovered one are both zero
+  points, and the existing copy for zero points is `forecastGap.ts`'s
+  "<model> has no forecast for <country> in this window" — false here, and with
+  a **Remove from comparison** button whose premise is that another model might
+  cover the country. So a withheld entry never reaches that path:
+  `LoadTab`'s selection view filters it out of the gap list and prints the
+  registry sentence separately, and `multiForecastSeries.ts` gives it
+  `WITHHELD_LEGEND_NOTE` ("Withheld — different basis") instead of "Not
+  available in …" beside the same hatched swatch. It is also excluded from the
+  point-writing loop and from the band, not merely marked `covered: false` —
+  that flag governed the legend alone, so rows arriving with a withheld verdict
+  would still have been drawn.
+
+  `/api/forecasts/latest` is the one forecast endpoint deliberately **not**
+  covered: it returns a newest-batch across every type with no actuals beside
+  it, so it would need per-row type gating for a payload nothing renders
+  (ABL-285 deleted its last client reader). Filed as follow-up rather than
+  bolted on.
 
   **An `energy_load` row of exactly `0.0` is withheld everywhere, because a
   national grid never draws 0 MW** (ABL-35). This is the same "published a
@@ -1042,12 +1113,12 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   |---|---:|---|
   | `loadService.ts:21` `:38` `:57` `:75` `:86` `:111` `:146` | 7 | `measuredLoadClause()` |
   | `dashboardService.ts:84` `:106` `:183` `:369` | 4 | `measuredLoadClause()` |
-  | `tsoForecastService.ts:200` `:240` | 2 | `measuredLoadClause()` |
+  | `tsoForecastService.ts:246` `:286` | 2 | `measuredLoadClause()` |
   | `countryService.ts:51` | 1 | `measuredLoadClause()` |
   | `dataFreshnessService.ts:35` | 1 | `measuredLoadClause()` |
   | `crossCountryMetricsService.ts:155-168` | 4 aliases | `loadActualGuard()` ×3 |
   | `mlForecastService.ts:243` `:287` | 2 | `loadActualGuard()` |
-  | `forecastService.ts:251` | 1 | `loadActualGuard()` |
+  | `forecastService.ts:312` | 1 | `loadActualGuard()` |
   | `countryService.ts:153` | 1 | **none, deliberately** |
 
   `dashboardService.ts`'s four are current load, peak demand, the map
@@ -1831,7 +1902,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   Three properties are load-bearing:
 
   - **It is a registry of measured findings, not a threshold**
-    (`DIVERGENT_LOAD_BASIS`, `loadForecastBasis.ts:69`). A threshold was
+    (`DIVERGENT_LOAD_BASIS`, `loadForecastBasis.ts:119`). A threshold was
     tried and rejected: across the 34 countries with a stored D+1 load
     forecast there is **no gap in the MAPE distribution to put one in**. FR
     reached 11.6% and DK 11.0% over 2025-06-01..15 through ordinary forecast
@@ -1841,7 +1912,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
     divergence is established against the raw upstream documents, and carries
     the evidence that established it.
   - **The rule lives in the service, not the routes**
-    (`tsoForecastService.ts:367`), so every consumer inherits it rather than
+    (`tsoForecastService.ts:474`), so every consumer inherits it rather than
     having to remember it. That is what closes `/tso-forecast/accuracy/load`,
     `/tso-forecast/metrics`, and — through `forecastComparisonService`'s three
     call sites — `/forecast-comparison/:cc`, `/:cc/best` and `/:cc/rolling`.
@@ -1914,7 +1985,8 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   the sibling `energy-forecast` repo, and this repo cannot see the answer. It
   is filed separately. What follows for *this* repo is only that the ml path
   needed the same suppression the TSO path already had — see "Cross-country
-  comparison metrics" below.
+  comparison metrics" below, and, one level up from any measure, the withheld
+  overlay under `LoadTab` above (ABL-501).
 
   (No January control exists on the ml side: NL's earliest stored load
   forecast of any model is `2026-02-03`, so February is the low-solar window,
@@ -2093,9 +2165,9 @@ The legacy forecast fields are **not uniformly dead**. Before deleting one,
 check which group it is in:
 
 - **Live.** `showComparisonMode` / `showTSOComparisonMode` gate the comparison
-  queries (`useLoadChartData.ts:172`, `:213`; `usePriceChartData.ts:133`);
+  queries (`useLoadChartData.ts:192`, `:233`; `usePriceChartData.ts:133`);
   `selectedMLHorizons` drives the multi-horizon fetch
-  (`useLoadChartData.ts:131`, `:177`).
+  (`useLoadChartData.ts:151`, `:197`).
 - **No reader at all.** `showForecast`, `showTSOForecast`, `tsoForecastType`,
   `visibleRenewableTypes`, `sidebarOpen`, `comparisonCountries`.
   `showForecast` is still *written* — `setTimePreset` sets it `true` for future
@@ -2108,7 +2180,7 @@ check which group it is in:
 
 Careful with the name `showForecast`: `useLoadChartData`/`usePriceChartData`
 declare *local* consts of that name derived from the picker
-(`selected?.source === 'ml'`, `useLoadChartData.ts:113`;
+(`selected?.source === 'ml'`, `useLoadChartData.ts:133`;
 `usePriceChartData.ts:77`), which shadow the store field. A grep hit is not
 necessarily a store read.
 
@@ -3047,7 +3119,7 @@ request to fill one of them.
 ### Generation forecast accuracy moved off the frozen table (ABL-353)
 
 Tranche 3 of ABL-324. `getGenerationForecastAccuracy`'s two query sites — the
-hourly join (`tsoForecastService.ts:359`) and the aggregated branch
+hourly join (`tsoForecastService.ts:402`) and the aggregated branch
 (`:388`) — now read `energy_generation`. This is the accuracy-critical tranche,
 and the move removed three separate defects; the sample change is large enough
 that **any accuracy figure for solar / wind_onshore / wind_offshore recorded
@@ -3234,9 +3306,9 @@ assumed:
   nothing to re-baseline.
 - **No accuracy figure can count a blanked cell as a measured zero.** Every
   path joining a forecast to `energy_generation` already filters the actual:
-  `tsoForecastService.ts:366` (hourly) and `tsoForecastService.ts:392`
+  `tsoForecastService.ts:409` (hourly) and `tsoForecastService.ts:435`
   (aggregated), `mlForecastService.ts:246` and `mlForecastService.ts:290`,
-  `crossCountryMetricsService.ts:170`, and `forecastService.ts:255`. A blanked
+  `crossCountryMetricsService.ts:170`, and `forecastService.ts:316`. A blanked
   cell becomes an **absent point**, so `dataPoints` shrinks honestly instead of
   overstating a sample whose metrics silently skipped it.
 - **The generation mix will show gaps where it used to show zeros, and that is
@@ -3665,7 +3737,7 @@ and unlike the two services above it **was** live, because
 `timestampFormOnClause`-pair-plus-`COALESCE` treatment for both its branches.
 That is **not** what shipped, and the reason is worth keeping: ABL-324
 tranche 3 moved the actuals side off `energy_renewable` onto
-`energy_generation` (`tsoForecastService.ts:359`, `:388`), which removes the
+`energy_generation` (`tsoForecastService.ts:402`, `:431`), which removes the
 precondition rather than working around it. Measured 2026-08-13,
 `energy_generation` is **0 `T`-form and 0 non-19-length rows out of
 3,178,270** and `energy_generation_forecast` is **0 of 3,050,001** — both
@@ -4057,14 +4129,24 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-20, measured on ABL-493 against a worktree at `5cf5b4c`
-(the ABL-289 merge) with `node_modules` junctioned from the primary checkout:
-**104 server test files / 2,020 tests** and **52 client test files / 694
-tests**, all passing, zero skipped, both `tsc --noEmit` exit 0. The same tree
-with this branch's changes stashed measures **104 / 2,001** and **51 / 678**,
-so ABL-493 is **+0 server files / +19 server cases** and **+1 client file /
-+16 client cases** — the baseline was re-measured rather than taken from the
-line above it, per the rule this section keeps re-learning.
+Green as of 2026-08-20, measured on ABL-501 in the worktree at `e3ee50a` (the
+ABL-493 commit, which this branch is stacked on) with `node_modules` junctioned
+from the primary checkout: **104 server test files / 2,044 tests** and
+**53 client test files / 719 tests**, all passing, zero skipped, both
+`tsc --noEmit` exit 0.
+
+ABL-501 is **+0 server files / +24 server cases** and **+1 client file / +25
+client cases** over its base — no new server test file because every server
+assertion belongs beside an existing one (`loadForecastBasis.test.ts`,
+`routes/forecast.test.ts`, `routes/tsoForecast.test.ts`);
+`components/dashboard/forecastBasisNote.test.ts` is the new client file, and
+`LoadTab.test.tsx` and `lib/multiForecastSeries.test.ts` carry the rest.
+
+Its base, ABL-493, measured **104 / 2,020** and **52 / 694** on the same
+worktree, against a stashed-changes baseline of **104 / 2,001** and
+**51 / 678** — so ABL-493 was +0 server files / +19 server cases and +1 client
+file / +16 client cases. Both figures were re-measured rather than taken from
+the line above them, per the rule this section keeps re-learning.
 
 **Two claims that stood here were stale, and both said the toolchain was
 broken when it was not.** The entry this replaces said the client suite "could
@@ -4825,14 +4907,24 @@ DB-touching module, so it runs without a database or a mock, and the
 assertion that `generationService.RENEWABLE_MW_SUM` really is built from its
 column list lives in `generationService.test.ts`, which already mocks that
 connection),
-`server/src/services/loadForecastBasis.ts` (ABL-493 widened it to a second
-carrier shape — the cross-country entry, which publishes `bias` and a skill
+`server/src/services/loadForecastBasis.ts` (ABL-501 added the series half —
+`classifyForecastSeriesBasis` and `withholdDivergentBasisSeries`, which
+withhold a forecast series rather than a measure derived from one, carry the
+chart-worded `seriesReason` rather than `reason`, and take no model argument
+because the finding is a property of the country's realized series; ABL-493
+widened it to a second carrier shape — the cross-country entry, which publishes `bias` and a skill
 block and no `mape` — so the suppressed set is now the named `ERROR_MEASURES`
 list rather than four assignments, and `MeasuresClassified<T>` asserts at each
 served type's definition site that every numeric field on it is classified),
 `client/src/components/comparison/basisNotice.ts` (ABL-493 — the words a
 withheld cell shows and the footnote that carries the registry sentence; pure
 so "not comparable, never no data" can be pinned without a DOM),
+`client/src/components/dashboard/forecastBasisNote.ts` (ABL-501 — the same job
+for a withheld chart *overlay*: the legend key, the per-model grouping and the
+predicate that keeps a withheld model out of `forecastGap.ts`'s "has no
+forecast for <country>" copy. Two modules rather than one because the server
+sends a differently worded sentence for a series than for a measure, and the
+two surfaces put different evidence in front of the reader),
 `server/src/services/wape.ts` (ABL-388 — the single WAPE definition, moved
 out of `crossCountryMetricsService.ts` when `tsoForecastService` and
 `mlForecastService` became its second and third callers; its test needed a
@@ -5057,10 +5149,10 @@ Check the `forecasts` table for the `model_name` before adding the entry.
 training a model is the whole job.** Traced DE `wind_offshore` on 2026-08-12:
 
 - `getForecastData` filters on `country_code` / `forecast_type` / `model_name`
-  only (`services/forecastService.ts:42-118`); `resolveModelCandidates` is keyed
+  only (`services/forecastService.ts:61-137`); `resolveModelCandidates` is keyed
   by **stream** and never sees a country (`config/forecastModels.ts:224`).
 - `getAvailableForecastTypes` is a plain `SELECT DISTINCT forecast_type`
-  (`services/forecastService.ts:165-177`), so the first row written for a
+  (`services/forecastService.ts:221-234`), so the first row written for a
   country/stream adds the type to the picker with no code change.
 - No client component gates generation by country; `WindTab` is shared by both
   wind streams and reads whatever the API returns.
@@ -5160,7 +5252,7 @@ type TSOForecastType = 'day_ahead' | 'week_ahead' | 'all';
 // client/src/types/index.ts:281. The server's TSOLoadForecastDataPoint
 // (server/src/types/index.ts:170) has NO min/max fields; the two the client
 // adds are populated by the week-ahead branch of the query
-// (tsoForecastService.ts:57-58, NULL on the day-ahead branches).
+// (tsoForecastService.ts:71-72, NULL on the day-ahead branches).
 interface TSOLoadForecastDataPoint {
   timestamp: string;
   forecast_value_mw: number;
@@ -5171,7 +5263,7 @@ interface TSOLoadForecastDataPoint {
 }
 
 // server-only: server/src/types/index.ts:177 (and a duplicate at
-// tsoForecastService.ts:21). There is no client counterpart.
+// tsoForecastService.ts:27). There is no client counterpart.
 interface TSOGenerationForecastDataPoint {
   timestamp: string;
   solar_mw: number | null;
@@ -5242,6 +5334,12 @@ sentence instead of numbers:**
   `/api/cross-country/metrics` at the same moment. If you see the two disagree
   again, that is the shape to look for: the rule lives in
   `loadForecastBasis.ts` and every surface has to route through it.
+- **And the Load tab draws no forecast line for that country at all** — the
+  same rule applied to the series rather than to a measure (ABL-501). That one
+  had the largest blast radius of the three, because it was a picture rather
+  than a number: NL's chart drew 9,431 MW over a realized 4,361 MW. See
+  `LoadTab` above for the four endpoints that withhold and for why a withheld
+  overlay must never borrow the "not available in <country>" copy.
 - `dataPoints` stays non-zero on purpose: the points really did pair, and
   reporting zero would claim we hold no data when we hold both series in full.
   The TSO D+1/D+7 horizon bars are absent for the same reason.
@@ -5251,6 +5349,13 @@ sentence instead of numbers:**
   first; BA/MK/MD/LT/EE/IE are suspected and unestablished.
 
 **A country's load/price forecast is blank:**
+- **First, read the card.** If there is a sentence under the chart saying the
+  forecast was withheld, that is the divergent-basis rule working (ABL-501) —
+  NL is the only registered case. The rows exist; we are declining to draw
+  them, because they forecast Dutch load gross of behind-the-meter solar while
+  the realized series is published net of it. `meta.withheldPoints` on
+  `/api/forecasts` is non-zero and says how many. Do not "fix" it by removing
+  the rule, and do not file it as missing data.
 - Check whether a specific model is checked in `ModelPicker` — catboost and
   xgboost coverage barely overlaps (see Forecast model selection), so a
   checked model with no data for that country renders nothing for that line.

@@ -21,6 +21,8 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { LoadTab } from './LoadTab';
+import { WITHHELD_LEGEND_NOTE } from './forecastBasisNote';
+import * as api from '@/services/api';
 import { useDashboardStore } from '@/store/dashboardStore';
 
 // Ensure a functional localStorage is present before the zustand persist
@@ -53,10 +55,19 @@ const fx = vi.hoisted(() => {
   const ML_VALUE = 1111;
   const TSO_VALUE = 2222;
 
+  // The wire shape of `meta.basis`/`basisNote`/`withheldPoints` (ABL-501).
+  // `BASIS_NOTE` stands in for the sentence the server sends from
+  // `loadForecastBasis.ts`'s registry — the client owns none of these words, so
+  // the fixture deliberately does not copy the production one.
+  const BASIS_NOTE = 'Forecast withheld. Test sentence explaining the basis gap.';
+
   return {
     iso,
     ML_VALUE,
     TSO_VALUE,
+    BASIS_NOTE,
+    comparable: { basis: 'comparable' as const, basisNote: null, withheldPoints: 0 },
+    withheld: { basis: 'divergent_basis' as const, basisNote: BASIS_NOTE, withheldPoints: 24 },
     loadPoints: [
       { timestamp: iso(-2), load: 9000 },
       { timestamp: iso(-1), load: 9500 },
@@ -108,8 +119,8 @@ vi.mock('@/services/api', () => ({
   fetchCountries: vi.fn(async () => [{ country_code: 'BE', country_name: 'Belgium' }]),
   fetchForecastModels: vi.fn(async () => fx.registry),
   fetchLoadData: vi.fn(async () => fx.loadPoints),
-  fetchForecastData: vi.fn(async () => ({ points: fx.mlPoints, servedModelId: 'xgboost' })),
-  fetchTSOLoadForecast: vi.fn(async () => fx.tsoPoints),
+  fetchForecastData: vi.fn(async () => ({ points: fx.mlPoints, servedModelId: 'xgboost', ...fx.comparable })),
+  fetchTSOLoadForecast: vi.fn(async () => ({ points: fx.tsoPoints, ...fx.comparable })),
   fetchForecastComparison: vi.fn(async () => ({ forecasts: [], actuals: [] })),
   fetchMultiHorizonForecast: vi.fn(async () => []),
   fetchTSOLoadForecastAccuracy: vi.fn(async () => ({
@@ -131,7 +142,7 @@ vi.mock('@/components/charts/AbleLineChart', () => ({
     forecastSeries,
   }: {
     series: Array<{ forecast: number | null }>;
-    forecastSeries?: Array<{ id: string }>;
+    forecastSeries?: Array<{ id: string; coverageNote?: string }>;
   }) => (
     <div
       data-testid="line-chart"
@@ -139,6 +150,12 @@ vi.mock('@/components/charts/AbleLineChart', () => ({
         series.filter((p) => p.forecast != null).map((p) => p.forecast),
       )}
       data-forecast-series-ids={JSON.stringify((forecastSeries ?? []).map((s) => s.id))}
+      // The legend text for an uncovered entry (ABL-501): "not available" and
+      // "withheld" are the same hatched swatch and two different claims, and
+      // this is the only place the difference is visible.
+      data-forecast-coverage-notes={JSON.stringify(
+        (forecastSeries ?? []).map((s) => s.coverageNote ?? null),
+      )}
     />
   ),
 }));
@@ -235,5 +252,127 @@ describe('LoadTab forecast overlay', () => {
 
     expect(await forecastValuesOnChart()).toEqual([]);
     expect(screen.queryByText(/dashed =/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ABL-501 — a forecast on a different basis from the actuals is withheld by
+// the server, and the tab has to say so instead of drawing it or going quiet.
+//
+// The live defect this guards: NL's Load tab drew catboost's gross-basis
+// prediction at ~9.4 GW over a realized ~4.4 GW at midday, with nothing on the
+// card saying the two lines were different quantities.
+// ---------------------------------------------------------------------------
+describe('LoadTab — withheld forecast (divergent basis)', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      selectedCountry: 'BE',
+      timePreset: '24h',
+      timeOffset: 0,
+      selectedModelsByType: {},
+      forecastHiddenByType: {},
+      showComparisonMode: false,
+      showTSOComparisonMode: false,
+    });
+    vi.mocked(api.fetchForecastData).mockResolvedValue({
+      points: fx.mlPoints,
+      servedModelId: 'xgboost',
+      ...fx.comparable,
+    });
+    vi.mocked(api.fetchTSOLoadForecast).mockResolvedValue({
+      points: fx.tsoPoints,
+      ...fx.comparable,
+    });
+  });
+
+  afterEach(() => cleanup());
+
+  /** What the server sends for a withheld series: no rows, and the reason. */
+  const withheldMl = () =>
+    vi.mocked(api.fetchForecastData).mockResolvedValue({
+      points: [],
+      servedModelId: 'catboost',
+      ...fx.withheld,
+    });
+
+  it('default view: prints the reason instead of a line', async () => {
+    withheldMl();
+
+    renderLoadTab();
+
+    expect(await screen.findByText(fx.BASIS_NOTE)).toBeTruthy();
+    expect(await forecastValuesOnChart()).toEqual([]);
+  });
+
+  it('default view: stops claiming a dashed forecast line that is not drawn', async () => {
+    // The subtitle read "dashed = able-ml forecast" beside a chart with no
+    // dashed line — a caption describing a mark that is not there.
+    withheldMl();
+
+    renderLoadTab();
+
+    await screen.findByText(fx.BASIS_NOTE);
+    expect(screen.queryByText(/dashed =/)).toBeNull();
+  });
+
+  it('default view: says nothing when the series is comparable', async () => {
+    renderLoadTab();
+
+    expect(await forecastValuesOnChart()).toContain(fx.ML_VALUE);
+    expect(screen.queryByText(fx.BASIS_NOTE)).toBeNull();
+  });
+
+  it('selection view: names the withheld model and gives the reason', async () => {
+    useDashboardStore.setState({ selectedModelsByType: { load: ['catboost'] } });
+    withheldMl();
+
+    renderLoadTab();
+
+    expect(await screen.findByText(/able-ml · catboost: /)).toBeTruthy();
+    expect(screen.getByText(new RegExp(fx.BASIS_NOTE.slice(0, 30)))).toBeTruthy();
+  });
+
+  it('selection view: never calls a withheld model unavailable', async () => {
+    // The regression this fix could easily have introduced. A withheld entry
+    // has zero points, which is exactly what a coverage gap looks like — and
+    // the copy for that is "<model> has no forecast for Belgium in this
+    // window", which would be false: the rows exist and we are declining to
+    // draw them.
+    useDashboardStore.setState({ selectedModelsByType: { load: ['catboost'] } });
+    withheldMl();
+
+    renderLoadTab();
+
+    await screen.findByText(/able-ml · catboost: /);
+    expect(screen.queryByText(/has no forecast for/)).toBeNull();
+    expect(screen.queryByText(/not available in/i)).toBeNull();
+  });
+
+  it('selection view: the legend key says withheld, not unavailable', async () => {
+    useDashboardStore.setState({ selectedModelsByType: { load: ['catboost'] } });
+    withheldMl();
+
+    renderLoadTab();
+
+    await screen.findByText(/able-ml · catboost: /);
+    const charts = await screen.findAllByTestId('line-chart');
+    const notes = charts.flatMap(
+      (c) => JSON.parse(c.getAttribute('data-forecast-coverage-notes') ?? '[]') as (string | null)[],
+    );
+    expect(notes).toContain(WITHHELD_LEGEND_NOTE);
+    expect(notes.some((n) => n?.includes('Not available'))).toBe(false);
+  });
+
+  it('selection view: a withheld model and an uncovered one get different words', async () => {
+    // Two checked models, one withheld and one genuinely absent. Both draw a
+    // hatched key; only one of them is a gap the user could act on.
+    useDashboardStore.setState({ selectedModelsByType: { load: ['catboost', 'tso-d1'] } });
+    withheldMl();
+    vi.mocked(api.fetchTSOLoadForecast).mockResolvedValue({ points: [], ...fx.comparable });
+
+    renderLoadTab();
+
+    expect(await screen.findByText(/able-ml · catboost: /)).toBeTruthy();
+    expect(screen.getByText(/ENTSO-E TSO · D\+1 has no forecast for Belgium/)).toBeTruthy();
   });
 });

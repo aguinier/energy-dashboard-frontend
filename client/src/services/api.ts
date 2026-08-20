@@ -2,6 +2,7 @@ import axios from 'axios';
 import { API_BASE_URL } from '@/lib/constants';
 import type {
   Country,
+  LoadForecastBasis,
   LoadDataPoint,
   PriceDataPoint,
   RenewableDataPoint,
@@ -205,9 +206,36 @@ export async function fetchMapData(params: {
 }
 
 // Forecast Data
-export interface ForecastFetchResult {
+/**
+ * Whether the served series may be drawn against this country's actuals, off
+ * `meta` (ABL-501, server side in `services/loadForecastBasis.ts`).
+ *
+ * `basisNote` is the sentence to render; it comes off the wire from the
+ * registry entry that was established against the upstream documents, so there
+ * is no second copy of it in the client to drift. Both fields are nullable
+ * rather than optional-and-absent because the server sends them on every
+ * response — a cached response predating this rule sends neither, which reads
+ * as `undefined` and is handled the same way as `comparable`.
+ */
+export interface ForecastBasisMeta {
+  basis: LoadForecastBasis | null;
+  /** Non-null exactly when the series was withheld. */
+  basisNote: string | null;
+  /** Rows the server holds and did not serve. Non-zero only on a withheld series. */
+  withheldPoints: number;
+}
+
+function readBasisMeta(meta: Partial<ForecastBasisMeta> | undefined): ForecastBasisMeta {
+  return {
+    basis: meta?.basis ?? null,
+    basisNote: meta?.basisNote ?? null,
+    withheldPoints: meta?.withheldPoints ?? 0,
+  };
+}
+
+export interface ForecastFetchResult extends ForecastBasisMeta {
   points: ForecastDataPoint[];
-  /** `meta.model` — which model the server actually read. */
+  /** `meta.model` — which model the server actually read, or whose rows it withheld. */
   servedModelId: string | null;
 }
 
@@ -221,11 +249,14 @@ export async function fetchForecastData(params: {
   /** Registry model id. Omit to let the server choose one with data. */
   model?: string;
 }): Promise<ForecastFetchResult> {
-  const { data } = await api.get<ApiResponse<ForecastDataPoint[]> & { meta?: { model?: string | null } }>(
-    '/forecasts',
-    { params },
-  );
-  return { points: unwrap(data, '/forecasts'), servedModelId: data.meta?.model ?? null };
+  const { data } = await api.get<
+    ApiResponse<ForecastDataPoint[]> & { meta?: { model?: string | null } & Partial<ForecastBasisMeta> }
+  >('/forecasts', { params });
+  return {
+    points: unwrap(data, '/forecasts'),
+    servedModelId: data.meta?.model ?? null,
+    ...readBasisMeta(data.meta),
+  };
 }
 
 // Multi-horizon forecast data (D+1 and D+2 for overlay view)
@@ -249,21 +280,31 @@ export async function fetchForecastComparison(params: {
   return unwrap(data, '/forecasts/compare');
 }
 
-// TSO Forecast Data (ENTSO-E official forecasts)
+export interface TSOLoadForecastFetchResult extends ForecastBasisMeta {
+  points: TSOLoadForecastDataPoint[];
+}
+
+/**
+ * TSO Forecast Data (ENTSO-E official forecasts).
+ *
+ * Returns the basis verdict alongside the points rather than a bare array
+ * (ABL-501): this series can be withheld, and a caller handed `[]` with no
+ * reason would render the country as having no TSO forecast, which is a
+ * different and false claim.
+ */
 export async function fetchTSOLoadForecast(params: {
   countryCode: string;
   start?: string;
   end?: string;
   forecastType?: TSOForecastType;
   granularity?: Granularity;
-}): Promise<TSOLoadForecastDataPoint[]> {
+}): Promise<TSOLoadForecastFetchResult> {
   const { countryCode, ...queryParams } = params;
   const endpoint = `/tso-forecast/load/${countryCode}`;
-  const { data } = await api.get<ApiResponse<TSOLoadForecastDataPoint[]>>(
-    endpoint,
-    { params: queryParams }
-  );
-  return unwrap(data, endpoint);
+  const { data } = await api.get<
+    ApiResponse<TSOLoadForecastDataPoint[]> & { meta?: Partial<ForecastBasisMeta> }
+  >(endpoint, { params: queryParams });
+  return { points: unwrap(data, endpoint), ...readBasisMeta(data.meta) };
 }
 
 /**

@@ -35,6 +35,20 @@ export interface DivergentLoadBasis {
    * States what the gap *is*, never that data is missing.
    */
   reason: string;
+  /**
+   * The same finding said for a withheld forecast **series** rather than a
+   * withheld measure (ABL-501).
+   *
+   * A separate sentence rather than a reuse of `reason`, because the two
+   * describe different things and the reader is looking at different evidence.
+   * `reason` answers "why is this accuracy cell empty" and opens *Not
+   * measurable here*; on a chart nothing was being measured — a line was being
+   * drawn — and the honest lead is that it was withheld. The half that carries
+   * the finding is identical in both, and it is stated once per sentence
+   * rather than assembled from fragments, so neither can be rendered as a
+   * clause that reads oddly on its own.
+   */
+  seriesReason: string;
   /** When the finding was measured against the upstream documents. */
   measuredOn: string;
 }
@@ -65,13 +79,55 @@ export interface DivergentLoadBasis {
  * the observed error, and that is the point: in a window where the two happen
  * to agree, the difference is still not attributable to forecast skill. A
  * number we cannot attribute is not a number we can publish.
+ *
+ * **Our own ml model is on the gross basis too** (ABL-501, measured on the
+ * replica 2026-08-20). This entry was written as a fact about the *TSO*
+ * forecast, on the reasoning that our models are trained against the same
+ * realized series they are scored on and so could not diverge. That reasoning
+ * is plausible and the conclusion is false. Over 2026-08-04..11 the stored NL
+ * load forecast is 100% `catboost` — no tso-named model writes into that table
+ * for NL — and it carries the identical diurnal signature, larger than the
+ * TSO's:
+ *
+ * | window | midday bias (09–14 UTC) | overnight (21–05) | WAPE |
+ * |---|---:|---:|---:|
+ * | NL 2026-02-10..24 | −1.9% | +0.2% | 10.28% |
+ * | NL 2026-06-10..24 | +138.2% | −3.6% | 31.46% |
+ * | NL 2026-08-04..11 | +173.7% | −3.0% | 32.59% |
+ * | DE 2026-08-04..11 | −0.5% | +3.3% | 8.18% |
+ * | BE 2026-08-04..11 | −1.4% | −0.8% | 5.58% |
+ *
+ * Same proof, on the ml side: no solar, no divergence. A merely weak model
+ * does not produce a clean midday-only bias that vanishes in winter, and
+ * neither control shows any midday skew. The levels say what is being
+ * predicted — NL midday August: realized 3,464 MW, ours 9,480 MW, ENTSO-E
+ * D+1 8,073 MW, so our forecast is closer to the TSO's forecast (13.31% WAPE
+ * against it) than either is to reality. Two forecasts of Dutch *gross* load.
+ * The single clearest instance is one day at one pair of hours: on
+ * 2026-08-05 catboost predicts 9,801 MW against a realized 9,909 MW at 03:00
+ * and 9,431 MW against a realized 4,361 MW at 12:00.
+ *
+ * **Why** our model is on that basis — a gross training target, or a feature
+ * that carries the basis in, such as an ENTSO-E day-ahead regressor — is not
+ * established, is not visible from this repo, and is deliberately not guessed
+ * at here. It is a question for the sibling `energy-forecast` repo and is
+ * filed separately. What follows for *this* repo is only that the rule is a
+ * property of the country's realized series, so it binds every forecast of
+ * that series whoever produced it — which is why `withholdDivergentBasisSeries`
+ * below takes no model argument.
  */
 export const DIVERGENT_LOAD_BASIS: Readonly<Record<string, DivergentLoadBasis>> = {
   NL: {
     reason:
       'Not measurable here. ENTSO-E publishes the Dutch realized load net of ' +
-      'behind-the-meter solar and the day-ahead forecast without it, so the ' +
-      'difference between them is a definitional gap, not forecast error.',
+      'behind-the-meter solar, while both its own day-ahead forecast and our ' +
+      'model predict that load gross of it — so the difference between ' +
+      'forecast and realized is a definitional gap, not forecast error.',
+    seriesReason:
+      'Forecast withheld. This is a forecast of Dutch load gross of ' +
+      'behind-the-meter solar, while the realized series ENTSO-E publishes is ' +
+      'net of it — a different quantity. Drawn together, the midday gap ' +
+      'between the two lines would read as forecast error when it is solar.',
     measuredOn: '2026-08-12',
   },
 };
@@ -107,7 +163,13 @@ export interface DivergentBasisMarks {
 }
 
 /**
- * Classify a country's realized-vs-TSO-forecast load pair.
+ * Classify a country's realized-load-vs-load-forecast pair.
+ *
+ * Takes no model and no source: the finding is a property of the *realized*
+ * series (what ENTSO-E nets out of it), so it binds every forecast of that
+ * series — the TSO's, ours, and any future one — rather than singling out a
+ * producer. ABL-501 measured that the ml side carries it too, which is
+ * confirmation of that reading rather than a second finding.
  *
  * Case-insensitive, and an unknown country is `comparable` — the registry
  * records what has been *established*, so absence means "no finding", never
@@ -266,6 +328,90 @@ export function suppressIfDivergentBasis<T extends SuppressibleLoadMetrics>(
   const { basis, basisNote } = classifyLoadForecastBasis(countryCode);
   if (basis !== 'divergent_basis' || basisNote === null) return metrics;
   return { ...blankDerivedMeasures(metrics), basis, basisNote };
+}
+
+/**
+ * A forecast series that was withheld, or served untouched, plus the reason.
+ *
+ * `withheldPoints` is the count of rows we hold and did not serve. It is the
+ * series-level counterpart of `dataPoints` surviving suppression above, and it
+ * carries the same claim: this is a *withholding*, not an absence. Zero rows
+ * with `withheldPoints: 0` means the query found nothing; zero rows with
+ * `withheldPoints: 96` means we have 96 and are not drawing them. Collapsing
+ * those two into a bare empty array is what would let a withheld series be
+ * reported to a reader as "no forecast published", which is false and is the
+ * kind of false this module exists to stop.
+ */
+export interface WithheldForecastSeries<T> {
+  data: T[];
+  basis: LoadForecastBasis;
+  basisNote: string | null;
+  withheldPoints: number;
+}
+
+/**
+ * The verdict for a forecast *series* of a given type, note worded for a chart.
+ *
+ * Gated on the forecast type for the reason `DIVERGENT_BASIS_FORECAST_TYPE`
+ * gives, and the cost of forgetting is the same here as it is for the
+ * measures: `/api/forecasts` serves eight types off one handler, so an ungated
+ * application would blank NL's price, solar and wind overlays as well. Nothing
+ * has been measured about those pairs (generation-side divergence is ABL-400,
+ * still open), and withholding them would be a second false claim pointing the
+ * other way.
+ */
+export function classifyForecastSeriesBasis(
+  countryCode: string,
+  forecastType: string,
+): LoadForecastBasisVerdict {
+  if (forecastType !== DIVERGENT_BASIS_FORECAST_TYPE) {
+    return { basis: 'comparable', basisNote: null };
+  }
+  const entry = DIVERGENT_LOAD_BASIS[countryCode?.toUpperCase()];
+  return entry
+    ? { basis: 'divergent_basis', basisNote: entry.seriesReason }
+    : { basis: 'comparable', basisNote: null };
+}
+
+/**
+ * Withhold a forecast series whose basis does not match the actuals it will be
+ * drawn against (ABL-501).
+ *
+ * The metric-level rule above stops a *number* derived from the pair from
+ * being published. This stops the pair itself from being put on one axis,
+ * which is the same defect one level up and was the more visible of the two:
+ * measured through a local server on the replica 2026-08-20, NL's Load tab
+ * drew a dashed forecast at 9,431 MW over a realized 4,361 MW at 12:00 on
+ * 2026-08-05, with nothing on the card saying the two were different
+ * quantities. A chart wrong by more than 2x is the incident class, and a
+ * reader has no way to discover the gap from the picture.
+ *
+ * Withholding rather than annotating, and it is worth being explicit that the
+ * rows are not junk. A degenerate net-position forecast (ABL-25) is
+ * numerically unusable and there is nothing to lose by dropping it; a
+ * gross-basis load forecast is a perfectly good prediction of a real
+ * quantity. What it is not is a prediction of the series it is plotted
+ * against, and the chart's whole claim — "here is the load, here is what we
+ * said it would be" — is that claim. Drawing the line under a caveat was the
+ * alternative and was rejected: the caveat is a sentence, the 2x gap is the
+ * picture, and the picture is what gets read and screenshotted.
+ *
+ * Returns the rows **by identity** when there is no finding, so a comparable
+ * country's response is byte-identical to its pre-ABL-501 shape — the same
+ * property `suppressIfDivergentBasis` keeps for the same reason: it preserves
+ * the cheapest check available on a change like this, which is to diff the
+ * payload and confirm nothing moved but the country named.
+ */
+export function withholdDivergentBasisSeries<T>(
+  countryCode: string,
+  forecastType: string,
+  rows: T[],
+): WithheldForecastSeries<T> {
+  const verdict = classifyForecastSeriesBasis(countryCode, forecastType);
+  if (verdict.basis === 'comparable') {
+    return { data: rows, ...verdict, withheldPoints: 0 };
+  }
+  return { data: [], ...verdict, withheldPoints: rows.length };
 }
 
 /**

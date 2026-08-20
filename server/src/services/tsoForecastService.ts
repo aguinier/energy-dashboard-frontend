@@ -2,7 +2,13 @@ import db from '../config/database.js';
 import { Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { measuredLoadClause } from './loadQuality.js';
-import { applyLoadForecastBasis, type MeasuresClassified } from './loadForecastBasis.js';
+import {
+  applyLoadForecastBasis,
+  withholdDivergentBasisSeries,
+  DIVERGENT_BASIS_FORECAST_TYPE,
+  type MeasuresClassified,
+  type WithheldForecastSeries,
+} from './loadForecastBasis.js';
 import { wape } from './wape.js';
 
 // Valid generation types for SQL column interpolation - prevents injection
@@ -37,9 +43,16 @@ export interface ForecastAccuracyDataPoint {
 export type TSOForecastType = 'day_ahead' | 'week_ahead' | 'all';
 
 /**
- * Get TSO load forecasts for a country
+ * Get TSO load forecasts for a country.
+ *
+ * **Not exported** — `getServedLoadForecast` below is the entry point, so a
+ * caller cannot obtain this series without the verdict on whether it may be
+ * drawn against the realized load (ABL-501). Same reasoning as
+ * `forecastService.getForecastData`, which is private for the same reason;
+ * `getGenerationForecast` beside this one stays exported because no basis
+ * finding has been established for the generation pair (that is ABL-400, open).
  */
-export function getLoadForecast(
+function getLoadForecast(
   countryCode: string,
   start: string,
   end: string,
@@ -112,6 +125,36 @@ export function getLoadForecast(
     ORDER BY timestamp, forecast_type
   `);
   return stmt.all(...params) as TSOLoadForecastDataPoint[];
+}
+
+/**
+ * The TSO load forecast as it may be served: the rows, minus any the
+ * divergent-basis rule withholds, plus the reason (ABL-501).
+ *
+ * No forecast-type gate is needed and none is applied — this path serves
+ * `load` and nothing else, which is the case `DIVERGENT_BASIS_FORECAST_TYPE`'s
+ * doc comment names. The type is passed explicitly rather than hardcoded as a
+ * string so that adding a second divergent type to the registry reaches this
+ * site by changing one constant.
+ *
+ * Both horizons are covered, D+1 and D+7 alike. The finding is about the
+ * *realized* series being net of behind-the-meter solar, so it does not become
+ * less true further out; ABL-277's metric-level suppression already treated
+ * this whole stream as one, which is why NL's D+1 *and* D+7 horizon bars
+ * vanish together on the Forecast-accuracy tab.
+ */
+export function getServedLoadForecast(
+  countryCode: string,
+  start: string,
+  end: string,
+  forecastType: TSOForecastType = 'day_ahead',
+  granularity: Granularity = 'hourly'
+): WithheldForecastSeries<TSOLoadForecastDataPoint> {
+  return withholdDivergentBasisSeries(
+    countryCode,
+    DIVERGENT_BASIS_FORECAST_TYPE,
+    getLoadForecast(countryCode, start, end, forecastType, granularity)
+  );
 }
 
 /**
