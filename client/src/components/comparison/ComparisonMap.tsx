@@ -6,6 +6,7 @@ import { SCALE_CLEAN, SCALE_DIRTY, SCALE_MEDIUM } from '@/lib/dataScale';
 import { NoDataHatchPattern, NoDataSwatch, noDataHatchUrl } from '@/components/map/NoDataHatch';
 import type { CrossCountryMetrics, CrossCountryMetricsEntry } from '@/types';
 import { wapeScale } from './accuracyScale';
+import { divergentBasisNote, NOT_COMPARABLE } from './basisNotice';
 import { countryFill, usesFlatFill, MEASURED_FLAT_FILL } from './mapFill';
 import type { GeoFeature } from '@/components/map/mapGeometry';
 
@@ -172,14 +173,27 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
             </span>
           </div>
           <div className="space-y-1.5">
-            {Object.entries(hovered.metrics).map(([type, entry]) => (
-              <div key={type} className="flex items-center justify-between text-xs">
-                <span className="text-muted-foreground capitalize">{type.replace('_', ' ')}</span>
-                <span className="font-medium">
-                  {formatMetricValue(entry[comparisonMetric], comparisonMetric === 'wape')}
-                </span>
-              </div>
-            ))}
+            {Object.entries(hovered.metrics).map(([type, entry]) => {
+              // A withheld measure is not a missing one, and the tooltip is
+              // where a reader lands after seeing the shape drop off the ramp
+              // — so it has to say which (ABL-493).
+              const note = divergentBasisNote(entry);
+              return (
+                <div key={type} className="text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground capitalize">{type.replace('_', ' ')}</span>
+                    <span className="font-medium">
+                      {note !== null
+                        ? NOT_COMPARABLE
+                        : formatMetricValue(entry[comparisonMetric], comparisonMetric === 'wape')}
+                    </span>
+                  </div>
+                  {note !== null && (
+                    <p className="m-0 mt-0.5 max-w-[15rem] text-micro text-muted-foreground">{note}</p>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </m.div>
       )}

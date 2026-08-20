@@ -2,7 +2,7 @@ import db from '../config/database.js';
 import { Granularity } from '../types/index.js';
 import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { measuredLoadClause } from './loadQuality.js';
-import { applyLoadForecastBasis } from './loadForecastBasis.js';
+import { applyLoadForecastBasis, type MeasuresClassified } from './loadForecastBasis.js';
 import { wape } from './wape.js';
 
 // Valid generation types for SQL column interpolation - prevents injection
@@ -430,6 +430,15 @@ export function getLoadForecastAccuracyMetrics(
   const data = getLoadForecastAccuracy(countryCode, start, end, forecastType, 'hourly');
   return applyLoadForecastBasis(countryCode, calculateMetrics(data));
 }
+
+/**
+ * Compile-time: every error measure this shape publishes is one
+ * `loadForecastBasis` blanks, or one it deliberately keeps. Adding a sixth to
+ * `calculateMetrics` fails the build here rather than reaching a
+ * divergent-basis country unsuppressed — see `MeasuresClassified` (ABL-493,
+ * generalising ABL-388's "required, not optional" property for `wape`).
+ */
+const _loadAccuracyMeasuresClassified: MeasuresClassified<ReturnType<typeof calculateMetrics>> = true;
 
 export function getGenerationForecastAccuracyMetrics(
   countryCode: string,

@@ -76,10 +76,34 @@ export const DIVERGENT_LOAD_BASIS: Readonly<Record<string, DivergentLoadBasis>> 
   },
 };
 
+/**
+ * The forecast type every entry in `DIVERGENT_LOAD_BASIS` was established for.
+ *
+ * A caller that serves one forecast type from a load-only path needs no gate
+ * — `tsoForecastService.getLoadForecastAccuracyMetrics` is one. A caller that
+ * loops over several types must gate on this, and the cost of forgetting is
+ * concrete: `/api/cross-country/metrics` spans eight types, so an ungated
+ * application would blank NL's **price** and generation numbers as well.
+ * Nothing has been measured about those pairs, so suppressing them would be a
+ * second false claim in the opposite direction. Generation-side basis
+ * divergence is a separate, still-open finding (ABL-400).
+ */
+export const DIVERGENT_BASIS_FORECAST_TYPE = 'load';
+
 export interface LoadForecastBasisVerdict {
   basis: LoadForecastBasis;
   /** Non-null exactly when `basis` is `divergent_basis`. */
   basisNote: string | null;
+}
+
+/**
+ * What a suppressed entry carries instead of the verdict pair above, on a
+ * response whose comparable entries must stay byte-identical. See
+ * `suppressIfDivergentBasis`.
+ */
+export interface DivergentBasisMarks {
+  basis: 'divergent_basis';
+  basisNote: string;
 }
 
 /**
@@ -96,19 +120,103 @@ export function classifyLoadForecastBasis(countryCode: string): LoadForecastBasi
     : { basis: 'comparable', basisNote: null };
 }
 
-export interface SuppressibleLoadMetrics {
-  mae: number | null;
-  mape: number | null;
-  /**
-   * Added by ABL-388. Required, not optional, and that is the point: a new
-   * error measure must not be able to reach a divergent-basis country by
-   * being forgotten here. An optional field would have compiled.
-   */
-  wape: number | null;
-  rmse: number | null;
-  dataPoints: number;
-  mapeSamples: number;
+/**
+ * Every measure produced by differencing the realized series against the
+ * forecast — the whole set, named once, because a divergent basis invalidates
+ * all of them at once.
+ *
+ * **`bias` is why this is a list rather than four assignments** (ABL-493).
+ * `/api/cross-country/metrics` publishes it and `/tso-forecast/*` does not, so
+ * routing the rule through the cross-country path by calling the existing
+ * helper unchanged would have left `bias: -2063.27 MW` standing for NL — the
+ * definitional gap restated in megawatts, under a heading that says forecast
+ * error, and the one number on that response a reader would take as
+ * actionable ("the TSO over-forecasts by 2 GW, they could correct that").
+ *
+ * Suppression is driven off this list at runtime, so a carrier that publishes
+ * a measure already named here is covered whether or not anyone remembered it.
+ * A *new* measure is caught by `MeasuresClassified` below.
+ */
+export const ERROR_MEASURES = ['mae', 'mape', 'wape', 'rmse', 'bias'] as const;
+export type ErrorMeasure = (typeof ERROR_MEASURES)[number];
+
+/**
+ * Numeric fields that count how many rows paired up rather than how wrong they
+ * were.
+ *
+ * These stay truthful. The points really did pair — we hold both series in
+ * full — and zeroing them would assert "no data", a different and equally
+ * false claim, the same distinction `degenerate_zero` draws against
+ * `no_actuals` on the net-position side.
+ */
+export const PAIRING_COUNTS = ['dataPoints', 'mapeSamples'] as const;
+export type PairingCount = (typeof PAIRING_COUNTS)[number];
+
+/**
+ * The D-7 seasonal-naive comparison, of which exactly one field is suppressed.
+ *
+ * `skillPct` is `100 * (1 - model_wape / baseline_wape)`, so it divides by the
+ * contaminated model WAPE and inherits the whole defect — and it is the field
+ * that renders the "worse than the D-7 naive baseline" badge, which was the
+ * loudest wrong claim on the page (NL read `-136.8%`).
+ *
+ * `baselineWape` and `n` survive, and that asymmetry is deliberate rather than
+ * an oversight. The baseline is the *actual* value from the same hour seven
+ * days earlier (`skillScore.ts`), so `baselineWape` is
+ * `100 * SUM|actual - actual_D7| / SUM|actual|` — realized against realized,
+ * both terms net of behind-the-meter solar, both on the same basis. It is a
+ * true statement about the country (Dutch load varies 13.09% week over week)
+ * and blanking it would be this module's own rule misapplied: blank what is
+ * unattributable, keep what is real, never assert absence.
+ */
+export interface SuppressibleSkill {
+  skillPct: number | null;
 }
+
+/**
+ * What `applyLoadForecastBasis` will accept and blank.
+ *
+ * Every field is optional because the two carriers genuinely differ — the TSO
+ * accuracy shape has `mape`/`mapeSamples` and no `bias`, the cross-country
+ * entry has `bias` and `skillVsSeasonalNaive` and no `mape`. Widening this was
+ * the alternative to casting at one of the two call sites, and a cast is
+ * exactly the thing that would let a measure through unblanked.
+ *
+ * ABL-388 made `wape` **required** here so a new error measure could not reach
+ * a divergent-basis country by being forgotten, noting that an optional field
+ * would have compiled. That property is not weakened by this change, it is
+ * moved and strengthened: it now lives in `MeasuresClassified`, which fires at
+ * the *response type's* definition site rather than on this parameter, and so
+ * catches the case the old form could not — a measure added to a served shape
+ * without ever being mentioned in this module at all.
+ */
+export interface SuppressibleLoadMetrics extends Partial<Record<ErrorMeasure, number | null>> {
+  skillVsSeasonalNaive?: SuppressibleSkill;
+}
+
+/** Keys of `T` whose type is plain `number` (nullable or not). */
+type NumericKeys<T> = {
+  [K in keyof T]-?: number extends NonNullable<T[K]> ? K : never;
+}[keyof T];
+
+type Unclassified<T> = Exclude<NumericKeys<T>, ErrorMeasure | PairingCount>;
+
+/**
+ * Assign `true` to this beside any response type that publishes error
+ * measures, in the ABL-305 `Exhaustive<…>` idiom.
+ *
+ * Every plain-numeric field on the shape must be classified: an
+ * `ErrorMeasure` this module blanks, or a `PairingCount` it keeps. Add a sixth
+ * measure to a served response and the assignment stops compiling and names
+ * the field, instead of the measure quietly reaching a divergent-basis country
+ * — which is the failure ABL-493 was filed for, in its next incarnation.
+ *
+ * It cannot see a measure nested inside an object field; `SuppressibleSkill`
+ * is the one such case and is handled by name.
+ */
+export type MeasuresClassified<T> = [Unclassified<T>] extends [never]
+  ? true
+  : { unclassifiedNumericField: Unclassified<T> };
 
 /**
  * Blank the error measures for a divergent pair, keeping the pairing counts.
@@ -134,5 +242,46 @@ export function applyLoadForecastBasis<T extends SuppressibleLoadMetrics>(
 ): T & LoadForecastBasisVerdict {
   const verdict = classifyLoadForecastBasis(countryCode);
   if (verdict.basis === 'comparable') return { ...metrics, ...verdict };
-  return { ...metrics, ...verdict, mae: null, mape: null, wape: null, rmse: null };
+  return { ...blankDerivedMeasures(metrics), ...verdict };
+}
+
+/**
+ * The same rule, for a response whose comparable entries must not change at
+ * all.
+ *
+ * `/api/cross-country/metrics` returns up to 34 countries across 8 forecast
+ * types, and one measured finding covers one of those 272 cells. Stamping
+ * `basis: 'comparable', basisNote: null` onto the other 271 would make every
+ * entry in the response differ from the one before this rule existed, which
+ * costs the cheapest check anyone has on a change like this — diff the payload
+ * and confirm nothing moved but the country named. So a comparable entry is
+ * returned **unchanged, by identity**, and absence of `basis` reads exactly the
+ * way absence from `DIVERGENT_LOAD_BASIS` does: no finding, never "verified
+ * fine".
+ */
+export function suppressIfDivergentBasis<T extends SuppressibleLoadMetrics>(
+  countryCode: string,
+  metrics: T,
+): T | (T & DivergentBasisMarks) {
+  const { basis, basisNote } = classifyLoadForecastBasis(countryCode);
+  if (basis !== 'divergent_basis' || basisNote === null) return metrics;
+  return { ...blankDerivedMeasures(metrics), basis, basisNote };
+}
+
+/**
+ * Blank every measure the pair cannot support, and nothing else.
+ *
+ * Driven off `ERROR_MEASURES` rather than a literal per call site, and only
+ * for keys the carrier actually has — so a shape that never published `bias`
+ * does not acquire a `bias: null`, and the two callers above stay honest about
+ * two different response shapes without either one listing fields.
+ */
+function blankDerivedMeasures<T extends SuppressibleLoadMetrics>(metrics: T): T {
+  const blanked = { ...metrics } as Record<string, unknown>;
+  for (const measure of ERROR_MEASURES) {
+    if (measure in blanked) blanked[measure] = null;
+  }
+  const skill = blanked.skillVsSeasonalNaive as SuppressibleSkill | undefined;
+  if (skill) blanked.skillVsSeasonalNaive = { ...skill, skillPct: null };
+  return blanked as T;
 }

@@ -821,18 +821,45 @@ export interface SkillVsSeasonalNaive {
 }
 
 export interface CrossCountryMetricsEntry {
-  mae: number;
+  /**
+   * `null` when the pair cannot support the measure. Two causes now, and they
+   * are different claims: the window's actuals summed to zero, or the two
+   * series measure different quantities and the difference is a definitional
+   * gap rather than forecast error (ABL-493 — `basis` below says which).
+   * Never 0, either way: a 0 here reads as a flawless forecast.
+   */
+  mae: number | null;
   wape: number | null;
-  rmse: number;
-  bias: number;
+  rmse: number | null;
+  bias: number | null;
+  /** How many rows paired. Truthful even when every measure above is null. */
   dataPoints: number;
   /**
    * Optional so the many hand-built `CrossCountryMetricsEntry` literals in
    * existing tests (leaderboardRows.test.ts, portfolioHome.test.ts,
    * portfolioSummary.test.ts) keep compiling without this field. Treat a
    * missing value the same as `{ n: 0, skillPct: null, baselineWape: null }`.
+   *
+   * On a `divergent_basis` entry, `skillPct` is `null` while `n` and
+   * `baselineWape` survive: the D-7 baseline is the realized value from the
+   * same hour last week, so `baselineWape` compares realized against realized
+   * and is a true statement about the country. Only the ratio against the
+   * contaminated model WAPE is withheld.
    */
   skillVsSeasonalNaive?: SkillVsSeasonalNaive;
+  /**
+   * Present **only** when the measures above were withheld because this
+   * country's two series are not on the same basis. Absent means no finding,
+   * never "verified fine", and a comparable entry is byte-identical to its
+   * pre-ABL-493 shape — see `server/src/services/loadForecastBasis.ts`.
+   */
+  basis?: 'divergent_basis';
+  /**
+   * The sentence to render in place of the numbers. Present with `basis`,
+   * never alone. It states what the gap *is*; a bare dash where a number used
+   * to be would trade a wrong number for a silent one.
+   */
+  basisNote?: string;
 }
 
 export type CrossCountryMetrics = Record<string, Record<string, CrossCountryMetricsEntry>>;

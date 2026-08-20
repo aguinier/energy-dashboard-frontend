@@ -34,6 +34,14 @@ export interface LeaderboardRow {
   dataPoints: number;
   /** Absent only for a stale cached response predating ABL-186 — see `describeSkill`. */
   skill?: SkillVsSeasonalNaive;
+  /**
+   * Set when every measure above was withheld because this country's realized
+   * and forecast series are not on the same basis (ABL-493). The row is then
+   * unplaced rather than last, and `basisNote` is what it prints instead of the
+   * numbers — see `basisNotice.ts`.
+   */
+  basis?: 'divergent_basis';
+  basisNote?: string;
 }
 
 function measured(v: unknown): number | null {
@@ -60,6 +68,8 @@ export function buildLeaderboardRows(
       bias: measured(entry.bias),
       dataPoints: measured(entry.dataPoints) ?? 0,
       skill: entry.skillVsSeasonalNaive,
+      basis: entry.basis,
+      basisNote: entry.basisNote,
     });
   }
   return rows;
@@ -71,6 +81,11 @@ export function buildLeaderboardRows(
  * Countries whose WAPE was not measurable get no rank — they are not "last",
  * they are unplaced, and the denominator excludes them so "#3 of 21" counts
  * only the countries actually in the running.
+ *
+ * That already covers ABL-493's divergent-basis countries without a branch
+ * here: their WAPE arrives `null`, so they drop out of the ranking and out of
+ * the denominator by the same rule as an unmeasurable window. What they need
+ * beyond that is the *reason*, which is `basisNote`'s job, not this one's.
  */
 export function wapeRanks(rows: readonly LeaderboardRow[]): Map<string, number> {
   const ranked = rows

@@ -4,6 +4,7 @@ import { withOpacity } from '@/lib/colors';
 import { FORECAST_TYPE_CONFIG, sortForecastTypes } from '@/lib/comparisonConstants';
 import type { CrossCountryMetrics } from '@/types';
 import { wapeColor, wapeScale, type WapeScale } from './accuracyScale';
+import { basisNoticesAcrossTypes, divergentBasisNote, NOT_COMPARABLE } from './basisNotice';
 import { activatesCountryDetail } from './portfolioHome';
 
 interface ComparisonHeatmapProps {
@@ -40,6 +41,11 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
     }
     return scales;
   }, [data, forecastTypes]);
+
+  const notices = useMemo(
+    () => basisNoticesAcrossTypes(data, forecastTypes),
+    [data, forecastTypes],
+  );
 
   // Sort countries
   const sortedCountries = useMemo(() => {
@@ -113,6 +119,21 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
                 const entry = data[country]?.[type];
                 const value = entry?.[comparisonMetric];
 
+                // Withheld because this country's realized and forecast series
+                // are not on the same basis (ABL-493). Checked before the
+                // generic empty-cell branch below, because the two look
+                // identical in the data and mean opposite things: one says we
+                // hold nothing, the other says we hold both series in full and
+                // their difference is not forecast error.
+                const note = divergentBasisNote(entry);
+                if (note !== null) {
+                  return (
+                    <td key={type} className="px-3 py-2 text-center text-xs text-ink-dim" title={note}>
+                      {NOT_COMPARABLE}
+                    </td>
+                  );
+                }
+
                 if (value === undefined || value === null || isNaN(value)) {
                   return (
                     <td key={type} className="px-3 py-2 text-center text-xs text-muted-foreground">
@@ -145,6 +166,19 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
         </tbody>
       </table>
     </div>
+    {/* One line per country whose cells read "not comparable", across every
+        column in view — the matrix is the all-types view, so a per-type
+        footnote would go missing the moment somebody switched columns. */}
+    {notices.length > 0 && (
+      <ul className="m-0 list-none space-y-1 px-1 text-micro text-ink-dim">
+        {notices.map((notice) => (
+          <li key={`${notice.country}-${notice.type}`}>
+            <span className="font-mono font-medium">{notice.country}</span>
+            {' '}({FORECAST_TYPE_CONFIG[notice.type]?.shortLabel ?? notice.type}) — {notice.note}
+          </li>
+        ))}
+      </ul>
+    )}
     {comparisonMetric === 'wape' && (
       <p className="px-1 text-micro text-ink-dim">
         Colour is a country's rank <em>within its own column</em> — best teal, worst terracotta.

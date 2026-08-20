@@ -96,16 +96,23 @@ Measured that way on ABL-42 (branch tip `e1f849f`, `origin/main` + 2 files):
 identical to the figure `origin/main` was green at. So an empty `.bin` says
 nothing about the suite.
 
-**The client suite is separately and genuinely blocked here, and the two must
-not be conflated.** It fails to boot on `Cannot find package
+**The client suite was separately blocked here for a while. It is not any
+more — re-measure before repeating the claim** (checked 2026-08-20 on ABL-493:
+`node_modules/@rolldown/pluginutils` is present, all 52 client test files run,
+694 tests pass, `tsc --noEmit` is clean). The symptom was `Cannot find package
 '@rolldown/pluginutils' imported from …@vitejs/plugin-react/dist/index.js`, and
-that package really is absent — `ls node_modules/@rolldown` finds nothing.
-Note 1's tell distinguishes the two: this error names the **bare specifier**, so
-it is a missing package, not the stale-process trap (which resolves to a path
-ending `@babel\core\index.js`). Restarting will not fix it, and `npm install` is
-still the wrong reflex in this shared checkout for note 1's reason. Verify a
-server-only change with the server suite and say the client half was not run —
-do not report the whole toolchain as broken.
+the package really was absent — `ls node_modules/@rolldown` found nothing. The
+checkout was repaired in the interim.
+
+Two things worth keeping from that episode. Note 1's tell is what
+distinguished it: that error named the **bare specifier**, so it was a missing
+package, not the stale-process trap (which resolves to a path ending
+`@babel\core\index.js`) — restarting would not have fixed it, and `npm install`
+was still the wrong reflex in this shared checkout for note 1's reason. And a
+documented-broken suite is one nobody re-runs, so it stays "broken" long after
+it is fixed and a real regression in it goes unseen. If the client half will
+not boot for you, say what you measured and when; do not report the whole
+toolchain as broken, and do not take this paragraph's word for it either way.
 
 ## Project Structure
 
@@ -1038,7 +1045,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   | `tsoForecastService.ts:200` `:240` | 2 | `measuredLoadClause()` |
   | `countryService.ts:51` | 1 | `measuredLoadClause()` |
   | `dataFreshnessService.ts:35` | 1 | `measuredLoadClause()` |
-  | `crossCountryMetricsService.ts:131-141` | 4 aliases | `loadActualGuard()` ×3 |
+  | `crossCountryMetricsService.ts:155-168` | 4 aliases | `loadActualGuard()` ×3 |
   | `mlForecastService.ts:243` `:287` | 2 | `loadActualGuard()` |
   | `forecastService.ts:251` | 1 | `loadActualGuard()` |
   | `countryService.ts:153` | 1 | **none, deliberately** |
@@ -1048,7 +1055,7 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   `crossCountryMetricsService.ts` joins the table under four aliases and needs
   only three guards: `s`/`s2` are guarded in their join clauses and the
   `a`/`a2` pair is guarded once in the `WHERE`, through the `COALESCE` that
-  merges them (`crossCountryMetricsService.ts:108,147`).
+  merges them (`crossCountryMetricsService.ts:132,171`).
 
   The unguarded one is `getCountriesWithData` — a `SELECT DISTINCT` over a
   three-table `UNION` that answers *is this code worth offering in a picker*,
@@ -1869,11 +1876,50 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   probed upstream, so none is in the registry. Filed separately; do not add an
   entry without the upstream measurement that justifies it.
 
-  Note this is a **TSO-forecast** property, not a property of NL's actuals.
-  Our own ml models are trained against the same realized series they are
-  scored on, so ml accuracy for NL is measuring what it claims to (it is
-  simply poor — 94.75% MAPE for catboost D+1 over that window, which is a
-  model-quality question, not a basis one).
+  **It is not a TSO-forecast property. This entry said it was, and that was
+  wrong** (corrected by ABL-493, measured on the replica 2026-08-20). The
+  sentence it replaces read: "Our own ml models are trained against the same
+  realized series they are scored on, so ml accuracy for NL is measuring what
+  it claims to (it is simply poor — 94.75% MAPE for catboost D+1, which is a
+  model-quality question, not a basis one)." The premise is plausible and the
+  conclusion is false: **our own catboost NL load forecast carries the same
+  gap, and more of it than the TSO's.**
+
+  Three measurements settle it, over 2026-08-04..11 (`forecasts`, NL load,
+  which is 100% `catboost` — there is no tso-named model row for NL load in
+  that window, so this really is our model):
+
+  | | midday bias (09-14 UTC) | overnight bias (21-05) | WAPE |
+  |---|---:|---:|---:|
+  | NL **Feb** 2026-02-10..24 | **−1.9%** | +0.2% | 10.28% |
+  | NL **Jun** 2026-06-10..24 | **+138.2%** | −3.6% | 31.46% |
+  | NL **Aug** 2026-08-04..11 | **+173.7%** | −3.0% | 32.59% |
+  | DE Aug, control | −0.5% | +3.3% | 8.18% |
+  | BE Aug, control | −1.4% | −0.8% | 5.58% |
+
+  Same proof as ABL-277's, on the ml side: **no solar, no divergence.** A
+  merely weak model does not produce a clean diurnal bias that vanishes in
+  winter and reaches +174% at midsummer noon, and neither control shows any
+  midday skew at all.
+
+  The levels say what is actually being predicted. NL midday, Aug: **actual
+  3,464 MW, our ml 9,480 MW, ENTSO-E D+1 8,073 MW.** Our forecast is closer to
+  the TSO's forecast (13.31% WAPE against it) than either is to reality
+  (32.59% / 32.46%) — two forecasts of Dutch **gross** load, scored against a
+  realized series published **net** of behind-the-meter solar.
+
+  **What is measured is that our ml forecast is on the gross basis; *why* is
+  not, and do not write it down until it is.** Whether the NL model is fitted
+  to a gross target or inherits the basis through a feature is a question for
+  the sibling `energy-forecast` repo, and this repo cannot see the answer. It
+  is filed separately. What follows for *this* repo is only that the ml path
+  needed the same suppression the TSO path already had — see "Cross-country
+  comparison metrics" below.
+
+  (No January control exists on the ml side: NL's earliest stored load
+  forecast of any model is `2026-02-03`, so February is the low-solar window,
+  and it is a good one — Dutch solar at 52°N in February is close enough to
+  nothing for the purpose.)
 
 ### 4. Time navigation
 
@@ -2086,6 +2132,69 @@ Per-country TSO/ML accuracy (`ForecastTab`, `/tso-forecast/metrics`,
 positive actual (`mapeSamples` in the response, always <= `dataPoints`) and
 returns `null` rather than `0` when no point qualified — e.g. solar overnight,
 where every actual is legitimately zero.
+
+**A divergent-basis country publishes no error measure here either** (ABL-493).
+`loadForecastBasis.ts`'s rule had exactly one caller —
+`tsoForecastService.ts` — so NL's load error was withheld on
+`/tso-forecast/accuracy/load/NL` and published in full on this endpoint at the
+same moment. Live on prod, 2026-08-04..11: `data.load.NL` was
+`{mae: 2435.77, wape: 30.99, rmse: 3475.71, bias: -2063.27, dataPoints: 169,
+skillVsSeasonalNaive: {n: 169, skillPct: -136.8, baselineWape: 13.09}}` with no
+`basis` key at all, ranking NL **24th of 24** on the forecast-quality tab under
+a "worse than the D-7 naive baseline" badge. The rule was written into a
+service so every consumer would inherit it; the consumer that mattered most was
+in a different service and inherited nothing.
+
+Four things about the shape, three of which are traps:
+
+- **The suppressed set is `ERROR_MEASURES`, and it includes `bias`.** The old
+  helper blanked `mae`/`mape`/`wape`/`rmse` — the fields the *TSO* shape has.
+  This entry publishes `bias` and no `mape`, so calling that helper unchanged
+  would have left `bias: -2063.27` standing, which is the definitional gap
+  restated in megawatts and the one figure on the response a reader would act
+  on. Blanking is now driven off a named list at runtime and applied only to
+  keys the carrier actually has, so one function serves both shapes without
+  either listing fields.
+- **`skillPct` goes; `n` and `baselineWape` stay.** The D-7 baseline is the
+  *actual* from the same hour last week (`skillScore.ts`), so `baselineWape` is
+  realized against realized — both terms net of behind-the-meter solar — and is
+  a true statement about the country (Dutch load varies 13.09% week over week).
+  `skillPct` divides by the contaminated model WAPE and is also what renders
+  the loss badge. Blank what is unattributable, keep what is real.
+- **It is gated on the forecast type.** `DIVERGENT_LOAD_BASIS` is a *load*
+  finding; this service loops over eight types, so an ungated application would
+  blank NL's price and generation numbers too — a second false claim, in the
+  other direction. Generation-side divergence is ABL-400 and is deliberately not
+  folded in. Suppression is driven off the registry, never off a literal `'NL'`,
+  so ABL-283's pending work flows through by adding an entry.
+- **A comparable entry is byte-identical, with no `basis` key at all.** Absence
+  reads the way absence from the registry does: no finding, never "verified
+  fine". Verified end to end against the replica through a local server, same
+  query as prod's: **exactly 1 of 66 (country, type) cells changed**, all 23
+  other load entries unchanged, `data.price.NL` unchanged, and NL went from
+  ranked 24th to unplaced with the ranked denominator falling 24 → 23. Stamping
+  `basis: 'comparable'` everywhere would have cost that check, which is the
+  cheapest one available on a change like this.
+
+`MeasuresClassified<T>` (`loadForecastBasis.ts`) is the compile-time half, in
+the ABL-305 `Exhaustive<…>` idiom and asserted beside both response types. It
+generalises ABL-388's property — `wape` was made a *required* field so a new
+measure could not reach a divergent-basis country by being forgotten — from one
+field to the whole shape: every plain-numeric field on a served entry must be an
+error measure the module blanks or a pairing count it keeps, and adding a sixth
+fails the build naming the field. It cannot see a measure nested inside an
+object, which is why `skillVsSeasonalNaive` is handled by name.
+
+Client side, nothing needed to change to keep NL out of the ranking —
+`wapeRanks` already excluded a null WAPE ("not last, unplaced") and every cell
+already guarded `!== null`. What was missing was the **reason**, and a bare
+em-dash trades a wrong number for a silent one. `comparison/basisNotice.ts`
+(pure, colocated test) owns the words: cells read **"not comparable"**, never
+"no data" or "insufficient data" — we hold both series in full, 169 paired
+hours and a real D-7 baseline — and the registry sentence is printed as a
+footnote under the leaderboard, the ranking and the matrix, and in the map
+tooltip. `SkillCell` is deliberately *not* rendered for such a row: with
+`skillPct` null it prints "insufficient data", which is false here.
 
 **Those same endpoints now serve `wape` beside `mape`, and on a generation
 type it is the one to read** (ABL-388). The `actual > 0` guard above stops a
@@ -3127,7 +3236,7 @@ assumed:
   path joining a forecast to `energy_generation` already filters the actual:
   `tsoForecastService.ts:366` (hourly) and `tsoForecastService.ts:392`
   (aggregated), `mlForecastService.ts:246` and `mlForecastService.ts:290`,
-  `crossCountryMetricsService.ts:142`, and `forecastService.ts:255`. A blanked
+  `crossCountryMetricsService.ts:170`, and `forecastService.ts:255`. A blanked
   cell becomes an **absent point**, so `dataPoints` shrinks honestly instead of
   overstating a sample whose metrics silently skipped it.
 - **The generation mix will show gaps where it used to show zeros, and that is
@@ -3390,7 +3499,7 @@ forecast type sharing `ACTUAL_DATA_MAPPING` — it dropped `T`-separated
 now separator-agnostic: `mlForecastService.ts`'s `resolvedActualJoin()`
 (`mlForecastService.ts:128`, called from both its hourly and aggregated
 branches) and `crossCountryMetricsService.ts`'s `metricSelect()`
-(`crossCountryMetricsService.ts:93`, covering both the actuals join and the
+(`crossCountryMetricsService.ts:121`, covering both the actuals join and the
 D-7 seasonal-naive baseline join beneath it).
 
 **The obvious fix is wrong, not just imprecise — measure before joining on
@@ -3948,24 +4057,29 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-14, measured on ABL-289 after merging `main` at `7965255`
-in: **104 server test files / 2,001 tests**, all passing, zero skipped. `main`
-itself measures **102 / 1,944** on the same tree, so ABL-289 is **+2 files /
-+57 cases** (`lib/classifyRequest.test.ts`, `services/visitorCounters.test.ts`,
-plus added cases in `app.test.ts` and `routes/opsStatus.test.ts`). An earlier
-reading of **94 / 1,792** on ABL-305 at `8298dad` is what that same rule below
-predicts going stale — the floor moved, the work did not.
+Green as of 2026-08-20, measured on ABL-493 against a worktree at `5cf5b4c`
+(the ABL-289 merge) with `node_modules` junctioned from the primary checkout:
+**104 server test files / 2,020 tests** and **52 client test files / 694
+tests**, all passing, zero skipped, both `tsc --noEmit` exit 0. The same tree
+with this branch's changes stashed measures **104 / 2,001** and **51 / 678**,
+so ABL-493 is **+0 server files / +19 server cases** and **+1 client file /
++16 client cases** — the baseline was re-measured rather than taken from the
+line above it, per the rule this section keeps re-learning.
 
-**The client suite could not be run in this checkout on 2026-08-14 and this
-figure is therefore not re-measured**: it is blocked before it boots by the
-absent `@rolldown/pluginutils` documented above, which is an environment
-defect, not a code one. Last measured at **50 client test files / 666 tests**
-on 2026-08-13; ABL-289 adds `lib/opsTrafficRows.test.ts` (11 cases), which was
-run on its own against a scratch config with the React plugin dropped — it is a
-pure helper with no JSX, so nothing about it depends on the plugin. `tsc
---noEmit` reports the same 7 pre-existing `@radix-ui/*` TS2307 errors in
-`components/ui/*` on this branch as on `main`, i.e. ABL-289 adds none. Fewer
-tests passing than the figures above means something broke.
+**Two claims that stood here were stale, and both said the toolchain was
+broken when it was not.** The entry this replaces said the client suite "could
+not be run in this checkout" because `@rolldown/pluginutils` was absent, and
+that `tsc --noEmit` reported "7 pre-existing `@radix-ui/*` TS2307 errors in
+`components/ui/*`". Neither reproduces on 2026-08-20: `node_modules/@rolldown`
+is present, the client suite boots and runs all 52 files, and the client
+typecheck is **clean**. The checkout was repaired in the interim. That is worth
+knowing because a documented-broken suite is one nobody re-runs, so a real
+regression in it would have gone unseen — re-measure before believing a claim
+that a suite cannot run, exactly as you would before believing a count.
+
+The 2026-08-14 figures this replaces, for continuity: **104 / 2,001** server on
+ABL-289 (`main` itself **102 / 1,944**, so ABL-289 was +2 files / +57 cases),
+and a client figure last really measured at **50 / 666** on 2026-08-13.
 
 **The rule below cost ABL-399 a correction on its own branch, which is the best
 evidence it is real.** ABL-399 measured 89 / 1,661 against `50d7a72` and wrote
@@ -4711,7 +4825,14 @@ DB-touching module, so it runs without a database or a mock, and the
 assertion that `generationService.RENEWABLE_MW_SUM` really is built from its
 column list lives in `generationService.test.ts`, which already mocks that
 connection),
-`server/src/services/loadForecastBasis.ts`,
+`server/src/services/loadForecastBasis.ts` (ABL-493 widened it to a second
+carrier shape — the cross-country entry, which publishes `bias` and a skill
+block and no `mape` — so the suppressed set is now the named `ERROR_MEASURES`
+list rather than four assignments, and `MeasuresClassified<T>` asserts at each
+served type's definition site that every numeric field on it is classified),
+`client/src/components/comparison/basisNotice.ts` (ABL-493 — the words a
+withheld cell shows and the footnote that carries the registry sentence; pure
+so "not comparable, never no data" can be pinned without a DOM),
 `server/src/services/wape.ts` (ABL-388 — the single WAPE definition, moved
 out of `crossCountryMetricsService.ts` when `tsoForecastService` and
 `mlForecastService` became its second and third callers; its test needed a
@@ -5109,12 +5230,18 @@ interface TSOForecastAccuracyMetrics {
 
 **The Forecast-accuracy tab shows no MAE/MAPE/RMSE for a country, with a
 sentence instead of numbers:**
-- That is the signal working. A country whose ENTSO-E realized load and TSO
-  load forecast are published on different bases has every error measure
-  withheld, because their difference is a definitional gap rather than
-  forecast error — see the `ForecastTab` entry above. **NL** is the only
-  registered case; `services/loadForecastBasis.ts` carries the upstream
-  measurement behind it.
+- That is the signal working. A country whose realized load and load forecast
+  are published on different bases has every error measure withheld, because
+  their difference is a definitional gap rather than forecast error — see the
+  `ForecastTab` entry above. **NL** is the only registered case;
+  `services/loadForecastBasis.ts` carries the upstream measurement behind it.
+- **The same country now reads "not comparable" on the Forecast quality
+  portfolio too** — unranked rather than last, no D-7 loss badge, and a
+  footnote naming the reason (ABL-493). Until then the rule had one caller, so
+  NL's load error was withheld on the country tab and published in full on
+  `/api/cross-country/metrics` at the same moment. If you see the two disagree
+  again, that is the shape to look for: the rule lives in
+  `loadForecastBasis.ts` and every surface has to route through it.
 - `dataPoints` stays non-zero on purpose: the points really did pair, and
   reporting zero would claim we hold no data when we hold both series in full.
   The TSO D+1/D+7 horizon bars are absent for the same reason.
