@@ -363,13 +363,19 @@ function edgeRow(
  * `load` and `generation` are measured and judged on age; `price` is a
  * day-ahead publication and judged on *coverage of the required market day*.
  * Applying the first rule to the second is the mirror of the bug
- * `services/freshness.ts` exists for, and the comment at its line 193 says so.
+ * `services/freshness.ts` exists for, and the comment at its line 277 says so.
  * Both classifiers are imported verbatim rather than reimplemented, so `/v1` and
  * the dashboard cannot come to different conclusions about the same zone.
+ *
+ * The day-ahead deadline is per document (ABL-494), and `price` is the only
+ * day-ahead stream `/v1` exposes — `OBSERVATION_STREAMS` is `load | price |
+ * generation` (`series.ts:69`). A second one added here must pass **its own**
+ * key: A44 lands by 14:00 UTC while A69 is not due until 18:00 Brussels D-1, so
+ * inheriting price's deadline would report it stale every afternoon.
  */
 function classify(stream: ObservationStream, latest: string | null, at: Date): FreshnessStatus {
   return STREAMS[stream].series[0].family === 'day_ahead'
-    ? classifyDayAheadStream(latest, at).status
+    ? classifyDayAheadStream(latest, at, 'price').status
     : classifyMeasuredStream(latest, at).status;
 }
 
