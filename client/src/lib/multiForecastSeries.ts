@@ -31,6 +31,17 @@ export interface MultiForecastEntry {
   dash: string;
   /** `undefined` while this model's query has not resolved yet. */
   points: NormalizedForecastPoint[] | undefined;
+  /**
+   * Set when the server withheld this model's series because it is not on the
+   * same basis as the actuals (ABL-501) — the short legend wording, from
+   * `forecastBasisNote.ts`'s `WITHHELD_LEGEND_NOTE`.
+   *
+   * Passed in rather than derived here so this module keeps knowing nothing
+   * about why a series might be withheld; it only needs to know that "empty"
+   * has two causes with two different legends, and that the caller has already
+   * decided which applies.
+   */
+  withheldNote?: string | null;
 }
 
 export interface MultiForecastSeriesResult {
@@ -78,8 +89,17 @@ export function buildMultiForecastSeries<TActual extends { timestamp?: string; d
   const { actual = [], actualValue, entries, countryLabel, window } = opts;
   const now = opts.now ?? new Date();
 
+  const isWithheld = (e: MultiForecastEntry) => e.withheldNote != null && e.withheldNote !== '';
+
+  // A withheld entry contributes no points, no band and no timestamps —
+  // whatever its `points` array happens to hold (ABL-501). The server sends
+  // none with a withheld verdict, so in practice this filter is redundant; it
+  // is here because the alternative to redundancy is that the two ever
+  // disagree and the line gets drawn, which is the single outcome this rule
+  // exists to prevent. `covered: false` alone only governed the legend.
   const resolved = entries.filter(
-    (e): e is MultiForecastEntry & { points: NormalizedForecastPoint[] } => e.points != null,
+    (e): e is MultiForecastEntry & { points: NormalizedForecastPoint[] } =>
+      e.points != null && !isWithheld(e),
   );
 
   const allTs: number[] = [];
@@ -116,15 +136,29 @@ export function buildMultiForecastSeries<TActual extends { timestamp?: string; d
   // A model still in flight reads as covered until it resolves — flipping the
   // legend to "not available" before the response is back would be wrong,
   // not just premature.
+  //
+  // A withheld model is uncovered whatever its points say, and takes its own
+  // wording (ABL-501). "Not available in the Netherlands" would be false for
+  // the case that produced this branch: catboost publishes a full day for NL
+  // and we are declining to draw it because it is a forecast of a different
+  // quantity. The hatched swatch is right for both — the mark means "not on
+  // this scale" — but the sentence beside it is the whole difference between
+  // a coverage gap the user might fix by picking another model and a decision
+  // we made on their behalf.
   const forecastSeries: AbleForecastSeriesSpec[] = entries.map((entry) => {
-    const covered = entry.points == null ? true : entry.points.length > 0;
+    const withheld = isWithheld(entry);
+    const covered = withheld ? false : entry.points == null ? true : entry.points.length > 0;
     return {
       id: entry.id,
       label: entry.label,
       color: entry.color,
       dash: entry.dash,
       covered,
-      coverageNote: covered ? undefined : `Not available in ${countryLabel}`,
+      coverageNote: covered
+        ? undefined
+        : withheld
+        ? entry.withheldNote ?? undefined
+        : `Not available in ${countryLabel}`,
     };
   });
 
@@ -139,7 +173,7 @@ export function buildMultiForecastSeries<TActual extends { timestamp?: string; d
 
   // Band: only when exactly one model is selected, and only from that model's
   // own response — see doc comment above.
-  const soleActive = entries.length === 1 ? entries[0] : undefined;
+  const soleActive = entries.length === 1 && !isWithheld(entries[0]) ? entries[0] : undefined;
   if (soleActive?.points) {
     for (const p of soleActive.points) {
       if (!p.timestamp) continue;

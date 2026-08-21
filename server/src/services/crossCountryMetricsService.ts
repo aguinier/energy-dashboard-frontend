@@ -5,6 +5,11 @@ import { loadActualGuard } from './loadQuality.js';
 import { actualsSourceFor } from './actualsSource.js';
 import { runReadQueryInWorker } from './readQueryWorker.js';
 import { computeSkillVsSeasonalNaive, type SkillVsSeasonalNaive } from './skillScore.js';
+import {
+  DIVERGENT_BASIS_FORECAST_TYPE,
+  suppressIfDivergentBasis,
+  type MeasuresClassified,
+} from './loadForecastBasis.js';
 
 /**
  * Cross-Country Forecast Metrics Service
@@ -26,14 +31,37 @@ export const VALID_FORECAST_TYPES: ForecastType[] = [
 // six types off the frozen `energy_renewable`.
 
 export interface CountryMetrics {
-  mae: number;
+  /**
+   * `null` when the pair cannot support the measure — which since ABL-493 also
+   * covers a country whose two series measure different quantities, not only
+   * an empty window. Never 0: a 0 here is a flawless forecast.
+   */
+  mae: number | null;
   wape: number | null;
-  rmse: number;
-  bias: number;
+  rmse: number | null;
+  bias: number | null;
+  /** How many rows paired. Truthful even when every measure above is null. */
   dataPoints: number;
   /** Skill vs the D-7 seasonal-naive baseline, on this WAPE's own pair intersection (ABL-186). */
   skillVsSeasonalNaive: SkillVsSeasonalNaive;
+  /**
+   * Present **only** when the measures above were withheld, so a comparable
+   * country's entry is byte-identical to its pre-ABL-493 shape. Absent means
+   * "no finding" — see `suppressIfDivergentBasis`.
+   */
+  basis?: 'divergent_basis';
+  /** The sentence to print in place of the numbers. Present with `basis`, never alone. */
+  basisNote?: string;
 }
+
+/**
+ * Compile-time: every error measure this entry publishes is one
+ * `loadForecastBasis` knows to blank, or one it knows to keep. Adding a sixth
+ * to `CountryMetrics` without classifying it fails the build rather than
+ * silently publishing it for a divergent-basis country — `bias` reaching prod
+ * unsuppressed is the concrete cost of not having had this (ABL-490/ABL-493).
+ */
+const _countryMetricsMeasuresClassified: MeasuresClassified<CountryMetrics> = true;
 
 export type CrossCountryMetricsResult = Record<string, CountryMetrics>;
 
@@ -186,7 +214,7 @@ function rowsToResult(rows: MetricsRow[]): Record<string, CrossCountryMetricsRes
   const result: Record<string, CrossCountryMetricsResult> = {};
   for (const row of rows) {
     const byCountry = result[row.forecast_type] ??= {};
-    byCountry[row.country_code] = {
+    const measured: CountryMetrics = {
       mae: row.mae ?? 0,
       wape: row.wape,
       rmse: row.rmse ?? 0,
@@ -199,6 +227,19 @@ function rowsToResult(rows: MetricsRow[]): Record<string, CrossCountryMetricsRes
         baselineErrAbsSum: row.skill_baseline_err_abs_sum,
       }),
     };
+    // The basis rule runs **after** the `?? 0` coercions above, and the order
+    // is load-bearing: applied first, those `?? 0`s would turn a withheld
+    // measure straight back into a confident zero — a flawless forecast, which
+    // is the failure this whole endpoint's WAPE was introduced to avoid.
+    //
+    // Gated on the forecast type because `DIVERGENT_LOAD_BASIS` is a *load*
+    // finding: NL's price and generation numbers are unaffected by the
+    // behind-the-meter-solar gap, and blanking them would be a second false
+    // claim in the other direction. See `DIVERGENT_BASIS_FORECAST_TYPE`.
+    byCountry[row.country_code] =
+      row.forecast_type === DIVERGENT_BASIS_FORECAST_TYPE
+        ? suppressIfDivergentBasis(row.country_code, measured)
+        : measured;
   }
   return result;
 }

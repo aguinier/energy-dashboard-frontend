@@ -27,16 +27,29 @@
  * trap `useModelComparison.ts` documents on the client. Pinning D+1 also makes
  * the comparison against the ENTSO-E *day-ahead* series a like-for-like one.
  *
- * **The TSO load path goes through `applyLoadForecastBasis`.** For a country
- * where realized load and the TSO forecast measure different quantities — NL,
- * whose realized series is net of behind-the-meter solar and whose forecast is
- * not (ABL-277) — that returns `wape: null`, so NL's TSO series is excluded
- * from the ranking as `unmeasurable_wape` rather than ranked on a 27% figure
- * that is a definitional gap. Calling `calculateMetrics` directly here would
- * have bypassed that suppression and auto-selected on it, which is exactly the
+ * **Both load paths go through `applyLoadForecastBasis`, ours and the TSO's.**
+ * For a country where realized load and the forecast measure different
+ * quantities — NL, whose realized series is net of behind-the-meter solar and
+ * whose forecast is not (ABL-277) — that returns `wape: null`, so the series is
+ * excluded from the ranking as `unmeasurable_wape` rather than ranked on a
+ * figure that is a definitional gap. Calling `calculateMetrics` directly would
+ * bypass the suppression and auto-select on it, which is exactly the
  * confidently-wrong-number failure this dashboard exists to avoid. Verified on
  * the replica: NL's TSO D+1 comes back `divergent_basis` with null measures
  * while its point count stays truthful at 721.
+ *
+ * **The ML side needs it for the same reason, and that is not obvious.** This
+ * module first applied the rule to the TSO branch alone, on the then-current
+ * reading that the divergence was a property of the *TSO's* forecast. ABL-493
+ * refuted that by measurement: the gap is a property of what ENTSO-E nets out
+ * of the country's **realized** series, so it binds every forecast of that
+ * series, and NL catboost carries more of it than the TSO does (+173.7% midday
+ * bias against +123.2%, both vanishing in winter). Suppressing one side only is
+ * strictly worse than suppressing neither — the honest exclusion of the TSO
+ * series hands the ranking to the contaminated model by walkover, and
+ * `describeAutoSelection` then labels it the most accurate forecast for that
+ * country. With both suppressed, NL load falls through to the no-history
+ * fallback, which says nothing rather than something false.
  */
 
 import { getTypeConfig, type ForecastModel } from '../config/forecastModels.js';
@@ -127,7 +140,21 @@ function measure(
     const points = getMLForecastAccuracy(
       countryCode, forecastType, start, end, 1, 'hourly', model.modelName,
     );
-    const metrics = calculateMlMetrics(points);
+    // Basis suppression applies to *our* load forecast too, not only the TSO's
+    // below (ABL-493). The rule is a property of what ENTSO-E nets out of the
+    // country's **realized** series, so it binds every forecast of that series
+    // whoever produced it — measured on the replica 2026-08-20, NL catboost
+    // carries more of the gap than the TSO does (+173.7% midday bias against
+    // +123.2%, vanishing to -1.9% in February).
+    //
+    // Suppressing one side and not the other is worse than suppressing
+    // neither: the honest exclusion of the TSO series would hand the ranking
+    // to the contaminated model *by walkover*, and it would then be announced
+    // on the chart as the most accurate forecast for that country.
+    const metrics =
+      forecastType === 'load'
+        ? applyLoadForecastBasis(countryCode, calculateMlMetrics(points))
+        : calculateMlMetrics(points);
     return {
       ...base,
       wape: metrics.wape,

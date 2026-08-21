@@ -17,7 +17,12 @@ vi.mock('../config/database.js', () => ({ default: fixtureDb }));
 vi.mock('../config/writeDatabase.js', async () => (await import('../test/noWriteDb.js')).forbidWriteDb());
 
 const { getRecommendedModel, accuracyWindow } = await import('./recommendedModelService.js');
-const { getForecastData } = await import('./forecastService.js');
+// `getForecastSeries`, not the raw `getForecastData` this originally called:
+// ABL-501 un-exported the latter so that no caller can obtain a forecast series
+// without the verdict on whether it may be drawn. DE and FR are both comparable
+// countries, so the withholding is a no-op here and these assertions are about
+// the same rows they always were.
+const { getForecastSeries } = await import('./forecastService.js');
 
 /**
  * `now` for every test here. The 30-day window it implies is 2026-07-03 to
@@ -137,10 +142,10 @@ describe('getRecommendedModel — per (country, forecast type) resolution', () =
 });
 
 describe('getRecommendedModel — what it refuses to rank', () => {
-  it('excludes a divergent-basis TSO series rather than ranking a definitional gap', () => {
-    // NL's realized load is net of behind-the-meter solar and its day-ahead
-    // forecast is not (ABL-277). The pairs are real; the difference is not
-    // forecast error, so it must not win a comparison — nor lose one.
+  it('excludes a divergent-basis series rather than ranking a definitional gap', () => {
+    // NL's realized load is net of behind-the-meter solar and the forecasts of
+    // it are not (ABL-277). The pairs are real; the difference is not forecast
+    // error, so it must not win a comparison — nor lose one.
     const rec = getRecommendedModel('NL', 'load', NOW)!;
     const tso = rec.candidates.find((c) => c.id === 'tso-d1')!;
 
@@ -148,8 +153,41 @@ describe('getRecommendedModel — what it refuses to rank', () => {
     expect(tso.wape).toBeNull();
     // The point count stays truthful — "not measurable" is not "no data".
     expect(tso.dataPoints).toBe(DAYS.length * 24);
+  });
+
+  it('excludes OUR model on the same basis, so the gap cannot win by walkover', () => {
+    // This case was originally pinned the other way — NL resolving to catboost
+    // with a real WAPE — on the reading that the divergence was a property of
+    // the *TSO's* forecast. ABL-493 refuted that by measurement: it is a
+    // property of the realized series, so it binds our model too, and NL
+    // catboost carries more of the gap than the TSO does.
+    //
+    // Suppressing only the TSO side is worse than suppressing neither. The
+    // honest exclusion of one candidate would hand the ranking to the
+    // contaminated one unopposed, and the chart would then announce it as the
+    // most accurate forecast for the Netherlands.
+    const rec = getRecommendedModel('NL', 'load', NOW)!;
+    const ml = rec.candidates.find((c) => c.id === 'catboost')!;
+
+    expect(ml.excluded).toBe('unmeasurable_wape');
+    expect(ml.wape).toBeNull();
+    expect(ml.dataPoints).toBe(DAYS.length * 24);
+
+    // Nothing qualified, so this is the no-history fallback: the production
+    // model renders, and `wape: null` is what stops the client claiming it was
+    // chosen on measured accuracy (`describeAutoSelection` says nothing).
+    expect(rec.fallback).toBe(true);
     expect(rec.modelId).toBe('catboost');
-    expect(rec.source).toBe('ml');
+    expect(rec.wape).toBeNull();
+  });
+
+  it('leaves a comparable country\'s ML candidate scored — the rule is per country', () => {
+    // The gate is the registry, not the source. FR's own model keeps its score.
+    const rec = getRecommendedModel('FR', 'load', NOW)!;
+    const ml = rec.candidates.find((c) => c.id === 'xgboost')!;
+
+    expect(ml.excluded).toBeNull();
+    expect(ml.wape).toBeCloseTo(2, 1);
   });
 
   it('excludes the week-ahead series, which only publishes at one hour of the day', () => {
@@ -227,15 +265,21 @@ describe('the recommendation does not reach the serving path', () => {
   it('serves our ML model unpinned, even where the recommendation is the TSO series', () => {
     expect(getRecommendedModel('DE', 'load', NOW)!.modelId).toBe('tso-d1');
 
-    const rows = getForecastData('DE', 'load', SEEDED_WINDOW.start, SEEDED_WINDOW.end);
+    const { data: rows, withheldPoints } = getForecastSeries(
+      'DE', 'load', SEEDED_WINDOW.start, SEEDED_WINDOW.end,
+    );
 
     // Still the ladder's answer — production first — not the recommendation's.
     expect(rows.length).toBeGreaterThan(0);
     expect([...new Set(rows.map((r) => r.model_name))]).toEqual(['catboost']);
+    // Nothing held back: DE is comparable, so this is the whole served series.
+    expect(withheldPoints).toBe(0);
   });
 
   it('still honours an explicit model= strictly', () => {
-    const rows = getForecastData('FR', 'load', SEEDED_WINDOW.start, SEEDED_WINDOW.end, 'hourly', undefined, 'xgboost');
+    const { data: rows } = getForecastSeries(
+      'FR', 'load', SEEDED_WINDOW.start, SEEDED_WINDOW.end, 'hourly', undefined, 'xgboost',
+    );
 
     expect([...new Set(rows.map((r) => r.model_name))]).toEqual(['xgboost']);
   });
@@ -243,8 +287,15 @@ describe('the recommendation does not reach the serving path', () => {
   it('still returns nothing for a model with no rows, rather than substituting', () => {
     // FR is seeded with xgboost only. Asking for catboost gets an empty series,
     // never xgboost's numbers under catboost's name.
-    const rows = getForecastData('FR', 'load', SEEDED_WINDOW.start, SEEDED_WINDOW.end, 'hourly', undefined, 'catboost');
+    const { data: rows, withheldPoints, model } = getForecastSeries(
+      'FR', 'load', SEEDED_WINDOW.start, SEEDED_WINDOW.end, 'hourly', undefined, 'catboost',
+    );
 
     expect(rows).toEqual([]);
+    // Empty because the query found nothing, NOT because anything was withheld
+    // — the distinction `withheldPoints` exists to draw, and `model: null` is
+    // the other half of it (there is no model whose rows were held back).
+    expect(withheldPoints).toBe(0);
+    expect(model).toBeNull();
   });
 });

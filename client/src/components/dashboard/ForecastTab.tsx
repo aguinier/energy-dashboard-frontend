@@ -126,7 +126,7 @@ export function ForecastTab() {
   const horizonBars = buildHorizonBars(summary, 'load');
 
   // Overlay chart data — pair forecasted vs actual for the past window.
-  const { loadData, forecastData } = useLoadChartData();
+  const { loadData, forecastData, forecastBasisNote } = useLoadChartData();
   const overlaySeries = useMemo(() => {
     const { series } = adaptLoadSeries({
       loadData,
@@ -209,7 +209,12 @@ export function ForecastTab() {
 
         <AbleCard
           title="Forecast vs actual"
-          subtitle="GW · past 7 days · solid = actual, dashed = forecast"
+          // Drops the "dashed = forecast" half when the forecast was withheld
+          // (ABL-501). This card reads the same `useLoadChartData` series the
+          // Load tab does, so a withheld overlay leaves it with one line — and
+          // a caption naming a mark that is not on the chart is the small
+          // version of the defect the withholding exists to fix.
+          subtitle={`GW · past 7 days · solid = actual${forecastBasisNote ? '' : ', dashed = forecast'}`}
         >
           {overlayQuery.isLoading ? (
             <div className="flex h-[180px] items-center justify-center text-meta text-ink-muted">
@@ -224,6 +229,13 @@ export function ForecastTab() {
               formatTooltip={(v) => (v >= 1000 ? `${(v / 1000).toFixed(2)} GW` : `${v.toFixed(0)} MW`)}
               label="Forecast vs actual load"
             />
+          )}
+          {/* Repeats the finding rather than relying on the sentence under the
+              stat strip above: that one is the *measure* wording ("Not
+              measurable here"), it is a card and a scroll away, and this is the
+              card with a visibly missing line. */}
+          {forecastBasisNote && (
+            <p className="mt-2 text-micro text-ink-muted">{forecastBasisNote}</p>
           )}
         </AbleCard>
       </div>

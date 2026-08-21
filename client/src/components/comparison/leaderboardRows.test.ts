@@ -113,4 +113,58 @@ describe('wapeRanks', () => {
   it('handles an empty set', () => {
     expect(wapeRanks([]).size).toBe(0);
   });
+
+  it('leaves a divergent-basis country unplaced, not first and not last (ABL-493)', () => {
+    // The failure to guard against is the *opposite* of the one that filed
+    // this: a suppressed WAPE coerced to 0 would put NL at the top of the
+    // accuracy leaderboard with a flawless score. `measured()` maps its null
+    // through unchanged and the rank filter drops it, so it is unplaced and
+    // out of the denominator — exactly like an unmeasurable window, which is
+    // why no branch was added for it.
+    const rows = buildLeaderboardRows(DIVERGENT, 'load');
+    const ranks = wapeRanks(rows);
+    expect(ranks.has('NL')).toBe(false);
+    expect(ranks.get('DE')).toBe(1);
+    expect(ranks.size).toBe(1);
+  });
+});
+
+const DIVERGENT: CrossCountryMetrics = {
+  DE: { load: { mae: 150, wape: 3.2, rmse: 190, bias: -12, dataPoints: 168 } },
+  // NL as the server serves it since ABL-493: every measure withheld, the
+  // pairing count intact, and the reason attached.
+  NL: {
+    load: {
+      mae: null, wape: null, rmse: null, bias: null, dataPoints: 169,
+      skillVsSeasonalNaive: { n: 169, skillPct: null, baselineWape: 13.09 },
+      basis: 'divergent_basis',
+      basisNote: 'a definitional gap, not forecast error',
+    },
+  },
+};
+
+describe('buildLeaderboardRows and the divergent basis (ABL-493)', () => {
+  it('carries the reason onto the row so the view has something to print', () => {
+    const nl = buildLeaderboardRows(DIVERGENT, 'load').find((r) => r.country === 'NL');
+    expect(nl).toMatchObject({
+      wape: null,
+      mae: null,
+      rmse: null,
+      bias: null,
+      basis: 'divergent_basis',
+      basisNote: 'a definitional gap, not forecast error',
+    });
+  });
+
+  it('keeps dataPoints truthful, which is what separates this from "no data"', () => {
+    const nl = buildLeaderboardRows(DIVERGENT, 'load').find((r) => r.country === 'NL');
+    expect(nl?.dataPoints).toBe(169);
+  });
+
+  it('leaves a comparable country with no basis fields at all', () => {
+    const de = buildLeaderboardRows(DIVERGENT, 'load').find((r) => r.country === 'DE');
+    expect(de?.basis).toBeUndefined();
+    expect(de?.basisNote).toBeUndefined();
+    expect(de?.mae).toBe(150);
+  });
 });

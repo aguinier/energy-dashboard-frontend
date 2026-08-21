@@ -71,11 +71,15 @@ import Database, { type Database as DatabaseType } from 'better-sqlite3';
 export const WINDOW = { start: '2026-07-01T00:00:00Z', end: '2026-07-01T03:00:00Z' };
 
 /**
- * A window one day later: forecasts exist here, and the only actuals that do
- * are GR's — its degenerate all-zero `net_position` rows, and its `energy_load`
- * day carrying impossible exact zeros (both below). **DE publishes no actual of
- * any kind on this day**, which is what keeps `no_paired_actuals` testable, so
- * add a DE actual here only if you mean to break that.
+ * A window one day later, holding the shapes that need a day of their own:
+ * GR's degenerate all-zero `net_position` and its all-zero `energy_load` day,
+ * PT's impossible zeros interleaved with real hours, and NL's divergent-basis
+ * load pair (all below).
+ *
+ * **DE publishes no actual of any kind on this day**, which is what keeps
+ * `no_paired_actuals` testable, so add a DE actual here only if you mean to
+ * break that. (This comment used to say GR's were the *only* actuals here; PT's
+ * and NL's arrived later and it was simply not updated.)
  */
 export const NEXT_DAY = { start: '2026-07-02T00:00:00Z', end: '2026-07-02T03:00:00Z' };
 
@@ -329,6 +333,21 @@ function seed(db: DatabaseType): void {
   // against (verified 2026-08-11: zero such duplicates in the real table) —
   // and would break it for a reason that has nothing to do with separators.
   HOURS.forEach((h, i) => load.run('NL', at(h, 2), 900 - i * 200));
+  // NL's D-7 seasonal-naive baseline for that day, 100 MW under realized at
+  // every hour. This row set is what makes ABL-493's skill suppression
+  // *measurable*: without a baseline `skillPct` would already be null for want
+  // of pairs, and a test asserting `skillPct: null` afterwards would pass with
+  // the rule doing nothing. With it, NL scores -200% against D-7 unsuppressed —
+  // the "worse than the D-7 naive baseline" badge, which is the loudest of the
+  // wrong claims, and the one `skillPct` alone carries.
+  //
+  // It is also where `baselineWape` surviving is checkable. That figure is
+  // realized against realized — both terms out of `energy_load`, so both net of
+  // behind-the-meter solar — and is a true statement about the country. Only
+  // `skillPct`, which divides by the contaminated model WAPE, has to go.
+  HOURS.forEach((h, i) =>
+    load.run('NL', `2026-06-25 ${String(h).padStart(2, '0')}:00:00`, 800 - i * 200)
+  );
   // GR went silent after 01:00. The last two hours of the window simply are
   // not there — the shape GR and IE have had since 2026-03-14.
   load.run('GR', at(0), 300);
@@ -358,6 +377,11 @@ function seed(db: DatabaseType): void {
   // BE: a genuinely negative day-ahead window. Avg is -25, not +25 and not 0.
   HOURS.forEach((h, i) => price.run('BE', at(h), -10 - i * 10));
   HOURS.forEach((h) => price.run('FR', at(h), 5));
+  // NL day-ahead price on NEXT_DAY — the control for the ABL-493 gate. The
+  // divergent-basis finding is about NL's *load* pair only, so this type has
+  // to come back with its numbers intact: blanking it would be the same
+  // false-claim defect pointed the other way, asserting a gap nobody measured.
+  HOURS.forEach((h, i) => price.run('NL', at(h, 2), 50 + i * 10));
 
   // ------------------------------------------------------------- generation
 
@@ -495,6 +519,26 @@ function seed(db: DatabaseType): void {
   // `no_paired_actuals`, which must not be confused with `no_model_coverage`.
   HOURS.forEach((h, i) =>
     forecast.run('DE', 'load', atT(h, 2), GENERATED_AT, 12, 900 + i * 100, 'catboost', 'v1')
+  );
+
+  // NL on NEXT_DAY — the ABL-277 divergent-basis shape, on the ML/cross-country
+  // side rather than the TSO side (ABL-493).
+  //
+  // Paired against NL's realized load above (900/700/500/300) the forecast is
+  // 300 MW HIGH at every hour, which is the real signature in miniature:
+  // ENTSO-E nets behind-the-meter solar out of the Dutch realized series and
+  // not out of the forecast, so the forecast sits above realized and the
+  // difference is a definitional gap rather than a miss. Unsuppressed that is
+  // mae 300, wape 50.00, rmse 300, bias -300 over 4 points — every one of them
+  // arithmetically correct and none of them forecast error.
+  HOURS.forEach((h, i) =>
+    forecast.run('NL', 'load', atT(h, 2), GENERATED_AT, 12, 1200 - i * 200, 'catboost', 'v1')
+  );
+  // NL price on NEXT_DAY, 5 EUR/MWh high at every hour: mae 5, wape 7.69.
+  // Nothing has been measured about NL's price pair, so these numbers must
+  // survive the load suppression untouched.
+  HOURS.forEach((h, i) =>
+    forecast.run('NL', 'price', atT(h, 2), GENERATED_AT, 12, 55 + i * 10, 'catboost', 'v1')
   );
 
   // AT load, xgboost ONLY — no catboost row exists for AT anywhere in this

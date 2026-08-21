@@ -90,23 +90,37 @@ router.get('/', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknown, unkn
   // Parse horizon parameter
   const horizonDays = horizon ? parseInt(horizon, 10) : undefined;
 
-  const data = forecastService.getForecastData(
+  const series = forecastService.getForecastSeries(
     country, type, startDate, endDate, granularity, horizonDays, model
   );
 
   res.json({
     success: true,
-    data,
+    data: series.data,
     meta: {
-      count: data.length,
+      count: series.data.length,
       timeRange: { start: startDate, end: endDate },
       granularity,
       forecastType: type,
       horizon: horizonDays,
-      // Which model actually served. A fallback must be visible, not passed
-      // off as the production model.
-      model: data[0]?.model_name ?? null,
+      // Which model actually served — or, on a withheld series, which model
+      // produced the rows being held back. A fallback must be visible, not
+      // passed off as the production model.
+      model: series.model,
       modelRequested: model ?? null,
+      // Present on every response, and `'comparable'` is the overwhelming
+      // majority answer. Unlike `/api/cross-country/metrics`, which returns up
+      // to 272 entries and where stamping a verdict on each would have cost
+      // the payload diff that verified ABL-493, this response is one series —
+      // so the verdict is cheap here, and always naming it means a client
+      // reading `basis` never has to distinguish "comparable" from "the server
+      // predates the rule".
+      basis: series.basis,
+      basisNote: series.basisNote,
+      // Rows we hold and did not serve. Non-zero is the only thing that
+      // distinguishes a withheld series from a country that has no forecast,
+      // and those are different claims.
+      withheldPoints: series.withheldPoints,
     },
   });
 });
@@ -163,14 +177,21 @@ router.get('/compare', cacheMiddleware(TTL.MEDIUM), (req: Request<object, unknow
   const endDate = end || new Date().toISOString();
   const startDate = start || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-  const data = forecastService.getForecastWithActuals(country, type, startDate, endDate);
+  const { forecasts, actuals, basis, basisNote, withheldPoints } =
+    forecastService.getForecastWithActuals(country, type, startDate, endDate);
 
   res.json({
     success: true,
-    data,
+    // `data`'s shape is unchanged: the verdict rides in `meta` beside the
+    // other statements about the response, not grafted into the payload a
+    // consumer parses.
+    data: { forecasts, actuals },
     meta: {
       timeRange: { start: startDate, end: endDate },
       forecastType: type,
+      basis,
+      basisNote,
+      withheldPoints,
     },
   });
 });
@@ -191,15 +212,18 @@ router.get('/multi-horizon', cacheMiddleware(TTL.MEDIUM), (req: Request<object, 
   const startDate = start || new Date().toISOString();
   const endDate = end || new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
 
-  const data = forecastService.getMultiHorizonForecastData(country, type, startDate, endDate);
+  const series = forecastService.getMultiHorizonForecastData(country, type, startDate, endDate);
 
   res.json({
     success: true,
-    data,
+    data: series.data,
     meta: {
-      count: data.length,
+      count: series.data.length,
       timeRange: { start: startDate, end: endDate },
       forecastType: type,
+      basis: series.basis,
+      basisNote: series.basisNote,
+      withheldPoints: series.withheldPoints,
     },
   });
 });

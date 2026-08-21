@@ -4,6 +4,11 @@ import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
 import { resolveModelCandidates } from '../config/forecastModels.js';
 import { loadActualGuard } from './loadQuality.js';
 import { actualsSourceFor } from './actualsSource.js';
+import {
+  classifyForecastSeriesBasis,
+  withholdDivergentBasisSeries,
+  type WithheldForecastSeries,
+} from './loadForecastBasis.js';
 
 // There used to be a second normalizer here, `normalizeForForecastsTable`,
 // which kept the 'T' separator "for the forecasts table". It had the mirror of
@@ -12,7 +17,21 @@ import { actualsSourceFor } from './actualsSource.js';
 // start day, and a 'T'-form upper bound pulled in every space-form row later in
 // the end day. Neither single form is right — see `timestampRange`.
 
-export function getForecastData(
+/**
+ * The raw row fetch: the candidate ladder, and no rule about whether the rows
+ * may be drawn.
+ *
+ * **Not exported.** `getForecastSeries` below is the served entry point, and
+ * the only way to reach these rows from outside this module — so a caller
+ * cannot get a forecast series without also getting the verdict on whether it
+ * is on the same basis as the actuals it is about to be plotted against
+ * (ABL-501). That is a structural version of the property
+ * `loadForecastBasis.ts` states as a rule: put the rule where every consumer
+ * inherits it, because a rule a caller has to remember is one somebody will
+ * not. It cost ABL-493 to learn once already, when the metric-level rule sat
+ * in one service and the endpoint that mattered most lived in another.
+ */
+function getForecastData(
   countryCode: string,
   forecastType: ForecastType,
   start: string,
@@ -117,6 +136,43 @@ function queryForecasts(
   ) as ForecastDataPoint[];
 }
 
+export interface ServedForecastSeries extends WithheldForecastSeries<ForecastDataPoint> {
+  /**
+   * Which model produced these rows — or produced the rows that were withheld.
+   *
+   * Read **before** the withholding, deliberately. Naming who produced an
+   * unusable series is the honest half of the answer and it is what separates
+   * this from the no-rows case, where there is no model to name; the
+   * degenerate net-position forecast keeps `model_name` for exactly the same
+   * reason (`netPositionService.ts`). Taking it off `data[0]` after the fact
+   * would silently turn "catboost's 96 rows are withheld" into "nothing
+   * served", which is the collapse `withheldPoints` exists to prevent.
+   */
+  model: string | null;
+}
+
+/**
+ * A forecast series as it may be served: the ladder's rows, minus any the
+ * divergent-basis rule withholds, plus the reason and who produced them.
+ *
+ * Every route that hands a forecast series to a caller goes through here.
+ */
+export function getForecastSeries(
+  countryCode: string,
+  forecastType: ForecastType,
+  start: string,
+  end: string,
+  granularity: Granularity = 'hourly',
+  horizon?: number,
+  modelId?: string
+): ServedForecastSeries {
+  const rows = getForecastData(countryCode, forecastType, start, end, granularity, horizon, modelId);
+  return {
+    ...withholdDivergentBasisSeries(countryCode, forecastType, rows),
+    model: rows[0]?.model_name ?? null,
+  };
+}
+
 export function getLatestForecast(
   countryCode: string,
   forecastType?: ForecastType
@@ -201,7 +257,12 @@ export function getForecastWithActuals(
   // than unknown).
   const source = actualsSourceFor(forecastType);
   if (!source) {
-    return { forecasts: [], actuals: [] };
+    return {
+      forecasts: [],
+      actuals: [],
+      ...classifyForecastSeriesBasis(countryCode, forecastType),
+      withheldPoints: 0,
+    };
   }
 
   // Get forecasts
@@ -258,7 +319,21 @@ export function getForecastWithActuals(
   `);
   const actuals = actualStmt.all(upperCode, ...rangeArgs(range));
 
-  return { forecasts, actuals };
+  // The forecasts go, the actuals stay. This endpoint's whole point is that
+  // the two arrays are the same window of the same quantity, so on a
+  // divergent-basis pair it is the *pairing* that is the false claim — the
+  // realized series is a true measurement and withholding it would assert a
+  // gap in data we hold in full (ABL-501). `withheldPoints` says how many
+  // forecast rows are being held back, so a consumer can tell this apart from
+  // a country that simply has no forecast.
+  const withheld = withholdDivergentBasisSeries(countryCode, forecastType, forecasts);
+  return {
+    forecasts: withheld.data,
+    actuals,
+    basis: withheld.basis,
+    basisNote: withheld.basisNote,
+    withheldPoints: withheld.withheldPoints,
+  };
 }
 
 function getGroupByClause(granularity: Granularity): string {
@@ -288,7 +363,7 @@ export function getMultiHorizonForecastData(
   forecastType: ForecastType,
   start: string,
   end: string
-): MultiHorizonDataPoint[] {
+): WithheldForecastSeries<MultiHorizonDataPoint> {
   const upperCode = countryCode.toUpperCase();
   const range = timestampRange(start, end);
 
@@ -353,7 +428,13 @@ export function getMultiHorizonForecastData(
   }
 
   // Convert to array and sort by timestamp
-  return Array.from(dataMap.values()).sort((a, b) =>
+  const merged = Array.from(dataMap.values()).sort((a, b) =>
     new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
+
+  // Same series, split by horizon — so the divergent-basis rule applies for
+  // the same reason it applies to `getForecastSeries`, and splitting a
+  // gross-basis forecast into D+1 and D+2 does not make either half comparable
+  // with a net-basis actual.
+  return withholdDivergentBasisSeries(countryCode, forecastType, merged);
 }

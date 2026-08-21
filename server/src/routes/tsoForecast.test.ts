@@ -409,3 +409,50 @@ describe('divergent forecast basis (ABL-277)', () => {
     expect(da.bias).toBe(-50); // forecast 50 MW under the actual at every hour
   });
 });
+
+// ---------------------------------------------------------------------------
+// ABL-501 — the TSO half of the same withholding. ABL-277 stopped NL's TSO
+// load *error measures* from being published but left the TSO forecast series
+// itself on the Load tab, so the gross-basis line kept being drawn over the
+// net-basis actuals with only the accuracy tab saying anything about it.
+// ---------------------------------------------------------------------------
+describe('GET /api/tso-forecast/load/:cc — divergent forecast basis (ABL-501)', () => {
+  it('withholds NL and says how many rows it is holding', async () => {
+    const { status, body } = await get(`load/NL?${NEXT_DAY}`);
+
+    expect(status).toBe(200);
+    expect(body.data).toEqual([]);
+    expect(body.meta.count).toBe(0);
+    expect(body.meta.withheldPoints).toBe(4);
+    expect(body.meta.basis).toBe('divergent_basis');
+    expect(body.meta.basisNote).toContain('behind-the-meter solar');
+  });
+
+  it('withholds the week-ahead horizon too', async () => {
+    // The finding is about what ENTSO-E nets out of the realized series, which
+    // does not become less true further out. ABL-277's metric suppression
+    // already treated D+1 and D+7 as one stream — both horizon bars vanish for
+    // NL together — so the series half has to match.
+    const { body } = await get(`load/NL?${NEXT_DAY}&forecastType=week_ahead`);
+    expect(body.data).toEqual([]);
+    expect(body.meta.basis).toBe('divergent_basis');
+  });
+
+  it('leaves DE alone', async () => {
+    const { status, body } = await get(`load/DE?${WINDOW}`);
+
+    expect(status).toBe(200);
+    expect((body.data as unknown[]).length).toBeGreaterThan(0);
+    expect(body.meta.basis).toBe('comparable');
+    expect(body.meta.basisNote).toBeNull();
+    expect(body.meta.withheldPoints).toBe(0);
+  });
+
+  it('does not touch the generation forecast, for NL or anyone', async () => {
+    // Generation-side basis divergence is ABL-400 and is not established. The
+    // registry records a load finding; applying it here would be inventing one.
+    const { status, body } = await get(`generation/NL?${NEXT_DAY}`);
+    expect(status).toBe(200);
+    expect(body.meta).not.toHaveProperty('basis');
+  });
+});

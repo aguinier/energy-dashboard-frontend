@@ -5,6 +5,7 @@ import { FORECAST_TYPE_CONFIG, FORECAST_TYPE_MAP_OPTIONS } from '@/lib/compariso
 import { cn } from '@/lib/utils';
 import type { CrossCountryMetrics } from '@/types';
 import { wapeColor, wapeScale } from './accuracyScale';
+import { basisNoticesFromRows, divergentBasisNote, NOT_COMPARABLE } from './basisNotice';
 import { buildLeaderboardRows, wapeRanks, type LeaderboardRow } from './leaderboardRows';
 import { SkillCell } from './SkillCell';
 
@@ -73,6 +74,7 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
   // spread — never shared with another type. See accuracyScale.ts.
   const scale = useMemo(() => wapeScale(rows.map((r) => r.wape)), [rows]);
   const ranks = useMemo(() => wapeRanks(rows), [rows]);
+  const notices = useMemo(() => basisNoticesFromRows(rows), [rows]);
 
   const sortedRows = useMemo(() => {
     return [...rows].sort((a, b) => {
@@ -159,6 +161,12 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
             {sortedRows.map((row: LeaderboardRow, idx) => {
               const color = wapeColor(row.wape, scale);
               const rank = ranks.get(row.country);
+              // Withheld because this country's two series are not on the same
+              // basis (ABL-493). Every measure cell says so rather than
+              // printing a bare dash — a silent gap reads as a data problem,
+              // and the whole point of the server's separate verdict word is
+              // that this is not one. The footnote below carries the sentence.
+              const note = divergentBasisNote(row);
 
               return (
                 <tr
@@ -173,7 +181,9 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
                     {row.country}
                   </td>
                   <td className="px-4 py-3 text-center">
-                    {row.wape !== null ? (
+                    {note !== null ? (
+                      <span className="text-xs text-ink-dim" title={note}>{NOT_COMPARABLE}</span>
+                    ) : row.wape !== null ? (
                       <span
                         className="inline-block rounded px-2 py-0.5 text-xs font-medium"
                         style={color ? { backgroundColor: withOpacity(color, 0.15), color } : undefined}
@@ -183,16 +193,25 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
                     ) : '-'}
                   </td>
                   <td className="px-4 py-3 text-center">
-                    <SkillCell skill={row.skill} />
+                    {/* Not `<SkillCell>`: with `skillPct` withheld it would
+                        print "insufficient data", which is false here — the
+                        D-7 pairs exist and the baseline itself is measurable.
+                        It is the ratio against a contaminated model WAPE that
+                        cannot be published. */}
+                    {note !== null ? (
+                      <span className="text-xs text-ink-dim" title={note}>{NOT_COMPARABLE}</span>
+                    ) : (
+                      <SkillCell skill={row.skill} />
+                    )}
                   </td>
                   <td className="px-4 py-3 text-center text-xs">
-                    {row.mae !== null ? row.mae.toFixed(2) : '-'}
+                    {note !== null ? <span title={note}>—</span> : row.mae !== null ? row.mae.toFixed(2) : '-'}
                   </td>
                   <td className="px-4 py-3 text-center text-xs">
-                    {row.rmse !== null ? row.rmse.toFixed(2) : '-'}
+                    {note !== null ? <span title={note}>—</span> : row.rmse !== null ? row.rmse.toFixed(2) : '-'}
                   </td>
                   <td className="px-4 py-3 text-center text-xs">
-                    {row.bias !== null ? (
+                    {note !== null ? <span title={note}>—</span> : row.bias !== null ? (
                       <span className={row.bias > 0 ? 'text-amber-500' : 'text-sky-500'}>
                         {row.bias > 0 ? '+' : ''}{row.bias.toFixed(2)}
                       </span>
@@ -211,7 +230,9 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
                         #{rank}<span className="text-ink-faint"> / {scale.count}</span>
                       </span>
                     ) : (
-                      <span className="text-xs text-muted-foreground">not measurable</span>
+                      <span className="text-xs text-muted-foreground" title={note ?? undefined}>
+                        {note !== null ? NOT_COMPARABLE : 'not measurable'}
+                      </span>
                     )}
                   </td>
                 </tr>
@@ -233,6 +254,21 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
         is that pair count. A negative skill means the naive baseline would have done better; a WAPE
         can look respectable in isolation and still be a loss against D-7.
       </p>
+      {/* The reason behind every "not comparable" in the table above. It is the
+          registry sentence off the wire, not a second copy kept here, and it
+          says what the gap IS — the country is unranked because its numbers
+          would not mean what the column heading says, not because we are
+          missing its data. The Data Pts column beside it still shows the real
+          pair count, which is what makes that distinction checkable. */}
+      {notices.length > 0 && (
+        <ul className="m-0 list-none space-y-1 px-1 text-micro text-ink-dim">
+          {notices.map((notice) => (
+            <li key={notice.country}>
+              <span className="font-mono font-medium">{notice.country}</span> — {notice.note}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
