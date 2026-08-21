@@ -2354,11 +2354,61 @@ alarm no ingest fix could clear is furniture.
   judged on **coverage**, never age. A healthy day-ahead price is dated up to
   ~46h in the *future*, so the age rule would read it as impossibly fresh
   forever and never notice a missing tomorrow — which is exactly how ABL-51 got
-  found by a board member instead of by us. The rule: before
-  `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` (**14**, the first hour by which the 13:30
+  found by a board member instead of by us. The rule: before that stream's
+  `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` the newest row must reach today's Brussels
+  market day; after it, tomorrow's.
+
+  **The deadline is per stream, because the three streams are three different
+  ENTSO-E documents** (ABL-494, `services/freshness.ts:168`). They do not
+  publish at the same time of day, and one shared 14 made
+  `tsoGenerationForecast` read `stale` fleet-wide every afternoon:
+
+  | Stream | Document | Data item | Upstream publication deadline | Required after (UTC) |
+  |---|---|---|---|---|
+  | `price` | A44 | 12.1.D | SDAC auction, ~12:45 Brussels (10:45 UTC CEST) | **14** |
+  | `tsoLoadForecast` | A65 / A01 | 6.1 | around midday Brussels D-1 | **14** |
+  | `tsoGenerationForecast` | A69 / A01 | 14.1.D | **18:00 Brussels D-1** (Reg. 543/2013 Art. 14.1) = 16:00 UTC CEST, 17:00 UTC CET | **20** |
+
+  Document types are `../energy-data-gathering/config.py`'s (`price`,
+  `load_forecast_day_ahead`, `wind_solar_forecast`). `14.1.D` is quoted verbatim
+  from ENTSO-E's own Acknowledgement 999 text; the other two items are the
+  Reg. 543/2013 numbering. 14 for A44 is roughly the hour by which the 13:30
   pass has finished, so "missing" means *we* are missing it rather than nobody
-  having published yet) the newest row must reach today's Brussels market day;
-  after it, tomorrow's.
+  having published yet; A65 clears that hour empirically (DE/FR/ES/IT/PL all
+  held tomorrow at 15:17 and 16:32 UTC on 2026-08-20).
+
+  **A pass takes 17-55 minutes, not the ~11 this file and the docstring used to
+  claim.** That figure was inferred from one pass's per-country fetch stamps and
+  was wrong by up to 5x. Measured on prod from `cron_update.log` over 08-18..20:
+  16m55s, 23m00s, 29m46s, 29m19s, 20m40s, 18m55s, 23m43s and **55m10s**.
+  Countries are fetched in one sequential alphabetical loop, so an overrun bites
+  the tail of the alphabet rather than everyone — in the 55-minute pass, NL was
+  fetched 14:07 and UA 14:25, both after the 14:00 cutoff. Two consequences: the
+  A69 hour must clear 18:30 + 55m = **19:25**, which is why it is 20 and not 19;
+  and 14:00 can already fire while the pass carrying the data is still running,
+  a pre-existing few-minute false-positive risk on `price` and
+  `tsoLoadForecast`. 14 is kept anyway — it is the ABL-51 tripwire, and widening
+  it trades a rare few-minute false positive for permanently later real-miss
+  detection — but whether the shared floor should move to 15 is its own
+  judgement with its own evidence.
+
+  That the A69 horizon actually moves at the 18:30 pass is measured, not
+  inferred: DE's stored row count per pass repeats identically across 08-18/19/20
+  and closes at 15-minute resolution — 704 at 13:30 (newest row today) and 780 at
+  18:30 (newest row tomorrow); the early publishers' 800 is 704 + 96, exactly one
+  extra market day. At the 13:30 pass that early set is NL, BE, AT, GR, HR, HU,
+  LT, LU, NO and RO, so do not treat NL/BE as special in a fixture.
+
+  **What that costs, stated rather than papered over:** between 14:00 and 20:00
+  UTC we cannot distinguish "upstream never published A69" from "we have not
+  fetched it yet", and the rule no longer pretends to. That is a bound of a
+  four-passes-a-day ingest, not a workaround. Measured 2026-08-20 by raw HTTP
+  probes against ENTSO-E: at 15:24 UTC the API itself answered Acknowledgement
+  999, "No matching data found for GENERATION_FORECAST_WIND_SOLAR [14.1.D]", for
+  DE's tomorrow — the old alarm fired while *nobody* had the data. Two things
+  survive inside the window: a stream that fails to reach even today is still
+  `stale` at any hour, and from 20:00 UTC a genuinely missing tomorrow is caught
+  for the rest of the day — ABL-51's protection, intact.
 
   The bound is the **start** of the required Brussels day, not its end, and that
   is what makes one Brussels-framed test correct for every bidding zone from WET
@@ -2376,8 +2426,8 @@ alarm no ingest fix could clear is furniture.
   worst active stall and spans at least 102 longest scheduled ingest gaps. It
   selected only AL generation plus GB/UA load and generation forecasts.
   There is no country ignore-list: a newer row immediately re-enters the normal
-  live/stale rule (`classifyMeasuredStream`, `services/freshness.ts:181`;
-  `classifyDayAheadStream`, `services/freshness.ts:213`).
+  live/stale rule (`classifyMeasuredStream`, `services/freshness.ts:264`;
+  `classifyDayAheadStream`, `services/freshness.ts:303`).
 
   This is still an inference from absence, not proof of upstream causality. A
   single-stream ingest defect left untouched for 30 days has the same stored
