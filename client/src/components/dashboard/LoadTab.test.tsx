@@ -118,6 +118,14 @@ const fx = vi.hoisted(() => {
 vi.mock('@/services/api', () => ({
   fetchCountries: vi.fn(async () => [{ country_code: 'BE', country_name: 'Belgium' }]),
   fetchForecastModels: vi.fn(async () => fx.registry),
+  // ABL-469. `undefined` is the no-recommendation case and is what every test
+  // below except the two auto-selection ones wants — it reproduces the state
+  // before auto-selection existed. It has to be mocked explicitly rather than
+  // left off: `vi.mock` with a factory replaces the whole module, so an absent
+  // export is `undefined` and calling it throws inside the query, where React
+  // Query swallows it. That happened to produce the right answer for the wrong
+  // reason, which is exactly the kind of accident a test file should not rest on.
+  fetchRecommendedModel: vi.fn(async () => undefined),
   fetchLoadData: vi.fn(async () => fx.loadPoints),
   fetchForecastData: vi.fn(async () => ({ points: fx.mlPoints, servedModelId: 'xgboost', ...fx.comparable })),
   fetchTSOLoadForecast: vi.fn(async () => ({ points: fx.tsoPoints, ...fx.comparable })),
@@ -320,6 +328,56 @@ describe('LoadTab — withheld forecast (divergent basis)', () => {
 
     expect(await forecastValuesOnChart()).toContain(fx.ML_VALUE);
     expect(screen.queryByText(fx.BASIS_NOTE)).toBeNull();
+  });
+
+  /**
+   * A measured TSO recommendation — the smallest fixture that makes
+   * `describeAutoSelection` actually speak. `tso` is used rather than `ml`
+   * because it displays what was measured immediately, where an `ml` label
+   * additionally waits for `meta.model` to agree (`resolveSelection`).
+   */
+  const recommendTso = () =>
+    vi.mocked(api.fetchRecommendedModel).mockResolvedValue({
+      modelId: 'tso-d1',
+      label: 'ENTSO-E TSO · D+1',
+      source: 'tso',
+      wape: 3.45,
+      dataPoints: 700,
+      fallback: false,
+      windowStart: fx.iso(-720),
+      windowEnd: fx.iso(0),
+      windowDays: 30,
+      candidates: [],
+    });
+
+  const AUTO_SENTENCE = /automatically selected as the most accurate/;
+
+  it('default view: an auto-selected default IS announced when its line is drawn', async () => {
+    // Negative control for the test below. Without this passing, the assertion
+    // that the sentence disappears when withheld would pass vacuously — which
+    // is the failure mode a "check something is absent" test invites.
+    recommendTso();
+
+    renderLoadTab();
+
+    expect(await screen.findByText(AUTO_SENTENCE)).toBeTruthy();
+  });
+
+  it('default view: never announces a withheld series as the most accurate forecast', async () => {
+    // The trap this merge created (ABL-469 + ABL-501). That sentence is a claim
+    // about a line, and a withheld pair has no line — nor any attributable
+    // accuracy for a default to have been selected *on*, which is the whole of
+    // ABL-493. Printing it would republish, as a commendation, the very measure
+    // suppressed everywhere else.
+    recommendTso();
+    vi.mocked(api.fetchTSOLoadForecast).mockResolvedValue({ points: [], ...fx.withheld });
+
+    renderLoadTab();
+
+    await screen.findByText(fx.BASIS_NOTE);
+    expect(screen.queryByText(AUTO_SENTENCE)).toBeNull();
+    // And no line to describe, which is what makes the sentence wrong.
+    expect(await forecastValuesOnChart()).toEqual([]);
   });
 
   it('selection view: names the withheld model and gives the reason', async () => {

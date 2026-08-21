@@ -4345,16 +4345,32 @@ checkout, under **v24.18.0**:
 | suite | files | tests | typecheck |
 |---|---:|---:|---|
 | `cd server && npx vitest run` | **107** | **2,132** | `tsc --noEmit` exit 0 |
-| `cd client && npx vitest run` | **54** | **745** | `tsc -b --force` exit 0 |
+| `cd client && npx vitest run` | **54** | **747** | `tsc -b --force` exit 0 |
 
 **Both baselines were measured in the same session rather than reconciled from
 the entries below**, which is the only way this section has ever been right:
 `origin/main` at `a508ba1` was checked out into a scratch worktree and both
 suites run against it, giving **server 107 / 2,087** and **client 52 / 704**. So
 this branch is **+0 server files / +45 server cases** and **+2 client files /
-+41 client cases**. Three of those server cases are *replacements* rather than
++43 client cases**. Three of those server cases are *replacements* rather than
 additions — see the ABL-469 interaction below — so the delta is not the sum of
 what the two issues added.
+
+**The primary checkout's `node_modules` regressed to the ABL-460 state partway
+through this run, and the same completeness check found it.** The client suite
+ran green here at 13:5x and then failed to boot at 14:2x on
+`Cannot find package '@rolldown/pluginutils'` — the bare-specifier tell — with
+the note-4 check reporting **107 missing packages** again, `@babel/core` among
+them. Nothing in this branch touched `node_modules`; something rewrote the
+shared tree in place, which is what note 1 forbids. Worth knowing for two
+reasons: a green suite earlier in your own session is not evidence the tree is
+still complete when you re-run it, and **the cheapest repair is often not a
+repair at all** — several per-issue worktrees carry their own complete
+`node_modules`, so verifying a candidate against your own `package-lock.json`
+(0 missing) and repointing your worktree's junction at it costs seconds, writes
+nothing shared, and is reversible. Check the candidate against *your* lockfile
+rather than assuming: of the two tried here, one was complete and the other was
+48 packages short.
 
 The server file count needed no run and confirms the +0: `git ls-tree -r
 origin/main --name-only | grep -c '^server/src/.*\.test\.ts$'` returns 106,
