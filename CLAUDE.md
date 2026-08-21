@@ -94,18 +94,19 @@ Measured that way on ABL-42 (branch tip `e1f849f`, `origin/main` + 2 files):
 identical to the figure `origin/main` was green at. So an empty `.bin` says
 nothing about the suite.
 
-**Both suites run normally in the primary checkout as of 2026-08-20, and the
+**Both suites run normally in the primary checkout as of 2026-08-21, and the
 entry-point workarounds above are now a fallback rather than the standing
-procedure** (ABL-460). Between roughly 2026-08-13 and 2026-08-20 the root
-`node_modules` was **incompletely installed** — 106 of 605 packages absent and
-`node_modules/.bin` empty — and this section recorded three of the consequences
-as three separate, unrelated environment quirks. They were one defect:
+procedure** (ABL-460, and again under ABL-517 after the identical damage
+recurred). Between roughly 2026-08-13 and 2026-08-20 the root `node_modules`
+was missing 106 of 605 packages with `node_modules/.bin` empty, and this
+section recorded three of the consequences as three separate, unrelated
+environment quirks. They were one defect:
 
 | symptom recorded here | actually |
 |---|---|
-| `.bin` empty, `npx vitest` "is not recognized" | no `.bin` shims were ever written |
-| client suite "genuinely blocked" on an absent `@rolldown/pluginutils` | absent because the install was partial |
-| `tsx` failing `Host version "0.27.2" does not match binary version "0.28.1"` | `@esbuild/win32-x64` absent, so esbuild found no matching binary |
+| `.bin` empty, `npx vitest` "is not recognized" | all 129 shims had been deleted |
+| client suite "genuinely blocked" on an absent `@rolldown/pluginutils` | the package had been deleted |
+| `tsx` failing `Host version "0.27.2" does not match binary version "0.28.1"` | `@esbuild/win32-x64` deleted, so esbuild found no matching binary |
 
 Two further absences never made it into this file at all. `@babel/core` was
 **genuinely** missing, so note 1's stale-process story did not apply to it — and
@@ -114,6 +115,58 @@ exact error as a stale process. And every `@radix-ui/*` package was missing,
 which is what produced the "7 pre-existing `@radix-ui/*` TS2307 errors in
 `components/ui/*`" the Testing section used to tell you to expect. There are
 none now: `npx tsc -b --force` exits 0.
+
+**ABL-460 called this an incomplete *install*, and that was wrong — which is why
+it recurred within a day** (ABL-517, 2026-08-21, the same shape at 107
+packages). Nothing was ever half-installed: something **deleted** those packages
+out of the live tree, and the proof is in the shape rather than in any log. All
+107 are scoped; they run in unbroken alphabetical order from `@alloc` to
+`@rollup`; and they stop dead inside `@rollup/rollup-win32-x64-msvc`, whose
+*only* surviving file is `rollup.win32-x64-msvc.node`. That is a recursive
+delete walking the directory in name order and aborting on the first file
+Windows refuses to unlink — a native addon some live process has memory-mapped.
+An install failure has no reason to be alphabetical and no reason to stop there.
+
+**What ran it: `git worktree remove --force` on a scratch worktree whose
+`node_modules` was a junction to the shared tree.** Reproduced in an isolated
+scratch repo rather than inferred — junction a worktree's `node_modules` at a
+directory holding `@aaa @bbb @ccc zzz-survivor`, run `git worktree remove
+--force`, and that directory is left present and empty. Git does not treat an
+NTFS junction as a link to step over; it walks through and deletes the target's
+contents. On 2026-08-21 that call is timestamped `11:45:58Z`, the primary tree's
+`@rollup` directory carries an `11:45` mtime, and both suites are recorded green
+*through the same junction* fifteen seconds earlier — which is also what clears
+the `Remove-Item -Recurse` in the same run of suspicion.
+
+So the rule, and it costs nothing:
+
+**Drop the junction before removing the worktree, and never aim a
+`git worktree remove`, `rm -rf` or `Remove-Item -Recurse` at a path that still
+contains one.**
+
+```powershell
+cmd /c rmdir "<worktree>\node_modules"     # drops the reparse point only
+git worktree remove --force "<worktree>"   # now safe
+```
+
+`cmd /c rmdir` is the only removal in that pair guaranteed not to follow the
+junction.
+
+**And do not confirm the shared tree afterwards by probing an unscoped
+package.** The 2026-08-21 run checked `node_modules\vitest`, got `True`, and
+reported "shared node_modules intact" — thirty-five minutes before the client
+suite failed to boot. `vitest` sorts after every `@` scope, so the aborted walk
+had not reached it. Run the completeness check below instead; it cannot be
+fooled by ordering.
+
+**The blast radius is what makes this more than an inconvenience.** Measured
+2026-08-21, **17 of the 28 worktrees under `C:\Code\able` reach the primary
+`node_modules` through a junction**, so one delete-through-junction takes out
+seventeen checkouts at once and leaves each reporting a *different*
+plausible-looking environment fault. Giving every worktree its own tree would
+end that, at ~302 MB and one install each (~5 GB for the seventeen); the
+ordering rule above costs nothing and removes the same failure, so it is the
+answer unless those installs become desirable for another reason.
 
 The repair was **purely additive and changed no source file** — a clean `npm ci`
 into a scratch directory, then a copy of only the absent packages into the live
@@ -127,6 +180,25 @@ is what makes it safe against note 1's hazard, which is specifically about
 `npm install` *rewriting* modules under ~40 live agent processes: a running
 process cannot have an already-resolved module change underneath it if no
 existing file changes.
+
+**The `npm ci` into scratch is the fallback, not the first move — a
+verified-complete sibling worktree is a cheaper donor and needs no network.**
+ABL-517 repaired all 107 that way in under a minute: survey every
+`C:\Code\able\*/node_modules` against the damaged tree's own
+`package-lock.json`, take one reporting `missing=0` **and**
+`versionMismatch=0` (2026-08-21: `ABL-300-v1-api-key-auth`, `ABL-351-…`,
+`ed-wt-abl412`, `ed-wt-ceo`), and copy from it under exactly the rules above.
+Check both counts, not just the first: a tree can hold every package at a
+version the lockfile does not ask for. Two details that repair needs and a
+naive copy gets wrong — walk the missing list **shallowest path first**, or a
+package nested inside another arrives before its parent (12 of the 107 turned
+out to be carried in by a parent and had to be re-checked and skipped); and
+merge, never rename over, any directory that already partially exists, which
+is how `@rollup/rollup-win32-x64-msvc` keeps the mapped `.node` no process
+will release (verified byte-identical to the donor's before the two missing
+files were added beside it). The 129 `.bin` shims copy across safely too —
+they are generated with relative paths only (`%dp0%\..\vitest\vitest.mjs`),
+with zero absolute paths across all 129.
 
 So an empty `.bin` still says nothing about the suite, and a missing package
 still names its **bare specifier** where the stale-process trap resolves to a
@@ -4361,9 +4433,13 @@ through this run, and the same completeness check found it.** The client suite
 ran green here at 13:5x and then failed to boot at 14:2x on
 `Cannot find package '@rolldown/pluginutils'` — the bare-specifier tell — with
 the note-4 check reporting **107 missing packages** again, `@babel/core` among
-them. Nothing in this branch touched `node_modules`; something rewrote the
-shared tree in place, which is what note 1 forbids. Worth knowing for two
-reasons: a green suite earlier in your own session is not evidence the tree is
+them. Nothing in this branch *edited* `node_modules` — but it did delete
+through it, which was not obvious at the time and is the whole finding of
+ABL-517: the run's own `git worktree remove --force` on a scratch baseline
+worktree, at `11:45:58Z`, walked the junction into the shared tree. Note 4
+carries the mechanism, the scratch-repo reproduction and the two-line ordering
+rule that prevents it. Two things are still worth knowing independently of the
+cause: a green suite earlier in your own session is not evidence the tree is
 still complete when you re-run it, and **the cheapest repair is often not a
 repair at all** — several per-issue worktrees carry their own complete
 `node_modules`, so verifying a candidate against your own `package-lock.json`
@@ -4424,14 +4500,15 @@ both of which had become false and neither of which was a code defect:
 
 - **"The client suite could not be run in this checkout"** — it was blocked
   before it booted by an absent `@rolldown/pluginutils`. That package was
-  missing because the root `node_modules` was incompletely installed; it is
+  missing because it had been deleted out of the root `node_modules` (note 4
+  — not the incomplete install ABL-460 recorded); it is
   present now and all 51 files run. The last figure recorded under the blockage
   was 50 files / 666 tests on 2026-08-13, so the repair reveals ABL-289's
   `lib/opsTrafficRows.test.ts` plus one more case than the +11 that entry
   predicted. Re-measure rather than reconciling against 666.
 - **"`tsc --noEmit` reports the same 7 pre-existing `@radix-ui/*` TS2307 errors
-  in `components/ui/*`"** — those were every `@radix-ui/*` package being absent
-  from the same partial install, not a pre-existing condition of the code.
+  in `components/ui/*`"** — those were every `@radix-ui/*` package having been
+  deleted by the same walk, not a pre-existing condition of the code.
   There are none: `npx tsc -b --force` exits 0 on `origin/main`. **A TS2307 in
   `components/ui/*` is now a real failure and must not be waved through as
   expected.**
