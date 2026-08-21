@@ -817,7 +817,11 @@ model must be listed there to be served at all.**
 **The client sends `model=` only when the user explicitly picked one** in
 `ModelPicker` (`client/src/components/dashboard/ModelPicker.tsx`, driven by
 `useForecastModels.ts`'s `resolveSelection` — `requestModelId` is set from an
-id the user actually chose and from nothing else, `useForecastModels.ts:62`).
+id the user actually chose and from nothing else, `useForecastModels.ts:155`).
+**ABL-469's auto-selection does not weaken this**: a measured recommendation
+decides which model is *displayed*, and is deliberately still not pinned onto
+the wire — see "The default is auto-selected per (country, forecast type)"
+below for why.
 Leaving it off lets the server walk its candidate ladder
 (`resolveModelCandidates`, `forecastModels.ts:211-220`): production model
 first, then the other registered ml models, returning the first with rows for
@@ -835,6 +839,67 @@ from the picker's own selection when the ladder fell back.
 (`forecastModels.ts:174` still asserts the sets are fully disjoint, as measured
 on 2026-07-26. That comment is now stale for `price`; the behaviour it
 justifies — ordered rather than absolute preference — is unaffected.)
+
+### The default is auto-selected per (country, forecast type) — ABL-469
+
+`FORECAST_MODELS` names one `production` model per forecast **type**, picked by
+hand on 2026-07-26 and never by measurement. It has no country dimension, so a
+pair whose ENTSO-E series is twice as accurate as ours still displayed ours.
+Measured through the real service code against the replica on 2026-08-20, that
+is the ordinary case rather than an edge one — WAPE over a rolling 30 days,
+ours vs ENTSO-E D+1: DE load **6.77 vs 3.41**, FR load 5.17 vs 1.54, ES load
+6.00 vs 1.18, BE load 5.30 vs 3.86, DE solar 62.13 vs 4.69, DE wind_onshore
+63.65 vs 13.48, BE wind_offshore 194.76 vs 35.23. The Board directive (ABL-316,
+2026-08-14) is that the better series is displayed **labelled with its source**,
+while ours stays selectable and keeps accruing a track record.
+
+`GET /forecasts/models?type=&country=` now carries a `recommended` key beside
+the type's config. `services/bestForecastModel.ts` is the ranking rule (pure,
+colocated test) and `services/recommendedModelService.ts` measures the
+candidates. **No new accuracy machinery and no new table**: every figure comes
+from an accuracy function that already served an endpoint, at 14-32 ms per
+pair measured on the replica, so the "prefer the accuracy the server already
+computes" bar is met rather than deferred to a follow-up.
+
+Four properties are load-bearing:
+
+- **The recommendation decides what is *displayed*, and is still never pinned
+  onto the wire.** `requestModelId` stays `undefined` for anything the user did
+  not choose (`useForecastModels.ts:155`), so the claim above this section
+  survives intact. A recommendation is measured over the last 30 days and says
+  nothing about a window the user has shifted back six months; pinning it there
+  would blank the chart in exactly the case the server's fallback ladder exists
+  to cover. So auto-selection chooses the *source*, and the ladder keeps
+  choosing between our own models by coverage.
+- **A fallback is never labelled as a measurement.** A pair with no qualifying
+  candidate resolves to the type's `production` id exactly as before, with
+  `fallback: true`, and `describeAutoSelection` returns `null` for it —
+  announcing an unmeasured default as "the most accurate forecast here" would
+  be this repo's defining failure mode in a sentence.
+- **An `ml` label waits for `meta.model` to agree.** A tso recommendation is
+  unambiguous (the tab fetches that horizon directly), but nothing is pinned for
+  an ml one, so the ladder could serve one model while the measurement named
+  another — a chart labelled with a model that did not draw it. Measured over
+  the same window, **no pair has rows from more than one of our registered ml
+  models**, so the disagreement is empty today; the check keeps the label
+  correct by construction rather than by that measurement holding.
+- **Two exclusions do real work, and both were verified live.** NL load's TSO
+  series comes back `unmeasurable_wape` — `applyLoadForecastBasis` suppresses
+  it, so ABL-277's divergent-basis country is not auto-selected onto a 27%
+  figure that is a definitional gap — and `tso-d7` is `sparse_coverage`
+  everywhere, publishing one value per day at noon (4.2% of the window's hours),
+  so its WAPE answers a narrower question and must not be ranked against a
+  series measured all day. The coverage bar counts **distinct window hours, not
+  a share of the largest point count**; the latter was tried first and excludes
+  the hourly ML model for competing against a 15-minute TSO series, which is a
+  resolution difference and not a coverage difference.
+
+`PriceTab` deliberately carries no source label: `price` has **no TSO model
+registered**, so the "a TSO default must not read as ours" case cannot arise
+there, and its subtitle already says `dashed = able-ml forecast`. The window,
+the ranking measure (WAPE) and the tie-break (evidence, then the incumbent,
+then registry order) are the three judgement calls the issue asked to be stated
+rather than buried; they are argued in `bestForecastModel.ts`'s header.
 
 **A pin is clearable, and "pinned" is not "shown" (ABL-16).** The server still
 honours an explicit request strictly — "if you asked for xgboost and it has
@@ -4104,6 +4169,25 @@ both of which had become false and neither of which was a code defect:
 See "Troubleshooting the dev server" note 4 for the completeness check that
 distinguishes a broken tree from a broken change, and for why the repair was
 additive rather than an `npm install`.
+
+**Both of those client claims are environment-specific, and neither reproduced
+on 2026-08-20 (ABL-469).** In a per-issue execution worktree with its own
+complete `node_modules`, the client suite boots and runs clean —
+`@rolldown/pluginutils` is present, and `tsc --noEmit` reports **zero** errors,
+not the 7 `@radix-ui/*` TS2307s. So both are properties of the primary
+checkout's incomplete install (see the "Measure `node_modules` completeness
+first" lesson), not of the client suite, and a run that hits either should
+measure its own tree before recording it as the state of the world.
+Measured there on unmodified `main` at `5cf5b4c`: **client 51 files / 678
+tests, server 104 files / 2,001 tests** — the server figure reproducing the one
+above exactly, which is what makes the client correction trustworthy rather
+than a second unverified number. ABL-469 adds **+1 client file / +26 cases**
+(`dashboard/autoSelection.test.ts`, plus the auto-selection block in
+`hooks/useForecastModels.test.ts`) and **+2 server files / +45 cases**
+(`services/bestForecastModel.test.ts`,
+`services/recommendedModelService.test.ts`, plus the additive-recommendation
+block in `routes/forecast.test.ts`), landing at **52 / 704** and **106 /
+2,046**, both typechecks clean.
 
 **The rule below cost ABL-399 a correction on its own branch, which is the best
 evidence it is real.** ABL-399 measured 89 / 1,661 against `50d7a72` and wrote

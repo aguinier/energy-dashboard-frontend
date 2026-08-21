@@ -3,6 +3,7 @@ import * as forecastService from '../services/forecastService.js';
 import { cacheMiddleware, TTL } from '../middleware/cache.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { FORECAST_MODELS, getTypeConfig } from '../config/forecastModels.js';
+import { getRecommendedModel } from '../services/recommendedModelService.js';
 import { ForecastType, Granularity } from '../types/index.js';
 
 const router = Router();
@@ -19,26 +20,55 @@ interface ForecastQuery {
 }
 
 /**
- * GET /forecasts/models[?type=load]
+ * GET /forecasts/models[?type=load[&country=DE]]
  *
  * The model registry: which models may serve which forecast type, and which is
  * production. The picker renders from this rather than hardcoding a list, so a
  * model can only appear in the UI by being registered here.
+ *
+ * With `country` **and** `type`, the type's config also carries `recommended`:
+ * the best available forecast for that (country, type) pair over the rolling
+ * accuracy window, across both our ML models and the ENTSO-E series
+ * (`recommendedModelService.ts`, ABL-469). The registry half of the response is
+ * byte-identical either way — `recommended` is an additive sibling key, so a
+ * client that does not ask for it, or one on older code, sees exactly what it
+ * saw before.
+ *
+ * **`country` requires `type`, and that is a 400 rather than a convenience.**
+ * Ranking one pair costs ~35 ms; ranking a country across all nine registered
+ * types would put ~25 accuracy queries behind one request to answer eight
+ * questions the caller did not ask. The picker only ever needs the active
+ * tab's type, so the endpoint asks for it.
  */
-router.get('/models', cacheMiddleware(TTL.LONG), (req: Request<object, unknown, unknown, { type?: string }>, res) => {
-  const { type } = req.query;
+router.get(
+  '/models',
+  cacheMiddleware(TTL.LONG),
+  (req: Request<object, unknown, unknown, { type?: string; country?: string }>, res) => {
+    const { type, country } = req.query;
 
-  if (type) {
-    const cfg = getTypeConfig(type);
-    if (!cfg) {
-      throw new AppError(`Unknown forecast type: ${type}`, 400, 'UNKNOWN_FORECAST_TYPE');
+    if (country && !type) {
+      throw new AppError(
+        'A recommendation is per (country, forecast type): pass `type` alongside `country`.',
+        400,
+        'MISSING_FORECAST_TYPE',
+      );
     }
-    res.json({ success: true, data: { [type]: cfg } });
-    return;
-  }
 
-  res.json({ success: true, data: FORECAST_MODELS });
-});
+    if (type) {
+      const cfg = getTypeConfig(type);
+      if (!cfg) {
+        throw new AppError(`Unknown forecast type: ${type}`, 400, 'UNKNOWN_FORECAST_TYPE');
+      }
+      const recommended = country
+        ? getRecommendedModel(country, type as ForecastType)
+        : undefined;
+      res.json({ success: true, data: { [type]: { ...cfg, ...(recommended ? { recommended } : {}) } } });
+      return;
+    }
+
+    res.json({ success: true, data: FORECAST_MODELS });
+  },
+);
 
 // GET /api/forecasts - Get forecast data with filters
 // Query params: country, type, start, end, granularity, horizon (optional: 1 for D+1, 2 for D+2)
