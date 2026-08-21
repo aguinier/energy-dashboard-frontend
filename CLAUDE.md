@@ -81,9 +81,7 @@ This bypasses the missing shims and was the ABL-362 workaround.
 
 **The same applies to `vitest`, and it matters more, because an unrunnable test
 command reads as "the tree is broken" and invites the `npm install` note 1
-forbids.** `.bin` was empty in the primary checkout on 2026-08-14 — `npx vitest`
-reported `'vitest' is not recognized` — while the suite itself was completely
-healthy. Dependencies hoist to the repo root under npm workspaces, so from
+forbids.** Dependencies hoist to the repo root under npm workspaces, so from
 `server/` or `client/` the entry point is one level up:
 
 ```bash
@@ -96,16 +94,76 @@ Measured that way on ABL-42 (branch tip `e1f849f`, `origin/main` + 2 files):
 identical to the figure `origin/main` was green at. So an empty `.bin` says
 nothing about the suite.
 
-**The client suite is separately and genuinely blocked here, and the two must
-not be conflated.** It fails to boot on `Cannot find package
-'@rolldown/pluginutils' imported from …@vitejs/plugin-react/dist/index.js`, and
-that package really is absent — `ls node_modules/@rolldown` finds nothing.
-Note 1's tell distinguishes the two: this error names the **bare specifier**, so
-it is a missing package, not the stale-process trap (which resolves to a path
-ending `@babel\core\index.js`). Restarting will not fix it, and `npm install` is
-still the wrong reflex in this shared checkout for note 1's reason. Verify a
-server-only change with the server suite and say the client half was not run —
-do not report the whole toolchain as broken.
+**Both suites run normally in the primary checkout as of 2026-08-20, and the
+entry-point workarounds above are now a fallback rather than the standing
+procedure** (ABL-460). Between roughly 2026-08-13 and 2026-08-20 the root
+`node_modules` was **incompletely installed** — 106 of 605 packages absent and
+`node_modules/.bin` empty — and this section recorded three of the consequences
+as three separate, unrelated environment quirks. They were one defect:
+
+| symptom recorded here | actually |
+|---|---|
+| `.bin` empty, `npx vitest` "is not recognized" | no `.bin` shims were ever written |
+| client suite "genuinely blocked" on an absent `@rolldown/pluginutils` | absent because the install was partial |
+| `tsx` failing `Host version "0.27.2" does not match binary version "0.28.1"` | `@esbuild/win32-x64` absent, so esbuild found no matching binary |
+
+Two further absences never made it into this file at all. `@babel/core` was
+**genuinely** missing, so note 1's stale-process story did not apply to it — and
+note 1 is the reason that went unnoticed, because it tells you to read that
+exact error as a stale process. And every `@radix-ui/*` package was missing,
+which is what produced the "7 pre-existing `@radix-ui/*` TS2307 errors in
+`components/ui/*`" the Testing section used to tell you to expect. There are
+none now: `npx tsc -b --force` exits 0.
+
+The repair was **purely additive and changed no source file** — a clean `npm ci`
+into a scratch directory, then a copy of only the absent packages into the live
+tree, each placed by same-volume rename so it is observed either wholly present
+or wholly absent. All 498 packages already on disk were verified version-
+identical to `package-lock.json` first, and the one partially-written package
+(`@rollup/rollup-win32-x64-msvc`, holding its `.node` binary with no
+`package.json`) was completed by adding the two missing files after confirming
+the binary was byte-identical. **Not one existing file was overwritten.** That
+is what makes it safe against note 1's hazard, which is specifically about
+`npm install` *rewriting* modules under ~40 live agent processes: a running
+process cannot have an already-resolved module change underneath it if no
+existing file changes.
+
+So an empty `.bin` still says nothing about the suite, and a missing package
+still names its **bare specifier** where the stale-process trap resolves to a
+path ending `@babel\core\index.js` (note 1's tell). But do not read a bare
+specifier as "unfixable in this checkout" any more. Check whether the tree is
+actually complete before reporting a suite as blocked:
+
+```bash
+node -e "const l=require('./package-lock.json'),f=require('fs');let m=0;
+for(const[p,v]of Object.entries(l.packages)){if(!p.includes('node_modules/')||v.link||!v.version)continue;
+if(v.os&&!v.os.includes('win32'))continue;if(v.cpu&&!v.cpu.includes('x64'))continue;
+if(!f.existsSync(p+'/package.json'))m++}console.log('missing packages:',m)"
+```
+
+That prints `0` on a healthy tree, needs no install to run, and is the check
+that would have caught this on day one. A non-zero count calls for the additive
+repair above — it is still not a licence to run `npm install` in place.
+
+**What is safe to run while other processes hold this checkout**, since "do not
+install" was read as "do not touch it" and left Ops with no move at all:
+`npm install --dry-run` (reports the plan, writes nothing to `node_modules`),
+`npm ls`, and the completeness check above. What is not: `npm install`, `npm ci`
+and `npm rebuild`, all of which rewrite modules in place, plus
+`npm approve-scripts`, which also dirties `package.json`. Run `npm ci` only
+into a scratch directory **outside** the checkout, as the repair above does, and
+with `--ignore-scripts` — `better-sqlite3`'s install script is a `node-gyp
+rebuild` that re-points the native ABI for every worktree at once, which is the
+trap under "NODE_MODULE_VERSION mismatch" below reached by a different route.
+
+**`node_modules/.package-lock.json` is absent after this repair, and that is
+cosmetic rather than a hazard.** npm writes that hidden lockfile from its own
+reify step, so copying directories in does not produce one. The worry it invites
+— that a tree npm does not consider installed gets partially rewritten by the
+next command to touch it — does not occur, because npm falls back to reading the
+real tree from disk: verified 2026-08-20, `npm install --dry-run` reports
+`up to date` with the file absent. The next legitimate install writes it. Do not
+hand-author one.
 
 ## Project Structure
 
@@ -3956,16 +4014,34 @@ plus added cases in `app.test.ts` and `routes/opsStatus.test.ts`). An earlier
 reading of **94 / 1,792** on ABL-305 at `8298dad` is what that same rule below
 predicts going stale — the floor moved, the work did not.
 
-**The client suite could not be run in this checkout on 2026-08-14 and this
-figure is therefore not re-measured**: it is blocked before it boots by the
-absent `@rolldown/pluginutils` documented above, which is an environment
-defect, not a code one. Last measured at **50 client test files / 666 tests**
-on 2026-08-13; ABL-289 adds `lib/opsTrafficRows.test.ts` (11 cases), which was
-run on its own against a scratch config with the React plugin dropped — it is a
-pure helper with no JSX, so nothing about it depends on the plugin. `tsc
---noEmit` reports the same 7 pre-existing `@radix-ui/*` TS2307 errors in
-`components/ui/*` on this branch as on `main`, i.e. ABL-289 adds none. Fewer
-tests passing than the figures above means something broke.
+**Both figures were re-measured on 2026-08-20 in the repaired primary checkout
+(ABL-460), on unmodified `origin/main` at `5cf5b4c`, and both suites now run:**
+
+| suite | files | tests | typecheck |
+|---|---:|---:|---|
+| `cd server && npx vitest run` | **104** | **2,001** | `npx tsc --noEmit` exit 0 |
+| `cd client && npx vitest run` | **51** | **678** | `npx tsc -b --force` exit 0 |
+
+Fewer tests passing than that means something broke. Two claims this replaces,
+both of which had become false and neither of which was a code defect:
+
+- **"The client suite could not be run in this checkout"** — it was blocked
+  before it booted by an absent `@rolldown/pluginutils`. That package was
+  missing because the root `node_modules` was incompletely installed; it is
+  present now and all 51 files run. The last figure recorded under the blockage
+  was 50 files / 666 tests on 2026-08-13, so the repair reveals ABL-289's
+  `lib/opsTrafficRows.test.ts` plus one more case than the +11 that entry
+  predicted. Re-measure rather than reconciling against 666.
+- **"`tsc --noEmit` reports the same 7 pre-existing `@radix-ui/*` TS2307 errors
+  in `components/ui/*`"** — those were every `@radix-ui/*` package being absent
+  from the same partial install, not a pre-existing condition of the code.
+  There are none: `npx tsc -b --force` exits 0 on `origin/main`. **A TS2307 in
+  `components/ui/*` is now a real failure and must not be waved through as
+  expected.**
+
+See "Troubleshooting the dev server" note 4 for the completeness check that
+distinguishes a broken tree from a broken change, and for why the repair was
+additive rather than an `npm install`.
 
 **The rule below cost ABL-399 a correction on its own branch, which is the best
 evidence it is real.** ABL-399 measured 89 / 1,661 against `50d7a72` and wrote
