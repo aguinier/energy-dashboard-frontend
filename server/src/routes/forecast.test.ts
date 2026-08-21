@@ -448,3 +448,90 @@ describe('GET /api/forecasts/multi-horizon — divergent forecast basis (ABL-501
     expect(body.meta.withheldPoints).toBe(0);
   });
 });
+
+/**
+ * ABL-469 — the model registry endpoint now also answers "which of these is
+ * the best available forecast for this country?".
+ *
+ * The ranking itself is measured in `services/recommendedModelService.test.ts`,
+ * which seeds a multi-week history because that is what a track record needs.
+ * What is pinned here is the endpoint's contract: the registry half must be
+ * unchanged for every caller that does not ask, and a pair with no history
+ * must still resolve to something renderable.
+ */
+describe('GET /api/forecasts/models — the recommendation is additive', () => {
+  it('returns the bare registry when no country is asked about', async () => {
+    const { status, body } = await get('models?type=load');
+
+    expect(status).toBe(200);
+    const load = (body.data as Record<string, Record<string, unknown>>).load;
+    expect(load.production).toBe('catboost');
+    expect(load.models).toHaveLength(4);
+    // The key is absent, not null: a client on older code sees byte-identically
+    // what it saw before this existed.
+    expect(load).not.toHaveProperty('recommended');
+  });
+
+  it('still returns the whole registry with no type at all', async () => {
+    const { status, body } = await get('models');
+
+    expect(status).toBe(200);
+    const data = body.data as Record<string, Record<string, unknown>>;
+    expect(Object.keys(data).length).toBeGreaterThan(1);
+    expect(data.load).not.toHaveProperty('recommended');
+  });
+
+  it('rejects a country without a type rather than ranking nine types nobody asked about', async () => {
+    const { status, body } = await get('models?country=DE');
+
+    expect(status).toBe(400);
+    expect(body.code).toBe('MISSING_FORECAST_TYPE');
+  });
+
+  it('rejects an unknown forecast type', async () => {
+    const { status, body } = await get('models?type=not_a_type&country=DE');
+
+    expect(status).toBe(400);
+    expect(body.code).toBe('UNKNOWN_FORECAST_TYPE');
+  });
+
+  it('carries the recommendation beside an unchanged registry when asked', async () => {
+    const { status, body } = await get('models?type=load&country=DE');
+
+    expect(status).toBe(200);
+    const load = (body.data as Record<string, Record<string, unknown>>).load;
+    // Registry half untouched.
+    expect(load.production).toBe('catboost');
+    expect(load.models).toHaveLength(4);
+
+    const rec = load.recommended as Record<string, unknown>;
+    expect(rec).toBeDefined();
+    // The fixture holds four hours, which is deliberately below the evidence
+    // bar — so this is the no-history fallback, and it says so.
+    expect(rec.fallback).toBe(true);
+    expect(rec.modelId).toBe('catboost');
+    expect(rec.wape).toBeNull();
+    expect(rec.windowDays).toBe(30);
+    // Every registered model is still reported, each with its own reason.
+    expect(rec.candidates).toHaveLength(4);
+  });
+
+  it('resolves a country with no rows at all to the production model rather than blanking', async () => {
+    const { status, body } = await get('models?type=load&country=ZZ');
+
+    expect(status).toBe(200);
+    const rec = (body.data as Record<string, Record<string, unknown>>).load.recommended as Record<string, unknown>;
+    expect(rec.modelId).toBe('catboost');
+    expect(rec.fallback).toBe(true);
+  });
+
+  it('answers for a type nothing can be scored against, instead of failing', async () => {
+    // `net_position` has no actuals source, so no accuracy path exists for it.
+    const { status, body } = await get('models?type=net_position&country=DE');
+
+    expect(status).toBe(200);
+    const rec = (body.data as Record<string, Record<string, unknown>>).net_position.recommended as Record<string, unknown>;
+    expect(rec.modelId).toBe('chronos-2-V010');
+    expect(rec.fallback).toBe(true);
+  });
+});

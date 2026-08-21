@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { AbleCard } from './AbleCard';
 import { ForecastGapNotice } from './ForecastGapNotice';
 import { ForecastVintageNote } from './ForecastVintageNote';
+import { describeAutoSelection } from './autoSelection';
 import { AbleLineChart } from '@/components/charts/AbleLineChart';
 import { useWindChartData } from '@/hooks/useWindChartData';
 import type { WindModelQuery, WindType } from '@/hooks/useWindChartData';
@@ -110,9 +111,12 @@ function WindDefaultView({
   todayWindow: TodayWindow;
   title: string;
 }) {
-  const { selected, hidden } = useModelSelection(windType);
+  const { selected, hidden, autoSelected } = useModelSelection(windType);
   const useMl = !hidden && selected?.source === 'ml';
   const useTso = !hidden && selected?.source === 'tso';
+  // Non-null only when this default was auto-selected on measured accuracy
+  // (ABL-469) — never for a user pin and never for the no-history fallback.
+  const autoNote = hidden ? null : describeAutoSelection(autoSelected, countryLabel);
 
   const { series, nowIndex } = useMemo(
     () =>
@@ -155,6 +159,7 @@ function WindDefaultView({
               points={useMl ? forecastData : undefined}
               chartWindow={todayWindow}
             />
+            {autoNote && <p className="mt-2 text-micro text-ink-muted">{autoNote}</p>}
           </>
         )}
       </AbleCard>

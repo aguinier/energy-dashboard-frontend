@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolveSelection, resolveMultiSelection } from './useForecastModels';
-import type { ForecastModelRegistry } from '@/types';
+import type { ForecastModelRegistry, RecommendedModel } from '@/types';
 
 const REGISTRY: ForecastModelRegistry = {
   load: {
@@ -8,6 +8,7 @@ const REGISTRY: ForecastModelRegistry = {
     models: [
       { id: 'catboost', label: 'able-ml · catboost', source: 'ml', modelName: 'catboost' },
       { id: 'xgboost', label: 'able-ml · xgboost', source: 'ml', modelName: 'xgboost' },
+      { id: 'tso-d1', label: 'ENTSO-E TSO · D+1', source: 'tso', tsoHorizon: 'day_ahead' },
     ],
   },
   net_position: {
@@ -81,6 +82,125 @@ describe('resolveSelection', () => {
     expect(r.hidden).toBe(false);
     expect(r.requestModelId).toBeUndefined();
     expect(r.selected?.id).toBe('catboost');
+  });
+});
+
+// ABL-469. The default is resolved per (country, forecast type) from measured
+// accuracy across both sources, instead of from the type's one hand-picked
+// `production` id. Two properties carry the whole change: the recommendation
+// decides what is *displayed*, and it still never reaches the wire.
+describe('resolveSelection — auto-selection', () => {
+  const tsoWins: RecommendedModel = {
+    modelId: 'tso-d1',
+    label: 'ENTSO-E TSO · D+1',
+    source: 'tso',
+    wape: 3.45,
+    dataPoints: 721,
+    fallback: false,
+    windowStart: '2026-07-21T00:00:00.000Z',
+    windowEnd: '2026-08-20T00:00:00.000Z',
+    windowDays: 30,
+    candidates: [
+      { id: 'tso-d1', label: 'ENTSO-E TSO · D+1', source: 'tso', wape: 3.45, dataPoints: 721, hoursCovered: 720, excluded: null },
+      { id: 'catboost', label: 'able-ml · catboost', source: 'ml', wape: 6.75, dataPoints: 721, hoursCovered: 720, excluded: null },
+    ],
+  };
+
+  it('displays the ENTSO-E series where it measures better than ours', () => {
+    const r = resolveSelection(REGISTRY, 'load', undefined, false, tsoWins);
+    expect(r.selected?.id).toBe('tso-d1');
+    expect(r.selected?.source).toBe('tso');
+    expect(r.autoSelected).toBe(tsoWins);
+  });
+
+  // The property CLAUDE.md's "client sends model= only when the user picked
+  // one" claim depends on. A recommendation is measured over the last 30 days
+  // and says nothing about a window the user has shifted back six months;
+  // pinning it there would blank the chart exactly where the server's fallback
+  // ladder exists to cover.
+  it('never puts the recommended id on the wire', () => {
+    const r = resolveSelection(REGISTRY, 'load', undefined, false, tsoWins);
+    expect(r.requestModelId).toBeUndefined();
+  });
+
+  it('leaves a user pin untouched, and does not label it as auto-selected', () => {
+    const r = resolveSelection(REGISTRY, 'load', 'xgboost', false, tsoWins);
+    expect(r.selected?.id).toBe('xgboost');
+    expect(r.requestModelId).toBe('xgboost');
+    expect(r.autoSelected).toBeNull();
+  });
+
+  it('resolves to production, unlabelled, when nothing has a track record yet', () => {
+    const noHistory: RecommendedModel = {
+      ...tsoWins,
+      modelId: 'catboost',
+      label: 'able-ml · catboost',
+      source: 'ml',
+      wape: null,
+      dataPoints: 0,
+      fallback: true,
+    };
+    const r = resolveSelection(REGISTRY, 'load', undefined, false, noHistory);
+    expect(r.selected?.id).toBe('catboost');
+    expect(r.autoSelected).toBeNull();
+  });
+
+  it('ignores a recommendation naming a model that is no longer registered', () => {
+    const stale: RecommendedModel = { ...tsoWins, modelId: 'retired-model' };
+    const r = resolveSelection(REGISTRY, 'load', undefined, false, stale);
+    expect(r.selected?.id).toBe('catboost');
+    expect(r.autoSelected).toBeNull();
+  });
+
+  it('stays on production, unlabelled, before the measurement lands', () => {
+    const r = resolveSelection(REGISTRY, 'load', undefined, false, undefined);
+    expect(r.selected?.id).toBe('catboost');
+    expect(r.autoSelected).toBeNull();
+  });
+
+  it('labels nothing while the overlay is switched off', () => {
+    const r = resolveSelection(REGISTRY, 'load', undefined, false, tsoWins);
+    expect(r.autoSelected).not.toBeNull();
+    const off = resolveSelection(REGISTRY, 'load', undefined, true, tsoWins);
+    expect(off.autoSelected).toBeNull();
+    expect(off.selected).toBeNull();
+  });
+
+  // An ml recommendation is not self-evidently what got drawn: nothing is
+  // pinned, so the server's coverage ladder chooses between our models and
+  // could serve one while the measurement named another. The label waits for
+  // `meta.model` to agree, so it can never name a model that did not draw the
+  // line. A tso recommendation needs no such check — the tab fetches that
+  // horizon directly.
+  describe('an ml label waits for the served model to agree', () => {
+    const mlWins: RecommendedModel = {
+      ...tsoWins,
+      modelId: 'catboost',
+      label: 'able-ml · catboost',
+      source: 'ml',
+      wape: 2.10,
+    };
+
+    it('labels our model once the response confirms it served', () => {
+      const r = resolveSelection(REGISTRY, 'load', undefined, false, mlWins, 'catboost');
+      expect(r.selected?.id).toBe('catboost');
+      expect(r.autoSelected).toBe(mlWins);
+    });
+
+    it('withholds the label when the ladder served a different model', () => {
+      const r = resolveSelection(REGISTRY, 'load', undefined, false, mlWins, 'xgboost');
+      expect(r.autoSelected).toBeNull();
+    });
+
+    it('withholds the label until a response has been seen at all', () => {
+      const r = resolveSelection(REGISTRY, 'load', undefined, false, mlWins, undefined);
+      expect(r.autoSelected).toBeNull();
+    });
+
+    it('labels a tso winner without waiting, since the tab fetches it directly', () => {
+      const r = resolveSelection(REGISTRY, 'load', undefined, false, tsoWins, undefined);
+      expect(r.autoSelected).toBe(tsoWins);
+    });
   });
 });
 

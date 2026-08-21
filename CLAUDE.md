@@ -81,9 +81,7 @@ This bypasses the missing shims and was the ABL-362 workaround.
 
 **The same applies to `vitest`, and it matters more, because an unrunnable test
 command reads as "the tree is broken" and invites the `npm install` note 1
-forbids.** `.bin` was empty in the primary checkout on 2026-08-14 — `npx vitest`
-reported `'vitest' is not recognized` — while the suite itself was completely
-healthy. Dependencies hoist to the repo root under npm workspaces, so from
+forbids.** Dependencies hoist to the repo root under npm workspaces, so from
 `server/` or `client/` the entry point is one level up:
 
 ```bash
@@ -96,23 +94,76 @@ Measured that way on ABL-42 (branch tip `e1f849f`, `origin/main` + 2 files):
 identical to the figure `origin/main` was green at. So an empty `.bin` says
 nothing about the suite.
 
-**The client suite was separately blocked here for a while. It is not any
-more — re-measure before repeating the claim** (checked 2026-08-20 on ABL-493:
-`node_modules/@rolldown/pluginutils` is present, all 52 client test files run,
-694 tests pass, `tsc --noEmit` is clean). The symptom was `Cannot find package
-'@rolldown/pluginutils' imported from …@vitejs/plugin-react/dist/index.js`, and
-the package really was absent — `ls node_modules/@rolldown` found nothing. The
-checkout was repaired in the interim.
+**Both suites run normally in the primary checkout as of 2026-08-20, and the
+entry-point workarounds above are now a fallback rather than the standing
+procedure** (ABL-460). Between roughly 2026-08-13 and 2026-08-20 the root
+`node_modules` was **incompletely installed** — 106 of 605 packages absent and
+`node_modules/.bin` empty — and this section recorded three of the consequences
+as three separate, unrelated environment quirks. They were one defect:
 
-Two things worth keeping from that episode. Note 1's tell is what
-distinguished it: that error named the **bare specifier**, so it was a missing
-package, not the stale-process trap (which resolves to a path ending
-`@babel\core\index.js`) — restarting would not have fixed it, and `npm install`
-was still the wrong reflex in this shared checkout for note 1's reason. And a
-documented-broken suite is one nobody re-runs, so it stays "broken" long after
-it is fixed and a real regression in it goes unseen. If the client half will
-not boot for you, say what you measured and when; do not report the whole
-toolchain as broken, and do not take this paragraph's word for it either way.
+| symptom recorded here | actually |
+|---|---|
+| `.bin` empty, `npx vitest` "is not recognized" | no `.bin` shims were ever written |
+| client suite "genuinely blocked" on an absent `@rolldown/pluginutils` | absent because the install was partial |
+| `tsx` failing `Host version "0.27.2" does not match binary version "0.28.1"` | `@esbuild/win32-x64` absent, so esbuild found no matching binary |
+
+Two further absences never made it into this file at all. `@babel/core` was
+**genuinely** missing, so note 1's stale-process story did not apply to it — and
+note 1 is the reason that went unnoticed, because it tells you to read that
+exact error as a stale process. And every `@radix-ui/*` package was missing,
+which is what produced the "7 pre-existing `@radix-ui/*` TS2307 errors in
+`components/ui/*`" the Testing section used to tell you to expect. There are
+none now: `npx tsc -b --force` exits 0.
+
+The repair was **purely additive and changed no source file** — a clean `npm ci`
+into a scratch directory, then a copy of only the absent packages into the live
+tree, each placed by same-volume rename so it is observed either wholly present
+or wholly absent. All 498 packages already on disk were verified version-
+identical to `package-lock.json` first, and the one partially-written package
+(`@rollup/rollup-win32-x64-msvc`, holding its `.node` binary with no
+`package.json`) was completed by adding the two missing files after confirming
+the binary was byte-identical. **Not one existing file was overwritten.** That
+is what makes it safe against note 1's hazard, which is specifically about
+`npm install` *rewriting* modules under ~40 live agent processes: a running
+process cannot have an already-resolved module change underneath it if no
+existing file changes.
+
+So an empty `.bin` still says nothing about the suite, and a missing package
+still names its **bare specifier** where the stale-process trap resolves to a
+path ending `@babel\core\index.js` (note 1's tell). But do not read a bare
+specifier as "unfixable in this checkout" any more. Check whether the tree is
+actually complete before reporting a suite as blocked:
+
+```bash
+node -e "const l=require('./package-lock.json'),f=require('fs');let m=0;
+for(const[p,v]of Object.entries(l.packages)){if(!p.includes('node_modules/')||v.link||!v.version)continue;
+if(v.os&&!v.os.includes('win32'))continue;if(v.cpu&&!v.cpu.includes('x64'))continue;
+if(!f.existsSync(p+'/package.json'))m++}console.log('missing packages:',m)"
+```
+
+That prints `0` on a healthy tree, needs no install to run, and is the check
+that would have caught this on day one. A non-zero count calls for the additive
+repair above — it is still not a licence to run `npm install` in place.
+
+**What is safe to run while other processes hold this checkout**, since "do not
+install" was read as "do not touch it" and left Ops with no move at all:
+`npm install --dry-run` (reports the plan, writes nothing to `node_modules`),
+`npm ls`, and the completeness check above. What is not: `npm install`, `npm ci`
+and `npm rebuild`, all of which rewrite modules in place, plus
+`npm approve-scripts`, which also dirties `package.json`. Run `npm ci` only
+into a scratch directory **outside** the checkout, as the repair above does, and
+with `--ignore-scripts` — `better-sqlite3`'s install script is a `node-gyp
+rebuild` that re-points the native ABI for every worktree at once, which is the
+trap under "NODE_MODULE_VERSION mismatch" below reached by a different route.
+
+**`node_modules/.package-lock.json` is absent after this repair, and that is
+cosmetic rather than a hazard.** npm writes that hidden lockfile from its own
+reify step, so copying directories in does not produce one. The worry it invites
+— that a tree npm does not consider installed gets partially rewritten by the
+next command to touch it — does not occur, because npm falls back to reading the
+real tree from disk: verified 2026-08-20, `npm install --dry-run` reports
+`up to date` with the file absent. The next legitimate install writes it. Do not
+hand-author one.
 
 ## Project Structure
 
@@ -766,7 +817,11 @@ model must be listed there to be served at all.**
 **The client sends `model=` only when the user explicitly picked one** in
 `ModelPicker` (`client/src/components/dashboard/ModelPicker.tsx`, driven by
 `useForecastModels.ts`'s `resolveSelection` — `requestModelId` is set from an
-id the user actually chose and from nothing else, `useForecastModels.ts:62`).
+id the user actually chose and from nothing else, `useForecastModels.ts:155`).
+**ABL-469's auto-selection does not weaken this**: a measured recommendation
+decides which model is *displayed*, and is deliberately still not pinned onto
+the wire — see "The default is auto-selected per (country, forecast type)"
+below for why.
 Leaving it off lets the server walk its candidate ladder
 (`resolveModelCandidates`, `forecastModels.ts:211-220`): production model
 first, then the other registered ml models, returning the first with rows for
@@ -784,6 +839,96 @@ from the picker's own selection when the ladder fell back.
 (`forecastModels.ts:174` still asserts the sets are fully disjoint, as measured
 on 2026-07-26. That comment is now stale for `price`; the behaviour it
 justifies — ordered rather than absolute preference — is unaffected.)
+
+### The default is auto-selected per (country, forecast type) — ABL-469
+
+`FORECAST_MODELS` names one `production` model per forecast **type**, picked by
+hand on 2026-07-26 and never by measurement. It has no country dimension, so a
+pair whose ENTSO-E series is twice as accurate as ours still displayed ours.
+Measured through the real service code against the replica on 2026-08-20, that
+is the ordinary case rather than an edge one — WAPE over a rolling 30 days,
+ours vs ENTSO-E D+1: DE load **6.77 vs 3.41**, FR load 5.17 vs 1.54, ES load
+6.00 vs 1.18, BE load 5.30 vs 3.86, DE solar 62.13 vs 4.69, DE wind_onshore
+63.65 vs 13.48, BE wind_offshore 194.76 vs 35.23. The Board directive (ABL-316,
+2026-08-14) is that the better series is displayed **labelled with its source**,
+while ours stays selectable and keeps accruing a track record.
+
+`GET /forecasts/models?type=&country=` now carries a `recommended` key beside
+the type's config. `services/bestForecastModel.ts` is the ranking rule (pure,
+colocated test) and `services/recommendedModelService.ts` measures the
+candidates. **No new accuracy machinery and no new table**: every figure comes
+from an accuracy function that already served an endpoint, at 14-32 ms per
+pair measured on the replica, so the "prefer the accuracy the server already
+computes" bar is met rather than deferred to a follow-up.
+
+Four properties are load-bearing:
+
+- **The recommendation decides what is *displayed*, and is still never pinned
+  onto the wire.** `requestModelId` stays `undefined` for anything the user did
+  not choose (`useForecastModels.ts:155`), so the claim above this section
+  survives intact. A recommendation is measured over the last 30 days and says
+  nothing about a window the user has shifted back six months; pinning it there
+  would blank the chart in exactly the case the server's fallback ladder exists
+  to cover. So auto-selection chooses the *source*, and the ladder keeps
+  choosing between our own models by coverage.
+- **A fallback is never labelled as a measurement.** A pair with no qualifying
+  candidate resolves to the type's `production` id exactly as before, with
+  `fallback: true`, and `describeAutoSelection` returns `null` for it —
+  announcing an unmeasured default as "the most accurate forecast here" would
+  be this repo's defining failure mode in a sentence.
+- **An `ml` label waits for `meta.model` to agree.** A tso recommendation is
+  unambiguous (the tab fetches that horizon directly), but nothing is pinned for
+  an ml one, so the ladder could serve one model while the measurement named
+  another — a chart labelled with a model that did not draw it. Measured over
+  the same window, **no pair has rows from more than one of our registered ml
+  models**, so the disagreement is empty today; the check keeps the label
+  correct by construction rather than by that measurement holding.
+- **Two exclusions do real work, and both were verified live.** NL load comes
+  back `unmeasurable_wape` on **both** sides — `applyLoadForecastBasis`
+  suppresses the TSO series *and* our own, so ABL-277's divergent-basis country
+  is not auto-selected onto a figure that is a definitional gap — and `tso-d7`
+  is `sparse_coverage`
+  everywhere, publishing one value per day at noon (4.2% of the window's hours),
+  so its WAPE answers a narrower question and must not be ranked against a
+  series measured all day. The coverage bar counts **distinct window hours, not
+  a share of the largest point count**; the latter was tried first and excludes
+  the hourly ML model for competing against a 15-minute TSO series, which is a
+  resolution difference and not a coverage difference.
+
+**Suppressing one side of a divergent-basis pair and not the other is strictly
+worse than suppressing neither, and this shipped that way for a day** (found
+merging ABL-493/ABL-501 onto `a508ba1`, fixed there). ABL-469 applied
+`applyLoadForecastBasis` to the TSO branch of `measure()` alone, on the reading
+this file itself carried at the time — that the divergence was a property of
+the *TSO's* forecast. ABL-493 refuted that by measurement: it is a property of
+what ENTSO-E nets out of the country's **realized** series, so it binds every
+forecast of that series, and NL catboost carries *more* of the gap than the TSO
+does (+173.7% midday bias against +123.2%, both vanishing in winter).
+
+The half-applied rule does not merely leave one number unsuppressed. The honest
+exclusion of the TSO series hands the ranking to the contaminated model **by
+walkover** — it becomes the only qualifying candidate, so `fallback` is `false`,
+`recommended.wape` publishes the ~32% definitional gap on
+`/forecasts/models?type=load&country=NL`, and `describeAutoSelection` prints it
+under the chart as *the most accurate forecast for the Netherlands*. Meanwhile
+ABL-501 withholds that same model's series from the chart entirely, so the page
+would have recommended a model on its accuracy and refused to draw it, in the
+same card. Both branches of `measure()` now go through the rule, NL load falls
+through to the no-history fallback, and `describeAutoSelection` says nothing —
+which is the correct amount to say about an accuracy nobody can attribute.
+
+`LoadTab` gates the auto-selection note on the withheld verdict as well, so the
+sentence cannot outlive the line it describes even if a future path produces a
+recommendation for a withheld pair. That is defence in depth rather than
+duplication: the server fix stops the *number* being published, the client gate
+stops the *claim* being made.
+
+`PriceTab` deliberately carries no source label: `price` has **no TSO model
+registered**, so the "a TSO default must not read as ours" case cannot arise
+there, and its subtitle already says `dashed = able-ml forecast`. The window,
+the ranking measure (WAPE) and the tie-break (evidence, then the incumbent,
+then registry order) are the three judgement calls the issue asked to be stated
+rather than buried; they are argued in `bestForecastModel.ts`'s header.
 
 **A pin is clearable, and "pinned" is not "shown" (ABL-16).** The server still
 honours an explicit request strictly — "if you asked for xgboost and it has
@@ -1988,6 +2133,19 @@ for the stacked mix — which feeds an `Able*` chart primitive.
   comparison metrics" below, and, one level up from any measure, the withheld
   overlay under `LoadTab` above (ABL-501).
 
+  **Three consumers have now had to inherit this rule, and each was found the
+  same way — by looking for the next one.** `tsoForecastService` (ABL-277),
+  `crossCountryMetricsService` (ABL-493), and `recommendedModelService`'s ml
+  branch (found merging ABL-493 onto ABL-469; see "The default is auto-selected
+  per (country, forecast type)"). The recurring shape is that a rule stated in
+  one service is inherited only by the callers someone remembered, so when
+  adding a surface that divides a forecast by an actual, the question to ask is
+  not "does this look like an accuracy endpoint" but "does this publish, rank
+  or label a number derived from both series". The auto-selection case is the
+  instructive one: it did not publish a measure to a chart axis at all, it
+  merely *ranked* on one — and ranking on a suppressed measure put the
+  contaminated model on screen with a commendation attached.
+
   (No January control exists on the ml side: NL's earliest stored load
   forecast of any model is `2026-02-03`, so February is the low-solar window,
   and it is a good one — Dutch solar at 52°N in February is close enough to
@@ -2477,11 +2635,61 @@ alarm no ingest fix could clear is furniture.
   judged on **coverage**, never age. A healthy day-ahead price is dated up to
   ~46h in the *future*, so the age rule would read it as impossibly fresh
   forever and never notice a missing tomorrow — which is exactly how ABL-51 got
-  found by a board member instead of by us. The rule: before
-  `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` (**14**, the first hour by which the 13:30
+  found by a board member instead of by us. The rule: before that stream's
+  `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` the newest row must reach today's Brussels
+  market day; after it, tomorrow's.
+
+  **The deadline is per stream, because the three streams are three different
+  ENTSO-E documents** (ABL-494, `services/freshness.ts:168`). They do not
+  publish at the same time of day, and one shared 14 made
+  `tsoGenerationForecast` read `stale` fleet-wide every afternoon:
+
+  | Stream | Document | Data item | Upstream publication deadline | Required after (UTC) |
+  |---|---|---|---|---|
+  | `price` | A44 | 12.1.D | SDAC auction, ~12:45 Brussels (10:45 UTC CEST) | **14** |
+  | `tsoLoadForecast` | A65 / A01 | 6.1 | around midday Brussels D-1 | **14** |
+  | `tsoGenerationForecast` | A69 / A01 | 14.1.D | **18:00 Brussels D-1** (Reg. 543/2013 Art. 14.1) = 16:00 UTC CEST, 17:00 UTC CET | **20** |
+
+  Document types are `../energy-data-gathering/config.py`'s (`price`,
+  `load_forecast_day_ahead`, `wind_solar_forecast`). `14.1.D` is quoted verbatim
+  from ENTSO-E's own Acknowledgement 999 text; the other two items are the
+  Reg. 543/2013 numbering. 14 for A44 is roughly the hour by which the 13:30
   pass has finished, so "missing" means *we* are missing it rather than nobody
-  having published yet) the newest row must reach today's Brussels market day;
-  after it, tomorrow's.
+  having published yet; A65 clears that hour empirically (DE/FR/ES/IT/PL all
+  held tomorrow at 15:17 and 16:32 UTC on 2026-08-20).
+
+  **A pass takes 17-55 minutes, not the ~11 this file and the docstring used to
+  claim.** That figure was inferred from one pass's per-country fetch stamps and
+  was wrong by up to 5x. Measured on prod from `cron_update.log` over 08-18..20:
+  16m55s, 23m00s, 29m46s, 29m19s, 20m40s, 18m55s, 23m43s and **55m10s**.
+  Countries are fetched in one sequential alphabetical loop, so an overrun bites
+  the tail of the alphabet rather than everyone — in the 55-minute pass, NL was
+  fetched 14:07 and UA 14:25, both after the 14:00 cutoff. Two consequences: the
+  A69 hour must clear 18:30 + 55m = **19:25**, which is why it is 20 and not 19;
+  and 14:00 can already fire while the pass carrying the data is still running,
+  a pre-existing few-minute false-positive risk on `price` and
+  `tsoLoadForecast`. 14 is kept anyway — it is the ABL-51 tripwire, and widening
+  it trades a rare few-minute false positive for permanently later real-miss
+  detection — but whether the shared floor should move to 15 is its own
+  judgement with its own evidence.
+
+  That the A69 horizon actually moves at the 18:30 pass is measured, not
+  inferred: DE's stored row count per pass repeats identically across 08-18/19/20
+  and closes at 15-minute resolution — 704 at 13:30 (newest row today) and 780 at
+  18:30 (newest row tomorrow); the early publishers' 800 is 704 + 96, exactly one
+  extra market day. At the 13:30 pass that early set is NL, BE, AT, GR, HR, HU,
+  LT, LU, NO and RO, so do not treat NL/BE as special in a fixture.
+
+  **What that costs, stated rather than papered over:** between 14:00 and 20:00
+  UTC we cannot distinguish "upstream never published A69" from "we have not
+  fetched it yet", and the rule no longer pretends to. That is a bound of a
+  four-passes-a-day ingest, not a workaround. Measured 2026-08-20 by raw HTTP
+  probes against ENTSO-E: at 15:24 UTC the API itself answered Acknowledgement
+  999, "No matching data found for GENERATION_FORECAST_WIND_SOLAR [14.1.D]", for
+  DE's tomorrow — the old alarm fired while *nobody* had the data. Two things
+  survive inside the window: a stream that fails to reach even today is still
+  `stale` at any hour, and from 20:00 UTC a genuinely missing tomorrow is caught
+  for the rest of the day — ABL-51's protection, intact.
 
   The bound is the **start** of the required Brussels day, not its end, and that
   is what makes one Brussels-framed test correct for every bidding zone from WET
@@ -2499,8 +2707,8 @@ alarm no ingest fix could clear is furniture.
   worst active stall and spans at least 102 longest scheduled ingest gaps. It
   selected only AL generation plus GB/UA load and generation forecasts.
   There is no country ignore-list: a newer row immediately re-enters the normal
-  live/stale rule (`classifyMeasuredStream`, `services/freshness.ts:181`;
-  `classifyDayAheadStream`, `services/freshness.ts:213`).
+  live/stale rule (`classifyMeasuredStream`, `services/freshness.ts:264`;
+  `classifyDayAheadStream`, `services/freshness.ts:303`).
 
   This is still an inference from absence, not proof of upstream causality. A
   single-stream ingest defect left untouched for 30 days has the same stored
@@ -4129,39 +4337,111 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-20, measured on ABL-501 in the worktree at `e3ee50a` (the
-ABL-493 commit, which this branch is stacked on) with `node_modules` junctioned
-from the primary checkout: **104 server test files / 2,044 tests** and
-**53 client test files / 719 tests**, all passing, zero skipped, both
-`tsc --noEmit` exit 0.
+Green as of 2026-08-21, measured on ABL-493/ABL-501 after merging `origin/main`
+at `a508ba1` (the four-branch batch: ABL-460, ABL-494, ABL-498, ABL-469), in a
+per-issue execution worktree with `node_modules` junctioned from the primary
+checkout, under **v24.18.0**:
 
-ABL-501 is **+0 server files / +24 server cases** and **+1 client file / +25
-client cases** over its base — no new server test file because every server
-assertion belongs beside an existing one (`loadForecastBasis.test.ts`,
-`routes/forecast.test.ts`, `routes/tsoForecast.test.ts`);
-`components/dashboard/forecastBasisNote.test.ts` is the new client file, and
-`LoadTab.test.tsx` and `lib/multiForecastSeries.test.ts` carry the rest.
+| suite | files | tests | typecheck |
+|---|---:|---:|---|
+| `cd server && npx vitest run` | **107** | **2,132** | `tsc --noEmit` exit 0 |
+| `cd client && npx vitest run` | **54** | **745** | `tsc -b --force` exit 0 |
 
-Its base, ABL-493, measured **104 / 2,020** and **52 / 694** on the same
-worktree, against a stashed-changes baseline of **104 / 2,001** and
-**51 / 678** — so ABL-493 was +0 server files / +19 server cases and +1 client
-file / +16 client cases. Both figures were re-measured rather than taken from
-the line above them, per the rule this section keeps re-learning.
+**Both baselines were measured in the same session rather than reconciled from
+the entries below**, which is the only way this section has ever been right:
+`origin/main` at `a508ba1` was checked out into a scratch worktree and both
+suites run against it, giving **server 107 / 2,087** and **client 52 / 704**. So
+this branch is **+0 server files / +45 server cases** and **+2 client files /
++41 client cases**. Three of those server cases are *replacements* rather than
+additions — see the ABL-469 interaction below — so the delta is not the sum of
+what the two issues added.
 
-**Two claims that stood here were stale, and both said the toolchain was
-broken when it was not.** The entry this replaces said the client suite "could
-not be run in this checkout" because `@rolldown/pluginutils` was absent, and
-that `tsc --noEmit` reported "7 pre-existing `@radix-ui/*` TS2307 errors in
-`components/ui/*`". Neither reproduces on 2026-08-20: `node_modules/@rolldown`
-is present, the client suite boots and runs all 52 files, and the client
-typecheck is **clean**. The checkout was repaired in the interim. That is worth
-knowing because a documented-broken suite is one nobody re-runs, so a real
-regression in it would have gone unseen — re-measure before believing a claim
-that a suite cannot run, exactly as you would before believing a count.
+The server file count needed no run and confirms the +0: `git ls-tree -r
+origin/main --name-only | grep -c '^server/src/.*\.test\.ts$'` returns 106,
+plus the one `scripts/` file the suite also discovers
+(`server/vitest.config.ts:11`) = 107, and this tree returns the same 106.
+**Deduplicate that count during a conflicted merge** — `git ls-files` lists an
+unresolved path once per stage, which reported 108 here and would have read as
+two phantom new files.
 
-The 2026-08-14 figures this replaces, for continuity: **104 / 2,001** server on
-ABL-289 (`main` itself **102 / 1,944**, so ABL-289 was +2 files / +57 cases),
-and a client figure last really measured at **50 / 666** on 2026-08-13.
+**Merging `origin/main` in broke three tests that git merged cleanly, in a file
+neither branch's conflict touched.** ABL-501 stopped exporting `getForecastData`
+(`getForecastSeries` is the entry point, so no caller can obtain a series
+without the verdict on whether it may be drawn), and ABL-469's
+`recommendedModelService.test.ts` — which landed in between — calls it directly
+to assert the serving path is untouched. Three `TypeError: getForecastData is
+not a function` failures, no conflict marker anywhere. This is the same hazard
+the ABL-388 entry below records for `toEqual` under a merge, in its other form:
+a *removed export* is invisible to a textual merge, and only a real run finds
+it. Run the suite after resolving, never just the resolved files.
+
+Re-measured 2026-08-20 on ABL-498, branched from `main` at `5cf5b4c` (which
+carries the ABL-289 merge): **105 server test files / 2,034 tests**, all
+passing, zero skipped, `tsc --noEmit` exit 0, under **v24.18.0**. ABL-498 is
+**+1 file / +33 cases** — `release/strandedWork.test.ts`, and nothing else; its
+`checkUnmergedWork.ts` and CLAUDE.md edits add no case. That delta was settled
+without a second checkout by re-running the same tree with the one new file
+excluded, which reported **104 / 2,001** — the figure recorded in the paragraph
+below, corroborated rather than derived from it. The file count needed no run at
+all: `git ls-tree -r main --name-only | grep -c '^server/src/.*\.test\.ts$'`
+returns 103 at `5cf5b4c`, plus the one `scripts/` file the server suite also
+discovers (`server/vitest.config.ts:11`) = 104.
+
+Green as of 2026-08-14, measured on ABL-289 after merging `main` at `7965255`
+in: **104 server test files / 2,001 tests**, all passing, zero skipped. `main`
+itself measures **102 / 1,944** on the same tree, so ABL-289 is **+2 files /
++57 cases** (`lib/classifyRequest.test.ts`, `services/visitorCounters.test.ts`,
+plus added cases in `app.test.ts` and `routes/opsStatus.test.ts`). An earlier
+reading of **94 / 1,792** on ABL-305 at `8298dad` is what that same rule below
+predicts going stale — the floor moved, the work did not.
+
+**Both figures were re-measured on 2026-08-20 in the repaired primary checkout
+(ABL-460), on unmodified `origin/main` at `5cf5b4c`, and both suites now run:**
+
+| suite | files | tests | typecheck |
+|---|---:|---:|---|
+| `cd server && npx vitest run` | **104** | **2,001** | `npx tsc --noEmit` exit 0 |
+| `cd client && npx vitest run` | **51** | **678** | `npx tsc -b --force` exit 0 |
+
+Fewer tests passing than that means something broke. Two claims this replaces,
+both of which had become false and neither of which was a code defect:
+
+- **"The client suite could not be run in this checkout"** — it was blocked
+  before it booted by an absent `@rolldown/pluginutils`. That package was
+  missing because the root `node_modules` was incompletely installed; it is
+  present now and all 51 files run. The last figure recorded under the blockage
+  was 50 files / 666 tests on 2026-08-13, so the repair reveals ABL-289's
+  `lib/opsTrafficRows.test.ts` plus one more case than the +11 that entry
+  predicted. Re-measure rather than reconciling against 666.
+- **"`tsc --noEmit` reports the same 7 pre-existing `@radix-ui/*` TS2307 errors
+  in `components/ui/*`"** — those were every `@radix-ui/*` package being absent
+  from the same partial install, not a pre-existing condition of the code.
+  There are none: `npx tsc -b --force` exits 0 on `origin/main`. **A TS2307 in
+  `components/ui/*` is now a real failure and must not be waved through as
+  expected.**
+
+See "Troubleshooting the dev server" note 4 for the completeness check that
+distinguishes a broken tree from a broken change, and for why the repair was
+additive rather than an `npm install`.
+
+**Both of those client claims are environment-specific, and neither reproduced
+on 2026-08-20 (ABL-469).** In a per-issue execution worktree with its own
+complete `node_modules`, the client suite boots and runs clean —
+`@rolldown/pluginutils` is present, and `tsc --noEmit` reports **zero** errors,
+not the 7 `@radix-ui/*` TS2307s. So both are properties of the primary
+checkout's incomplete install (see the "Measure `node_modules` completeness
+first" lesson), not of the client suite, and a run that hits either should
+measure its own tree before recording it as the state of the world.
+Measured there on unmodified `main` at `5cf5b4c`: **client 51 files / 678
+tests, server 104 files / 2,001 tests** — the server figure reproducing the one
+above exactly, which is what makes the client correction trustworthy rather
+than a second unverified number. ABL-469 adds **+1 client file / +26 cases**
+(`dashboard/autoSelection.test.ts`, plus the auto-selection block in
+`hooks/useForecastModels.test.ts`) and **+2 server files / +45 cases**
+(`services/bestForecastModel.test.ts`,
+`services/recommendedModelService.test.ts`, plus the additive-recommendation
+block in `routes/forecast.test.ts`), landing at **52 / 704** and **106 /
+2,046**, both typechecks clean.
 
 **The rule below cost ABL-399 a correction on its own branch, which is the best
 evidence it is real.** ABL-399 measured 89 / 1,661 against `50d7a72` and wrote
@@ -4768,11 +5048,14 @@ ABL-189/190/196, ABL-262/265, and on 2026-08-12 five issues (ABL-285, ABL-292,
 ABL-288, ABL-290, ABL-295) all read `done` while local `main` sat **12 commits
 ahead of `origin/main`**.
 
-`predone` runs **two gates**, and the second is the one ABL-311 added:
+`predone` runs **three gates** — gate 2 is ABL-311's, gate 3 is ABL-498's:
 
 1. **Per branch** — `done` + the work not on the target = shipping gap.
 2. **`main` itself** — local `main` ahead of the target = **not published**
    (`release/publishState.ts`, pure, colocated test).
+3. **Every local branch** — any commit whose patch is not on the target =
+   **stranded** (`release/strandedWork.ts`, pure, colocated test). Reports;
+   never fails. See below for why that is a decision rather than a weakness.
 
 **Gate 1 asks git two questions, not one, and the second is why it can be
 trusted.** Ancestry (`git merge-base --is-ancestor`) answers whether the *commit*
@@ -4809,6 +5092,62 @@ deleting the feature branch after merging, and committing straight to `main`.
 Gate 2 is deliberately **board-independent**: it asks git a question git can
 always answer. A gate that needs a reachable network in order to fail is a gate
 that fails open, and gate 1 does exit 0 when the board is unreachable.
+
+**Gate 3 exists because gates 1 and 2 are both blind one level below where they
+look, and neither is wrong on its own terms.** On 2026-08-20 this command
+printed its clean-bill-of-health line — "No shipping gaps: every issue marked
+done is on origin/main, and main is published." — while **five local branches
+held the only copy of finished work**, including ABL-469 (`6d2c1f3`), a 16-file
+feature with tests, +1804/-35. Gate 1 keys off *issue status* and ABL-469 read
+`blocked`, so its branch printed as a quiet `in flight` line and was never a
+failure. Gate 2 asks only about `main`, which sat at `0 ahead, 0 behind` because
+the work was stranded a level below it. Nothing asked the question that matters:
+*is any local branch holding a commit whose patch is not on the target?*
+
+Four properties, each of which had already cost this repo something:
+
+- **Patch identity, not ancestry** — the same rule gate 1 learned above.
+  A raw `git rev-list --count origin/main..<branch>` reported **eleven**
+  non-ancestor branches that day, of which **five were phantoms** already
+  cherry-picked onto `origin/main` (ABL-166 `3c42ec8`, ABL-216 `484b3e2`,
+  ABL-249 `d84e97b`, ABL-70 `9214114`, `claude/determined-merkle-7f23e0`).
+  Quoting the raw count as a stranding figure would be this repo's signature
+  defect committed by the check meant to catch it. Phantoms are **counted and
+  not listed** — five verbose paragraphs about branches that are safe to delete
+  is what pushes the one that matters off the top of the screen.
+- **Counted by commit, not by ref.** Several branch names on one tip is the
+  normal state of this checkout, not an edge case: the Paperclip
+  execution-workspace name and the hand-cut convention name routinely coexist
+  (`ABL-494-day-ahead-…` and `fix/abl-494-per-stream-day-ahead-deadline` were
+  both `16f27cb`), and older tips carry up to five refs each. Findings are
+  folded by tip and the extra refs listed under `also at:`, so the headline
+  cannot overstate. The first real run of this gate did double-count `16f27cb`
+  before that was added.
+- **Size and age beside every entry.** This is the whole payload. Gate 1
+  rendered ABL-469 (16 files, +1804/-35) and `fix/frontend-wal-mount` (1 file,
+  +3/-1, 121 days old) as two indistinguishable lines; gate 3 sorts by size and
+  prints `<n> commits; <files> +<ins>/-<del> vs merge base; <age>`. Note the
+  size is **against the merge base**, not "unpublished lines" — for a partly
+  cherry-picked branch it still counts the published hunks, and it is labelled
+  that way rather than overclaimed.
+- **Board-independent, like gate 2, and that is the point.** ABL-487 is the
+  incident behind this: the GitHub push credential expired, so no branch *could*
+  be published, and `predone` said everything was fine. That is exactly when the
+  board half is least likely to be reachable and stranded work is most likely to
+  be piling up, so gate 3 asks git and nothing else.
+
+**Gate 3 reports and never fails, and that is measured rather than timid**
+(`STRANDED_WORK_FAILS_CHECK`, `server/src/release/strandedWork.ts:69`). This is
+one physical checkout shared by many concurrent runs, so several other agents'
+in-flight branches are present at all times — on 2026-08-20, six commits held
+novel patches and exactly one belonged to the run reading the report. Any
+exit-code rule over that set is red on an ordinary working day, which is the
+"cries wolf" failure gate 1's own header already names. What changed instead is
+that the **summary can no longer read as an all-clear**: the clean line now
+carries "But N local commits carry work that is not on the target — listed
+above." Read that clause before you close anything. If a future checkout is
+single-tenant, flipping the constant may become right — measure the branch
+population first, do not infer it from this paragraph.
 
 So: `predone` must read `0 ahead, 0 behind` before you mark the issue `done` —
 and reaching that state is a **merge, not a push** (next section). If local
@@ -4951,6 +5290,13 @@ asserted through the component),
 `server/src/release/publishState.ts` (ABL-311 — the caller hands it two
 integers from one `git rev-list --left-right --count`, so every publish verdict
 is asserted without a repo, a remote or a network),
+`server/src/release/strandedWork.ts` (ABL-498 — the same shape one gate over:
+the caller hands it the branch list, the `git cherry` counts and the
+`git diff --numstat` blocks, so the phantom-vs-real split, the fold-by-tip and
+the numstat parse are all pinned without a repo. Its fixture is measured from
+the real checkout on 2026-08-20 rather than invented, because the gate's whole
+claim is that it separates six real branches from five phantoms and a
+made-up split would prove nothing),
 `server/src/services/freshnessRollup.ts`, `server/src/services/hostMetrics.ts`
 (ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
 as optional params, specifically so `hostMetrics.test.ts` can exercise the

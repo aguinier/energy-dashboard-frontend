@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { AbleCard } from './AbleCard';
 import { ForecastGapNotice } from './ForecastGapNotice';
 import { ForecastVintageNote } from './ForecastVintageNote';
+import { describeAutoSelection } from './autoSelection';
 import { AbleLineChart } from '@/components/charts/AbleLineChart';
 import { AblePriceHeatmap } from '@/components/charts/AblePriceHeatmap';
 import { useLoadChartData } from '@/hooks/useLoadChartData';
@@ -106,7 +107,7 @@ function LoadDefaultView({
   timePreset: string;
   todayWindow: TodayWindow;
 }) {
-  const { selected, hidden } = useModelSelection('load');
+  const { selected, hidden, autoSelected } = useModelSelection('load');
   // A withheld series draws no line, so every claim made about one has to be
   // switched off with it (ABL-501) — the subtitle's "dashed = …", the
   // heatmap's "+ next 2d", and the vintage footnote, which would otherwise be
@@ -114,6 +115,16 @@ function LoadDefaultView({
   const withheld = basisNote !== null;
   const useMl = !hidden && !withheld && selected?.source === 'ml';
   const useTso = !hidden && !withheld && selected?.source === 'tso';
+  // Non-null only when this default was auto-selected on measured accuracy
+  // (ABL-469) — never for a user pin and never for the no-history fallback.
+  //
+  // Withheld counts as a fourth case, and it is the one this merge created: a
+  // country whose forecast is not on the same basis as its actuals has no
+  // attributable accuracy for a default to have been *selected on*, so the
+  // sentence would both describe a line that is not drawn and republish, as a
+  // credential, the very WAPE ABL-493 suppresses everywhere else.
+  const autoNote =
+    hidden || withheld ? null : describeAutoSelection(autoSelected, countryLabel);
 
   const { series, nowIndex } = useMemo(
     () =>
@@ -175,6 +186,9 @@ function LoadDefaultView({
                 and this repo's rule is that a withheld number is replaced by
                 what it would have claimed, never merely deleted. */}
             {basisNote && <p className="mt-2 text-micro text-ink-muted">{basisNote}</p>}
+            {/* Mutually exclusive with the note above by construction, not by
+                luck: `autoNote` is null whenever `basisNote` is not. */}
+            {autoNote && <p className="mt-2 text-micro text-ink-muted">{autoNote}</p>}
           </>
         )}
       </AbleCard>

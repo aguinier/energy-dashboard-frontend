@@ -35,7 +35,7 @@ import { ABLE_FORECAST, ENTSOE_OBSERVATION, type SeriesSource } from './attribut
  * - `forecast` — our model output. A third clock again: judged by when the
  *   vintage was generated, not by where its targets land.
  *
- * `services/freshness.ts:193-211` makes the same split for the dashboard and
+ * `services/freshness.ts:277-302` makes the same split for the dashboard and
  * explains that applying the measured rule to a day-ahead series is "the mirror
  * of the bug this file exists for". `/v1` inherits the split rather than
  * flattening it.

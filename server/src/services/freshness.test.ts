@@ -160,7 +160,7 @@ describe('classifyDayAheadStream — coverage, not age', () => {
     // Requiring tomorrow here would light the pill up every morning — a false
     // alarm that teaches people to ignore the real one.
     const morning = new Date('2026-08-07T07:10:00Z');
-    expect(classifyDayAheadStream('2026-08-07 21:45:00', morning).status).toBe('live');
+    expect(classifyDayAheadStream('2026-08-07 21:45:00', morning, 'price').status).toBe('live');
   });
 
   it('catches ABL-51: the afternoon comes and tomorrow is still missing', () => {
@@ -168,12 +168,12 @@ describe('classifyDayAheadStream — coverage, not age', () => {
     // reached only to the end of today's market day, and the dashboard said
     // nothing at all.
     const evening = new Date('2026-08-07T16:00:00Z');
-    expect(classifyDayAheadStream('2026-08-07 21:45:00', evening).status).toBe('stale');
+    expect(classifyDayAheadStream('2026-08-07 21:45:00', evening, 'price').status).toBe('stale');
   });
 
   it('is satisfied once tomorrow has arrived', () => {
     const evening = new Date('2026-08-07T16:00:00Z');
-    expect(classifyDayAheadStream('2026-08-08 21:45:00', evening).status).toBe('live');
+    expect(classifyDayAheadStream('2026-08-08 21:45:00', evening, 'price').status).toBe('live');
   });
 
   it('never marks a healthy non-Brussels bidding zone stale', () => {
@@ -183,35 +183,35 @@ describe('classifyDayAheadStream — coverage, not age', () => {
     // its start cannot, because any full market day is ~24h long and the spread
     // between European market timezones is at most 3h.
     const evening = new Date('2026-08-07T16:00:00Z');
-    expect(classifyDayAheadStream('2026-08-08 20:45:00', evening).status).toBe('live'); // BG (EET)
-    expect(classifyDayAheadStream('2026-08-08 22:45:00', evening).status).toBe('live'); // PT (WET)
+    expect(classifyDayAheadStream('2026-08-08 20:45:00', evening, 'price').status).toBe('live'); // BG (EET)
+    expect(classifyDayAheadStream('2026-08-08 22:45:00', evening, 'price').status).toBe('live'); // PT (WET)
   });
 
   it('still catches a stream that has fallen behind even before the cutoff', () => {
     // Before the cutoff we require today, and this one does not even reach that.
     const morning = new Date('2026-08-07T07:10:00Z');
-    expect(classifyDayAheadStream('2026-08-05 21:45:00', morning).status).toBe('stale');
+    expect(classifyDayAheadStream('2026-08-05 21:45:00', morning, 'price').status).toBe('stale');
   });
 
   it('calls a long-ended day-ahead series ended rather than permanently stale', () => {
     const now = new Date('2026-08-10T12:04:00Z');
 
     // GB and UA generation forecasts ended with their other upstream series.
-    expect(classifyDayAheadStream('2021-06-14 23:30:00', now).status).toBe('ended');
-    expect(classifyDayAheadStream('2022-02-25 21:00:00', now).status).toBe('ended');
+    expect(classifyDayAheadStream('2021-06-14 23:30:00', now, 'price').status).toBe('ended');
+    expect(classifyDayAheadStream('2022-02-25 21:00:00', now, 'price').status).toBe('ended');
   });
 
-  it('switches its requirement exactly at the cutoff hour', () => {
-    const justBefore = new Date(
-      `2026-08-07T${String(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR - 1).padStart(2, '0')}:59:00Z`,
-    );
-    const justAfter = new Date(
-      `2026-08-07T${String(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR).padStart(2, '0')}:00:00Z`,
-    );
+  it('switches its requirement exactly at the cutoff hour, for every stream', () => {
     const onlyToday = '2026-08-07 21:45:00';
 
-    expect(classifyDayAheadStream(onlyToday, justBefore).status).toBe('live');
-    expect(classifyDayAheadStream(onlyToday, justAfter).status).toBe('stale');
+    for (const stream of ['price', 'tsoLoadForecast', 'tsoGenerationForecast'] as const) {
+      const cutoff = DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR[stream];
+      const justBefore = new Date(`2026-08-07T${String(cutoff - 1).padStart(2, '0')}:59:00Z`);
+      const justAfter = new Date(`2026-08-07T${String(cutoff).padStart(2, '0')}:00:00Z`);
+
+      expect(classifyDayAheadStream(onlyToday, justBefore, stream).status).toBe('live');
+      expect(classifyDayAheadStream(onlyToday, justAfter, stream).status).toBe('stale');
+    }
   });
 
   it('reports a negative age for a future-dated row without calling it a defect', () => {
@@ -219,16 +219,107 @@ describe('classifyDayAheadStream — coverage, not age', () => {
     // not be derived from it. A day-ahead price is legitimately ~14h "in front"
     // of now, which under the measured rule would read as impossibly fresh.
     const morning = new Date('2026-08-07T07:10:00Z');
-    const stream = classifyDayAheadStream('2026-08-07 21:45:00', morning);
+    const stream = classifyDayAheadStream('2026-08-07 21:45:00', morning, 'price');
     expect(stream.ageHours).toBeLessThan(0);
     expect(stream.status).toBe('live');
   });
 
   it('distinguishes "we hold nothing" from "what we hold is behind"', () => {
-    expect(classifyDayAheadStream(null, new Date('2026-08-07T16:00:00Z'))).toEqual({
+    expect(classifyDayAheadStream(null, new Date('2026-08-07T16:00:00Z'), 'price')).toEqual({
       latest: null,
       ageHours: null,
       status: 'none',
     });
+  });
+});
+
+/**
+ * ABL-494. The deadline is a property of the ENTSO-E *document*, not of the
+ * afternoon. One shared 14:00 UTC cutoff made every country's A69 generation
+ * forecast read `stale` from 14:00 until the 18:30 pass landed — a structural
+ * false alarm, fleet-wide, every single day. Measured 2026-08-20 by raw HTTP
+ * probes against ENTSO-E: at 15:24 UTC the API returned Acknowledgement 999,
+ * "No matching data found for GENERATION_FORECAST_WIND_SOLAR [14.1.D]", for DE
+ * — upstream did not have tomorrow either, so the alarm was definitionally a
+ * false positive.
+ *
+ * These cases pin both directions: the fix, and the ABL-51 protection it must
+ * not spend.
+ */
+describe('classifyDayAheadStream — the deadline is per document class', () => {
+  // A69 is due 18:00 Brussels D-1 (Reg. 543/2013 Art. 14.1) = 16:00 UTC under
+  // CEST, and our next A69-capable pass after 13:30 is 18:30. 15:00 UTC sits in
+  // the window where "we do not have tomorrow" carries no information at all.
+  const midAfternoon = new Date('2026-08-20T15:00:00Z');
+  const onlyToday = '2026-08-20 21:45:00';
+
+  it('stops calling A69 stale in the window where nobody has published it yet', () => {
+    expect(classifyDayAheadStream(onlyToday, midAfternoon, 'tsoGenerationForecast').status).toBe(
+      'live',
+    );
+  });
+
+  it('leaves the auction result judged at 14:00 as before', () => {
+    // Same row, same instant, different document: the SDAC auction published
+    // ~10:45 UTC and the 13:30 pass has been and gone, so a price that reaches
+    // only today is genuinely our miss. This is the ABL-51 case and it must not
+    // move.
+    expect(classifyDayAheadStream(onlyToday, midAfternoon, 'price').status).toBe('stale');
+  });
+
+  it('leaves the A65 load forecast judged at 14:00 as before', () => {
+    // Also measured 2026-08-20: DE/FR/ES/IT/PL all held tomorrow's A65 at both
+    // 15:17 and 16:32 UTC while their A69 was absent. A65 clears 14:00, so
+    // relaxing it would only cost detection.
+    expect(classifyDayAheadStream(onlyToday, midAfternoon, 'tsoLoadForecast').status).toBe('stale');
+  });
+
+  it('still catches a genuinely missing A69 tomorrow once our own pass has landed', () => {
+    // 20:30 UTC: the 18:30 pass is over even on the slowest day measured. Nothing
+    // upstream and nothing in our schedule excuses a missing tomorrow now — this
+    // is the ABL-51 protection, intact, six hours later in the day.
+    const evening = new Date('2026-08-20T20:30:00Z');
+    expect(classifyDayAheadStream(onlyToday, evening, 'tsoGenerationForecast').status).toBe(
+      'stale',
+    );
+  });
+
+  it('does not accuse the ingest while a slow 18:30 pass is still running', () => {
+    // The reason the hour is 20 and not 19. Measured pass durations run 16m55s
+    // to 55m10s (CEO, ABL-494), so 18:30 + worst case ends 19:25 — and because
+    // countries are fetched in one alphabetical loop, a 19:00 cutoff would fire
+    // on the tail of the alphabet on exactly the slow days. This case is what
+    // stops someone tightening it back.
+    const duringOverrun = new Date('2026-08-20T19:30:00Z');
+    expect(classifyDayAheadStream(onlyToday, duringOverrun, 'tsoGenerationForecast').status).toBe(
+      'live',
+    );
+  });
+
+  it('keeps catching an A69 stream that does not even reach today', () => {
+    // Inside the relaxed window the weaker requirement still bites, so a dead
+    // stream is never excused by the time of day.
+    expect(
+      classifyDayAheadStream('2026-08-18 21:45:00', midAfternoon, 'tsoGenerationForecast').status,
+    ).toBe('stale');
+  });
+
+  it('pins the A44/A65 deadline at 14, where its own derivation put it', () => {
+    expect(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.price).toBe(14);
+    expect(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoLoadForecast).toBe(14);
+  });
+
+  it('sizes the A69 deadline past the slowest measured 18:30 pass, CET included', () => {
+    // Art. 14.1 is 16:00 UTC under CEST and 17:00 UTC under CET, so upstream
+    // availability alone would allow 18. Our own ingest is the binding
+    // constraint: the 18:30 pass has been measured from 16m55s to 55m10s, ending
+    // as late as 19:25, so the first hour that cannot fire mid-pass is 20.
+    const worstPassEndsAtUtcHour = 18.5 + (55 + 10 / 60) / 60; // 19.42
+    expect(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoGenerationForecast).toBeGreaterThan(
+      worstPassEndsAtUtcHour,
+    );
+    // And inside the same UTC day, so the overnight 00:30/06:30 passes still
+    // leave a real miss visible for hours rather than minutes.
+    expect(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoGenerationForecast).toBeLessThan(24);
   });
 });

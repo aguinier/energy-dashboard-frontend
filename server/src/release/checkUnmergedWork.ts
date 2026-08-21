@@ -17,10 +17,11 @@
  * them it still runs and lists unmerged branches, but it cannot tell a shipping
  * gap from in-flight work, so it reports and exits 0 rather than guessing.
  *
- * Two gates run, and the second does not depend on the board (ABL-311):
+ * Three gates run, and only the first depends on the board (ABL-311, ABL-498):
  *
  *   1. Per-branch: `done` + not on the target = shipping gap.
  *   2. `main` itself: local `main` ahead of the target = not published.
+ *   3. Every local branch: any commit whose patch is not on the target = stranded.
  *
  * Gate 1 asks git two questions per branch, not one: is the tip an ancestor of
  * the target, and — when it is not — how many of its commits have no equivalent
@@ -38,6 +39,16 @@
  * straight to `main`, neither of which leaves a tip for gate 1 to classify.
  * See `publishState.ts` for the classification and its tests.
  *
+ * Gate 3 exists because gates 1 and 2 between them still left the 2026-08-20
+ * state reading clean: six local branches held the only copy of their work —
+ * one of them a finished 16-file feature — while `main` sat 0 ahead and every
+ * `done` issue was published, so the last line of this command said "No
+ * shipping gaps". Gate 3 asks the question neither of the others does: is any
+ * local branch holding a commit whose patch is not on the target? It reports
+ * and never fails (this checkout always carries other runs' in-flight
+ * branches), so what it changes is the summary and the evidence — see
+ * `strandedWork.ts` for the measurement behind that decision.
+ *
  * The target defaults to `origin/main`, not local `main` (ABL-190). The repo
  * workflow ends feature work by merging to local `main`, so a target of local
  * `main` makes a branch that is merged-but-never-pushed look shipped — that is
@@ -48,18 +59,22 @@
  * naming a specific ref by hand is the whole point of the override.
  */
 import { execFileSync } from 'node:child_process';
-import {
-  classifyBranches,
-  formatFindings,
-  shippingGaps,
-  type BranchTip,
-} from './unmergedWork.js';
+import { classifyBranches, formatFindings, shippingGaps } from './unmergedWork.js';
 import {
   classifyPublishState,
   formatPublishState,
   isPublishGap,
   type PublishCounts,
 } from './publishState.js';
+import {
+  classifyStrandedBranches,
+  formatStrandedWork,
+  isPublishedBranch,
+  parseNumstat,
+  strandedHeadline,
+  type BranchDiffStat,
+  type LocalBranch,
+} from './strandedWork.js';
 
 const TARGET_OVERRIDE = process.env.CHECK_UNMERGED_TARGET;
 const TARGET = TARGET_OVERRIDE ?? 'origin/main';
@@ -121,18 +136,69 @@ function novelCommitCount(tip: string): number | null {
   }
 }
 
+/**
+ * Size of a branch against its merge base with the target.
+ *
+ * Gathered only for branches gate 3 has already established as stranded — this
+ * checkout carries ~140 local branches and diffing all of them would make
+ * `predone` slow enough to skip, which is its own failure mode.
+ *
+ * Returns null when the diff cannot be taken; `strandedWork.ts` renders that as
+ * "size not measured" rather than as a zero.
+ */
+function branchDiffStat(tip: string): BranchDiffStat | null {
+  try {
+    // Three dots: diff the branch against its merge base, not against the
+    // target's tip, so unrelated commits landed on the target since the fork
+    // are not counted as this branch's work.
+    return parseNumstat(
+      execFileSync('git', ['diff', '--numstat', `${TARGET}...${tip}`], { encoding: 'utf8' }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** The branch this checkout has checked out, or null when HEAD is detached. */
+function currentBranch(): string | null {
+  try {
+    return execFileSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
 /** Local branches only. A remote-tracking ref is a copy of one, not extra work. */
-function localBranches(): BranchTip[] {
-  const out = git('for-each-ref', '--format=%(refname:short)%09%(objectname:short)', 'refs/heads/');
+function localBranches(): LocalBranch[] {
+  const head = currentBranch();
+  const out = git(
+    'for-each-ref',
+    '--format=%(refname:short)%09%(objectname:short)%09%(committerdate:iso-strict)',
+    'refs/heads/',
+  );
   return out
     .split('\n')
     .filter(Boolean)
     .map((line) => {
-      const [name, tip] = line.split('\t');
+      const [name, tip, lastCommitIso] = line.split('\t');
       const merged = isAncestor(tip);
       // Only worth asking for a branch that failed the ancestry test — an
       // ancestor is already the strongest possible answer.
-      return { name, tip, merged, novelCommits: merged ? null : novelCommitCount(tip) };
+      const novelCommits = merged ? null : novelCommitCount(tip);
+      const published = isPublishedBranch({ merged, novelCommits });
+      return {
+        name,
+        tip,
+        merged,
+        novelCommits,
+        lastCommitIso: lastCommitIso ?? null,
+        // Same predicate gate 3 classifies with, so the skip can never disagree
+        // with the verdict about which branches are worth measuring.
+        diffVsMergeBase: published ? null : branchDiffStat(tip),
+        current: name === head,
+      };
     })
     .filter((b) => b.name !== TARGET);
 }
@@ -213,11 +279,25 @@ async function main(): Promise<number> {
 
   if (report) console.log(report);
 
+  // Gate 3. Printed before every summary sentence below and regardless of the
+  // board, because the incident it exists for (ABL-487) was a dead push
+  // credential — the condition under which the board half is least likely to be
+  // reachable and stranded work is most likely to be piling up.
+  const stranded = classifyStrandedBranches(branches, Date.now());
+  const strandReport = formatStrandedWork(stranded, TARGET);
+  if (strandReport) console.log(`\n${strandReport}`);
+  const strandNote = strandedHeadline(stranded);
+
   if (!statuses) {
     console.log(
-      `\n${branches.filter((b) => !b.merged).length} branch(es) not on ${TARGET}. ` +
+      // "not an ancestor", not "unpublished": this is the raw count, and five
+      // of the thirteen it reported on 2026-08-20 were phantoms already on the
+      // target under other shas. Gate 3's figure below is the measured one, and
+      // the two must not read as competing answers to the same question.
+      `\n${branches.filter((b) => !b.merged).length} branch(es) are not ancestors of ${TARGET}. ` +
         'Board status unavailable (set PAPERCLIP_API_URL / PAPERCLIP_API_KEY / ' +
-        'PAPERCLIP_COMPANY_ID), so none of them could be judged.',
+        'PAPERCLIP_COMPANY_ID), so none of them could be judged.' +
+        (strandNote ? ` Gate 3 needs no board: ${strandNote}` : ''),
     );
     return publishGap ? 1 : 0;
   }
@@ -225,9 +305,12 @@ async function main(): Promise<number> {
   const gaps = shippingGaps(findings);
   if (gaps.length === 0) {
     if (!publishGap) {
+      // The sentence a reader skims to. On 2026-08-20 it was true, complete and
+      // still left six branches unaccounted for, so it never stands alone now.
       console.log(
         `\nNo shipping gaps: every issue marked done is on ${TARGET}, ` +
-          `and main is published.`,
+          `and main is published.` +
+          (strandNote ? `\nBut ${strandNote}` : ''),
       );
     }
     return publishGap ? 1 : 0;

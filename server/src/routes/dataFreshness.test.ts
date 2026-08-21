@@ -45,9 +45,10 @@ const hoursAgo = (h: number) => spaceForm(new Date(Date.now() - h * HOUR_MS));
 /**
  * A price row covering tomorrow's Brussels market day. Chosen so the assertion
  * holds at every hour of the day: `classifyDayAheadStream` requires today's
- * market day before 14:00 UTC and tomorrow's after it, and a row dated at
- * tomorrow's *end* satisfies both. A test whose verdict flipped at 14:00 UTC
- * would be worse than no test.
+ * market day before the stream's cutoff hour and tomorrow's after it — 14:00
+ * UTC for `price` — and a row dated at tomorrow's *end* satisfies both. A test
+ * whose verdict flipped at a cutoff hour would be worse than no test, and that
+ * is why this survived the cutoff becoming per-stream (ABL-494).
  */
 const endOfTomorrowBrussels = spaceForm(
   new Date(brusselsDayStartUtc(new Date(), 2).getTime() - HOUR_MS),

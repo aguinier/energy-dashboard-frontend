@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
-import { fetchForecastModels } from '@/services/api';
+import { fetchForecastModels, fetchRecommendedModel } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { TAB_FORECAST_TYPE } from '@/lib/constants';
-import type { ForecastModel, ForecastModelRegistry } from '@/types';
+import type { ForecastModel, ForecastModelRegistry, RecommendedModel } from '@/types';
 
 /**
  * The server-side model registry. Cached for the session — it changes only
@@ -13,6 +13,26 @@ export function useForecastModels() {
     queryKey: ['forecast-models'],
     queryFn: fetchForecastModels,
     staleTime: Infinity,
+  });
+}
+
+/**
+ * The best available forecast for the selected country and a given forecast
+ * type, measured server-side over a rolling 30-day window across both our ML
+ * models and the ENTSO-E series (ABL-469).
+ *
+ * Keyed on the pair and cached for an hour, not for the session: the registry
+ * above is the same for everyone and never changes without a redeploy, while
+ * this is a measurement that moves as the window rolls. An hour is well inside
+ * the server's own 30-minute response cache, so a tab switch costs nothing.
+ */
+export function useRecommendedModel(forecastType: string) {
+  const country = useDashboardStore((s) => s.selectedCountry);
+  return useQuery<RecommendedModel | undefined>({
+    queryKey: ['forecast-recommended', country, forecastType],
+    queryFn: () => fetchRecommendedModel({ country, type: forecastType }),
+    enabled: Boolean(country && forecastType),
+    staleTime: 60 * 60 * 1000,
   });
 }
 
@@ -29,14 +49,22 @@ export interface ActiveModelSelection {
    */
   requestModelId: string | undefined;
   hidden: boolean;
+  /**
+   * The measured recommendation this default came from, when it came from one
+   * (ABL-469). `null` when the user pinned a model, when nothing has a
+   * measurable track record for this pair, or before the measurement lands.
+   * What the UI needs it for is the label: a default that is the ENTSO-E
+   * series must say so, and must say what it beat.
+   */
+  autoSelected: RecommendedModel | null;
   isLoading: boolean;
 }
 
 /**
  * Resolve which model applies to a forecast type, honouring the user's pin and
- * falling back to the type's production model for labelling.
+ * otherwise taking the best available forecast for this country.
  *
- * A stored id that is no longer registered resolves to production rather than
+ * A stored id that is no longer registered resolves to the default rather than
  * to nothing — otherwise removing a model from the registry would leave anyone
  * who had selected it staring at an empty chart.
  *
@@ -44,39 +72,109 @@ export interface ActiveModelSelection {
  * persisted slot (`null` = hidden), so switching the overlay off threw the pin
  * away and switching it back on had to fabricate one. See ABL-16 and the v7
  * clause in store/migrate.ts.
+ *
+ * ## The default is now per (country, forecast type) — ABL-469
+ *
+ * `cfg.production` is one hand-picked id per *type*, chosen on 2026-07-26 and
+ * never by measurement. Measured on the replica over 30 days, that showed our
+ * catboost for DE load at 6.75% WAPE while the ENTSO-E day-ahead series beside
+ * it ran 3.45%. `recommended` is the server's ranking across both sources for
+ * this exact pair; when it exists it decides the default, and `cfg.production`
+ * stays as the fallback for a pair with no track record yet.
+ *
+ * **A recommended model is never pinned onto the wire, and that is deliberate
+ * rather than an omission.** `requestModelId` stays `undefined` for anything
+ * the user did not choose, exactly as before. A recommendation is measured
+ * over the last 30 days and says nothing about a window the user has shifted
+ * back six months; pinning it there would blank the chart in precisely the
+ * case the server's fallback ladder exists to cover, and ABL-221 removed the
+ * footnote that used to explain such a blank. So the recommendation decides
+ * which *source* is displayed — which is what the Board directive is about —
+ * and the ladder keeps choosing between our own models by coverage.
+ *
+ * ## Why `autoSelected` is not simply "a recommendation exists"
+ *
+ * The label has to be true of what is on screen, and the two paths differ in
+ * how sure we can be:
+ *
+ * - A **tso** recommendation is unambiguous. The tab fetches that horizon
+ *   directly off `selected.tsoHorizon`, so what is drawn is exactly what was
+ *   recommended.
+ * - An **ml** recommendation is not. Nothing is pinned, so the server's
+ *   coverage ladder chooses between our models, and if two of ours both had
+ *   rows the ladder could serve one while the measurement named the other —
+ *   a chart labelled with a model that did not draw it. `servedModelId` is
+ *   the response's own answer to "who actually served" (`meta.model`, already
+ *   recorded in `servedModelByType`), so the ml label waits for it to agree.
+ *
+ * Measured on the replica over 2026-07-21..08-20, **no (country, forecast
+ * type) pair has rows from more than one of our registered ml models**, so the
+ * disagreement is empty today across all eight types. The check is here so the
+ * label stays correct by construction rather than by that measurement holding.
  */
 export function resolveSelection(
   registry: ForecastModelRegistry | undefined,
   forecastType: string,
   pinnedId: string | null | undefined,
   hidden: boolean,
+  recommended?: RecommendedModel,
+  servedModelId?: string | null,
 ): Omit<ActiveModelSelection, 'isLoading'> {
   const cfg = registry?.[forecastType];
   const models = cfg?.models ?? [];
 
   if (hidden || !cfg) {
-    return { forecastType, models, selected: null, requestModelId: undefined, hidden };
+    return { forecastType, models, selected: null, requestModelId: undefined, hidden, autoSelected: null };
   }
 
   const explicit = pinnedId ? models.find((m) => m.id === pinnedId) : undefined;
-  const selected =
-    explicit ?? models.find((m) => m.id === cfg.production) ?? models[0] ?? null;
 
-  // Only an id the user actually pinned goes on the wire. A production default
-  // is a preference, not an instruction, and pinning it blanks every country
-  // that has no data for that model.
-  return { forecastType, models, selected, requestModelId: explicit?.id, hidden };
+  // A recommendation only applies when the user has not chosen for themselves,
+  // and only when the model it names is still registered — the same leniency a
+  // stale pin already gets.
+  const auto = explicit || !recommended
+    ? undefined
+    : models.find((m) => m.id === recommended.modelId);
+
+  const selected =
+    explicit ?? auto ?? models.find((m) => m.id === cfg.production) ?? models[0] ?? null;
+
+  // A fallback is today's hand-picked default, not a measured winner, and must
+  // never be labelled as one.
+  const measured = auto && recommended && !recommended.fallback ? recommended : null;
+  const displaysWhatWasMeasured =
+    measured?.source === 'tso' || (measured != null && servedModelId === measured.modelId);
+
+  // Only an id the user actually pinned goes on the wire. A default is a
+  // preference, not an instruction, and pinning one blanks every country and
+  // every window that has no data for that model.
+  return {
+    forecastType,
+    models,
+    selected,
+    requestModelId: explicit?.id,
+    hidden,
+    autoSelected: displaysWhatWasMeasured ? measured : null,
+  };
 }
 
 export function useModelSelection(forecastType: string): ActiveModelSelection {
   const { data: registry, isLoading } = useForecastModels();
-  // Single-select callers (Load, Price, ForecastTab) only ever write a
-  // one-element selection (`setSelectedModel`) — see dashboardStore.ts. This
-  // reads just its first (only) entry, so `resolveSelection` above is
-  // unchanged from before the store moved to an array shape.
+  const { data: recommended } = useRecommendedModel(forecastType);
+  // Single-select callers (Load, Price, Wind) only ever write a one-element
+  // selection (`setSelectedModel`) — see dashboardStore.ts. This reads just its
+  // first (only) entry, so `resolveSelection` above is unchanged from before
+  // the store moved to an array shape.
   const pinnedId = useDashboardStore((s) => s.selectedModelsByType[forecastType]?.[0]);
   const hidden = useDashboardStore((s) => s.forecastHiddenByType[forecastType] ?? false);
-  return { ...resolveSelection(registry, forecastType, pinnedId, hidden), isLoading };
+  // `meta.model` from the last response for this type — the only thing that
+  // knows which of our models the server's ladder actually served. Written by
+  // each tab's data hook; this is its first reader.
+  const servedModelId = useDashboardStore((s) => s.servedModelByType[forecastType]);
+  return {
+    ...resolveSelection(registry, forecastType, pinnedId, hidden, recommended, servedModelId),
+    isLoading,
+  };
 }
 
 export interface ActiveModelsSelection {

@@ -71,8 +71,18 @@ export function getDataFreshness(countryCode: string, now: Date = new Date()): D
     // Day-ahead publications are legitimately dated in the future, so they are
     // judged on coverage. Judging them on age would report a healthy price as
     // impossibly fresh and never notice a missing tomorrow — ABL-51.
-    price: classifyDayAheadStream(price, now),
-    tsoLoadForecast: classifyDayAheadStream(tsoLoadForecast, now),
-    tsoGenerationForecast: classifyDayAheadStream(tsoGenerationForecast, now),
+    //
+    // Each names its own stream because the deadline is per document, not
+    // fleet-wide: A44 and A65 publish around midday Brussels, A69 (day-ahead
+    // wind & solar) has until 18:00 Brussels D-1, so one shared 14:00 UTC cutoff
+    // flagged every country's generation forecast stale every afternoon
+    // (ABL-494). See `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` for the derivations.
+    price: classifyDayAheadStream(price, now, 'price'),
+    tsoLoadForecast: classifyDayAheadStream(tsoLoadForecast, now, 'tsoLoadForecast'),
+    tsoGenerationForecast: classifyDayAheadStream(
+      tsoGenerationForecast,
+      now,
+      'tsoGenerationForecast',
+    ),
   };
 }
