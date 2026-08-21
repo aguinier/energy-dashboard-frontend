@@ -4056,6 +4056,18 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
+Re-measured 2026-08-20 on ABL-498, branched from `main` at `5cf5b4c` (which
+carries the ABL-289 merge): **105 server test files / 2,034 tests**, all
+passing, zero skipped, `tsc --noEmit` exit 0, under **v24.18.0**. ABL-498 is
+**+1 file / +33 cases** — `release/strandedWork.test.ts`, and nothing else; its
+`checkUnmergedWork.ts` and CLAUDE.md edits add no case. That delta was settled
+without a second checkout by re-running the same tree with the one new file
+excluded, which reported **104 / 2,001** — the figure recorded in the paragraph
+below, corroborated rather than derived from it. The file count needed no run at
+all: `git ls-tree -r main --name-only | grep -c '^server/src/.*\.test\.ts$'`
+returns 103 at `5cf5b4c`, plus the one `scripts/` file the server suite also
+discovers (`server/vitest.config.ts:11`) = 104.
+
 Green as of 2026-08-14, measured on ABL-289 after merging `main` at `7965255`
 in: **104 server test files / 2,001 tests**, all passing, zero skipped. `main`
 itself measures **102 / 1,944** on the same tree, so ABL-289 is **+2 files /
@@ -4698,11 +4710,14 @@ ABL-189/190/196, ABL-262/265, and on 2026-08-12 five issues (ABL-285, ABL-292,
 ABL-288, ABL-290, ABL-295) all read `done` while local `main` sat **12 commits
 ahead of `origin/main`**.
 
-`predone` runs **two gates**, and the second is the one ABL-311 added:
+`predone` runs **three gates** — gate 2 is ABL-311's, gate 3 is ABL-498's:
 
 1. **Per branch** — `done` + the work not on the target = shipping gap.
 2. **`main` itself** — local `main` ahead of the target = **not published**
    (`release/publishState.ts`, pure, colocated test).
+3. **Every local branch** — any commit whose patch is not on the target =
+   **stranded** (`release/strandedWork.ts`, pure, colocated test). Reports;
+   never fails. See below for why that is a decision rather than a weakness.
 
 **Gate 1 asks git two questions, not one, and the second is why it can be
 trusted.** Ancestry (`git merge-base --is-ancestor`) answers whether the *commit*
@@ -4739,6 +4754,62 @@ deleting the feature branch after merging, and committing straight to `main`.
 Gate 2 is deliberately **board-independent**: it asks git a question git can
 always answer. A gate that needs a reachable network in order to fail is a gate
 that fails open, and gate 1 does exit 0 when the board is unreachable.
+
+**Gate 3 exists because gates 1 and 2 are both blind one level below where they
+look, and neither is wrong on its own terms.** On 2026-08-20 this command
+printed its clean-bill-of-health line — "No shipping gaps: every issue marked
+done is on origin/main, and main is published." — while **five local branches
+held the only copy of finished work**, including ABL-469 (`6d2c1f3`), a 16-file
+feature with tests, +1804/-35. Gate 1 keys off *issue status* and ABL-469 read
+`blocked`, so its branch printed as a quiet `in flight` line and was never a
+failure. Gate 2 asks only about `main`, which sat at `0 ahead, 0 behind` because
+the work was stranded a level below it. Nothing asked the question that matters:
+*is any local branch holding a commit whose patch is not on the target?*
+
+Four properties, each of which had already cost this repo something:
+
+- **Patch identity, not ancestry** — the same rule gate 1 learned above.
+  A raw `git rev-list --count origin/main..<branch>` reported **eleven**
+  non-ancestor branches that day, of which **five were phantoms** already
+  cherry-picked onto `origin/main` (ABL-166 `3c42ec8`, ABL-216 `484b3e2`,
+  ABL-249 `d84e97b`, ABL-70 `9214114`, `claude/determined-merkle-7f23e0`).
+  Quoting the raw count as a stranding figure would be this repo's signature
+  defect committed by the check meant to catch it. Phantoms are **counted and
+  not listed** — five verbose paragraphs about branches that are safe to delete
+  is what pushes the one that matters off the top of the screen.
+- **Counted by commit, not by ref.** Several branch names on one tip is the
+  normal state of this checkout, not an edge case: the Paperclip
+  execution-workspace name and the hand-cut convention name routinely coexist
+  (`ABL-494-day-ahead-…` and `fix/abl-494-per-stream-day-ahead-deadline` were
+  both `16f27cb`), and older tips carry up to five refs each. Findings are
+  folded by tip and the extra refs listed under `also at:`, so the headline
+  cannot overstate. The first real run of this gate did double-count `16f27cb`
+  before that was added.
+- **Size and age beside every entry.** This is the whole payload. Gate 1
+  rendered ABL-469 (16 files, +1804/-35) and `fix/frontend-wal-mount` (1 file,
+  +3/-1, 121 days old) as two indistinguishable lines; gate 3 sorts by size and
+  prints `<n> commits; <files> +<ins>/-<del> vs merge base; <age>`. Note the
+  size is **against the merge base**, not "unpublished lines" — for a partly
+  cherry-picked branch it still counts the published hunks, and it is labelled
+  that way rather than overclaimed.
+- **Board-independent, like gate 2, and that is the point.** ABL-487 is the
+  incident behind this: the GitHub push credential expired, so no branch *could*
+  be published, and `predone` said everything was fine. That is exactly when the
+  board half is least likely to be reachable and stranded work is most likely to
+  be piling up, so gate 3 asks git and nothing else.
+
+**Gate 3 reports and never fails, and that is measured rather than timid**
+(`STRANDED_WORK_FAILS_CHECK`, `server/src/release/strandedWork.ts:69`). This is
+one physical checkout shared by many concurrent runs, so several other agents'
+in-flight branches are present at all times — on 2026-08-20, six commits held
+novel patches and exactly one belonged to the run reading the report. Any
+exit-code rule over that set is red on an ordinary working day, which is the
+"cries wolf" failure gate 1's own header already names. What changed instead is
+that the **summary can no longer read as an all-clear**: the clean line now
+carries "But N local commits carry work that is not on the target — listed
+above." Read that clause before you close anything. If a future checkout is
+single-tenant, flipping the constant may become right — measure the branch
+population first, do not infer it from this paragraph.
 
 So: `predone` must read `0 ahead, 0 behind` before you mark the issue `done` —
 and reaching that state is a **merge, not a push** (next section). If local
@@ -4864,6 +4935,13 @@ asserted through the component),
 `server/src/release/publishState.ts` (ABL-311 — the caller hands it two
 integers from one `git rev-list --left-right --count`, so every publish verdict
 is asserted without a repo, a remote or a network),
+`server/src/release/strandedWork.ts` (ABL-498 — the same shape one gate over:
+the caller hands it the branch list, the `git cherry` counts and the
+`git diff --numstat` blocks, so the phantom-vs-real split, the fold-by-tip and
+the numstat parse are all pinned without a repo. Its fixture is measured from
+the real checkout on 2026-08-20 rather than invented, because the gate's whole
+claim is that it separates six real branches from five phantoms and a
+made-up split would prove nothing),
 `server/src/services/freshnessRollup.ts`, `server/src/services/hostMetrics.ts`
 (ABL-237 — both injectable at their I/O boundary, `statfs`/`loadavg`/`platform`
 as optional params, specifically so `hostMetrics.test.ts` can exercise the
