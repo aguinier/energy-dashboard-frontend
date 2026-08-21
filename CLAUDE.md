@@ -810,7 +810,7 @@ Three top-level views, switched via `currentView` in the store (`map` | `country
 ### 2. Forecast model selection
 
 `server/src/config/forecastModels.ts` is the registry: which models (`catboost`,
-`xgboost`, TSO day-ahead/week-ahead, the net-position Chronos run, ...) may
+`xgboost`, TSO day-ahead/week-ahead, the net-position Chronos/XGBoost/baseline runs, ...) may
 serve which forecast type, and which one is `production` for that type. **A
 model must be listed there to be served at all.**
 
