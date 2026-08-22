@@ -47,7 +47,7 @@ import { resolveApiKeysDbPath } from '../keys/sqliteApiKeyStore.js';
  * ```
  *
  * See "Serving a changed model artifact: the ToS §9.3 sequence" in CLAUDE.md
- * for the full procedure in which entries:publish is step C.
+ * for the full procedure; entries:publish is step 4 of Procedure A and step 3 of Procedure B.
  */
 
 interface ParsedArgs {

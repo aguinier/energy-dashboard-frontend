@@ -38,7 +38,7 @@ import { openApiKeyAdminStore, resolveApiKeysDbPath } from './sqliteApiKeyStore.
  * ```
  *
  * See "Serving a changed model artifact: the ToS §9.3 sequence" in CLAUDE.md
- * for the full procedure in which keys:contacts is step D.
+ * for the full procedure; keys:contacts is step 5 of Procedure A and step 4 of Procedure B.
  */
 
 interface ParsedArgs {
