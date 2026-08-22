@@ -24,13 +24,16 @@ import type {
  * one guard that refuses to let this be the 376 GiB energy database — and passes
  * the handle here.
  *
- * That is not an accident of convenience. `publicAppGraph.test.ts` asserts that
- * **exactly three modules import `better-sqlite3`**, by name, and its own comment
- * says why the assertion names them individually rather than counting: a fourth
- * is a decision somebody should have to justify in review. A second handle on the
- * same file would also be a second place `resolveApiKeysDbPath` had to be
- * remembered, and the metering module's header already records that having one
- * decision about that path and one guard to keep true is the point.
+ * That is not an accident of convenience. `publicAppGraph.test.ts` **names, one
+ * by one, every module in the serving graph that imports `better-sqlite3`**, and
+ * its own comment says why it names them rather than counting them: a count would
+ * pass if somebody deleted one and added another, and one more handle is a
+ * decision somebody should have to justify in review. Read the membership rather
+ * than the total — the total moved under this branch while it sat in review, when
+ * ABL-532's `sqliteChangelogStore.ts` opened one. A second handle on the same
+ * file would also be a second place `resolveApiKeysDbPath` had to be remembered,
+ * and the metering module's header already records that having one decision about
+ * that path and one guard to keep true is the point.
  *
  * So the import above is `import type`, which `tsc` erases. This module holds the
  * SQL for a security record; it holds no capability to decide where that record

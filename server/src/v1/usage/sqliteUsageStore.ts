@@ -438,10 +438,12 @@ export function openUsageStore({
   db.exec(SCHEMA);
 
   // The auth-failure record (ABL-530), on this same handle rather than on a
-  // fourth one. `sqliteAuthFailureStore.ts` holds its schema and its SQL and
-  // imports `better-sqlite3` for its *type* only, so `publicAppGraph.test.ts`'s
-  // "exactly three modules open a database" assertion is unaffected — which is
-  // the assertion, and not the module count, that was ever the control.
+  // second one. `sqliteAuthFailureStore.ts` holds its schema and its SQL and
+  // imports `better-sqlite3` for its *type* only, so it is absent from the list
+  // of database-opening modules `publicAppGraph.test.ts` names — which is the
+  // assertion, and not the module count, that was ever the control. (The count
+  // itself has already moved once without this table: ABL-532's change-log store
+  // is a fourth. Quote the membership, not the total.)
   //
   // Same file for a reason that is not tidiness: that table holds `client_ip` and
   // `user_agent`, so it is inside the ABL-297 §5 promise from its first row and

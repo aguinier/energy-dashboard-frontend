@@ -4,11 +4,13 @@ import compression from 'compression';
 import helmet from 'helmet';
 import { createV1Routes } from './routes/index.js';
 import publicRootRoutes from './routes/root.js';
+import { createChangelogRoutes } from './changelog/changelogRoutes.js';
 import { requireApiKey } from './auth/apiKeyAuth.js';
 import { publicErrorHandler, publicNotFoundHandler } from './publicErrors.js';
 import { assertPublicEnvironment, parsePublicCorsOrigins, type PublicEnv } from './publicEnv.js';
 import type { ApiKeyDirectory } from './keys/apiKeyStore.js';
 import type { AuthFailureRecorder } from './security/authFailureRecorder.js';
+import type { ChangelogReader } from './changelog/changelogStore.js';
 import type { UsageMeter } from './usage/usageMeter.js';
 import type { PlanGate } from './quota/planGate.js';
 import type { V1DataContext } from './data/context.js';
@@ -170,6 +172,27 @@ export interface PublicAppOptions {
   data: V1DataContext;
 
   /**
+   * The published change-log entries `/changelog` serves (ABL-532).
+   *
+   * **Required, with no default, for the fifth time in this options bag**, and
+   * the reason is contractual rather than technical. §9.3 points a subscriber at
+   * a change log for advance notice of material model changes — so an app
+   * composed without one is an API whose Terms name a publication channel that
+   * answers 404. That is not a degraded mode, it is a promise with nothing behind
+   * it, and it is the failure this whole issue exists to fix. There is no way to
+   * spell it.
+   *
+   * A {@link ChangelogReader}, not an admin store: the process that answers
+   * public requests can read published entries and cannot write one. Same split
+   * as `apiKeyDirectory`, applied to a different risk — there, altering a
+   * credential; here, altering a notice we have already published. Publishing is
+   * `changelogCli.ts`'s, over a read-write handle this process never holds.
+   *
+   * Injected as a type, so `publicApp.ts` still chooses no storage.
+   */
+  changelog: ChangelogReader;
+
+  /**
    * The environment to configure from and to vet. Defaults to `process.env`.
    *
    * Injectable so tests can assert the refusal without mutating a global under
@@ -184,6 +207,7 @@ export function createPublicApp({
   usageMeter,
   planGate,
   data,
+  changelog,
   env = process.env,
 }: PublicAppOptions): Express {
   // First, before anything is wired: refuse to exist in a process that was
@@ -325,6 +349,28 @@ export function createPublicApp({
   app.use('/v1', usageMeter.middleware);
   app.use('/v1', planGate.middleware);
   app.use('/v1', createV1Routes(data));
+
+  // The change log, and note the mount path: **no `/v1` prefix** (ABL-532).
+  //
+  // Three consequences, all deliberate:
+  //
+  // - **It outlives `/v1`.** §9.3 commits us to announcing the retirement of a
+  //   major API version through this change log. Mounted under `/v1`, the
+  //   announcement would be served from a path that stops existing on the date it
+  //   announces — and ABL-532's first requirement is a URL that does not have to
+  //   change.
+  // - **It is unauthenticated**, and it is the second thing here that is, after
+  //   the discovery root. A change log behind an API key is unreadable by exactly
+  //   the person most likely to need it, including a prospective subscriber
+  //   deciding whether our change behaviour is acceptable to them.
+  // - **It does not weaken the `/v1` gate.** `requireApiKey` above still covers
+  //   every path under `/v1` including ones that match no route, so the surface
+  //   still cannot be enumerated without a key. `/v1/changelog` answers 401 like
+  //   any other `/v1` path, and `publicApp.test.ts` pins that.
+  //
+  // It takes a reader, never an admin store: this process cannot alter a notice
+  // it has published.
+  app.use(createChangelogRoutes({ reader: changelog }));
 
   // Unconditional and last, in this order — `notFound` first so anything that
   // matched no route becomes a typed 404 rather than reaching Express's HTML
