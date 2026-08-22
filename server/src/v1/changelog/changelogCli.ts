@@ -45,6 +45,9 @@ import { resolveApiKeysDbPath } from '../keys/sqliteApiKeyStore.js';
  * npm run changelog -- entries:export > changelog-backup.json
  * npm run changelog -- entries:seed --examples
  * ```
+ *
+ * See "Serving a changed model artifact: the ToS §9.3 sequence" in CLAUDE.md
+ * for the full procedure in which entries:publish is step C.
  */
 
 interface ParsedArgs {

@@ -36,6 +36,9 @@ import { openApiKeyAdminStore, resolveApiKeysDbPath } from './sqliteApiKeyStore.
  * npm run keys -- keys:rotate --key key_… --overlap-days 7
  * npm run keys -- keys:revoke --key key_… --reason "leaked in a support ticket"
  * ```
+ *
+ * See "Serving a changed model artifact: the ToS §9.3 sequence" in CLAUDE.md
+ * for the full procedure in which keys:contacts is step D.
  */
 
 interface ParsedArgs {
