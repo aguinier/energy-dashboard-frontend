@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describeEntry, parseArgs, runCommand } from './changelogCli.js';
-import { openChangelogAdminStore } from './sqliteChangelogStore.js';
+import { openChangelogAdminStore, openChangelogReader } from './sqliteChangelogStore.js';
 import type { ChangelogAdminStore } from './changelogStore.js';
 
 /**
@@ -268,6 +268,64 @@ describe('entries:seed', () => {
 
     expect(store.list()).toHaveLength(2);
     expect(out.join('\n')).toMatch(/Already seeded/);
+  });
+});
+
+describe('entries:init', () => {
+  /**
+   * The command a serving process's startup error sends an operator to, so the
+   * test is the operator's journey rather than a string: a fresh path, the
+   * documented command, and then the thing that was refusing must start.
+   *
+   * Pinning it this way is deliberate. The table is created as a side effect of
+   * opening the admin store, which `entries:list` also does — so a test that
+   * asserted the message names *a* command would keep passing if the command it
+   * named later stopped creating anything.
+   */
+  it('makes a store the serving process refused to open, openable', () => {
+    const fresh = tmpDbPath();
+    const env = { API_KEYS_DB_PATH: fresh } as NodeJS.ProcessEnv;
+
+    expect(() => openChangelogReader(env)).toThrow(/Cannot open the \/v1 change log/);
+
+    const admin = openChangelogAdminStore(env, () => clock);
+    try {
+      runCommand(admin, parseArgs(['entries:init']), () => clock);
+    } finally {
+      admin.close();
+    }
+
+    const reader = openChangelogReader(env);
+    try {
+      expect(reader.list()).toEqual([]);
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('publishes nothing, and says an empty change log is the correct state', () => {
+    run(['entries:init']);
+
+    expect(store.list()).toEqual([]);
+    const said = out.join('\n');
+    expect(said).toMatch(/Nothing is published/);
+    // The distinction the refusal turns on: an empty table serves an empty
+    // page, only a missing one refuses to start.
+    expect(said).toMatch(/empty change log serves an empty page/);
+  });
+
+  it('is idempotent, and never publishes an example', () => {
+    run(['entries:init']);
+    run(['entries:init']);
+    expect(store.list()).toEqual([]);
+
+    run(['entries:publish', '--type', 'planned', '--effective', offsetIso(40 * DAY),
+      '--title', 'A real change', '--detail', 'Something real.']);
+    out = [];
+
+    run(['entries:init']);
+    expect(store.list()).toHaveLength(1);
+    expect(out.join('\n')).toMatch(/nothing was changed/);
   });
 });
 

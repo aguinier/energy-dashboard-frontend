@@ -932,6 +932,23 @@ root, not the OpenAPI document. `entries:seed --examples` installs two example
 entries that describe no real change and say so loudly on the page; do not seed
 them into a store that serves real subscribers.
 
+**`npm run changelog -- entries:init` is how the store gets created, and the
+distinction is not cosmetic.** Seeding is emphatically not the way: it publishes
+two entries that give notice of nothing, and this module has no update and no
+delete, so an operator who reaches for it once has published them permanently on
+the page §9.3 points subscribers at. Both of `openChangelogReader`'s refusals
+therefore name `entries:init` — a startup error is the one instruction an
+operator is guaranteed to read, so it must not be the one that costs them that.
+An **empty** change log is a healthy state and serves an empty page; only a
+**missing** table refuses to start. `entries:init` is idempotent and publishes
+nothing. It exists as a named command rather than as documentation of
+`entries:list`'s side effect because `list` is a read, and later handing it the
+readonly handle — the discipline applied everywhere else here — would silently
+falsify a string printed in a startup error;
+`changelog/changelogCli.test.ts` pins the operator's journey end to end (fresh
+path → `entries:init` → the reader that was refusing now opens) rather than
+pinning the wording.
+
 The store is `changelog_entries` in the **same** SQLite file as keys and usage,
 resolved through `resolveApiKeysDbPath` so the "never the energy database" guard
 stays singular. It is the fourth module in the public graph to open a database,

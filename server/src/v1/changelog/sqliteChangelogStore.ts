@@ -149,6 +149,13 @@ function makeReader(db: DatabaseType): ChangelogReader {
  * so a path typo cannot create an empty database and serve a change log with
  * nothing in it — an empty page at a URL the Terms name is a worse failure than
  * a process that refuses to start, because nothing about it looks broken.
+ *
+ * Both refusals name `entries:init`, and deliberately not `entries:seed
+ * --examples`: seeding is the one command every other line of documentation says
+ * never to run against a store that serves subscribers, and this module has no
+ * delete to undo it with. A startup error is the instruction an operator is
+ * guaranteed to read, so it must not be the one that publishes two entries
+ * giving notice of nothing. See `changelogCli.ts`, `entries:init`.
  */
 export function openChangelogReader(env: NodeJS.ProcessEnv = process.env): ChangelogReader {
   const dbPath = resolveApiKeysDbPath(env);
@@ -158,8 +165,8 @@ export function openChangelogReader(env: NodeJS.ProcessEnv = process.env): Chang
   } catch (err) {
     throw new Error(
       `Cannot open the /v1 change log at ${dbPath}: ${(err as Error).message}. ` +
-        'Create it with `npm run changelog -- entries:seed --examples` in server/, which opens ' +
-        'the same path read-write and applies the schema.'
+        'Create it with `npm run changelog -- entries:init` in server/, which opens the same ' +
+        'path read-write, applies the schema, and publishes nothing.'
     );
   }
 
@@ -170,8 +177,7 @@ export function openChangelogReader(env: NodeJS.ProcessEnv = process.env): Chang
     db.close();
     throw new Error(
       `The file at ${dbPath} has no changelog_entries table. Run ` +
-        '`npm run changelog -- entries:seed --examples` in server/ to create it, or check ' +
-        'API_KEYS_DB_PATH.'
+        '`npm run changelog -- entries:init` in server/ to create it, or check API_KEYS_DB_PATH.'
     );
   }
 

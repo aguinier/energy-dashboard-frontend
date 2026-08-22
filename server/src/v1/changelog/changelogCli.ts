@@ -40,6 +40,7 @@ import { resolveApiKeysDbPath } from '../keys/sqliteApiKeyStore.js';
  *     --title "..." --detail "..."
  * npm run changelog -- entries:publish --type correction --effective 2026-08-22T14:00:00Z \
  *     --title "..." --detail "..." --what-was-wrong "..."
+ * npm run changelog -- entries:init
  * npm run changelog -- entries:list
  * npm run changelog -- entries:export > changelog-backup.json
  * npm run changelog -- entries:seed --examples
@@ -122,9 +123,14 @@ the key store and the usage tables, never the energy database.
                    --title <text> --detail <text>
                    [--what-was-wrong <text>]   required on a correction, refused otherwise
                    [--example]                 marks an entry that describes no real change
+  entries:init                                 create the store. Publishes nothing, and is
+                                               what a serving process that refuses to start
+                                               for want of a change log needs run against it
   entries:list
   entries:export                               every entry as JSON, for archival
-  entries:seed --examples                      install the two example entries
+  entries:seed --examples                      install the two example entries. They describe
+                                               no real change — never against a store that
+                                               serves real subscribers
 
 The publication instant is stamped at insert and cannot be supplied: a ${NOTICE_PERIOD_DAYS}-day
 notice must not be manufacturable after the fact. --effective needs an explicit time zone
@@ -177,6 +183,39 @@ export function runCommand(
             "A correction's entry is meant to go up at the same time as the change. The page " +
             'shows both instants, so the gap is published rather than hidden.'
         );
+      }
+      return;
+    }
+
+    case 'entries:init': {
+      // Applying the schema is `openChangelogAdminStore`'s doing — it runs it on
+      // open — so by the time this case is reached the table exists. What this
+      // command adds is a **name** for that, and the name is the point.
+      //
+      // `openChangelogReader` refuses to start when the table is absent, and its
+      // refusal has to send the operator somewhere. It used to send them to
+      // `entries:seed --examples`, which made the only documented way to create
+      // the store the one command every other line of documentation says never to
+      // run against a store that serves subscribers — and since there is no
+      // delete anywhere in this module, an operator following that instruction at
+      // first deployment would permanently publish two entries giving notice of
+      // nothing, on the page §9.3 points subscribers at.
+      //
+      // Naming a command rather than documenting `entries:list`'s side effect:
+      // `list` is a read, and giving it the readonly handle later — the
+      // discipline this codebase applies everywhere else — would silently break
+      // an instruction printed in a startup error. The contract here is that
+      // running this makes the serving process able to start, and
+      // `changelogCli.test.ts` pins that end to end rather than pinning a string.
+      const entries = store.list();
+      console.log('Change log ready: changelog_entries exists, and the serving process can');
+      console.log('open it readonly.');
+      if (entries.length === 0) {
+        console.log('\nNothing is published, which is the correct state until something is. An');
+        console.log('empty change log serves an empty page; only a missing table refuses.');
+      } else {
+        console.log(`\n${entries.length} already published, and nothing was changed — this command`);
+        console.log('creates the store and never writes an entry. Run it as often as you like.');
       }
       return;
     }

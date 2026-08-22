@@ -254,8 +254,28 @@ describe('the reader', () => {
       /no changelog_entries table/
     );
     expect(() => openChangelogReader({ API_KEYS_DB_PATH: other } as NodeJS.ProcessEnv)).toThrow(
-      /entries:seed --examples/
+      /entries:init/
     );
+  });
+
+  it('never sends the operator to entries:seed to create a store', () => {
+    // Both refusals are pinned, because they are two separate strings and the
+    // cases above exercise one each. A startup error is the instruction an
+    // operator is guaranteed to read, and `entries:seed --examples` publishes
+    // two entries that give notice of nothing — into a store this module gives
+    // nobody a way to delete from.
+    const missing = path.join(path.dirname(dbPath), 'nothing-here.db');
+    const decoy = path.join(path.dirname(dbPath), 'decoy.db');
+    const handle = new Database(decoy);
+    handle.exec('CREATE TABLE something_else (x TEXT)');
+    handle.close();
+
+    for (const target of [missing, decoy]) {
+      const open = (): unknown =>
+        openChangelogReader({ API_KEYS_DB_PATH: target } as NodeJS.ProcessEnv);
+      expect(open).toThrow(/entries:init/);
+      expect(open).not.toThrow(/entries:seed/);
+    }
   });
 
   it('resolves its path through the key store resolver, so the energy-database guard is singular', () => {
