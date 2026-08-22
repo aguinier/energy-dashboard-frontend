@@ -46,6 +46,50 @@ in §3 clears.
   arriving today is a value the *caller* chose — recording it would corrupt the
   one field we rate-limit on and name in the notice as personal data.
 
+### 1b. And one row in `auth_failures` per **refused** request (ABL-530)
+
+A second table, in the same file, holding the requests that never became a
+metered one. It exists because a failed authentication previously produced no
+durable record anywhere — the meter is mounted behind the key gate, and
+`usage_events.account_id`/`key_id` are `NOT NULL`, so a refusal could not be
+counted there even in principle.
+
+| Recorded | Personal data? | Why we hold it |
+|---|---|---|
+| error code, status | No | Which refusal it was |
+| presented **prefix** | No — the non-secret handle | The one column that separates enumeration from a customer with a stale key |
+| `secret_verified` | No | Whether the caller had already proven a secret. See below |
+| account id, key id | Pseudonymous, and only when `secret_verified` | Lets "was this key ever *served* from this address?" be a join |
+| route **template** | No, **by construction** | Which surface was aimed at — from a closed table, never `req.path` |
+| **source IP** | **Yes** | Telling one attacker walking the key space apart from many customers with stale keys |
+| **user agent** | **Yes** | Same |
+
+**Two constraints, and neither is negotiable:**
+
+- **The presented secret is never recorded** — not hashed, not truncated, not
+  prefixed-plus-N. There is no column that could hold one, and
+  `sqliteAuthFailureStore.test.ts` drives real keys through the real gate and
+  asserts the secrets are absent from the *bytes on disk*. A store of attempted
+  secrets would be a second credential store, filled from the open internet,
+  with none of the protections the real one has.
+- **The route template comes from a fixed table** (`requestTarget.ts`), and a
+  path that matches nothing is recorded as `(unrecognised)`. On a refused
+  request the path is an unauthenticated caller-controlled string, so it is the
+  §2 problem in its sharpest form: this table is fed by the callers we trust
+  least, and it is kept for thirteen months.
+
+`secret_verified` is worth understanding before reading any report built on
+this table. `key_revoked`, `key_expired` and `account_disabled` are reachable
+**only after** the presented secret has matched the stored hash, so anyone who
+triggers one holds a real key — there is no guessing path to them. It is
+recorded explicitly rather than derived from the error code, because
+`key_invalid` is produced on *both* sides of that comparison.
+
+**This table is inside the §3 retention job on the same two boundaries**, and
+`usage:stats` reports one compliance figure across both. That is the detail
+most likely to be missed, and missing it would turn a detection feature into a
+privacy-notice violation — a worse outcome than not building it.
+
 ---
 
 ## 2. Query parameters cannot become a personal-data vector
@@ -82,9 +126,14 @@ store of whatever the caller sent.
 
 | At | What happens | To |
 |---|---|---|
-| **90 days** | `client_ip` and `user_agent` are set to NULL, `pii_scrubbed_at` is stamped | `usage_events` |
-| **13 months** | The de-identified row is deleted outright | `usage_events` |
+| **90 days** | `client_ip` and `user_agent` are set to NULL, `pii_scrubbed_at` is stamped | `usage_events`, `auth_failures` |
+| **13 months** | The de-identified row is deleted outright | `usage_events`, `auth_failures` |
 | **never** | — | `usage_rollup`, `usage_month_close` |
+
+Both tables are covered by one pass, in **one transaction**, on the same two
+periods. There is no separate variable for the security record: two periods that
+could drift apart is how a published statement stops being true for half the data
+it covers.
 
 It runs two ways, and both are the same code path (`runUsageMaintenance`):
 
@@ -100,12 +149,21 @@ Three properties worth knowing before you touch it:
    would remove it from an invoice permanently. Retention keeps the row instead
    and reports the count as `keptPendingRollup`. A non-zero number there is a
    *rollup* alert, not a retention one: fix the rollup, then re-run.
-2. **It is scoped to `usage_events` and nothing else.** ABL-301 is the first
-   scheduled deletion in this codebase, which makes it the place a future
-   general-purpose row reaper is most likely to grow. **Do not build one.** ToS
-   §9.3 commits us to retaining forecast vintages so a subscriber can reconstruct
-   what a model said at the time; forecast vintages must never be pruned for
-   storage reasons.
+2. **It is scoped to `usage_events` and `auth_failures`, and nothing else.**
+   ABL-301 is the first scheduled deletion in this codebase, which makes it the
+   place a future general-purpose row reaper is most likely to grow. **Do not
+   build one.** ToS §9.3 commits us to retaining forecast vintages so a
+   subscriber can reconstruct what a model said at the time; forecast vintages
+   must never be pruned for storage reasons. `auth_failures` was added because it
+   holds personal data — which is the only reason that would justify a third
+   table joining the list.
+
+   Its delete is **unconditional**, where `usage_events`' waits for the rollup
+   watermark. That is not an oversight: the watermark gate exists because an
+   un-aggregated event deleted at 13 months is a request permanently missing from
+   an invoice, and nothing aggregates or invoices from `auth_failures`. A gate
+   there would be a condition that is always true, which reads to the next
+   maintainer as protection that is not there.
 3. **`usage_rollup` is out of scope on purpose.** Accounting law requires the
    figures an invoice was based on for roughly seven years, and the raw rows are
    gone at thirteen months. See §4. `usage_month_close` is out of scope for the
@@ -120,10 +178,26 @@ npm run usage -- usage:stats
 ```
 
 The line to read is the retention check. `OK` means no record past the
-personal-data boundary still holds an IP or a user agent. `NOT COMPLIANT` means
-we are publicly committed to something we are demonstrably not doing, and
-`usage:retention` is the fix. It should never say `NOT COMPLIANT`; if it does,
-find out how long it has, because that is the answer a regulator would want.
+personal-data boundary still holds an IP or a user agent, **in either table**.
+`NOT COMPLIANT` means we are publicly committed to something we are demonstrably
+not doing, and `usage:retention` is the fix; it names the per-table split so an
+operator is not left looking in the wrong one. It should never say `NOT
+COMPLIANT`; if it does, find out how long it has, because that is the answer a
+regulator would want.
+
+### The evidence problem, when the investigation is the thing at risk
+
+The 90-day boundary applies while an incident is being investigated, and the job
+runs every six hours — so **an investigation that starts on day 89 can lose its
+own evidence while it is running** (ABL-524 §4). The lawful escape is Privacy
+Notice §5's own provision: security incident records may retain request records
+that would otherwise have expired, for 24 months, **under a documented incident
+record**.
+
+That is a reason to open the incident record *early and cheaply*, before anyone
+is sure there is an incident. It is what makes preserving the evidence lawful
+rather than a retention breach of its own — and nothing in this codebase does it
+for you.
 
 ---
 
@@ -234,11 +308,17 @@ does not carry it, so it cannot reach a response body.
    npm run usage -- usage:export --account acct_XXXX --out acct_XXXX-export.json
    ```
 
-   That produces one JSON file with three sections: `keys` (every key ever issued
+   That produces one JSON file with four sections: `keys` (every key ever issued
    to the account, minus the secret hash and including the §9.3 account contact),
    `events` (every request record still held — so up to 13 months, with IPs on
-   the last 90 days), and `rollups` (every monthly aggregate, including closed
-   months).
+   the last 90 days), `rollups` (every monthly aggregate, including closed
+   months), and `authFailures` (refused requests, on the same 90/13 periods).
+
+   `authFailures` covers only the refusals that carry this account's `key_id` —
+   which means only those where the presented secret had already matched, since
+   that is the one branch on which the gate knows whose key it is. A refusal that
+   named no key belongs to no account and is not exportable per account;
+   attributing one would put a stranger's address in a subscriber's file.
 
 4. **Check it before it leaves.** Two things: that it contains no
    `secret_sha256` (it cannot — the export names its columns explicitly and a

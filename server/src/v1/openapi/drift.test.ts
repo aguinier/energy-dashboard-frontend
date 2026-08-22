@@ -6,6 +6,7 @@ import publicRootRoutes from '../routes/root.js';
 import { requireApiKey } from '../auth/apiKeyAuth.js';
 import { publicErrorHandler, publicNotFoundHandler } from '../publicErrors.js';
 import { createMemoryApiKeyDirectory } from '../keys/memoryApiKeyDirectory.js';
+import { createTestAuthFailureRecorder } from '../security/memoryAuthFailureSink.js';
 import {
   createMemoryDataContext,
   createMemoryEnergySource,
@@ -654,7 +655,13 @@ describe('the error contract', () => {
     // would then have to thread a key through every request and a gate failure
     // would read as a contract failure.
     const gated = express();
-    gated.use('/v1', requireApiKey({ directory: createMemoryApiKeyDirectory().directory }));
+    gated.use(
+      '/v1',
+      requireApiKey({
+        directory: createMemoryApiKeyDirectory().directory,
+        recorder: createTestAuthFailureRecorder().recorder,
+      })
+    );
     gated.use('/v1', createV1Routes(createMemoryDataContext(source, { now: () => NOW })));
     gated.use(publicNotFoundHandler);
     gated.use(publicErrorHandler);

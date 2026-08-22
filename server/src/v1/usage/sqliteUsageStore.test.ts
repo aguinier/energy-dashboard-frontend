@@ -660,7 +660,12 @@ describe('retention — ABL-297 §5, which is a published commitment', () => {
     store.rollUp();
     store.applyRetention(NOW);
 
-    expect(store.applyRetention(NOW)).toEqual({ scrubbed: 0, deleted: 0, keptPendingRollup: 0 });
+    expect(store.applyRetention(NOW)).toEqual({
+      scrubbed: 0,
+      deleted: 0,
+      keptPendingRollup: 0,
+      authFailures: { scrubbed: 0, deleted: 0 },
+    });
   });
 
   it('touches nothing but usage_events — not the rollup, and not the key store', () => {

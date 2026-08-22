@@ -9,6 +9,7 @@ import { PLAN_LIMITS, type PlanLimits } from './planLimits.js';
 import type { MonthlyUsageReader } from './monthlyQuota.js';
 import { requireApiKey } from '../auth/apiKeyAuth.js';
 import { createMemoryApiKeyDirectory } from '../keys/memoryApiKeyDirectory.js';
+import { createTestAuthFailureRecorder } from '../security/memoryAuthFailureSink.js';
 import { publicErrorHandler, publicNotFoundHandler } from '../publicErrors.js';
 import { THROTTLED_STATUS } from '../usage/usageStore.js';
 import type { AccountPlan } from '../keys/apiKeyStore.js';
@@ -107,7 +108,10 @@ async function build(limits: Record<AccountPlan, PlanLimits> = TEST_LIMITS): Pro
   });
 
   const app = express();
-  app.use('/v1', requireApiKey({ directory: seeded.directory }));
+  app.use(
+    '/v1',
+    requireApiKey({ directory: seeded.directory, recorder: createTestAuthFailureRecorder().recorder })
+  );
   app.use('/v1', gate.middleware);
   app.get('/v1/ping', (_req, res) => {
     res.json({ ok: true });
@@ -460,7 +464,10 @@ describe('enforcement never suspends an account (ABL-297 §6.5, AUP)', () => {
     const seeded = createMemoryApiKeyDirectory([{ plan: 'explorer', accountName: 'Explorer' }]);
     const gate = createPlanGate({ usage: store, limits: (plan) => TEST_LIMITS[plan] });
     const app = express();
-    app.use('/v1', requireApiKey({ directory: seeded.directory }));
+    app.use(
+    '/v1',
+    requireApiKey({ directory: seeded.directory, recorder: createTestAuthFailureRecorder().recorder })
+  );
     app.use('/v1', gate.middleware);
     app.get('/v1/ping', (_req, res) => {
       res.json({ ok: true });

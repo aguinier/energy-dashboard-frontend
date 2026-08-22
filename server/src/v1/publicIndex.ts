@@ -2,6 +2,7 @@ import { createPublicApp } from './publicApp.js';
 import { openApiKeyDirectory } from './keys/sqliteApiKeyStore.js';
 import { openChangelogReader } from './changelog/sqliteChangelogStore.js';
 import { openUsageStore } from './usage/sqliteUsageStore.js';
+import { createAuthFailureRecorder } from './security/authFailureRecorder.js';
 import { createUsageMeter } from './usage/usageMeter.js';
 import { startUsageMaintenance } from './usage/usageMaintenance.js';
 import { shutDownUsage } from './usage/usageShutdown.js';
@@ -91,6 +92,19 @@ const apiKeyDirectory = openApiKeyDirectory();
 const usageStore = openUsageStore();
 const usageMeter = createUsageMeter({ sink: usageStore });
 const usageMaintenance = startUsageMaintenance({ store: usageStore });
+
+// Where refused requests go (ABL-530). Handed the same store, narrowed by its
+// parameter type to `AuthFailureSink` — one method, appends rows — exactly as the
+// plan gate is handed it narrowed to `MonthlyUsageReader`. The recorder therefore
+// cannot read a key, close a month or delete a record, and that is a property of
+// the type rather than of anyone's restraint.
+//
+// One store and one file for both tables, deliberately: `auth_failures` holds
+// `client_ip` and `user_agent`, so it is inside the ABL-297 §5 promise from its
+// first row and has to be scrubbed by the same job on the same boundary. A second
+// store would be a second retention job to remember, and the one that got
+// forgotten would be the one nobody had ever printed a compliance line for.
+const authFailureRecorder = createAuthFailureRecorder({ sink: usageStore });
 
 // The plan gate (ABL-302), reading the same store the meter writes.
 //
@@ -198,6 +212,7 @@ const changelog = openChangelogReader();
 
 const app = createPublicApp({
   apiKeyDirectory,
+  authFailureRecorder,
   usageMeter,
   planGate,
   data: {
@@ -219,6 +234,7 @@ const server = app.listen(PORT, HOST, () => {
 🔑 API-key auth: Authorization: Bearer able_<env>_<prefix>_<secret>
 📈 Usage metering: on — every authenticated request is counted per key
 🚦 Plan limits: on — per-account monthly quota and per-minute rate limit, 429 only
+🛡  Auth-failure recording: on — every refusal, by prefix and origin (npm run usage -- security:help)
 🚀 Listening on http://${HOST}:${PORT}
 📊 API base URL: http://${HOST}:${PORT}/v1
 📜 Change log:   http://${HOST}:${PORT}/changelog   (and /changelog.json) — outside /v1, no key
@@ -263,7 +279,12 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     shuttingDown = true;
 
     server.close(() => {
-      shutDownUsage({ meter: usageMeter, maintenance: usageMaintenance, store: usageStore });
+      shutDownUsage({
+        meter: usageMeter,
+        authFailureRecorder,
+        maintenance: usageMaintenance,
+        store: usageStore,
+      });
       apiKeyDirectory.close();
       changelog.close();
       // Nothing is buffered behind these two — the map is a read cache and the
