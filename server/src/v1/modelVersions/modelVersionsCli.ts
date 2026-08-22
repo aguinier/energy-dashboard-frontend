@@ -30,10 +30,12 @@ import { diffLedger, type LedgerDiff, type ObservedVersion } from './versionGuar
  *
  * ## Why it does not send anything
  *
- * §9.3's channels are the changelog (ABL-522) and the account contact
- * (ABL-528). Both are explicitly out of this issue's scope, and neither exists
- * as a delivery mechanism yet. This makes the change impossible to miss; it does
- * not deliver mail.
+ * §9.3's channels are the change log at `/changelog` (ABL-532) and the account
+ * contact (ABL-528). This makes the change impossible to miss; it does not
+ * deliver mail.
+ *
+ * See "Serving a changed model artifact: the ToS §9.3 sequence" in CLAUDE.md
+ * for the full procedure, including when to run this command and what comes next.
  *
  * ## `--kind correction` skips the 30 days, and is not a shortcut
  *
