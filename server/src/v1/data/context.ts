@@ -1,6 +1,7 @@
 import type { EnergyQuery } from './energySource.js';
 import type { FreshnessMap } from './freshnessMap.js';
 import type { CatalogRepo } from './catalogRepo.js';
+import type { AcknowledgementLedger } from '../modelVersions/acknowledgements.js';
 
 /**
  * Everything the `/v1` data routes need, handed to them rather than reached for.
@@ -21,6 +22,21 @@ export interface V1DataContext {
   /** Fleet-wide freshness and coverage, memoized on a timer. Never queried per request. */
   freshness: FreshnessMap;
   catalog: CatalogRepo;
+  /**
+   * Which forecast artifacts a human has signed off (ABL-529).
+   *
+   * Carried as the **ledger**, not as a resolved gate, because a material
+   * acknowledgement becomes servable at its own instant and a gate resolved once
+   * at startup would keep withholding the new artifact until somebody restarted
+   * the process. The routes build a gate per request from this plus `now`, so
+   * the thirtieth day arrives on its own.
+   *
+   * Required rather than optional on purpose: an optional field defaulting to
+   * "no restriction" would make forgetting to wire it a silent fail-open, and
+   * this is the field whose absence means a §9.3 breach ships unnoticed. Making
+   * it required turns that into a `tsc` error at every construction site.
+   */
+  acknowledgedVersions: AcknowledgementLedger;
   /**
    * The origin subscribers reach this API on, or `null` for relative links.
    *
