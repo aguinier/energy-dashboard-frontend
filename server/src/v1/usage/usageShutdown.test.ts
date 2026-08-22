@@ -8,6 +8,7 @@ import { openUsageStore } from './sqliteUsageStore.js';
 import { createUsageMeter } from './usageMeter.js';
 import { startUsageMaintenance, type UsageMaintenanceTimer } from './usageMaintenance.js';
 import { shutDownUsage } from './usageShutdown.js';
+import { createTestAuthFailureRecorder } from '../security/memoryAuthFailureSink.js';
 import { requestFingerprint, type UsageAdminStore, type UsageEvent } from './usageStore.js';
 
 /**
@@ -43,6 +44,8 @@ interface Fixture {
   dbPath: string;
   store: UsageAdminStore;
   meter: ReturnType<typeof createUsageMeter>;
+  authFailureRecorder: ReturnType<typeof createTestAuthFailureRecorder>['recorder'];
+  authFailureSink: ReturnType<typeof createTestAuthFailureRecorder>['sink'];
   maintenance: UsageMaintenanceTimer;
   accountId: string;
   keyId: string;
@@ -68,7 +71,13 @@ function fixture(): Fixture {
     log: () => {},
   });
 
-  return { dbPath, store, meter, maintenance, accountId, keyId };
+  // The auth-failure recorder is flushed by the same sequence (ABL-530), so it
+  // is part of the fixture rather than passed ad hoc: a shutdown that flushed the
+  // meter and not this one would lose exactly the records this table exists for,
+  // and it would lose them on a deploy.
+  const { recorder: authFailureRecorder, sink: authFailureSink } = createTestAuthFailureRecorder();
+
+  return { dbPath, store, meter, authFailureRecorder, authFailureSink, maintenance, accountId, keyId };
 }
 
 const ROUTE = '/v1/observations/:series';
@@ -136,6 +145,7 @@ describe('a clean shutdown loses nothing', () => {
 
     shutDownUsage({
       meter,
+      authFailureRecorder: f.authFailureRecorder,
       maintenance: {
         stop: () => order.push('stop'),
         runNow: () => {
@@ -170,7 +180,13 @@ describe('a clean shutdown loses nothing', () => {
 
     f.store.writeEvents([event(f, 3), event(f, 4), event(f, 5)]);
 
-    shutDownUsage({ meter: f.meter, maintenance: f.maintenance, store: f.store, log: () => {} });
+    shutDownUsage({
+      meter: f.meter,
+      authFailureRecorder: f.authFailureRecorder,
+      maintenance: f.maintenance,
+      store: f.store,
+      log: () => {},
+    });
 
     expect(onDisk(f.dbPath).rollupBillable).toBe(5);
   });
@@ -182,6 +198,7 @@ describe('a clean shutdown loses nothing', () => {
 
     shutDownUsage({
       meter: f.meter,
+      authFailureRecorder: f.authFailureRecorder,
       maintenance: f.maintenance,
       store: f.store,
       log: (line) => lines.push(line),
@@ -196,6 +213,7 @@ describe('a clean shutdown loses nothing', () => {
 
     shutDownUsage({
       meter: f.meter,
+      authFailureRecorder: f.authFailureRecorder,
       maintenance: f.maintenance,
       store: f.store,
       log: (line) => lines.push(line),
@@ -222,6 +240,7 @@ describe('a shutdown that goes wrong still shuts down', () => {
 
     shutDownUsage({
       meter: f.meter,
+      authFailureRecorder: f.authFailureRecorder,
       maintenance: exploding,
       store: f.store,
       log: () => {},
@@ -255,6 +274,7 @@ describe('a shutdown that goes wrong still shuts down', () => {
 
     shutDownUsage({
       meter: brokenMeter,
+      authFailureRecorder: f.authFailureRecorder,
       maintenance: f.maintenance,
       store: f.store,
       log: () => {},

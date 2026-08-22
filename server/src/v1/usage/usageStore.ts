@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto';
+import type {
+  AuthFailureAdminStore,
+  AuthFailureRetentionOutcome,
+  AuthFailureStats,
+} from '../security/authFailureStore.js';
 
 /**
  * What a usage record is, what may be written into one, and the two
@@ -165,6 +170,16 @@ export interface RetentionOutcome {
    * removes it from the invoice for good.
    */
   keptPendingRollup: number;
+  /**
+   * The same pass applied to `auth_failures` (ABL-530).
+   *
+   * Nested rather than folded into the two counts above, because they are not
+   * the same kind of row and an operator reading "scrubbed 400" should not have
+   * to wonder which table. There is no `keptPendingRollup` here: nothing
+   * aggregates that table, so its deletion has nothing to be gated on — see
+   * `sqliteAuthFailureStore.ts`.
+   */
+  authFailures: AuthFailureRetentionOutcome;
 }
 
 /**
@@ -191,12 +206,38 @@ export interface UsageStoreStats {
   rolledThroughEventId: number;
   oldestEventAt: string | null;
   newestEventAt: string | null;
-  /** Records past `piiDays` that still hold an IP or user agent. Must be 0. */
+  /**
+   * Records past `piiDays` that still hold an IP or user agent, across **every
+   * table in this store that holds personal data**. Must be 0.
+   *
+   * ABL-530 widened this from `usage_events` alone, and the widening is the
+   * point rather than a side effect. `auth_failures` holds `client_ip` and
+   * `user_agent`, so it is inside the ABL-297 §5 promise from its first row; a
+   * compliance figure that kept covering one table while a second filled up with
+   * addresses would still print `COMPLIANT` and would have stopped meaning what
+   * it says. A detection feature that quietly turns into a privacy-notice
+   * violation is a worse outcome than not building it.
+   */
   unscrubbedPastPii: number;
+  /** The same figure per table, so a non-zero total names its own cause. */
+  unscrubbedPastPiiByTable: { usageEvents: number; authFailures: number };
+  /** Counts for the auth-failure record (ABL-530). */
+  authFailures: AuthFailureStats;
 }
 
-/** Everything the operator and the invoice need. Held by the CLI and the maintenance timer. */
-export interface UsageAdminStore extends UsageSink {
+/**
+ * Everything the operator and the invoice need. Held by the CLI and the
+ * maintenance timer.
+ *
+ * It also **is** an {@link AuthFailureAdminStore} (ABL-530), because both records
+ * live in one SQLite file and must be scrubbed by one job on one boundary. The
+ * request path never sees this type: the meter is handed a `UsageSink`, the plan
+ * gate a `MonthlyUsageReader`, and the auth-failure recorder an
+ * `AuthFailureSink` — three one-way narrowings of the same object, each of them
+ * a parameter type rather than a runtime wrapper, and each of them the reason a
+ * request path cannot close a month or read a key.
+ */
+export interface UsageAdminStore extends UsageSink, AuthFailureAdminStore {
   /** Aggregate new events into `usage_rollup`. Idempotent; safe to run at any time. */
   rollUp(options?: { maxEvents?: number }): RollUpOutcome;
   /** Finalise every month that is past its grace period and fully aggregated. */

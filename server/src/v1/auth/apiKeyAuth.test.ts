@@ -10,6 +10,8 @@ import {
 } from '../keys/memoryApiKeyDirectory.js';
 import { mintApiKey, KEY_SECRET_LENGTH } from '../keys/keyFormat.js';
 import type { ApiKeyDirectory } from '../keys/apiKeyStore.js';
+import { createTestAuthFailureRecorder } from '../security/memoryAuthFailureSink.js';
+import type { AuthFailureRecorder } from '../security/authFailureRecorder.js';
 
 /**
  * The gate, branch by branch.
@@ -31,10 +33,14 @@ import type { ApiKeyDirectory } from '../keys/apiKeyStore.js';
 vi.spyOn(console, 'error').mockImplementation(() => {});
 
 /** A minimal app shaped exactly like `publicApp`'s `/v1` stack: gate, routes, error contract. */
-function appWith(directory: ApiKeyDirectory, now?: () => Date): Express {
+function appWith(
+  directory: ApiKeyDirectory,
+  now?: () => Date,
+  recorder: AuthFailureRecorder = createTestAuthFailureRecorder().recorder
+): Express {
   const app = express();
   app.get('/v1', (_req, res) => void res.json({ version: 'v1', status: 'ok' }));
-  app.use('/v1', requireApiKey({ directory, now }));
+  app.use('/v1', requireApiKey({ directory, recorder, now }));
   app.get('/v1/probe', (_req, res) => void res.json({ principal: requireApiPrincipal(res) }));
   app.get('/v1/peek', (_req, res) => void res.json({ seen: peekApiPrincipal(res) !== undefined }));
   app.use(publicNotFoundHandler);
@@ -372,6 +378,221 @@ describe('requireApiPrincipal', () => {
       expect((await get(server.origin, '/ungated')).body).toEqual({ seen: false });
     } finally {
       await server.close();
+    }
+  });
+});
+
+describe('every refusal is recorded — ABL-530', () => {
+  /**
+   * A gate with its own recorder, so refusals can be counted without the shared
+   * app's traffic from every other block in this file landing in the same sink.
+   */
+  async function recording(now = () => new Date('2026-08-12T00:00:00.000Z')) {
+    const { recorder, sink } = createTestAuthFailureRecorder();
+    const server = await listen(appWith(seeded.directory, now, recorder));
+    return {
+      ...server,
+      sink,
+      /** Refusals are buffered, never written inline. Nothing is in the sink until this runs. */
+      drain: () => {
+        recorder.flush();
+        return sink.events;
+      },
+      stats: () => recorder.stats(),
+    };
+  }
+
+  it.each([
+    { why: 'no header', header: undefined, code: AUTH_ERROR_CODES.missing, prefixed: false, verified: false },
+    { why: 'a Basic credential', header: 'Basic abc', code: AUTH_ERROR_CODES.malformed, prefixed: false, verified: false },
+    { why: 'an unissued key', header: null, code: AUTH_ERROR_CODES.invalid, prefixed: true, verified: false },
+    { why: 'a revoked key', header: 'revoked', code: AUTH_ERROR_CODES.revoked, prefixed: true, verified: true },
+    { why: 'an expired key', header: 'expired', code: AUTH_ERROR_CODES.expired, prefixed: true, verified: true },
+    { why: 'a disabled account', header: 'disabledAccount', code: AUTH_ERROR_CODES.accountDisabled, prefixed: true, verified: true },
+  ])('$why lands exactly one row with code $code', async ({ header, code, prefixed, verified }) => {
+    // Every one of these produced *nothing* before this issue: the meter is
+    // mounted behind the gate, so a refused request never reached it, and
+    // `usage_events.account_id`/`key_id` are NOT NULL so it could not have held
+    // the row anyway.
+    const api = await recording();
+    try {
+      const sent =
+        header === undefined
+          ? undefined
+          : header === null
+            ? `Bearer ${mintApiKey('live').key}`
+            : header in KEY
+              ? `Bearer ${KEY[header as keyof typeof KEY].key}`
+              : header;
+
+      const res = await get(api.origin, '/v1/observations/load', sent);
+      const rows = api.drain();
+
+      expect(res.body.error?.code).toBe(code);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        errorCode: code,
+        status: res.status,
+        secretVerified: verified,
+        // A template from the fixed table, never the raw path.
+        routeTemplate: '/v1/observations/load',
+        method: 'GET',
+      });
+      expect(rows[0].presentedPrefix === null).toBe(!prefixed);
+      // The ids appear only once the secret has matched. A prefix guess names
+      // nobody, and recording it as a key's owner would make the S4 query
+      // ("who presented a real secret") answer with people who guessed.
+      expect(rows[0].keyId === null).toBe(!verified);
+      expect(rows[0].accountId === null).toBe(!verified);
+    } finally {
+      await api.close();
+    }
+  });
+
+  it('never stores the presented secret, in any field', async () => {
+    // The constraint the issue calls non-negotiable. Asserted against the whole
+    // serialised row rather than field by field, so a column added later is
+    // covered without anybody remembering to extend this.
+    const api = await recording();
+    try {
+      const unissued = mintApiKey('live');
+      const forged = withSecret(KEY.good.key, 'z'.repeat(KEY_SECRET_LENGTH));
+
+      await get(api.origin, '/v1/probe', `Bearer ${unissued.key}`);
+      await get(api.origin, '/v1/probe', `Bearer ${forged}`);
+      await get(api.origin, '/v1/probe', `Bearer ${KEY.revoked.key}`);
+
+      const serialised = JSON.stringify(api.drain());
+      for (const secret of [
+        unissued.key.split('_')[3],
+        'z'.repeat(KEY_SECRET_LENGTH),
+        KEY.good.key.split('_')[3],
+        KEY.revoked.key.split('_')[3],
+      ]) {
+        expect(serialised).not.toContain(secret);
+      }
+      // …while the non-secret handle *is* there, because it is the one column
+      // that separates enumeration from a customer with a stale key.
+      expect(serialised).toContain(unissued.prefix);
+      expect(serialised).toContain(KEY.revoked.record.prefix);
+    } finally {
+      await api.close();
+    }
+  });
+
+  it('records the same shape whether the prefix is known or unknown', async () => {
+    // The timing constraint, expressed as the thing that would cause a timing
+    // difference: work done on one branch and not the other. `apiKeyAuth.ts`
+    // burns a comparison so that "no such key" costs what "wrong secret" costs,
+    // and a record gathered asymmetrically would hand that back.
+    const api = await recording();
+    try {
+      await get(api.origin, '/v1/probe', `Bearer ${mintApiKey('live').key}`);
+      await get(api.origin, '/v1/probe', `Bearer ${withSecret(KEY.good.key, 'z'.repeat(KEY_SECRET_LENGTH))}`);
+
+      const [unknown, known] = api.drain();
+      const populated = (row: Record<string, unknown>) =>
+        Object.keys(row)
+          .filter((field) => row[field] !== null)
+          .sort();
+
+      expect(populated(unknown as unknown as Record<string, unknown>)).toEqual(
+        populated(known as unknown as Record<string, unknown>)
+      );
+      expect(unknown.errorCode).toBe(known.errorCode);
+      expect(unknown.secretVerified).toBe(known.secretVerified);
+    } finally {
+      await api.close();
+    }
+  });
+
+  it('writes nothing during the request — the sink is only touched on flush', async () => {
+    // The other half of the timing property, and the one that also keeps this
+    // from being a denial-of-service amplifier: a refused request is the one
+    // kind of traffic on this surface that nothing rate-limits, because the plan
+    // gate is mounted behind the key gate.
+    const api = await recording();
+    try {
+      for (let i = 0; i < 5; i += 1) {
+        await get(api.origin, '/v1/probe', `Bearer ${mintApiKey('live').key}`);
+      }
+      expect(api.sink.writeCalls).toBe(0);
+      expect(api.stats().pending).toBe(5);
+
+      expect(api.drain()).toHaveLength(5);
+    } finally {
+      await api.close();
+    }
+  });
+
+  it('a sink that fails cannot change the response, and the records are retried', async () => {
+    const api = await recording();
+    try {
+      api.sink.failNext();
+      const first = await get(api.origin, '/v1/probe', `Bearer ${mintApiKey('live').key}`);
+      expect(first.status).toBe(401);
+      expect(first.body.error?.code).toBe(AUTH_ERROR_CODES.invalid);
+
+      // The failed batch is put back rather than dropped: a security record is
+      // the opposite trade from a billing one, where under-counting is the safe
+      // direction.
+      api.drain();
+      expect(api.stats().failedFlushes).toBe(1);
+      expect(api.drain()).toHaveLength(1);
+    } finally {
+      await api.close();
+    }
+  });
+
+  it('an unrecognised path is recorded as such, never as the caller wrote it', async () => {
+    // On a refused request the path is an unauthenticated caller-controlled
+    // string, and this table is fed by exactly the callers we trust least.
+    const api = await recording();
+    try {
+      // Kept under `/v1` deliberately: `fetch` normalises a literal `..` away
+      // before the request leaves, so a traversal has to arrive percent-encoded
+      // to reach the gate at all — which is also how a real scanner sends it.
+      await get(api.origin, '/v1/%2e%2e%2f%2e%2e%2fetc%2fpasswd', undefined);
+      await get(api.origin, '/v1/wp-login.php', undefined);
+
+      const rows = api.drain();
+      expect(rows.map((row) => row.routeTemplate)).toEqual(['(unrecognised)', '(unrecognised)']);
+      expect(JSON.stringify(rows)).not.toContain('passwd');
+      expect(JSON.stringify(rows)).not.toContain('wp-login');
+    } finally {
+      await api.close();
+    }
+  });
+
+  it('records nothing for a request that succeeds', async () => {
+    const api = await recording();
+    try {
+      expect((await get(api.origin, '/v1/probe', `Bearer ${KEY.good.key}`)).status).toBe(200);
+      expect(api.drain()).toEqual([]);
+    } finally {
+      await api.close();
+    }
+  });
+
+  it('an environment mismatch is recorded as secret-verified, which its code cannot say', async () => {
+    // The branch that makes `secret_verified` a column rather than something
+    // derivable from `error_code`: `key_invalid` is produced on both sides of
+    // the hash comparison, so the code alone cannot distinguish somebody
+    // guessing a prefix from somebody holding a real secret.
+    const api = await recording();
+    try {
+      const res = await get(
+        api.origin,
+        '/v1/probe',
+        `Bearer ${KEY.testEnv.key.replace('_test_', '_live_')}`
+      );
+      expect(res.body.error?.code).toBe(AUTH_ERROR_CODES.invalid);
+
+      const [row] = api.drain();
+      expect(row.secretVerified).toBe(true);
+      expect(row.keyId).toBe(KEY.testEnv.record.id);
+    } finally {
+      await api.close();
     }
   });
 });

@@ -205,12 +205,19 @@ describe.each(ENTRIES)('$label', ({ file }) => {
     //   test. On a serving path it would answer a customer's question with a
     //   fixture — the same class of mistake as the other two, with the failure
     //   pointed at the data rather than at the auth.
+    // - `memoryAuthFailureSink.ts` (ABL-530) would record a credential attack
+    //   into an array that disappears with the process. It is listed by name for
+    //   the same reason the other fakes are, and with one extra edge: it exports
+    //   `createTestAuthFailureRecorder`, which every test that mounts the gate
+    //   now imports, so it is the fake most likely to be reached for by
+    //   accident.
     for (const operatorOnly of [
       'v1/keys/keysCli',
       'v1/keys/memoryApiKeyDirectory',
       'v1/usage/usageCli',
       'v1/usage/memoryUsageSink',
       'v1/data/memoryEnergySource',
+      'v1/security/memoryAuthFailureSink',
     ]) {
       expect(graph.modules.filter((m) => m.startsWith(operatorOnly))).toEqual([]);
     }
@@ -372,7 +379,21 @@ describe('the exact public module graph', () => {
 describe('the entrypoint chooses the key store, and only there', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicIndex.ts'), SRC_ROOT);
 
-  it('is these forty modules and no others', () => {
+  it('is these forty-three modules and no others', () => {
+    // **ABL-530 adds three**, all under `v1/security/`, and — like ABL-301's
+    // metering and ABL-302's quota before them — they are here and *not* in
+    // `createPublicApp`'s graph above. That is the property worth checking rather
+    // than the count: the gate takes an `AuthFailureRecorder` as a type, this
+    // file constructs one, and the module that serves requests still contains no
+    // recording code that could fail and no database driver behind it. The
+    // twenty-eight-module assertion above is unchanged by this issue.
+    //
+    // What to look for if this list changes again: nothing under `v1/security/`
+    // should import a store. The recorder is handed an `AuthFailureSink` — one
+    // method, appends rows — so it cannot read a key, close a month or delete a
+    // record, and `sqliteAuthFailureStore.ts` is handed an already-open handle
+    // rather than opening one, which is what keeps the assertion below at three
+    // database modules instead of four.
     // **ABL-302 adds four**, all under `v1/quota/`, and they are here rather than
     // in the app's graph above for the same reason the whole of ABL-301's
     // metering is: `publicApp.ts` takes a `PlanGate` as a type and this file
@@ -422,6 +443,9 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/routes/index.ts',
       'v1/routes/observations.ts',
       'v1/routes/root.ts',
+      'v1/security/authFailureRecorder.ts',
+      'v1/security/requestTarget.ts',
+      'v1/security/sqliteAuthFailureStore.ts',
       'v1/usage/sqliteUsageStore.ts',
       'v1/usage/usageMaintenance.ts',
       'v1/usage/usageMeter.ts',
@@ -488,6 +512,29 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/keys/sqliteApiKeyStore.ts',
       'v1/usage/sqliteUsageStore.ts',
     ]);
+  });
+
+  it('records auth failures into the key store file, on a handle it is given', () => {
+    // ABL-530's table lives in `API_KEYS_DB_PATH` beside `usage_events`, because
+    // it holds `client_ip` and `user_agent` and has to be scrubbed by the same
+    // retention job on the same boundary. The obvious way to write it — a fourth
+    // module calling `new Database(...)` — would have failed the assertion above,
+    // and rightly: it would also be a second place `resolveApiKeysDbPath` had to
+    // be remembered, on the one file that must never become the energy database.
+    //
+    // So the security store is handed an open handle and imports the driver for
+    // its *type* only. Checked as text, like everything else in this file,
+    // because the claim is about what the module says and importing it would open
+    // a database to find out.
+    const source = fs.readFileSync(
+      path.join(SRC_ROOT, 'v1/security/sqliteAuthFailureStore.ts'),
+      'utf8'
+    );
+    const specifiers = collectImportSpecifiers(source);
+
+    expect(specifiers.runtime).not.toContain('better-sqlite3');
+    expect(specifiers.typeOnly).toContain('better-sqlite3');
+    expect(source).not.toContain('new Database(');
   });
 
   it('opens the energy database readonly, and through the key store path resolver', () => {

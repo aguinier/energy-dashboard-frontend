@@ -414,7 +414,7 @@ repository.
 
 `server/src/v1/` holds a **separate Express application** for the commercial
 `/v1` surface, built by `createPublicApp`
-(`server/src/v1/publicApp.ts:154`) and run as its own process from
+(`server/src/v1/publicApp.ts:181`) and run as its own process from
 `server/src/v1/publicIndex.ts`. It is not `createApp()` with routes hidden.
 
 The distinction is the whole point (ABL-304, specified by ABL-293 §2f). A
@@ -568,7 +568,7 @@ a key — the surface cannot be enumerated, and a resource ABL-303 adds to
 CORS sits ahead of the gate deliberately: `cors` answers a preflight itself,
 and a preflight carries no `Authorization` header by specification. Handlers
 read the caller with `requireApiPrincipal`
-(`server/src/v1/auth/apiKeyAuth.ts:77`), which **throws** rather than returning
+(`server/src/v1/auth/apiKeyAuth.ts:95`), which **throws** rather than returning
 `undefined` — a route mounted on the wrong side of the gate fails loudly the
 first time it is exercised instead of being metered to nobody.
 
