@@ -4844,6 +4844,8 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
+**`server/tsconfig.test.json` — test-inclusive typecheck (ABL-533).** `server/tsconfig.json` excludes `src/**/*.test.ts`, so `tsc --noEmit` never sees test files and a required-argument omission in a test compiles clean. `server/tsconfig.test.json` extends the build config with `noEmit: true` and no test exclusion; `npm run typecheck:test -w server` (or `cd server && npx tsc -p tsconfig.test.json`) runs it. As of 2026-08-22 it reports **77 errors** — TS2741 missing-required-property failures and a handful of TS2345/TS2571 — and a non-zero exit is therefore expected today. Fixing those errors is out of scope here; the script's value is that adding a required field to a production type now fails the typecheck rather than compiling clean.
+
 Green as of 2026-08-22, measured on ABL-528 after merging `origin/main` at
 `f5ec75c` (PR #46, ABL-530's auth-failure record) into it, in a per-issue
 execution worktree with `node_modules` junctioned from the primary checkout,
