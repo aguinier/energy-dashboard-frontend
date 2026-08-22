@@ -119,7 +119,11 @@ export function requirePositiveNumber(
   if (raw === undefined) return fallback;
   const value = typeof raw === 'string' ? Number(raw) : NaN;
   if (!Number.isFinite(value) || value <= 0) {
-    throw new UsageError(`--${name} must be a positive number of ${name}, and is "${String(raw)}".`);
+    throw new UsageError(
+      `--${name} must be a positive number, and is "${String(raw)}". ` +
+        `Without it the default is ${fallback}, and running with a period you did not choose is ` +
+        'how "nothing in the window" gets believed.'
+    );
   }
   return value;
 }
