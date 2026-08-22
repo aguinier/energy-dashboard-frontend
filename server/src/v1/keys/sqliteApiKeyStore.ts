@@ -184,11 +184,30 @@ function hasColumn(db: DatabaseType, table: string, column: string): boolean {
 /** Create the tables, then apply every additive migration. Safe to run on any vintage. */
 function applySchema(db: DatabaseType): void {
   db.exec(SCHEMA);
-  if (!hasColumn(db, CONTACT_EMAIL_COLUMN.table, CONTACT_EMAIL_COLUMN.name)) {
+  if (!hasContactEmailColumn(db)) {
     db.exec(
       `ALTER TABLE ${CONTACT_EMAIL_COLUMN.table} ADD COLUMN ${CONTACT_EMAIL_COLUMN.name} ${CONTACT_EMAIL_COLUMN.type}`
     );
   }
+}
+
+/**
+ * Whether this file's `api_keys` table carries the contact column yet.
+ *
+ * Exported because **two** modules name `contact_email` in SQL and only one of
+ * them can migrate. `sqliteUsageStore.ts` opens the same file read-write but
+ * deliberately confines its DDL to the three usage tables — it checks only that
+ * `api_keys` exists — so its subject-access export can meet exactly the
+ * pre-ABL-528 file `lookupSql` below was written for, and has to degrade the
+ * same way rather than fail at `prepare`.
+ *
+ * One function rather than a second `PRAGMA table_info` read over there, for the
+ * reason `renewableTotal.ts` and `actualsSource.ts` exist in this repo: a rule
+ * restated in a second place is a rule with two chances to be wrong, and the
+ * copy that drifts is found by a customer.
+ */
+export function hasContactEmailColumn(db: DatabaseType): boolean {
+  return hasColumn(db, CONTACT_EMAIL_COLUMN.table, CONTACT_EMAIL_COLUMN.name);
 }
 
 /*
@@ -307,9 +326,7 @@ export function isRetryableCollision(err: unknown): boolean {
 }
 
 function makeDirectory(db: DatabaseType): ApiKeyDirectory {
-  const lookup = db.prepare(
-    lookupSql(hasColumn(db, CONTACT_EMAIL_COLUMN.table, CONTACT_EMAIL_COLUMN.name))
-  );
+  const lookup = db.prepare(lookupSql(hasContactEmailColumn(db)));
   return {
     findByPrefix(prefix) {
       const row = lookup.get(prefix) as Record<string, unknown> | undefined;

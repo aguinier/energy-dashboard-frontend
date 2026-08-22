@@ -1,5 +1,5 @@
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
-import { resolveApiKeysDbPath } from '../keys/sqliteApiKeyStore.js';
+import { hasContactEmailColumn, resolveApiKeysDbPath } from '../keys/sqliteApiKeyStore.js';
 import {
   DEFAULT_RETENTION_POLICY,
   IDEMPOTENCY_WINDOW_MS,
@@ -352,6 +352,25 @@ SELECT COUNT(*) AS v
 `;
 
 /**
+ * The `api_keys` half of a subject access request.
+ *
+ * `hasContactColumn` is deliberately the same parameter shape as `lookupSql` in
+ * `sqliteApiKeyStore.ts`, because it is the same problem: this module can be
+ * pointed at a key store file that predates `contact_email`, and naming a column
+ * that is not there fails at `prepare`. The columns are listed rather than taken
+ * with `SELECT *` so that a column added to `api_keys` later is absent from an
+ * export until somebody decides it belongs — see the call site for why that
+ * default is right in this direction, and why `contact_email` is the exception
+ * that was decided in.
+ */
+const exportKeysSql = (hasContactColumn: boolean) => `
+  SELECT id, account_id, key_env, key_prefix, label,
+         ${hasContactColumn ? 'contact_email' : 'NULL'} AS contact_email,
+         created_at, expires_at, revoked_at, revoked_reason
+    FROM api_keys WHERE account_id = ? ORDER BY created_at, id
+`;
+
+/**
  * The first instant of a `YYYY-MM`, in the same text form `received_at` holds.
  *
  * `Date#toISOString()` is what the meter writes, so the bounds are built the same
@@ -701,12 +720,17 @@ export function openUsageStore({
         // — the exclusion above is about `secret_sha256` specifically — and
         // omitting it would make the export quietly incomplete in the one
         // direction §9(3) cares about.
+        //
+        // `hasContactEmailColumn` is the same guard `sqliteApiKeyStore.ts`'s
+        // `lookupSql` uses, imported rather than restated. This module applies
+        // no keys migration — its DDL is confined to the three usage tables and
+        // it only checks that `api_keys` *exists* — so it can meet a
+        // pre-ABL-528 file, and this prepare is lazy, which means the failure
+        // would land at the moment somebody answers a subject access request
+        // rather than at open. Selecting a literal NULL degrades that to the
+        // true claim about those rows: they have no contact.
         keys: db
-          .prepare(
-            `SELECT id, account_id, key_env, key_prefix, label, contact_email, created_at,
-                    expires_at, revoked_at, revoked_reason
-               FROM api_keys WHERE account_id = ? ORDER BY created_at, id`
-          )
+          .prepare(exportKeysSql(hasContactEmailColumn(db)))
           .all(accountId) as Array<Record<string, unknown>>,
         events: db
           .prepare('SELECT * FROM usage_events WHERE account_id = ? ORDER BY id')

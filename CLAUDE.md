@@ -652,11 +652,22 @@ Four properties, and the last two are the ones a re-reader will want:
   decision. A placeholder would be an address a notice is "sent" to and lost —
   an address we cannot deliver to wearing the costume of one we can, which is
   this repository's defining defect applied to a contractual notice.
-- **The readonly serving handle degrades rather than refusing to start.** It
-  cannot run the migration, and naming a column that is not there fails at
-  `prepare`, so a server pointed at a pre-ABL-528 file would refuse to
-  authenticate *every customer* over a notice address no authentication path
-  reads. `lookupSql` selects a literal `NULL` instead when the column is absent.
+- **Two modules name `contact_email` in SQL and only one of them can migrate**,
+  so both degrade rather than fail. The readonly serving handle cannot run the
+  migration, and naming a column that is not there fails at `prepare` — a server
+  pointed at a pre-ABL-528 file would refuse to authenticate *every customer*
+  over a notice address no authentication path reads. `lookupSql` selects a
+  literal `NULL` instead when the column is absent, and
+  `sqliteUsageStore.exportAccount` does the same through the **same** exported
+  guard (`hasContactEmailColumn`), not a second copy of it: that module opens
+  the file read-write but confines its DDL to the three usage tables and only
+  checks that `api_keys` *exists*, so it meets the identical file shape. Its
+  prepare is lazy, which is what makes the omission expensive rather than
+  obvious — nothing fails at open, and the throw lands on the one command whose
+  whole job is to be answerable on demand, a subject access request. Verify with
+  `grep -rn "FROM api_keys" server/src --include=*.ts`: the other three reads are
+  `SELECT *` inside the admin store, which migrates and cannot name a missing
+  column anyway.
 
 Scope is live keys: a revoked or expired key's holder is not a subscriber §9.3
 owes a notice to. `liveKeys` rides along so "0 recipients" can be told apart from
@@ -4548,30 +4559,57 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
-Green as of 2026-08-22, measured on ABL-528 branched from `main` at `01e3160`,
-in a per-issue execution worktree with `node_modules` junctioned from the
-primary checkout, under **v24.18.0**:
+Green as of 2026-08-22, measured on ABL-528 after merging `origin/main` at
+`08b9cb6` (ABL-532's change log) into it, in a per-issue execution worktree with
+`node_modules` junctioned from the primary checkout, under **v24.18.0**, with
+the shared replica reachable so `generationService.test.ts`'s opportunistic
+block is included:
 
 | suite | files | tests | typecheck |
 |---|---:|---:|---|
-| `cd server && npx vitest run` | **108** | **2,181** | `tsc --noEmit` exit 0 |
+| `cd server && npx vitest run` | **113** | **2,297** | `tsc --noEmit` exit 0 |
 | `cd client && npx vitest run` | **54** | **747** | `tsc -b --force` exit 0 |
 
-ABL-528 is **+1 server file / +49 server cases** and touches no client file, so
+ABL-528 is **+1 server file / +50 server cases** and touches no client file, so
 the client row is the previous measurement carried forward rather than a fresh
 one — it is the one figure in this table that should be re-measured rather than
 trusted.
 
-**The baseline was corroborated rather than assumed, without a second
-checkout**, which is worth copying because the usual method is what note 4
-forbids. Re-running the same tree with only the new file excluded reports
-**107 / 2,152**; the diff adds 20 `it(` blocks to three existing test files
-(9 + 10 + 1, countable with `git diff -U0 <file> | grep -c '^+ *it('`); and
-2,152 − 20 = **2,132**, which is exactly what the ABL-493/ABL-501 entry below
-recorded for `origin/main`. Two independent routes to the same number. The file
-count needed no run at all: `git ls-tree -r HEAD --name-only | grep -c
-'^server/src/.*\.test\.ts$'` returns 106 at `01e3160`, plus the one `scripts/`
-file the server suite also discovers (`server/vitest.config.ts:11`) = 107.
+**This entry was wrong on arrival once already, and a merge is why.** It first
+recorded **108 / 2,181**, measured honestly against `01e3160`. ABL-532 (PR #47)
+then landed five server test files on `main` while ABL-528 sat in review, so the
+figure would have reached `main` describing a tree that had already stopped
+existing — the same failure this section spends several hundred words on, for
+the fifth time. Re-measure after merging the base in, not only after writing the
+code, and again if the branch waits.
+
+**`origin/main` at `08b9cb6` is 112 files / 2,247 tests, derived twice rather
+than measured once** — no scratch worktree was created for it, for the reason
+below.
+
+- **Subtract this branch from the run above.** Re-running the same tree with
+  only the new file excluded reports **112 / 2,268**, so
+  `accountContacts.test.ts` is 29 cases. Note that is *12* `it(` lines, three of
+  them `it.each` tables — the grep below undercounts any file that uses one, so
+  take a new file's contribution from a run and only the *edits* from the grep.
+  Those are 21 more `it(` across three existing files (10 + 9 + 2, from
+  `git diff -U0 origin/main -- <file> | grep -c '^+ *it('`). 2,268 − 21 = **2,247**.
+- **Add ABL-532 to the entry below.** That entry puts `origin/main` at
+  **107 / 2,132** once the ABL-493/ABL-501 merge landed. ABL-532's five
+  `v1/changelog/` files run **107** cases, and it added 12 `it(` to
+  `publicApp.test.ts` / `publicAppGraph.test.ts` while **removing 4** — net
+  **+115**. 2,132 + 115 = **2,247**.
+
+**Those four removals are the part worth copying.** Counting `^+ *it(` alone
+predicts 2,251, and is wrong by exactly the four cases ABL-532 *replaced* rather
+than added. Count `^- *it(` too, or an arithmetic corroboration quietly stops
+corroborating — which is worse than not having one, because it agrees with
+itself.
+
+The file count needed no run at all: `git ls-tree -r origin/main --name-only |
+grep -c '^server/src/.*\.test\.ts$'` returns 111 at `08b9cb6`, plus the one
+`scripts/` file the server suite also discovers (`server/vitest.config.ts:11`)
+= 112.
 
 **A scratch worktree was deliberately not created to measure the baseline.**
 That is the standard move, and it is the move that deleted 107 packages out of

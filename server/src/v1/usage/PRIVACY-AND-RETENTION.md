@@ -190,6 +190,15 @@ document** — the key record, not the meter. That matters twice over.
   right for a credential, wrong for personal data. `contact_email` is named, and
   `sqliteUsageStore.test.ts` asserts both directions: the secret hash stays out,
   the contact goes in.
+- **A key store that predates the column still exports.** This module applies no
+  keys migration — its DDL is confined to the three usage tables — so it can be
+  pointed at a file written before ABL-528, where naming `contact_email` would
+  fail at `prepare`. It selects a literal `NULL` instead, through the same
+  `hasContactEmailColumn` guard the serving handle uses. Worth stating in *this*
+  document rather than only in the code, because the failure would have landed
+  precisely on the procedure in §5: the prepare is lazy, so nothing is wrong
+  until somebody actually answers a request, and "the export command threw" is
+  not an answer a month's deadline accepts.
 
 Unlike an IP address, this one is volunteered rather than observed: an operator
 is told it by the customer at issuance. There is exactly one of them per key, it
