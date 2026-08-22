@@ -205,12 +205,19 @@ describe.each(ENTRIES)('$label', ({ file }) => {
     //   test. On a serving path it would answer a customer's question with a
     //   fixture — the same class of mistake as the other two, with the failure
     //   pointed at the data rather than at the auth.
+    // - `modelVersionsCli.ts` (ABL-529) opens its own database handle and is the
+    //   operator's side of the ToS §9.3 trigger. The *rule* it reports on —
+    //   `versionGuard.ts` and the checked-in `acknowledgements.ts` — is in the
+    //   graph below, deliberately: that is the filter every forecast read
+    //   applies. The CLI is not, and must not be, because the acknowledgement is
+    //   a reviewed commit rather than something a request could reach.
     for (const operatorOnly of [
       'v1/keys/keysCli',
       'v1/keys/memoryApiKeyDirectory',
       'v1/usage/usageCli',
       'v1/usage/memoryUsageSink',
       'v1/data/memoryEnergySource',
+      'v1/modelVersions/modelVersionsCli',
     ]) {
       expect(graph.modules.filter((m) => m.startsWith(operatorOnly))).toEqual([]);
     }
@@ -237,7 +244,7 @@ describe.each(ENTRIES)('$label', ({ file }) => {
 describe('the exact public module graph', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicApp.ts'), SRC_ROOT);
 
-  it('is these twenty-eight modules and no others', () => {
+  it('is these thirty modules and no others', () => {
     // Pinned as an exact set on purpose. Any new edge out of the public app —
     // to a shared service, a middleware, the database config — shows up here as
     // a failing diff and gets justified in review rather than noticed later.
@@ -284,6 +291,17 @@ describe('the exact public module graph', () => {
     // constant `/v1/observations` reads, so `services/mlForecastService.ts` and
     // the frozen `energy_renewable` table it maps to are **not** in this graph
     // and must not become so.
+    //
+    // **ABL-529 adds two**, and they are the first modules here that exist to
+    // *withhold* data rather than to serve it: `acknowledgements.ts` is the
+    // checked-in set of forecast artifacts a human has signed off, and
+    // `versionGuard.ts` is the rule the forecast reads filter through. Both are
+    // pure — no database, no clock of their own, and `acknowledgements.ts`
+    // imports nothing at all — which is why the module that serves requests can
+    // hold the ToS §9.3 policy without gaining a dependency. What to look for if
+    // this changes again: `v1/modelVersions/servedLedger.ts` measures what the
+    // database actually serves and belongs to the entrypoint's graph below, not
+    // to this one; and `modelVersionsCli.ts` must appear in neither.
     expect(graph.modules).toEqual([
       'services/freshness.ts',
       'services/loadQuality.ts',
@@ -305,6 +323,8 @@ describe('the exact public module graph', () => {
       'v1/data/series.ts',
       'v1/keys/apiKeyStore.ts',
       'v1/keys/keyFormat.ts',
+      'v1/modelVersions/acknowledgements.ts',
+      'v1/modelVersions/versionGuard.ts',
       'v1/publicApp.ts',
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',
@@ -372,7 +392,15 @@ describe('the exact public module graph', () => {
 describe('the entrypoint chooses the key store, and only there', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicIndex.ts'), SRC_ROOT);
 
-  it('is these forty modules and no others', () => {
+  it('is these forty-three modules and no others', () => {
+    // **ABL-529 adds three**, and the split between this list and the app's is
+    // the point rather than an accident. `acknowledgements.ts` and
+    // `versionGuard.ts` are in both, because the filter runs on the request
+    // path; `servedLedger.ts` is only here, because it *measures* the database
+    // and is run once at startup as the notification half of the trigger. A
+    // detector on the request path would be a query per request to learn
+    // something static source already knows.
+    //
     // **ABL-302 adds four**, all under `v1/quota/`, and they are here rather than
     // in the app's graph above for the same reason the whole of ABL-301's
     // metering is: `publicApp.ts` takes a `PlanGate` as a type and this file
@@ -408,6 +436,9 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/keys/apiKeyStore.ts',
       'v1/keys/keyFormat.ts',
       'v1/keys/sqliteApiKeyStore.ts',
+      'v1/modelVersions/acknowledgements.ts',
+      'v1/modelVersions/servedLedger.ts',
+      'v1/modelVersions/versionGuard.ts',
       'v1/publicApp.ts',
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',

@@ -4,6 +4,7 @@ import { createFreshnessMap } from './freshnessMap.js';
 import { createCatalogRepo } from './catalogRepo.js';
 import type { EnergyDataSource } from './energySource.js';
 import type { V1DataContext } from './context.js';
+import type { AcknowledgementLedger } from '../modelVersions/acknowledgements.js';
 
 /**
  * A **real** SQLite database, in memory, with the energy schema — for tests.
@@ -125,6 +126,13 @@ export interface MemoryEnergySource extends EnergyDataSource {
     horizonHours: number;
     value: number;
     model: string;
+    /**
+     * The artifact identity (ABL-529). Optional, and left unset by almost every
+     * fixture, which is correct: a test that says nothing about `model_version`
+     * is a test about something else, and the default context acknowledges
+     * nothing, so no version filter applies to it.
+     */
+    modelVersion?: string;
   }): void;
   /**
    * One ingest pass.
@@ -160,12 +168,24 @@ export interface MemoryEnergySource extends EnergyDataSource {
  */
 export function createMemoryDataContext(
   source: MemoryEnergySource,
-  { now = () => new Date('2026-08-12T12:00:00Z'), publicBaseUrl = null as string | null } = {}
+  {
+    now = () => new Date('2026-08-12T12:00:00Z'),
+    publicBaseUrl = null as string | null,
+    acknowledgedVersions = [] as AcknowledgementLedger,
+  } = {}
 ): V1DataContext {
   return {
     source,
     freshness: createFreshnessMap({ source, refreshIntervalMs: 0, now }),
     catalog: createCatalogRepo({ source, now }),
+    // Empty, not `ACKNOWLEDGED_VERSIONS`. An empty ledger means every triple is
+    // one we have never served, which under ToS §9.3.1 is additive and serves
+    // unfiltered — so a fixture that says nothing about model versions behaves
+    // exactly as it did before ABL-529. Importing the real ledger here would
+    // instead make every fixture's `DE`/`load`/`catboost` rows fail a filter
+    // against production artifact names, which is a test asserting the wrong
+    // thing. Tests *about* the guard pass their own ledger.
+    acknowledgedVersions,
     publicBaseUrl,
     now,
   };
@@ -203,13 +223,13 @@ export function createMemoryEnergySource(): MemoryEnergySource {
         }) VALUES (?, ?${columns.length ? `, ${placeholders}` : ''})`
       ).run(zone, timestamp, ...columns.map((column) => values[column]));
     },
-    forecast({ zone, type, target, generatedAt, horizonHours, value, model }) {
+    forecast({ zone, type, target, generatedAt, horizonHours, value, model, modelVersion }) {
       db.prepare(
         `INSERT INTO forecasts
            (country_code, forecast_type, target_timestamp_utc, generated_at,
-            horizon_hours, forecast_value, model_name)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(zone, type, target, generatedAt, horizonHours, value, model);
+            horizon_hours, forecast_value, model_name, model_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(zone, type, target, generatedAt, horizonHours, value, model, modelVersion ?? null);
     },
     ingestPass({ pipelineType, zone, startTime, endTime, recordsFailed = 0, status = 'completed' }) {
       db.prepare(

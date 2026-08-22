@@ -9,6 +9,9 @@ import { openEnergyDatabase } from './data/sqliteEnergySource.js';
 import { createFreshnessMap } from './data/freshnessMap.js';
 import { createCatalogRepo } from './data/catalogRepo.js';
 import { resolvePublicBaseUrl } from './data/links.js';
+import { ACKNOWLEDGED_VERSIONS } from './modelVersions/acknowledgements.js';
+import { readServedVersionLedger } from './modelVersions/servedLedger.js';
+import { diffLedger } from './modelVersions/versionGuard.js';
 
 /**
  * Entrypoint for the public process.
@@ -126,6 +129,51 @@ const catalog = createCatalogRepo({ source: energySource });
 // process for whoever happened to arrive first after a restart.
 catalog.warm();
 
+// The served-version audit (ABL-529), before `listen` and once per start.
+//
+// The *enforcement* is not here — it is the version gate the forecast routes
+// build per request from `ACKNOWLEDGED_VERSIONS`, which is static source and
+// costs no query. This is the **notification**: the guard withholds an
+// unacknowledged artifact silently and correctly, and a mechanism that refuses
+// without telling anyone is how a pair stays frozen for a month while everyone
+// assumes it is current.
+//
+// Boot rather than a timer, deliberately. The audit is a ~2.9 s query against
+// the 9.4 GB replica, and the event it watches for — a promotion writing a new
+// `model_version` — is not one that needs catching within minutes: the guard has
+// already stopped it reaching a subscriber, and what remains is a 30-day notice
+// somebody has to start. A restart is also the moment an operator is looking.
+//
+// It never throws. A monitoring read that can take the process down with it is
+// worse than one that stays quiet, and this one runs before the port is bound.
+try {
+  const diff = diffLedger(readServedVersionLedger(energySource), ACKNOWLEDGED_VERSIONS, new Date());
+  for (const row of diff.unacknowledged) {
+    console.error(
+      `[v1] WITHHELD: ${row.zone}/${row.forecast_type}/${row.model} is serving model_version ` +
+        `'${row.model_version}', which no acknowledgement covers. The previously acknowledged ` +
+        `artifact keeps serving. Under ToS §9.3.1 this is a material change and needs 30 days' ` +
+        `notice — or, if it corrects values that are wrong, a §9.3.2 correction entry. ` +
+        `Run: npm run modelversions -- status`
+    );
+  }
+  for (const row of diff.embargoed) {
+    console.warn(
+      `[v1] embargoed: ${row.zone}/${row.forecast_type}/${row.model} model_version ` +
+        `'${row.model_version}' is acknowledged but inside its notice period.`
+    );
+  }
+  for (const pair of diff.withdrawn.filter((p) => p.triple_gone)) {
+    console.warn(
+      `[v1] withdrawn: ${pair.zone}/${pair.forecast_type}/${pair.model} produces no rows at all. ` +
+        `Ceasing to cover a zone is material under ToS §9.3.1 (M4) and cannot be withheld — ` +
+        `it needs a notice, not a guard.`
+    );
+  }
+} catch (error) {
+  console.error('[v1] served-version audit could not run:', error);
+}
+
 // Configuration, never `req.get('host')` — trap 1 from the ABL-291 brief. Unset
 // is the safe and current state: `links.next` then comes back relative, which is
 // correct against whatever origin the client already used and cannot bake a
@@ -136,7 +184,14 @@ const app = createPublicApp({
   apiKeyDirectory,
   usageMeter,
   planGate,
-  data: { source: energySource, freshness, catalog, publicBaseUrl, now: () => new Date() },
+  data: {
+    source: energySource,
+    freshness,
+    catalog,
+    acknowledgedVersions: ACKNOWLEDGED_VERSIONS,
+    publicBaseUrl,
+    now: () => new Date(),
+  },
 });
 
 const server = app.listen(PORT, HOST, () => {
