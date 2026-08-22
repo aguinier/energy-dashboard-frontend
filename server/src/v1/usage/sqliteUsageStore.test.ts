@@ -69,8 +69,8 @@ function open(policy?: Partial<RetentionPolicy>): void {
   const keys = openApiKeyAdminStore({ API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv);
   const account = keys.createAccount({ name: 'Acme Energy', plan: 'developer' });
   accountId = account.id;
-  keyId = keys.issueKey({ accountId, label: 'prod ETL', environment: 'live' }).record.id;
-  secondKeyId = keys.issueKey({ accountId, label: 'staging', environment: 'live' }).record.id;
+  keyId = keys.issueKey({ accountId, label: 'prod ETL', contactEmail: 'ops@acme.example', environment: 'live' }).record.id;
+  secondKeyId = keys.issueKey({ accountId, label: 'staging', contactEmail: 'ops@acme.example', environment: 'live' }).record.id;
   keys.close();
 
   store = openUsageStore({
@@ -836,11 +836,80 @@ describe('what the file holds, and what an export hands over', () => {
     }
   });
 
+  it('does include the account contact, which is the subject’s own address', () => {
+    // The mirror of the case above, and the reason both are needed: the export
+    // names its columns explicitly, so the default for a new `api_keys` column
+    // is *absent*. That is right for a credential and wrong for personal data,
+    // and `contact_email` (ABL-528) is personal data the subject gave us —
+    // omitting it makes the export quietly incomplete in the one direction
+    // ABL-297 §9(3) is about.
+    store.writeEvents([event()]);
+    const exported = store.exportAccount(accountId);
+
+    expect(exported.keys[0]).toHaveProperty('contact_email', 'ops@acme.example');
+  });
+
   it('exports nothing for an account that has no records', () => {
     const exported = store.exportAccount('acct_nobody');
     expect(exported.events).toEqual([]);
     expect(exported.rollups).toEqual([]);
     expect(exported.keys).toEqual([]);
+  });
+
+  it('answers a subject access request against a key store that predates the contact column', () => {
+    // The state `lookupSql` in `sqliteApiKeyStore.ts` was written for, reached
+    // from the other module that names `contact_email`. This one opens the file
+    // read-write but confines its DDL to the three usage tables — it does not
+    // apply the keys migration, only checks that `api_keys` exists — so it can
+    // meet a pre-ABL-528 file and must degrade the same way rather than throw.
+    //
+    // The prepare is lazy, inside `exportAccount`, so nothing fails at open: it
+    // would fail at the moment somebody answers a subject access request, which
+    // is the one command whose whole job is to be answerable on demand.
+    //
+    // The fixture is hand-written rather than seeded through
+    // `openApiKeyAdminStore`, because that store always migrates — so the
+    // rest of this file structurally cannot reach this path.
+    const oldPath = tmpDbPath();
+    const old = new Database(oldPath);
+    old.exec(`
+      CREATE TABLE accounts (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, plan TEXT NOT NULL,
+        created_at TEXT NOT NULL, disabled_at TEXT);
+      CREATE TABLE api_keys (
+        id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id),
+        key_env TEXT NOT NULL, key_prefix TEXT NOT NULL UNIQUE,
+        secret_sha256 TEXT NOT NULL, label TEXT NOT NULL,
+        created_at TEXT NOT NULL, expires_at TEXT,
+        revoked_at TEXT, revoked_reason TEXT);
+      INSERT INTO accounts VALUES
+        ('acct_old', 'Acme Energy', 'developer', '2026-01-01T00:00:00.000Z', NULL);
+      INSERT INTO api_keys VALUES
+        ('key_old', 'acct_old', 'live', '7f3a9c21', 'deadbeef', 'prod ETL',
+         '2026-01-01T00:00:00.000Z', NULL, NULL, NULL);
+    `);
+    old.close();
+
+    const oldStore = openUsageStore({
+      env: { API_KEYS_DB_PATH: oldPath } as NodeJS.ProcessEnv,
+      policy: { piiDays: 90, eventMonths: 13, monthCloseGraceDays: 2 },
+    });
+
+    try {
+      const exported = oldStore.exportAccount('acct_old');
+
+      expect(exported.keys).toHaveLength(1);
+      // Present as a key, and reported as having no contact — which is the true
+      // claim about the row. `null` here and the `unreachable` half of
+      // `collectAccountContacts` are the same fact reaching two readers.
+      expect(exported.keys[0]).toMatchObject({ id: 'key_old', contact_email: null });
+      // The guard degrades the one column and nothing else: the rest of the
+      // export is unaffected, and the secret hash is still absent.
+      expect(exported.keys[0]).toHaveProperty('key_prefix', '7f3a9c21');
+      expect(exported.keys[0]).not.toHaveProperty('secret_sha256');
+    } finally {
+      oldStore.close();
+    }
   });
 });
 

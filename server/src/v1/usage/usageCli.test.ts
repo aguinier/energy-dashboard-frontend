@@ -48,7 +48,7 @@ beforeEach(() => {
 
   const keys = openApiKeyAdminStore({ API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv);
   accountId = keys.createAccount({ name: 'Acme Energy', plan: 'developer' }).id;
-  keyId = keys.issueKey({ accountId, label: 'prod ETL', environment: 'live' }).record.id;
+  keyId = keys.issueKey({ accountId, label: 'prod ETL', contactEmail: 'ops@acme.example', environment: 'live' }).record.id;
   keys.close();
 
   store = openUsageStore({

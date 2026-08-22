@@ -541,7 +541,7 @@ and is opened readonly here (`config/database.ts:11`); writing accounts and
 keys into it would mean a write path contending with ingest, in a schema we do
 not own, and would undo the property ABL-304 established — that the public
 process holds no write handle on energy data. `resolveApiKeysDbPath`
-(`server/src/v1/keys/sqliteApiKeyStore.ts:88`) refuses to start when the two
+(`server/src/v1/keys/sqliteApiKeyStore.ts:89`) refuses to start when the two
 paths resolve to the same file, and refuses `config/database.ts`'s literal
 default too. There is no default for `API_KEYS_DB_PATH` itself, because a
 credentials file must not land somewhere nobody chose. ABL-301's
@@ -589,7 +589,8 @@ relationship, none of which exist:
 ```bash
 cd server                        # reads server/.env.public — see .env.public.example
 npm run keys -- accounts:create --name "Acme Energy" --plan developer
-npm run keys -- keys:issue --account acct_... --label "prod ETL"
+npm run keys -- keys:issue --account acct_... --label "prod ETL" --contact ops@acme.example
+npm run keys -- keys:contacts
 npm run keys -- keys:rotate --key key_... --overlap-days 7
 npm run keys -- keys:revoke --key key_... --reason "leaked in a support ticket"
 ```
@@ -609,6 +610,81 @@ There is no `last_used_at`. It is the obvious column to want and it would cost
 a write on the critical path of every authenticated request to maintain a field
 nobody needs to the second; once ABL-301 lands it is a `MAX(received_at)` over
 `usage_events`. An unused column invites someone to start filling it.
+
+### A key carries the account contact, and one without it is refused (ABL-528)
+
+**ToS §9.3 commits us to publishing a material model change "through the
+changelog *and* to the account contact", and until this landed there was no
+contact field anywhere** — not in `v1/billing`, not in `v1/keys`. Half of a
+two-channel contractual notice resolved to nothing, and the way that fails is
+the worst available: nobody finds out until a model changes.
+
+The obvious reading is "wait for the account model". That is what makes it fail.
+The thing issued today **is** a key, issued to somebody by a human running
+`keysCli` — so the address goes on the record that already exists
+(`ApiKeyRecord.contactEmail`), not on an account model with no scheduled date.
+It also gives the field a natural enforcement point: a key with no contact is a
+subscriber we have promised to notify and cannot reach.
+
+Four properties, and the last two are the ones a re-reader will want:
+
+- **Required at issuance, nullable in the column.** `IssueKeyInput.contactEmail`
+  is a required `string`, so omitting it is a compile error **in production
+  code**; `insertMintedKey` additionally calls `requireContactEmail`, because a
+  flag, a JSON payload or a cast are paths a type cannot see. The *column* is
+  nullable because SQLite cannot `ADD COLUMN … NOT NULL` without a default and
+  every candidate default here is a fabricated address. `null` is reachable only
+  from a row written before the column existed.
+
+  **"Compile error" is narrower than it sounds, and the runtime guard is not
+  belt-and-braces — it is the only guard on a whole class of call site.**
+  `server/tsconfig.json` excludes `src/**/*.test.ts`, so **no test file is
+  typechecked**, and a test minting a contactless key compiles clean with
+  `tsc --noEmit` at exit 0. That is not hypothetical: merging ABL-530 in brought
+  `security/sqliteAuthFailureStore.test.ts`, which mints a key to build its
+  fixture, and all 36 of its cases failed in setup on `requireContactEmail` with
+  nothing to warn them at build time. If that guard is ever removed as
+  redundant-to-the-type, every test becomes a path that can write a contactless
+  key — and tests are where fixtures get copied from.
+- **Both doors, not just the obvious one.** `issueKey` and `rotateKey` are two
+  ways into one room, and both funnel through `insertMintedKey`, which is where
+  the refusal lives. A rotation carries the retiring key's contact forward — a
+  rotation is the same subscriber with a new secret — so `--contact` is needed
+  there only to change it.
+- **Existing rows are left null and reported as unreachable, never backfilled.**
+  `collectAccountContacts` (`server/src/v1/keys/accountContacts.ts`, pure,
+  colocated test) returns `{ recipients, unreachable, liveKeys }` and
+  `keys:contacts` prints **both halves, always** — including "Every live key has
+  a contact" when the second is empty, because a report that goes quiet when
+  nothing is wrong cannot be told from one that has stopped checking. The
+  tempting shape is a `string[]` of addresses, which silently drops every
+  contactless key and hands the sender a list that looks complete. Rotating such
+  a key with `--contact` is the migration path, and it is deliberately a human
+  decision. A placeholder would be an address a notice is "sent" to and lost —
+  an address we cannot deliver to wearing the costume of one we can, which is
+  this repository's defining defect applied to a contractual notice.
+- **Two modules name `contact_email` in SQL and only one of them can migrate**,
+  so both degrade rather than fail. The readonly serving handle cannot run the
+  migration, and naming a column that is not there fails at `prepare` — a server
+  pointed at a pre-ABL-528 file would refuse to authenticate *every customer*
+  over a notice address no authentication path reads. `lookupSql` selects a
+  literal `NULL` instead when the column is absent, and
+  `sqliteUsageStore.exportAccount` does the same through the **same** exported
+  guard (`hasContactEmailColumn`), not a second copy of it: that module opens
+  the file read-write but confines its DDL to the three usage tables and only
+  checks that `api_keys` *exists*, so it meets the identical file shape. Its
+  prepare is lazy, which is what makes the omission expensive rather than
+  obvious — nothing fails at open, and the throw lands on the one command whose
+  whole job is to be answerable on demand, a subject access request. Verify with
+  `grep -rn "FROM api_keys" server/src --include=*.ts`: the other three reads are
+  `SELECT *` inside the admin store, which migrates and cannot name a missing
+  column anyway.
+
+Scope is live keys: a revoked or expired key's holder is not a subscriber §9.3
+owes a notice to. `liveKeys` rides along so "0 recipients" can be told apart from
+"0 keys". The plausibility check on the address is a **typo-catcher, not a proof
+of validity** — deliverability is only ever established by delivering, which is
+ABL-529's problem. **Nothing here sends anything.**
 
 Not done by ABL-300: quotas, rate limits and the 429 contract (ABL-302), and the
 resources themselves (ABL-303). The `plan` on the principal is carried for
@@ -4767,6 +4843,85 @@ nothing in the result saying which is wrong.
 cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
+
+Green as of 2026-08-22, measured on ABL-528 after merging `origin/main` at
+`f5ec75c` (PR #46, ABL-530's auth-failure record) into it, in a per-issue
+execution worktree with `node_modules` junctioned from the primary checkout,
+under **v24.18.0**, with the shared replica reachable so
+`generationService.test.ts`'s opportunistic block is included:
+
+| suite | files | tests | typecheck |
+|---|---:|---:|---|
+| `cd server && npx vitest run` | **119** | **2,444** | `tsc --noEmit` exit 0 |
+| `cd client && npx vitest run` | **54** | **747** | `tsc -b --force` exit 0 |
+
+Both rows are fresh runs on the merged tree. The client row is unchanged from
+the entries below and was re-measured anyway rather than carried forward —
+neither ABL-528 nor ABL-530 touches a client file, so it is the row most likely
+to be asserted from memory and least likely to be checked.
+
+**State the delta beside the absolute, because only one of them keeps.** ABL-528
+is **+1 server file / +50 server cases against `origin/main@f5ec75c`**, and that
+sentence survives the next merge, when 119 / 2,444 will not. The absolute stays
+because it is the tripwire this section exists to be — "fewer than that means
+something broke" is not a claim a delta can make — but it is the half with a
+shelf life, and this entry has now had that shelf life expire **three times**
+before reaching `main`. Read the delta first; re-measure the absolute.
+
+That the delta is the durable half is not a hunch here — it is measured. The
+same **+1 / +50** held against all three bases this branch has been rebased
+onto (`01e3160`, `08b9cb6`, `9fd4bdb`, `f5ec75c`) while the absolute moved
+108 → 113 → 115 → 119 without a line of ABL-528 changing.
+
+**The delta is measured, not derived, and the split is worth keeping.** Running
+the same tree with only the new file excluded reports **118 / 2,415**, so
+`accountContacts.test.ts` is **29** cases and the edits to existing files are
+**21**. Note the 29 is *12* `it(` lines, three of them `it.each` tables — a grep
+undercounts any file that uses one, so take a new file's contribution from a run
+and only the *edits* from the grep.
+
+**Corroborated two ways.** The file count needs no run: `git ls-tree -r
+origin/main --name-only | grep -c '^server/src/.*\.test\.ts$'` returns **117** at
+`f5ec75c`, plus the one `scripts/` file the server suite also discovers
+(`server/vitest.config.ts:11`) = 118, plus this branch's one new file = **119**,
+matching the run. The test count reconciles against the entry below —
+`origin/main@f5ec75c` is 118 / 2,394, and 2,394 + 50 = **2,444**.
+
+**This entry was wrong on arrival three times, and every time a merge is why.**
+It first recorded **108 / 2,181** against `01e3160`; ABL-532 (PR #47) landed
+while ABL-528 sat in review, taking it to **113 / 2,297** against `08b9cb6`;
+then ABL-529 (PR #45) landed, taking it to **115 / 2,324** against `9fd4bdb`;
+then ABL-530 (PR #46) landed while it sat in review a third time. Not one of
+those figures was carelessly taken — all were honest runs — and each described a
+tree that had stopped existing by the time anyone could read it. That is the
+fifth, sixth and seventh occurrence this section records. Re-measure after
+merging the base in, not only after writing the code, and **again if the branch
+waits**.
+
+**The fourth merge is the one that stopped being free, and it is the warning
+worth keeping.** The first three conflicted on this paragraph alone. Merging
+`f5ec75c` conflicted on three files — this one, `usage/PRIVACY-AND-RETENTION.md`
+and `usage/sqliteUsageStore.ts` — and, more to the point, **broke 36 tests that
+git merged without a single marker.** `security/sqliteAuthFailureStore.test.ts`
+mints keys to build its fixture, and ABL-528 refuses a contactless mint, so every
+case in the file failed in setup. Both changes were correct; their composition
+was not. A conflict-free merge is not a working merge, and the only thing that
+said so was a run.
+
+**`tsc --noEmit` could not have caught it, and that is a property of this repo
+worth knowing.** `server/tsconfig.json` sets `"exclude": [… "src/**/*.test.ts"]`,
+so **test files are never typechecked**. `IssueKeyInput.contactEmail` is a
+required `string`, and a call site omitting it still compiled clean, because that
+call site was in a test. So "required at the type level" means *production* call
+sites here; in a test it is the runtime guard or nothing. That is the argument
+for `requireContactEmail` existing at all, arriving from a direction nobody
+predicted — see the ABL-528 section above, which now says so.
+
+**A scratch worktree was deliberately not created to measure the baseline.**
+That is the standard move, and it is the move that deleted 107 packages out of
+the shared tree twice (note 4, ABL-460 and ABL-517) — the removal, not the
+install, is the hazard. Excluding one file from a run in the tree you already
+have costs one command and cannot walk a junction.
 
 Green as of 2026-08-22, measured on ABL-530 **after merging `origin/main` at
 `9fd4bdb`** (which carries ABL-532's change log *and* ABL-529's served-version

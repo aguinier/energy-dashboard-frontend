@@ -55,7 +55,7 @@ function fixture(): Fixture {
   const dbPath = tmpDbPath();
   const keys = openApiKeyAdminStore({ API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv);
   const accountId = keys.createAccount({ name: 'Acme Energy', plan: 'developer' }).id;
-  const keyId = keys.issueKey({ accountId, label: 'prod', environment: 'live' }).record.id;
+  const keyId = keys.issueKey({ accountId, label: 'prod', contactEmail: 'ops@acme.example', environment: 'live' }).record.id;
   keys.close();
 
   const store = openUsageStore({ env: { API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv });

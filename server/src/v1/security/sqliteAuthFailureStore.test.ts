@@ -62,7 +62,15 @@ function open(policy?: Partial<RetentionPolicy>): void {
   dbPath = tmpDbPath();
   const keys = openApiKeyAdminStore({ API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv);
   accountId = keys.createAccount({ name: 'Acme Energy', plan: 'developer' }).id;
-  keyId = keys.issueKey({ accountId, label: 'prod ETL', environment: 'live' }).record.id;
+  // `contactEmail` is required since ABL-528 — a contactless mint is refused at
+  // runtime, and this call site is in a test file, which `tsconfig.json`
+  // excludes from `tsc`, so the type could not say so here.
+  keyId = keys.issueKey({
+    accountId,
+    label: 'prod ETL',
+    environment: 'live',
+    contactEmail: 'ops@acme.example',
+  }).record.id;
   keys.close();
 
   store = openUsageStore({
@@ -622,7 +630,12 @@ describe('S2 — key origins from usage_events', () => {
 
   it('filters to one key when asked', () => {
     const keys = openApiKeyAdminStore({ API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv);
-    const otherKeyId = keys.issueKey({ accountId, label: 'other', environment: 'live' }).record.id;
+    const otherKeyId = keys.issueKey({
+      accountId,
+      label: 'other',
+      environment: 'live',
+      contactEmail: 'ops@acme.example',
+    }).record.id;
     keys.close();
 
     store.writeEvents([served(), served({ keyId: otherKeyId, clientIp: '203.0.113.1' })]);

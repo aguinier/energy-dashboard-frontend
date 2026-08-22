@@ -246,6 +246,41 @@ because an open month can legitimately give two different answers a day apart.
 
 ---
 
+## 4b. The account contact is personal data, and it is not in `usage_events`
+
+**ABL-528.** `api_keys.contact_email` holds the address ToS §9.3 promises to
+notify of a material model change. It is an email address, so it is personal
+data, and it is recorded in a **different table from everything else in this
+document** — the key record, not the meter. That matters twice over.
+
+- **It is not covered by §3's retention job.** That job is scoped to
+  `usage_events` alone, and deliberately: a contact is not observational data
+  that ages out, it is the address of a live commercial relationship, and
+  clearing it at 90 days would delete the ability to keep a contractual promise
+  while the contract is still running. It is deleted when the relationship ends,
+  which is an operator action and not a scheduled one.
+- **It is included in a subject access export.** `exportAccount` names its
+  `api_keys` columns explicitly, so the default for a new column is *absent* —
+  right for a credential, wrong for personal data. `contact_email` is named, and
+  `sqliteUsageStore.test.ts` asserts both directions: the secret hash stays out,
+  the contact goes in.
+- **A key store that predates the column still exports.** This module applies no
+  keys migration — its DDL is confined to the three usage tables — so it can be
+  pointed at a file written before ABL-528, where naming `contact_email` would
+  fail at `prepare`. It selects a literal `NULL` instead, through the same
+  `hasContactEmailColumn` guard the serving handle uses. Worth stating in *this*
+  document rather than only in the code, because the failure would have landed
+  precisely on the procedure in §5: the prepare is lazy, so nothing is wrong
+  until somebody actually answers a request, and "the export command threw" is
+  not an answer a month's deadline accepts.
+
+Unlike an IP address, this one is volunteered rather than observed: an operator
+is told it by the customer at issuance. There is exactly one of them per key, it
+is never derived, and nothing on the request path reads it — `ApiPrincipal`
+does not carry it, so it cannot reach a response body.
+
+---
+
 ## 5. Answering a subject access request
 
 **ABL-297 §9(3): answerable in under a month, by one person, without a UI.**
@@ -274,10 +309,10 @@ because an open month can legitimately give two different answers a day apart.
    ```
 
    That produces one JSON file with four sections: `keys` (every key ever issued
-   to the account, minus the secret hash), `events` (every request record still
-   held — so up to 13 months, with IPs on the last 90 days), `rollups` (every
-   monthly aggregate, including closed months), and `authFailures` (refused
-   requests, on the same 90/13 periods).
+   to the account, minus the secret hash and including the §9.3 account contact),
+   `events` (every request record still held — so up to 13 months, with IPs on
+   the last 90 days), `rollups` (every monthly aggregate, including closed
+   months), and `authFailures` (refused requests, on the same 90/13 periods).
 
    `authFailures` covers only the refusals that carry this account's `key_id` —
    which means only those where the presented secret had already matched, since
