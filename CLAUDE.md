@@ -541,7 +541,7 @@ and is opened readonly here (`config/database.ts:11`); writing accounts and
 keys into it would mean a write path contending with ingest, in a schema we do
 not own, and would undo the property ABL-304 established — that the public
 process holds no write handle on energy data. `resolveApiKeysDbPath`
-(`server/src/v1/keys/sqliteApiKeyStore.ts:88`) refuses to start when the two
+(`server/src/v1/keys/sqliteApiKeyStore.ts:89`) refuses to start when the two
 paths resolve to the same file, and refuses `config/database.ts`'s literal
 default too. There is no default for `API_KEYS_DB_PATH` itself, because a
 credentials file must not land somewhere nobody chose. ABL-301's
@@ -589,7 +589,8 @@ relationship, none of which exist:
 ```bash
 cd server                        # reads server/.env.public — see .env.public.example
 npm run keys -- accounts:create --name "Acme Energy" --plan developer
-npm run keys -- keys:issue --account acct_... --label "prod ETL"
+npm run keys -- keys:issue --account acct_... --label "prod ETL" --contact ops@acme.example
+npm run keys -- keys:contacts
 npm run keys -- keys:rotate --key key_... --overlap-days 7
 npm run keys -- keys:revoke --key key_... --reason "leaked in a support ticket"
 ```
@@ -609,6 +610,59 @@ There is no `last_used_at`. It is the obvious column to want and it would cost
 a write on the critical path of every authenticated request to maintain a field
 nobody needs to the second; once ABL-301 lands it is a `MAX(received_at)` over
 `usage_events`. An unused column invites someone to start filling it.
+
+### A key carries the account contact, and one without it is refused (ABL-528)
+
+**ToS §9.3 commits us to publishing a material model change "through the
+changelog *and* to the account contact", and until this landed there was no
+contact field anywhere** — not in `v1/billing`, not in `v1/keys`. Half of a
+two-channel contractual notice resolved to nothing, and the way that fails is
+the worst available: nobody finds out until a model changes.
+
+The obvious reading is "wait for the account model". That is what makes it fail.
+The thing issued today **is** a key, issued to somebody by a human running
+`keysCli` — so the address goes on the record that already exists
+(`ApiKeyRecord.contactEmail`), not on an account model with no scheduled date.
+It also gives the field a natural enforcement point: a key with no contact is a
+subscriber we have promised to notify and cannot reach.
+
+Four properties, and the last two are the ones a re-reader will want:
+
+- **Required at issuance, nullable in the column.** `IssueKeyInput.contactEmail`
+  is a required `string`, so omitting it is a compile error; `insertMintedKey`
+  additionally calls `requireContactEmail`, because a flag, a JSON payload or a
+  cast are paths a type cannot see. The *column* is nullable because SQLite
+  cannot `ADD COLUMN … NOT NULL` without a default and every candidate default
+  here is a fabricated address. `null` is reachable only from a row written
+  before the column existed.
+- **Both doors, not just the obvious one.** `issueKey` and `rotateKey` are two
+  ways into one room, and both funnel through `insertMintedKey`, which is where
+  the refusal lives. A rotation carries the retiring key's contact forward — a
+  rotation is the same subscriber with a new secret — so `--contact` is needed
+  there only to change it.
+- **Existing rows are left null and reported as unreachable, never backfilled.**
+  `collectAccountContacts` (`server/src/v1/keys/accountContacts.ts`, pure,
+  colocated test) returns `{ recipients, unreachable, liveKeys }` and
+  `keys:contacts` prints **both halves, always** — including "Every live key has
+  a contact" when the second is empty, because a report that goes quiet when
+  nothing is wrong cannot be told from one that has stopped checking. The
+  tempting shape is a `string[]` of addresses, which silently drops every
+  contactless key and hands the sender a list that looks complete. Rotating such
+  a key with `--contact` is the migration path, and it is deliberately a human
+  decision. A placeholder would be an address a notice is "sent" to and lost —
+  an address we cannot deliver to wearing the costume of one we can, which is
+  this repository's defining defect applied to a contractual notice.
+- **The readonly serving handle degrades rather than refusing to start.** It
+  cannot run the migration, and naming a column that is not there fails at
+  `prepare`, so a server pointed at a pre-ABL-528 file would refuse to
+  authenticate *every customer* over a notice address no authentication path
+  reads. `lookupSql` selects a literal `NULL` instead when the column is absent.
+
+Scope is live keys: a revoked or expired key's holder is not a subscriber §9.3
+owes a notice to. `liveKeys` rides along so "0 recipients" can be told apart from
+"0 keys". The plausibility check on the address is a **typo-catcher, not a proof
+of validity** — deliverability is only ever established by delivering, which is
+ABL-529's problem. **Nothing here sends anything.**
 
 Not done by ABL-300: quotas, rate limits and the 429 contract (ABL-302), and the
 resources themselves (ABL-303). The `plan` on the principal is carried for
@@ -4408,6 +4462,37 @@ nothing in the result saying which is wrong.
 cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
+
+Green as of 2026-08-22, measured on ABL-528 branched from `main` at `01e3160`,
+in a per-issue execution worktree with `node_modules` junctioned from the
+primary checkout, under **v24.18.0**:
+
+| suite | files | tests | typecheck |
+|---|---:|---:|---|
+| `cd server && npx vitest run` | **108** | **2,181** | `tsc --noEmit` exit 0 |
+| `cd client && npx vitest run` | **54** | **747** | `tsc -b --force` exit 0 |
+
+ABL-528 is **+1 server file / +49 server cases** and touches no client file, so
+the client row is the previous measurement carried forward rather than a fresh
+one — it is the one figure in this table that should be re-measured rather than
+trusted.
+
+**The baseline was corroborated rather than assumed, without a second
+checkout**, which is worth copying because the usual method is what note 4
+forbids. Re-running the same tree with only the new file excluded reports
+**107 / 2,152**; the diff adds 20 `it(` blocks to three existing test files
+(9 + 10 + 1, countable with `git diff -U0 <file> | grep -c '^+ *it('`); and
+2,152 − 20 = **2,132**, which is exactly what the ABL-493/ABL-501 entry below
+recorded for `origin/main`. Two independent routes to the same number. The file
+count needed no run at all: `git ls-tree -r HEAD --name-only | grep -c
+'^server/src/.*\.test\.ts$'` returns 106 at `01e3160`, plus the one `scripts/`
+file the server suite also discovers (`server/vitest.config.ts:11`) = 107.
+
+**A scratch worktree was deliberately not created to measure the baseline.**
+That is the standard move, and it is the move that deleted 107 packages out of
+the shared tree twice (note 4, ABL-460 and ABL-517) — the removal, not the
+install, is the hazard. Excluding one file from a run in the tree you already
+have costs one command and cannot walk a junction.
 
 Green as of 2026-08-21, measured on ABL-493/ABL-501 after merging `origin/main`
 at `a508ba1` (the four-branch batch: ABL-460, ABL-494, ABL-498, ABL-469), in a

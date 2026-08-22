@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   MAX_LIVE_KEYS_PER_ACCOUNT,
   isKeyLive,
+  requireContactEmail,
   type AccountPlan,
   type AccountRecord,
   type ApiKeyAdminStore,
@@ -129,6 +130,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
   -- see the module header for why that is a day-one decision.
   secret_sha256  TEXT NOT NULL,
   label          TEXT NOT NULL,
+  -- The account contact ToS §9.3 promises notice to (ABL-528). Nullable in the
+  -- column and required at the write path, which is not an oversight: see
+  -- CONTACT_EMAIL_COLUMN below for why the constraint cannot live here.
+  contact_email  TEXT,
   created_at     TEXT NOT NULL,
   expires_at     TEXT,
   revoked_at     TEXT,
@@ -137,6 +142,54 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_account ON api_keys(account_id);
 `;
+
+/**
+ * The first migration this file has needed, and the shape the next one should
+ * copy (ABL-528).
+ *
+ * `SCHEMA` is `CREATE TABLE IF NOT EXISTS`, which is idempotent and therefore
+ * silently *does nothing* to a table that already exists — so a store created
+ * before this column would simply never get it, and the next `issueKey` would
+ * fail on `no such column: contact_email`. Adding a column to a live table is an
+ * explicit step, and this is the first time this file has needed one.
+ *
+ * **Why the column is nullable when the field is required.** SQLite's
+ * `ALTER TABLE … ADD COLUMN` cannot add a `NOT NULL` column without a non-null
+ * default, and every candidate default here is a fabricated address: a
+ * placeholder that a notice would be "sent" to and silently lost is worse than
+ * an absence that is reported. So the constraint lives at the write path —
+ * `IssueKeyInput.contactEmail` is a required `string` (a compile error to omit)
+ * and `insertMintedKey` calls `requireContactEmail` (a runtime refusal for
+ * anything that reaches it dynamically). The column records that a pre-ABL-528
+ * row has no contact, and `accountContacts.ts` reports it as unreachable.
+ *
+ * Rows are **not backfilled.** Rotating such a key with `--contact` is the
+ * migration path, and it is a deliberate one: a human decides the address.
+ */
+const CONTACT_EMAIL_COLUMN = { table: 'api_keys', name: 'contact_email', type: 'TEXT' } as const;
+
+function hasColumn(db: DatabaseType, table: string, column: string): boolean {
+  // `PRAGMA table_info` rather than parsing `sqlite_master`, so this reads the
+  // table as SQLite understands it rather than as the DDL text happens to spell
+  // it — the same reason `sqliteApiKeyStore.test.ts` reads the schema back off
+  // the disk instead of restating the SQL literal. `JSON.stringify` is standard
+  // SQLite identifier quoting here (`"api_keys"`); every caller passes a
+  // module-level literal, so there is no untrusted name to interpolate.
+  const columns = db.prepare(`PRAGMA table_info(${JSON.stringify(table)})`).all() as {
+    name: string;
+  }[];
+  return columns.some((c) => c.name === column);
+}
+
+/** Create the tables, then apply every additive migration. Safe to run on any vintage. */
+function applySchema(db: DatabaseType): void {
+  db.exec(SCHEMA);
+  if (!hasColumn(db, CONTACT_EMAIL_COLUMN.table, CONTACT_EMAIL_COLUMN.name)) {
+    db.exec(
+      `ALTER TABLE ${CONTACT_EMAIL_COLUMN.table} ADD COLUMN ${CONTACT_EMAIL_COLUMN.name} ${CONTACT_EMAIL_COLUMN.type}`
+    );
+  }
+}
 
 /*
  * No `last_used_at`, on purpose.
@@ -169,6 +222,10 @@ function readKey(row: Record<string, unknown>): ApiKeyRecord {
     prefix: row.key_prefix as string,
     secretSha256: row.secret_sha256 as string,
     label: row.label as string,
+    // `?? null` rather than a cast, because this row can legitimately predate
+    // the column — either as a stored NULL, or as an absent select item when a
+    // readonly handle is serving an un-migrated file.
+    contactEmail: (row.contact_email as string | null | undefined) ?? null,
     createdAt: row.created_at as string,
     expiresAt: (row.expires_at as string | null) ?? null,
     revokedAt: (row.revoked_at as string | null) ?? null,
@@ -176,14 +233,26 @@ function readKey(row: Record<string, unknown>): ApiKeyRecord {
   };
 }
 
-/** The one query the request path makes. Joined so auth needs a single round trip. */
-const LOOKUP_SQL = `
+/**
+ * The one query the request path makes. Joined so auth needs a single round trip.
+ *
+ * `hasContactColumn` exists because the **readonly** serving handle cannot run
+ * the migration in `applySchema`, and naming a column that is not there fails at
+ * `prepare` time — which would mean a server pointed at a pre-ABL-528 file
+ * refusing to authenticate every customer over a notice address that no
+ * authentication path reads. Selecting a literal `NULL` instead degrades that to
+ * exactly what it is: those rows have no contact, `readKey` reports `null`, and
+ * `accountContacts.ts` reports them as unreachable the moment the CLI next
+ * opens the file read-write and migrates it.
+ */
+const lookupSql = (hasContactColumn: boolean) => `
   SELECT k.id            AS k_id,
          k.account_id    AS k_account_id,
          k.key_env       AS k_key_env,
          k.key_prefix    AS k_key_prefix,
          k.secret_sha256 AS k_secret_sha256,
          k.label         AS k_label,
+         ${hasContactColumn ? 'k.contact_email' : 'NULL'} AS k_contact_email,
          k.created_at    AS k_created_at,
          k.expires_at    AS k_expires_at,
          k.revoked_at    AS k_revoked_at,
@@ -238,7 +307,9 @@ export function isRetryableCollision(err: unknown): boolean {
 }
 
 function makeDirectory(db: DatabaseType): ApiKeyDirectory {
-  const lookup = db.prepare(LOOKUP_SQL);
+  const lookup = db.prepare(
+    lookupSql(hasColumn(db, CONTACT_EMAIL_COLUMN.table, CONTACT_EMAIL_COLUMN.name))
+  );
   return {
     findByPrefix(prefix) {
       const row = lookup.get(prefix) as Record<string, unknown> | undefined;
@@ -302,7 +373,7 @@ export function openApiKeyAdminStore(env: NodeJS.ProcessEnv = process.env): ApiK
   db.pragma('journal_mode = WAL');
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
-  db.exec(SCHEMA);
+  applySchema(db);
 
   const directory = makeDirectory(db);
   const nowIso = () => new Date().toISOString();
@@ -354,9 +425,9 @@ export function openApiKeyAdminStore(env: NodeJS.ProcessEnv = process.env): ApiK
 
   const insertKey = db.prepare(
     `INSERT INTO api_keys
-       (id, account_id, key_env, key_prefix, secret_sha256, label, created_at,
+       (id, account_id, key_env, key_prefix, secret_sha256, label, contact_email, created_at,
         expires_at, revoked_at, revoked_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`
   );
 
   /**
@@ -365,8 +436,17 @@ export function openApiKeyAdminStore(env: NodeJS.ProcessEnv = process.env): ApiK
    * At 62^8 a collision is vanishingly unlikely, but the recovery is one more
    * draw and the alternative is a customer-visible 500 at the least convenient
    * moment. Assumes the caller has already checked the cap.
+   *
+   * Every mint funnels through here, which is why the contact refusal lives
+   * here too: `issueKey` and `rotateKey` are two doors into one room, and a
+   * guard on each door is a guard somebody forgets to add to the third.
    */
   function insertMintedKey(input: Required<Omit<IssueKeyInput, 'expiresAt'>> & { expiresAt: string | null }): IssuedKey {
+    // Throws CONTACT_REQUIRED_MESSAGE. The type already makes omitting this a
+    // compile error; this catches the value that arrives as an empty string
+    // from a flag, a JSON payload or a `as any` — the paths a type cannot see.
+    const contactEmail = requireContactEmail(input.contactEmail);
+
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const minted = mintApiKey(input.environment);
       const record: ApiKeyRecord = {
@@ -376,6 +456,7 @@ export function openApiKeyAdminStore(env: NodeJS.ProcessEnv = process.env): ApiK
         prefix: minted.prefix,
         secretSha256: minted.secretSha256,
         label: input.label,
+        contactEmail,
         createdAt: nowIso(),
         expiresAt: input.expiresAt,
         revokedAt: null,
@@ -389,6 +470,7 @@ export function openApiKeyAdminStore(env: NodeJS.ProcessEnv = process.env): ApiK
           record.prefix,
           record.secretSha256,
           record.label,
+          record.contactEmail,
           record.createdAt,
           record.expiresAt
         );
@@ -436,14 +518,22 @@ export function openApiKeyAdminStore(env: NodeJS.ProcessEnv = process.env): ApiK
       return getAccount(id) as AccountRecord;
     },
 
-    issueKey({ accountId, label, environment, expiresAt = null }: IssueKeyInput): IssuedKey {
+    issueKey({ accountId, label, environment, contactEmail, expiresAt = null }: IssueKeyInput): IssuedKey {
       if (!getAccount(accountId)) throw new Error(`No such account: ${accountId}`);
       assertKeySlotAvailable(accountId);
-      return insertMintedKey({ accountId, label, environment, expiresAt });
+      return insertMintedKey({ accountId, label, environment, contactEmail, expiresAt });
     },
 
-    rotateKey({ keyId, label, overlapDays }) {
+    rotateKey({ keyId, label, contactEmail, overlapDays }) {
       const retiring = requireKey(keyId);
+
+      // Resolved before the transaction opens, so a rotation of a pre-ABL-528
+      // key with no `--contact` refuses without having touched the old key.
+      // Refusing *inside* the transaction would be correct too — better-sqlite3
+      // rolls back on a throw — but leaving the retiring key untouched on a
+      // usage error is one less thing to have to reason about while holding a
+      // credential half-rotated.
+      const resolvedContact = requireContactEmail(contactEmail ?? retiring.contactEmail);
 
       // One transaction, because the half-states are both bad in a way that is
       // hard to notice: a new key with the old one never retired leaves a
@@ -473,6 +563,7 @@ export function openApiKeyAdminStore(env: NodeJS.ProcessEnv = process.env): ApiK
           // rotation is how a key list becomes five rows called "new key".
           label: label ?? retiring.label,
           environment: retiring.environment,
+          contactEmail: resolvedContact,
           expiresAt: null,
         });
         return { issued, retired: requireKey(keyId) };

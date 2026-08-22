@@ -69,8 +69,8 @@ function open(policy?: Partial<RetentionPolicy>): void {
   const keys = openApiKeyAdminStore({ API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv);
   const account = keys.createAccount({ name: 'Acme Energy', plan: 'developer' });
   accountId = account.id;
-  keyId = keys.issueKey({ accountId, label: 'prod ETL', environment: 'live' }).record.id;
-  secondKeyId = keys.issueKey({ accountId, label: 'staging', environment: 'live' }).record.id;
+  keyId = keys.issueKey({ accountId, label: 'prod ETL', contactEmail: 'ops@acme.example', environment: 'live' }).record.id;
+  secondKeyId = keys.issueKey({ accountId, label: 'staging', contactEmail: 'ops@acme.example', environment: 'live' }).record.id;
   keys.close();
 
   store = openUsageStore({
@@ -829,6 +829,19 @@ describe('what the file holds, and what an export hands over', () => {
       expect(key).not.toHaveProperty('secret_sha256');
       expect(key).toHaveProperty('key_prefix');
     }
+  });
+
+  it('does include the account contact, which is the subject’s own address', () => {
+    // The mirror of the case above, and the reason both are needed: the export
+    // names its columns explicitly, so the default for a new `api_keys` column
+    // is *absent*. That is right for a credential and wrong for personal data,
+    // and `contact_email` (ABL-528) is personal data the subject gave us —
+    // omitting it makes the export quietly incomplete in the one direction
+    // ABL-297 §9(3) is about.
+    store.writeEvents([event()]);
+    const exported = store.exportAccount(accountId);
+
+    expect(exported.keys[0]).toHaveProperty('contact_email', 'ops@acme.example');
   });
 
   it('exports nothing for an account that has no records', () => {

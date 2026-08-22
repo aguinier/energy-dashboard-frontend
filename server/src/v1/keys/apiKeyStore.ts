@@ -67,6 +67,31 @@ export interface ApiKeyRecord {
   secretSha256: string;
   /** Free text a human chose: "prod backfill", "grafana". Never the key. */
   label: string;
+  /**
+   * Where a notice about this key's subscriber is sent — the **account contact**
+   * ToS §9.3 names (ABL-528).
+   *
+   * §9.3 commits us to publishing a material model change "through the changelog
+   * and to the account contact". Until this field existed, half of that
+   * two-channel notice resolved to nothing: there was no address anywhere in
+   * `v1/billing` or `v1/keys`, so the obligation had no way to be met and no way
+   * to be seen failing.
+   *
+   * **Required at issuance, nullable in the type**, and the asymmetry is the
+   * point. {@link IssueKeyInput.contactEmail} is a required `string`, so no
+   * caller can mint a contactless key — that is a compile error and, in
+   * `sqliteApiKeyStore.ts`, a runtime refusal too. `null` is reachable only by a
+   * row written *before* the column existed, and it is kept expressible rather
+   * than backfilled with a placeholder: a fabricated address is one we cannot
+   * deliver to wearing the costume of one we can, which is this repository's
+   * defining defect applied to a contractual notice. `accountContacts.ts`
+   * reports such a row as **unreachable**, by name, and never as "nobody to
+   * notify".
+   *
+   * It is not a secret and is printed by the listing commands. It is personal
+   * data — see `../usage/PRIVACY-AND-RETENTION.md` §6.
+   */
+  contactEmail: string | null;
   createdAt: string;
   /**
    * Optional deadline, the mechanism behind zero-downtime rotation: the old key
@@ -105,6 +130,14 @@ export interface IssueKeyInput {
   accountId: string;
   label: string;
   environment: KeyEnvironment;
+  /**
+   * The account contact for this key. **Required, deliberately not optional.**
+   *
+   * Typed `string` rather than `string | null` so that forgetting it is a
+   * compile error at every call site rather than a row nobody can be notified
+   * about. See {@link ApiKeyRecord.contactEmail}.
+   */
+  contactEmail: string;
   /** Absolute deadline, or `null` for a key that does not expire on its own. */
   expiresAt?: string | null;
 }
@@ -145,7 +178,21 @@ export interface ApiKeyAdminStore extends ApiKeyDirectory {
    * shape ABL-293 §2b asks for. `overlapDays: 0` revokes it immediately, which
    * is what a suspected leak wants.
    */
-  rotateKey(input: { keyId: string; label?: string; overlapDays: number }): {
+  rotateKey(input: {
+    keyId: string;
+    label?: string;
+    /**
+     * Carried forward from the key being retired when omitted — a rotation is
+     * the same subscriber with a new secret, so it is the same contact.
+     *
+     * It must be supplied when the retiring key predates the contact column and
+     * has none, because the replacement is a fresh key and minting a contactless
+     * one is refused however it is reached. That makes rotation the migration
+     * path for the rows in {@link ApiKeyRecord.contactEmail}'s `null` case.
+     */
+    contactEmail?: string;
+    overlapDays: number;
+  }): {
     issued: IssuedKey;
     retired: ApiKeyRecord;
   };
@@ -198,4 +245,80 @@ export function resolveKeyState(key: ApiKeyRecord, now: Date): KeyState {
 /** Live means usable now: neither revoked nor past its deadline. */
 export function isKeyLive(key: ApiKeyRecord, now: Date): boolean {
   return resolveKeyState(key, now) === 'active';
+}
+
+/**
+ * The sentence a contactless mint is refused with.
+ *
+ * A constant rather than an inline string because two call sites raise it — the
+ * CLI, where an operator reads it, and the store, which is the thing that would
+ * actually create the row — and the reason has to be identical in both. It is
+ * modelled on `scripts/backfillModelGuard.ts`: state what is refused, then state
+ * the consequence that makes the refusal worth the friction, so nobody has to
+ * guess whether it is a formality.
+ */
+export const CONTACT_REQUIRED_MESSAGE =
+  'Refusing to mint a key with no account contact. ToS §9.3 commits us to publishing a ' +
+  'material model change through the changelog AND to the account contact, so a key with no ' +
+  'contact is a subscriber we have promised to notify and cannot reach — and nobody finds out ' +
+  'until a model changes. Pass --contact <email>.';
+
+/**
+ * The longest address SMTP has to carry, RFC 5321 §4.5.3.1.3.
+ *
+ * A bound at all, because this string is written to a database and printed to a
+ * terminal, and an unbounded field is how a paste accident becomes a row.
+ */
+const MAX_CONTACT_EMAIL_LENGTH = 254;
+
+/**
+ * Is this shaped like an address somebody could be reached at?
+ *
+ * **A typo-catcher, not a proof of validity, and the distinction is worth
+ * stating because it decides how strict this should be.** Whether an address
+ * receives mail is only ever established by sending to it, which is ABL-529's
+ * job and does not exist yet; nothing here can know. So the rule is the weakest
+ * one that still catches the mistakes an operator actually makes at a
+ * terminal — a missing `@`, a shell-mangled value, an account id pasted into
+ * the wrong flag — and it deliberately stops there. The elaborate RFC 5322
+ * regexes reject addresses that work, which would be a refusal we could not
+ * justify to the person holding the address.
+ */
+export function isPlausibleContactEmail(value: string): boolean {
+  if (value.length === 0 || value.length > MAX_CONTACT_EMAIL_LENGTH) return false;
+  // Whitespace anywhere means the value was quoted wrong or two were passed as
+  // one; either way it is not one address.
+  if (/\s/.test(value)) return false;
+
+  const at = value.indexOf('@');
+  if (at <= 0 || at !== value.lastIndexOf('@')) return false;
+
+  const domain = value.slice(at + 1);
+  if (domain.startsWith('.') || domain.endsWith('.')) return false;
+  // A dot with at least two characters after it. Not a TLD list — that would be
+  // a second thing to keep true — just enough that `--contact acct_7f3a` and
+  // `--contact ops@localhost` are caught rather than stored.
+  return /\.[^.]{2,}$/.test(domain);
+}
+
+/**
+ * Trim and check, or throw the refusal.
+ *
+ * Returns the trimmed address **exactly as given otherwise** — no lowercasing.
+ * The local part of an address is case-sensitive by specification even though
+ * almost no provider treats it that way, so silently rewriting what a person
+ * typed risks changing where a notice goes in order to make a comparison
+ * tidier. `accountContacts.ts` handles the tidiness at compare time instead,
+ * where getting it wrong costs a duplicate line rather than a lost notice.
+ */
+export function requireContactEmail(raw: string | null | undefined): string {
+  const value = (raw ?? '').trim();
+  if (value === '') throw new Error(CONTACT_REQUIRED_MESSAGE);
+  if (!isPlausibleContactEmail(value)) {
+    throw new Error(
+      `'${value}' does not look like an email address, so it cannot be the account contact. ` +
+        CONTACT_REQUIRED_MESSAGE
+    );
+  }
+  return value;
 }

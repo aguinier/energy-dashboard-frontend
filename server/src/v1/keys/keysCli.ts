@@ -1,12 +1,14 @@
 import { pathToFileURL } from 'node:url';
 import {
   ACCOUNT_PLANS,
+  CONTACT_REQUIRED_MESSAGE,
   MAX_LIVE_KEYS_PER_ACCOUNT,
   resolveKeyState,
   type AccountPlan,
   type ApiKeyAdminStore,
   type ApiKeyRecord,
 } from './apiKeyStore.js';
+import { collectAccountContacts, type ContactSet } from './accountContacts.js';
 import { KEY_ENVIRONMENTS, type KeyEnvironment } from './keyFormat.js';
 import { openApiKeyAdminStore, resolveApiKeysDbPath } from './sqliteApiKeyStore.js';
 
@@ -106,14 +108,90 @@ function optionalEnvironment(flags: ParsedArgs['flags']): KeyEnvironment {
   return value as KeyEnvironment;
 }
 
-/** One key as a listing row. Never includes a secret — there is nothing stored that could. */
+/**
+ * The account contact, as a flag.
+ *
+ * Required on `keys:issue` and refused with {@link CONTACT_REQUIRED_MESSAGE}
+ * rather than with `requireString`'s generic "--contact is required": an
+ * operator who is told a flag is missing adds a flag, and an operator who is
+ * told what §9.3 promises knows which address to put in it. That is the
+ * `scripts/backfillModelGuard.ts` shape — a refusal that argues for itself.
+ */
+function requireContactFlag(flags: ParsedArgs['flags']): string {
+  const value = flags.contact;
+  if (typeof value !== 'string' || value.trim() === '') throw new UsageError(CONTACT_REQUIRED_MESSAGE);
+  return value.trim();
+}
+
+function optionalContactFlag(flags: ParsedArgs['flags']): string | undefined {
+  const value = flags.contact;
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+/**
+ * One key as a listing row. Never includes a secret — there is nothing stored
+ * that could.
+ *
+ * The contact is shown, and `none` is printed rather than omitted. A missing
+ * field reads as a field that does not apply; the word is what makes an
+ * un-notifiable subscriber visible in the listing an operator already runs,
+ * instead of only in `keys:contacts`.
+ */
 export function describeKey(key: ApiKeyRecord, now: Date): string {
   const state = resolveKeyState(key, now);
   const until = key.expiresAt ? ` expires=${key.expiresAt}` : '';
   const reason = key.revokedReason ? ` reason="${key.revokedReason}"` : '';
-  return `${key.id}  ${key.environment}  prefix=${key.prefix}  ${state.padEnd(7)}  ${
-    key.label
-  }${until}${reason}`;
+  return `${key.id}  ${key.environment}  prefix=${key.prefix}  ${state.padEnd(7)}  contact=${
+    key.contactEmail ?? 'none'
+  }  ${key.label}${until}${reason}`;
+}
+
+/**
+ * The §9.3 recipient list, rendered.
+ *
+ * Both halves always print, including "every live key has a contact" when the
+ * unreachable list is empty. A report that goes quiet when there is nothing
+ * wrong is indistinguishable from one that has stopped checking, and this is the
+ * output somebody will read once, in a hurry, on the day a model changes.
+ */
+export function describeContactSet(set: ContactSet): string[] {
+  const lines: string[] = [];
+
+  if (set.liveKeys === 0) {
+    lines.push('No live keys, so there is nobody to notify under ToS §9.3.');
+    return lines;
+  }
+
+  lines.push(
+    `${set.recipients.length} contact${set.recipients.length === 1 ? '' : 's'} for ${
+      set.liveKeys
+    } live key${set.liveKeys === 1 ? '' : 's'}:`
+  );
+  for (const r of set.recipients) {
+    lines.push(`  ${r.email.padEnd(34)}  keys=${r.keyIds.length}  ${r.accountIds.join(' ')}`);
+  }
+
+  if (set.unreachable.length === 0) {
+    lines.push('');
+    lines.push('Every live key has a contact.');
+    return lines;
+  }
+
+  lines.push('');
+  lines.push(
+    `${set.unreachable.length} live key${
+      set.unreachable.length === 1 ? '' : 's'
+    } cannot be reached — no contact was recorded:`
+  );
+  for (const u of set.unreachable) lines.push(`  ${u.keyId}  ${u.accountId}  "${u.label}"`);
+  lines.push('');
+  lines.push(
+    'These predate the contact field. ToS §9.3 promises them notice of a material model change ' +
+      'and we have no address, so they are listed rather than counted as nobody. Give each one ' +
+      'an address by rotating it: keys:rotate --key <key_...> --contact <email>.'
+  );
+
+  return lines;
 }
 
 const USAGE = `
@@ -124,15 +202,21 @@ Manage /v1 API keys. Reads API_KEYS_DB_PATH (its own SQLite file, never the ener
   accounts:disable  --account <acct_...>
   accounts:enable   --account <acct_...>
 
-  keys:issue        --account <acct_...> --label <label> [--env live|test] [--expires-in-days N]
+  keys:issue        --account <acct_...> --label <label> --contact <email> [--env live|test] [--expires-in-days N]
   keys:list         [--account <acct_...>]
-  keys:rotate       --key <key_...> [--overlap-days N] [--label <label>]
+  keys:contacts
+  keys:rotate       --key <key_...> [--overlap-days N] [--label <label>] [--contact <email>]
   keys:revoke       --key <key_...> [--reason <text>]
 
 A key is printed once, at issue or rotate. Nothing can print it again: the store holds
 sha256(secret) and the non-secret prefix, so a lost key is rotated, never recovered.
 Accounts hold at most ${MAX_LIVE_KEYS_PER_ACCOUNT} live keys; a rotation with an overlap
 window counts both while they overlap.
+
+--contact is the account contact ToS §9.3 promises to notify of a material model change,
+and issuing without one is refused. A rotation carries the old key's contact forward, so
+--contact is needed there only to change it, or to give one to a key that predates the
+field. keys:contacts prints the recipient list and every live key that has no address.
 `.trim();
 
 /**
@@ -154,6 +238,7 @@ function printIssuedKey(key: string, record: ApiKeyRecord): void {
   account: ${record.accountId}
   prefix : ${record.prefix}   <- the non-secret handle; use this in tickets and logs
   label  : ${record.label}
+  contact: ${record.contactEmail}   <- where a ToS §9.3 model-change notice goes
   expires: ${record.expiresAt ?? 'never'}
 
   Send it as:  Authorization: Bearer <the key above>
@@ -201,6 +286,7 @@ export function runCommand(store: ApiKeyAdminStore, { command, flags }: ParsedAr
       const { record, key } = store.issueKey({
         accountId: requireString(flags, 'account'),
         label: requireString(flags, 'label'),
+        contactEmail: requireContactFlag(flags),
         environment: optionalEnvironment(flags),
         expiresAt: days > 0 ? new Date(now.getTime() + days * 86_400_000).toISOString() : null,
       });
@@ -219,11 +305,23 @@ export function runCommand(store: ApiKeyAdminStore, { command, flags }: ParsedAr
       return;
     }
 
+    case 'keys:contacts': {
+      // Reads every key and filters to live ones in `collectAccountContacts`
+      // rather than asking the store for a filtered list: the "live" rule is
+      // `resolveKeyState`, and a second copy of it in SQL is a second copy to
+      // keep true.
+      for (const line of describeContactSet(collectAccountContacts(store.listKeys(), now))) {
+        console.log(line);
+      }
+      return;
+    }
+
     case 'keys:rotate': {
       const overlapDays = optionalNumber(flags, 'overlap-days', 7);
       const { issued, retired } = store.rotateKey({
         keyId: requireString(flags, 'key'),
         label: typeof flags.label === 'string' ? flags.label : undefined,
+        contactEmail: optionalContactFlag(flags),
         overlapDays,
       });
       console.log(

@@ -694,9 +694,16 @@ export function openUsageStore({
         // the columns rather than deleting the field afterwards means a column
         // added to `api_keys` later is absent from the export until somebody
         // decides it belongs, which is the right default for this direction.
+        //
+        // `contact_email` (ABL-528) is that decision made: it is an email
+        // address the subject gave us and that we hold about them, which is
+        // squarely what a subject access request is for. It is not a credential
+        // — the exclusion above is about `secret_sha256` specifically — and
+        // omitting it would make the export quietly incomplete in the one
+        // direction §9(3) cares about.
         keys: db
           .prepare(
-            `SELECT id, account_id, key_env, key_prefix, label, created_at,
+            `SELECT id, account_id, key_env, key_prefix, label, contact_email, created_at,
                     expires_at, revoked_at, revoked_reason
                FROM api_keys WHERE account_id = ? ORDER BY created_at, id`
           )
