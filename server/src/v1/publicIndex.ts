@@ -1,5 +1,6 @@
 import { createPublicApp } from './publicApp.js';
 import { openApiKeyDirectory } from './keys/sqliteApiKeyStore.js';
+import { openChangelogReader } from './changelog/sqliteChangelogStore.js';
 import { openUsageStore } from './usage/sqliteUsageStore.js';
 import { createUsageMeter } from './usage/usageMeter.js';
 import { startUsageMaintenance } from './usage/usageMaintenance.js';
@@ -132,11 +133,27 @@ catalog.warm();
 // `192.168.x` address into a subscriber's stored URL.
 const publicBaseUrl = resolvePublicBaseUrl(process.env);
 
+// The change log (ABL-532), opened before `listen` for the fourth time and the
+// fourth reason: §9.3 points a subscriber at this page for advance notice of a
+// material model change, so a process that binds a port and then 500s on
+// `/changelog` is answering a contractual URL with an error. `fileMustExist`
+// makes a wrong path a startup failure rather than an empty change log, which is
+// the more dangerous shape — an empty page looks like "we have never changed
+// anything" and nothing about it reads as broken.
+//
+// **Readonly**, like the key directory and for the same kind of reason: this
+// process publishes nothing. A published entry is a statement we made at a time
+// we recorded, and the serving process should not be able to alter one even by
+// mistake. `npm run changelog -- entries:publish` holds the only read-write
+// handle, and it is that command — not a deploy — that is the publish path.
+const changelog = openChangelogReader();
+
 const app = createPublicApp({
   apiKeyDirectory,
   usageMeter,
   planGate,
   data: { source: energySource, freshness, catalog, publicBaseUrl, now: () => new Date() },
+  changelog,
 });
 
 const server = app.listen(PORT, HOST, () => {
@@ -149,6 +166,7 @@ const server = app.listen(PORT, HOST, () => {
 🚦 Plan limits: on — per-account monthly quota and per-minute rate limit, 429 only
 🚀 Listening on http://${HOST}:${PORT}
 📊 API base URL: http://${HOST}:${PORT}/v1
+📜 Change log:   http://${HOST}:${PORT}/changelog   (and /changelog.json) — outside /v1, no key
 🔗 Pagination links: ${publicBaseUrl ?? 'relative (PUBLIC_BASE_URL unset)'}
 
 Not on this surface, by composition: /api/*, /api/ops/*, /api/health,
@@ -192,6 +210,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     server.close(() => {
       shutDownUsage({ meter: usageMeter, maintenance: usageMaintenance, store: usageStore });
       apiKeyDirectory.close();
+      changelog.close();
       // Nothing is buffered behind these two — the map is a read cache and the
       // handle is readonly — so closing them loses no data and is only about
       // not leaving a file handle and a timer behind.
