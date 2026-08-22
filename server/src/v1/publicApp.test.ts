@@ -8,6 +8,8 @@ import { createMemoryUsageSink, type MemoryUsageSink } from './usage/memoryUsage
 import { createUsageMeter, type UsageMeter } from './usage/usageMeter.js';
 import { createPlanGate, QUOTA_HEADERS, RATE_LIMIT_HEADERS, type PlanGate } from './quota/planGate.js';
 import { createMemoryDataContext, createMemoryEnergySource } from './data/memoryEnergySource.js';
+import type { ChangelogEntry } from './changelog/changelogEntry.js';
+import type { ChangelogReader } from './changelog/changelogStore.js';
 
 /**
  * What the public composition does, from the outside.
@@ -148,6 +150,43 @@ function dataContext() {
   return createMemoryDataContext(source);
 }
 
+/**
+ * A change log, for the fifth time and the fifth reason (ABL-532):
+ * `createPublicApp` requires one, because §9.3 points a subscriber at a change
+ * log for advance notice of a material model change — so an app composed without
+ * one has Terms naming a page that answers 404.
+ *
+ * Two entries, one of each type, because what this file checks about them is
+ * *routing*: that `/changelog` is reachable **without a key**, that it is not
+ * under `/v1`, and that mounting it opened no hole in the gate above. What the
+ * page says is `changelog/changelogHtml.test.ts`'s, and the two-date rules are
+ * `changelog/changelogEntry.test.ts`'s.
+ */
+const CHANGELOG_ENTRIES: ChangelogEntry[] = [
+  {
+    id: 'cl_planned0001',
+    type: 'planned',
+    publishedAt: '2026-08-22T09:00:00.000Z',
+    effectiveAt: '2026-09-21T09:00:00.000Z',
+    title: 'A planned change',
+    detail: 'What changed and for which datasets.',
+    whatWasWrong: null,
+    isExample: false,
+  },
+  {
+    id: 'cl_fix00000001',
+    type: 'correction',
+    publishedAt: '2026-08-25T14:03:00.000Z',
+    effectiveAt: '2026-08-25T14:03:00.000Z',
+    title: 'A correction',
+    detail: 'Values are now served on the right basis.',
+    whatWasWrong: 'They were served on the wrong basis for nine days.',
+    isExample: false,
+  },
+];
+
+const changelog: ChangelogReader = { list: () => [...CHANGELOG_ENTRIES], close: () => {} };
+
 beforeAll(async () => {
   for (const name of FORBIDDEN_PUBLIC_ENV) {
     savedEnv.set(name, process.env[name]);
@@ -159,6 +198,7 @@ beforeAll(async () => {
       usageMeter: mounted.meter,
       planGate: gate(),
       data: dataContext(),
+      changelog,
     })
   );
 });
@@ -302,7 +342,7 @@ describe('the public composition does answer /v1', () => {
     });
   });
 
-  it('keeps the discovery root open, and it is the only thing that is', async () => {
+  it('keeps the discovery root open, and it is the only thing under /v1 that is', async () => {
     expect((await probe(api.origin, '/v1')).status).toBe(200);
     for (const path of ['/v1/', '/v1/catalog', '/v1/anything/at/all']) {
       const res = await probe(api.origin, path);
@@ -310,6 +350,81 @@ describe('the public composition does answer /v1', () => {
       // are gated.
       expect(res.status).toBe(path === '/v1/' ? 200 : 401);
     }
+  });
+});
+
+describe('the change log is mounted outside /v1 (ABL-532)', () => {
+  it('answers without a key, at a path with no version in it', async () => {
+    const res = await probe(api.origin, '/changelog');
+
+    expect(res.status).toBe(200);
+    expect(res.contentType).toMatch(/^text\/html/);
+    expect(res.text).toContain('Model and data change log');
+  });
+
+  it('serves the machine-readable form on the same terms', async () => {
+    const res = await probe(api.origin, '/changelog.json');
+
+    expect(res.status).toBe(200);
+    expect(res.contentType).toMatch(/^application\/json/);
+    expect((res.json() as { entries: { id: string }[] }).entries.map((e) => e.id)).toEqual([
+      'cl_fix00000001',
+      'cl_planned0001',
+    ]);
+  });
+
+  it('is not under /v1, so the gate there is untouched', async () => {
+    // The mount is the thing that could have gone wrong: an unauthenticated
+    // router mounted at `/v1` would have made the whole surface enumerable. It
+    // is mounted at the app root instead, and `/v1/changelog` is just another
+    // gated path.
+    for (const path of ['/v1/changelog', '/v1/changelog.json']) {
+      const res = await probe(api.origin, path);
+      expect(res.status).toBe(401);
+      expect(res.json()).toMatchObject({ error: { code: 'key_missing' } });
+    }
+  });
+
+  it('is not linked from the discovery root, or from anywhere else on the surface', async () => {
+    // ABL-349 defers public exposure: this is built and ready, not live. The
+    // discovery document is the one index a caller reads, and it carries two
+    // constants and nothing else.
+    const root = await probe(api.origin, '/v1');
+
+    expect(Object.keys(root.json()).sort()).toEqual(['status', 'version']);
+    expect(root.text).not.toContain('changelog');
+  });
+
+  it('loads no third-party asset, and the CSP would refuse one anyway', async () => {
+    const res = await probe(api.origin, '/changelog');
+
+    expect(res.text).not.toMatch(/https?:\/\//);
+    for (const tag of ['<script', '<link', '<img', '<style']) {
+      expect(res.text).not.toContain(tag);
+    }
+    // helmet's `default-src 'none'` from the composition applies to this page
+    // too — the second lock, and the one a future edit cannot forget.
+    expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
+  });
+
+  it('is never cached, so a correction is visible the moment it is published', async () => {
+    for (const path of ['/changelog', '/changelog.json']) {
+      expect((await probe(api.origin, path)).headers.get('cache-control')).toBe('no-store');
+    }
+  });
+
+  it('is metered by nothing, because there is no principal to meter it to', async () => {
+    // The meter is mounted under `/v1` and takes its account from the key. A
+    // page anybody may read has no key, so it must not reach the meter —
+    // `requireApiPrincipal` throws rather than counting to nobody, so a
+    // misplaced mount would 500 here rather than fail quietly.
+    const before = mounted.meter.stats();
+    await probe(api.origin, '/changelog');
+    const after = mounted.meter.stats();
+
+    // Counted rather than flushed, so this leaves the shared meter exactly as it
+    // found it for the block below that asserts on its buffer.
+    expect(after.pending + after.flushed).toBe(before.pending + before.flushed);
   });
 });
 
@@ -331,6 +446,7 @@ describe('hardened HTTP configuration', () => {
         usageMeter: meter().meter,
         planGate: gate(),
         data: dataContext(),
+        changelog,
         env: { PUBLIC_CORS_ORIGINS: 'https://docs.example.com, https://app.example.com' },
       })
     );
@@ -365,16 +481,16 @@ describe('hardened HTTP configuration', () => {
 
 describe('the public app refuses a process holding write or ops capability', () => {
   it.each([...FORBIDDEN_PUBLIC_ENV])('refuses to build when %s is set', (name) => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
   });
 
   it('never puts the value in the message', () => {
     // An error message is the one place a secret reliably reaches a log file.
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
       /HELIO_WRITE_TOKEN/
     );
     try {
-      createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
+      createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
       expect.unreachable('should have thrown');
     } catch (err) {
       expect((err as Error).message).not.toContain('super-secret-value');
@@ -382,7 +498,7 @@ describe('the public app refuses a process holding write or ops capability', () 
   });
 
   it('builds when the environment is clean', () => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), env: {} })).not.toThrow();
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: {} })).not.toThrow();
   });
 });
 
@@ -458,6 +574,7 @@ describe('the plan gate is mounted where the composition says it is (ABL-302)', 
         usageMeter: m.meter,
         planGate: gate(1),
         data: dataContext(),
+        changelog,
       })
     );
     return { origin: server.origin, sink: m.sink, meter: m.meter, close: server.close };
