@@ -555,10 +555,12 @@ describe('the account contact', () => {
   });
 
   it('refuses to mint without one, whatever route reaches the store', () => {
-    // The type already makes omission a compile error. This is the runtime
-    // half, for the value that arrives from a flag, a JSON payload or a cast —
-    // the paths a type cannot see. The casts below are how the test reaches
-    // them, and are the only reason this case can exist.
+    // `IssueKeyInput.contactEmail` is a required string in production code, but
+    // `server/tsconfig.json` excludes `src/**/*.test.ts`, so test files are
+    // never typechecked — omitting it here compiles clean. The cast below is
+    // therefore load-bearing, not decorative: it is the only way to reach the
+    // omission path in a test. The runtime guard `requireContactEmail` is the
+    // sole protection at test call sites today.
     for (const contactEmail of ['', '   ', 'acct_7f3a9c21']) {
       expect(() => store.issueKey({ accountId, label: 'k', contactEmail, environment: 'live' })).toThrow(
         /§9\.3/
