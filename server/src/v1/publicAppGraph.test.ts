@@ -205,6 +205,12 @@ describe.each(ENTRIES)('$label', ({ file }) => {
     //   test. On a serving path it would answer a customer's question with a
     //   fixture — the same class of mistake as the other two, with the failure
     //   pointed at the data rather than at the auth.
+    // - `memoryAuthFailureSink.ts` (ABL-530) would record a credential attack
+    //   into an array that disappears with the process. It is listed by name for
+    //   the same reason the other fakes are, and with one extra edge: it exports
+    //   `createTestAuthFailureRecorder`, which every test that mounts the gate
+    //   now imports, so it is the fake most likely to be reached for by
+    //   accident.
     // - `changelogCli.ts` (ABL-532) holds the only read-write handle on published
     //   change-log entries, and `exampleEntries.ts` describes no real change. An
     //   entry, like a key, is published by a person running a command; a serving
@@ -222,6 +228,7 @@ describe.each(ENTRIES)('$label', ({ file }) => {
       'v1/usage/usageCli',
       'v1/usage/memoryUsageSink',
       'v1/data/memoryEnergySource',
+      'v1/security/memoryAuthFailureSink',
       'v1/changelog/changelogCli',
       'v1/changelog/exampleEntries',
       'v1/modelVersions/modelVersionsCli',
@@ -416,7 +423,29 @@ describe('the exact public module graph', () => {
 describe('the entrypoint chooses the key store, and only there', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicIndex.ts'), SRC_ROOT);
 
-  it('is these forty-eight modules and no others', () => {
+  it('is these fifty-one modules and no others', () => {
+    // **ABL-530 adds three**, all under `v1/security/`, and — like ABL-301's
+    // metering and ABL-302's quota before them — they are here and *not* in
+    // `createPublicApp`'s graph above. That is the property worth checking rather
+    // than the count: the gate takes an `AuthFailureRecorder` as a type, this
+    // file constructs one, and the module that serves requests still contains no
+    // recording code that could fail and no database driver behind it. **No
+    // `v1/security/` module appears in the app-graph assertion above**, which is
+    // the claim; that list's own length has moved twice since this was written
+    // and neither move was ours.
+    //
+    // What to look for if this list changes again: nothing under `v1/security/`
+    // should import a store. The recorder is handed an `AuthFailureSink` — one
+    // method, appends rows — so it cannot read a key, close a month or delete a
+    // record, and `sqliteAuthFailureStore.ts` is handed an already-open handle
+    // rather than opening one, which is why it appears in this list without
+    // appearing in the database-opening assertion below. That assertion names
+    // its modules rather than counting them, so what ABL-530 leaves true is the
+    // membership, not a total: `v1/security/sqliteAuthFailureStore.ts` is not in
+    // it. (The total did move under this branch, and not for any reason of ours
+    // — ABL-532's `sqliteChangelogStore.ts` opens a fourth handle. That is the
+    // hazard of quoting a count: this comment claimed three while it was four.)
+    //
     // **ABL-529 adds three**, and the split between this list and the app's is
     // the point rather than an accident. `acknowledgements.ts` and
     // `versionGuard.ts` are in both, because the filter runs on the request
@@ -481,6 +510,9 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/routes/index.ts',
       'v1/routes/observations.ts',
       'v1/routes/root.ts',
+      'v1/security/authFailureRecorder.ts',
+      'v1/security/requestTarget.ts',
+      'v1/security/sqliteAuthFailureStore.ts',
       'v1/usage/sqliteUsageStore.ts',
       'v1/usage/usageMaintenance.ts',
       'v1/usage/usageMeter.ts',
@@ -569,6 +601,30 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/keys/sqliteApiKeyStore.ts',
       'v1/usage/sqliteUsageStore.ts',
     ]);
+  });
+
+  it('records auth failures into the key store file, on a handle it is given', () => {
+    // ABL-530's table lives in `API_KEYS_DB_PATH` beside `usage_events`, because
+    // it holds `client_ip` and `user_agent` and has to be scrubbed by the same
+    // retention job on the same boundary. The obvious way to write it — one more
+    // module calling `new Database(...)` — would have failed the named-module
+    // assertion above, and rightly: it would also be a second place
+    // `resolveApiKeysDbPath` had to be remembered, on the one file that must
+    // never become the energy database.
+    //
+    // So the security store is handed an open handle and imports the driver for
+    // its *type* only. Checked as text, like everything else in this file,
+    // because the claim is about what the module says and importing it would open
+    // a database to find out.
+    const source = fs.readFileSync(
+      path.join(SRC_ROOT, 'v1/security/sqliteAuthFailureStore.ts'),
+      'utf8'
+    );
+    const specifiers = collectImportSpecifiers(source);
+
+    expect(specifiers.runtime).not.toContain('better-sqlite3');
+    expect(specifiers.typeOnly).toContain('better-sqlite3');
+    expect(source).not.toContain('new Database(');
   });
 
   it('opens the change log readonly, and through the key store path resolver', () => {

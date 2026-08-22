@@ -1,3 +1,4 @@
+import type { AuthFailureRecorder } from '../security/authFailureRecorder.js';
 import type { UsageMaintenanceTimer } from './usageMaintenance.js';
 import type { UsageMeter } from './usageMeter.js';
 import type { UsageAdminStore } from './usageStore.js';
@@ -28,15 +29,19 @@ import type { UsageAdminStore } from './usageStore.js';
  *    that turns "up to one flush interval lost on every restart" into "nothing
  *    lost on a clean one", and a deploy is the most frequent way this process
  *    dies.
- * 2. **Stop the maintenance timers**, so nothing starts a pass while the last
+ * 2. **Flush the auth-failure recorder** (ABL-530), which buffers on the same
+ *    interval into the same file. Before the maintenance pass, so the records
+ *    written here are inside the retention pass that follows rather than left a
+ *    boundary behind it.
+ * 3. **Stop the maintenance timers**, so nothing starts a pass while the last
  *    one is running.
- * 3. **Run one final pass.** After the flush, not before — the events written in
- *    step 1 are precisely the ones the rollup has never seen, and a pass that
+ * 4. **Run one final pass.** After the flushes, not before — the events written
+ *    in step 1 are precisely the ones the rollup has never seen, and a pass that
  *    ran first would leave them for the next start. Failure here is logged and
  *    swallowed: those events are already durable, and the watermark means the
  *    next start resumes exactly where this left off. Blocking an exit on it
  *    would trade a real outage for a tidiness nobody is waiting on.
- * 4. **Close the store.**
+ * 5. **Close the store.**
  *
  * Synchronous throughout, because `better-sqlite3` is and because an `await`
  * here is a promise the process may exit before settling — which would lose the
@@ -45,6 +50,16 @@ import type { UsageAdminStore } from './usageStore.js';
 
 export interface UsageShutdownOptions {
   meter: UsageMeter;
+  /**
+   * The auth-failure recorder (ABL-530), flushed alongside the meter.
+   *
+   * It buffers on the same one-second interval and for the same reason, so a
+   * clean exit that flushed one and not the other would lose exactly the records
+   * whose absence this issue exists to fix — and it would lose them on a
+   * *deploy*, which is the most frequent way this process dies and a moment an
+   * attacker has no way to arrange.
+   */
+  authFailureRecorder: AuthFailureRecorder;
   maintenance: UsageMaintenanceTimer;
   store: UsageAdminStore;
   log?: (line: string) => void;
@@ -53,6 +68,7 @@ export interface UsageShutdownOptions {
 
 export function shutDownUsage({
   meter,
+  authFailureRecorder,
   maintenance,
   store,
   log = (line) => console.log(line),
@@ -67,6 +83,16 @@ export function shutDownUsage({
     meter.close();
   } catch (err) {
     onError('flush', err);
+  }
+
+  // Its own `try`, ahead of the maintenance pass, for the reason above: a meter
+  // that throws on flush must not take the security records down with it. They
+  // are separate tables, written by separate buffers, and a failure in one says
+  // nothing about the other.
+  try {
+    authFailureRecorder.close();
+  } catch (err) {
+    onError('flushing the auth-failure recorder', err);
   }
 
   try {

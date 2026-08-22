@@ -4,6 +4,7 @@ import type { Express } from 'express';
 import { createPublicApp } from './publicApp.js';
 import { FORBIDDEN_PUBLIC_ENV } from './publicEnv.js';
 import { createMemoryApiKeyDirectory } from './keys/memoryApiKeyDirectory.js';
+import { createTestAuthFailureRecorder } from './security/memoryAuthFailureSink.js';
 import { createMemoryUsageSink, type MemoryUsageSink } from './usage/memoryUsageSink.js';
 import { createUsageMeter, type UsageMeter } from './usage/usageMeter.js';
 import { createPlanGate, QUOTA_HEADERS, RATE_LIMIT_HEADERS, type PlanGate } from './quota/planGate.js';
@@ -151,7 +152,24 @@ function dataContext() {
 }
 
 /**
- * A change log, for the fifth time and the fifth reason (ABL-532):
+ * An auth-failure recorder, for the fifth time and the fifth reason (ABL-530):
+ * `createPublicApp` requires one, because an app that authenticates correctly and
+ * records nothing about anyone who failed to is an app on which a credential
+ * attack is invisible — which was the actual shape until this issue, not a
+ * hypothetical.
+ *
+ * A fresh one per app, over a memory sink with no timer. This file's subject is
+ * the isolation claim rather than the record's contents, which
+ * `auth/apiKeyAuth.test.ts` covers branch by branch; what belongs here is that
+ * the recorder is in the stack, and the block below checks that a refused
+ * request is recorded there and *not* metered.
+ */
+function recorder() {
+  return createTestAuthFailureRecorder().recorder;
+}
+
+/**
+ * A change log, for the sixth time and the sixth reason (ABL-532):
  * `createPublicApp` requires one, because §9.3 points a subscriber at a change
  * log for advance notice of a material model change — so an app composed without
  * one has Terms naming a page that answers 404.
@@ -195,6 +213,7 @@ beforeAll(async () => {
   api = await listen(
     createPublicApp({
       apiKeyDirectory: seeded.directory,
+      authFailureRecorder: recorder(),
       usageMeter: mounted.meter,
       planGate: gate(),
       data: dataContext(),
@@ -443,6 +462,7 @@ describe('hardened HTTP configuration', () => {
     const allowlisted = await listen(
       createPublicApp({
         apiKeyDirectory: seeded.directory,
+        authFailureRecorder: recorder(),
         usageMeter: meter().meter,
         planGate: gate(),
         data: dataContext(),
@@ -481,16 +501,16 @@ describe('hardened HTTP configuration', () => {
 
 describe('the public app refuses a process holding write or ops capability', () => {
   it.each([...FORBIDDEN_PUBLIC_ENV])('refuses to build when %s is set', (name) => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, authFailureRecorder: recorder(), usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: { [name]: 'set-by-a-deployment' } })).toThrow(name);
   });
 
   it('never puts the value in the message', () => {
     // An error message is the one place a secret reliably reaches a log file.
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, authFailureRecorder: recorder(), usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } })).toThrow(
       /HELIO_WRITE_TOKEN/
     );
     try {
-      createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
+      createPublicApp({ apiKeyDirectory: seeded.directory, authFailureRecorder: recorder(), usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: { HELIO_WRITE_TOKEN: 'super-secret-value' } });
       expect.unreachable('should have thrown');
     } catch (err) {
       expect((err as Error).message).not.toContain('super-secret-value');
@@ -498,7 +518,7 @@ describe('the public app refuses a process holding write or ops capability', () 
   });
 
   it('builds when the environment is clean', () => {
-    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: {} })).not.toThrow();
+    expect(() => createPublicApp({ apiKeyDirectory: seeded.directory, authFailureRecorder: recorder(), usageMeter: meter().meter, planGate: gate(), data: dataContext(), changelog, env: {} })).not.toThrow();
   });
 });
 
@@ -571,6 +591,7 @@ describe('the plan gate is mounted where the composition says it is (ABL-302)', 
     const server = await listen(
       createPublicApp({
         apiKeyDirectory: seeded.directory,
+        authFailureRecorder: recorder(),
         usageMeter: m.meter,
         planGate: gate(1),
         data: dataContext(),

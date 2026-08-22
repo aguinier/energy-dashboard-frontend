@@ -59,7 +59,13 @@ function stubStore({
     },
     applyRetention(): RetentionOutcome {
       calls.push('applyRetention');
-      return { scrubbed: 0, deleted: 0, keptPendingRollup: 0, ...retention };
+      return {
+        scrubbed: 0,
+        deleted: 0,
+        keptPendingRollup: 0,
+        authFailures: { scrubbed: 0, deleted: 0 },
+        ...retention,
+      };
     },
     monthlyUsage: () => [],
     // ABL-302's live quota read. Present because the interface has it, and
@@ -120,7 +126,7 @@ describe('what a pass reports', () => {
         rollUp: { passes: 1, events: 0, rows: 0, rolledThroughEventId: 0, drained: true },
         closed: [],
         deferred: [],
-        retention: { scrubbed: 0, deleted: 0, keptPendingRollup: 0 },
+        retention: { scrubbed: 0, deleted: 0, keptPendingRollup: 0, authFailures: { scrubbed: 0, deleted: 0 } },
         ...outcome,
       },
       (line) => lines.push(line)
@@ -144,7 +150,9 @@ describe('what a pass reports', () => {
   });
 
   it('reports what retention removed', () => {
-    const lines = report({ retention: { scrubbed: 12, deleted: 3, keptPendingRollup: 0 } });
+    const lines = report({
+      retention: { scrubbed: 12, deleted: 3, keptPendingRollup: 0, authFailures: { scrubbed: 0, deleted: 0 } },
+    });
     expect(lines[0]).toContain('12');
     expect(lines[0]).toContain('3');
   });
@@ -153,7 +161,9 @@ describe('what a pass reports', () => {
     // The one case logged even though nothing happened: it means the rollup has
     // been broken for longer than the retention window, and the correct
     // response is to fix the rollup rather than delete the evidence.
-    const lines = report({ retention: { scrubbed: 0, deleted: 0, keptPendingRollup: 7 } });
+    const lines = report({
+      retention: { scrubbed: 0, deleted: 0, keptPendingRollup: 7, authFailures: { scrubbed: 0, deleted: 0 } },
+    });
     expect(lines[0]).toContain('KEPT 7');
     expect(lines[0]).toMatch(/rollup failure, not a retention failure/);
   });

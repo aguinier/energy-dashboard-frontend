@@ -33,12 +33,15 @@ import type { RetentionOutcome, UsageAdminStore } from './usageStore.js';
  *
  * ## Scope, which is narrower than it looks
  *
- * The only table anything here deletes from is `usage_events`. ABL-297 §9(5)
- * records that this issue introduces the first scheduled deletion in the
- * codebase and is therefore where the forecast-vintage retention commitment
- * (ToS §9.3) is most likely to be broken by accident later: **forecast vintages
- * must never be pruned for storage reasons.** There is no general-purpose row
- * reaper here and there should never be one. `usage_rollup` is likewise never
+ * The only tables anything here deletes from are `usage_events` and, since
+ * ABL-530, `auth_failures` — both of which hold `client_ip` and `user_agent` and
+ * are therefore inside the same published 90-day promise. ABL-297 §9(5) records
+ * that this issue introduces the first scheduled deletion in the codebase and is
+ * therefore where the forecast-vintage retention commitment (ToS §9.3) is most
+ * likely to be broken by accident later: **forecast vintages must never be
+ * pruned for storage reasons.** There is no general-purpose row reaper here and
+ * there should never be one — the second table was added because it holds
+ * personal data, which is the only reason that would justify a third. `usage_rollup` is likewise never
  * deleted from — those rows are the seven-year invoice record and outlive the
  * events they were computed from, which is the entire reason they exist. Nor is
  * `usage_month_close`: deleting a month's closure record would make that month
@@ -250,6 +253,18 @@ export function reportFullPass(
     log(
       `Usage maintenance: scrubbed IP and user agent from ${outcome.retention.scrubbed} request ` +
         `records, deleted ${outcome.retention.deleted} de-identified records (ABL-297 §5).`
+    );
+  }
+  // Reported on its own line rather than added to the two counts above. Both
+  // tables are inside the same §5 promise and are scrubbed in the same
+  // transaction, but they are different records, and an operator checking that
+  // the promise is being kept for `auth_failures` should be able to see that it
+  // ran rather than infer it from a total (ABL-530).
+  if (outcome.retention.authFailures.scrubbed > 0 || outcome.retention.authFailures.deleted > 0) {
+    log(
+      `Usage maintenance: scrubbed IP and user agent from ` +
+        `${outcome.retention.authFailures.scrubbed} auth-failure records, deleted ` +
+        `${outcome.retention.authFailures.deleted} de-identified ones (ABL-297 §5).`
     );
   }
   if (outcome.retention.keptPendingRollup > 0) {
