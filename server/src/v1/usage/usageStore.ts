@@ -278,6 +278,22 @@ export interface AccountUsageExport {
   keys: Array<Record<string, unknown>>;
   events: Array<Record<string, unknown>>;
   rollups: UsageRollupRow[];
+  /**
+   * Refused requests attributable to this account (ABL-530).
+   *
+   * **Only the rows that carry a `key_id`** — which means only those where the
+   * presented secret had already matched, since that is the one branch on which
+   * the gate knows whose key it is. A refusal that named no key is not
+   * attributable to any account, so it cannot be exported per account, and
+   * guessing would put a stranger's address in a subscriber's file.
+   *
+   * Included because the table holds `client_ip` and `user_agent` under the same
+   * privacy notice as `usage_events` does. A SAR answered from one table while a
+   * second held the subject's addresses would be incomplete in exactly the way
+   * §5 is written to prevent — the same miss as leaving the table out of the
+   * retention job, one procedure over.
+   */
+  authFailures: Array<Record<string, unknown>>;
 }
 
 /*

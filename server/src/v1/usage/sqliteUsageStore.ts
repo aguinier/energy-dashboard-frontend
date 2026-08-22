@@ -740,6 +740,21 @@ export function openUsageStore({
             )
             .all(accountId) as Record<string, unknown>[]
         ).map(readRollup),
+        // Refusals this account's own key can be tied to (ABL-530). Only the
+        // rows carrying an `account_id`, which the gate writes on exactly the
+        // branch where the secret has already matched — a refusal that named no
+        // key belongs to nobody, and attributing one would put a stranger's
+        // address in a subscriber's file.
+        //
+        // `SELECT *` rather than a named column list, and the difference from
+        // `keys` above is the direction of the risk: that table holds a
+        // credential (`secret_sha256`) that must never leave, so it is listed
+        // explicitly; this one holds no credential by construction, and a column
+        // added later is the subject's data and should appear without anybody
+        // remembering to add it here.
+        authFailures: db
+          .prepare('SELECT * FROM auth_failures WHERE account_id = ? ORDER BY id')
+          .all(accountId) as Array<Record<string, unknown>>,
       };
     },
 

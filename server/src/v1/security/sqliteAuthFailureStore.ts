@@ -443,11 +443,32 @@ export function createAuthFailureStore(db: DatabaseType): AuthFailureAdminStore 
      * which reads to the next maintainer as protection that is not there.
      */
     applyAuthFailureRetention(scrubBefore, deleteBefore, nowIso): AuthFailureRetentionOutcome {
+      // Note the third condition, which `usage_events`' otherwise-identical
+      // statement does not have, and the difference is deliberate.
+      //
+      // Without it the update also stamps `pii_scrubbed_at` on rows that never
+      // carried an address — which would make the column mean "this row is past
+      // the boundary" rather than "something was removed from this row", and the
+      // whole reason it exists is to keep *"no address because we deleted it"*
+      // apart from *"no address was recorded"*. It also inflates the count the
+      // maintenance log prints: "scrubbed 400 auth-failure records" should mean
+      // four hundred addresses were removed, not four hundred rows were visited.
+      //
+      // It matters here and not there because the two tables reach that state by
+      // different routes. `usageMeter.ts` reads the socket on every metered
+      // request, so a null `usage_events.client_ip` is vanishingly rare and the
+      // two predicates agree in practice. A refusal can legitimately arrive with
+      // no address at all, and a `key_missing` from a socket with no
+      // `remoteAddress` is a row this table is expected to hold. Making the same
+      // correction to `usage_events` would change an existing, tested count for
+      // no benefit there, so it is stated rather than done.
       const scrubbed = db
         .prepare(
           `UPDATE auth_failures
               SET client_ip = NULL, user_agent = NULL, pii_scrubbed_at = ?
-            WHERE received_at < ? AND pii_scrubbed_at IS NULL`
+            WHERE received_at < ?
+              AND pii_scrubbed_at IS NULL
+              AND (client_ip IS NOT NULL OR user_agent IS NOT NULL)`
         )
         .run(nowIso, scrubBefore).changes;
 

@@ -4,6 +4,16 @@ import { resolveApiKeysDbPath } from '../keys/sqliteApiKeyStore.js';
 import { openUsageStore } from './sqliteUsageStore.js';
 import { reportFullPass, runUsageMaintenance } from './usageMaintenance.js';
 import { resolveRetentionPolicy, type UsageAdminStore, type UsageRollupRow } from './usageStore.js';
+import {
+  classifyFingerprintBreadth,
+  classifyKeyOrigins,
+  classifySecretHolderFailures,
+  renderEnumerationReport,
+  renderFingerprintBreadthReport,
+  renderKeyOriginReport,
+  renderSecretHolderReport,
+} from '../security/securityReport.js';
+import type { AuthFailureWindow } from '../security/authFailureStore.js';
 
 /**
  * `npm run usage -- <command>` — the invoice figure, the scheduled jobs, and
@@ -91,6 +101,36 @@ function requireString(flags: ParsedArgs['flags'], name: string): string {
   return value.trim();
 }
 
+/**
+ * A `--days` / `--hours` lookback, validated.
+ *
+ * Rejected rather than defaulted when it is present and unreadable: an
+ * investigator who typed `--days 7d` and got a silent 24-hour window would draw
+ * a conclusion from a period they did not choose, which on this particular set
+ * of commands is how "no enumeration in the window" gets believed.
+ */
+export function requirePositiveNumber(
+  flags: ParsedArgs['flags'],
+  name: string,
+  fallback: number
+): number {
+  const raw = flags[name];
+  if (raw === undefined) return fallback;
+  const value = typeof raw === 'string' ? Number(raw) : NaN;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new UsageError(`--${name} must be a positive number of ${name}, and is "${String(raw)}".`);
+  }
+  return value;
+}
+
+/** A half-open `[now - hours, now)` window, in the ISO form `received_at` holds. */
+export function lookbackWindow(now: Date, hours: number): AuthFailureWindow {
+  return {
+    since: new Date(now.getTime() - hours * 3_600_000).toISOString(),
+    until: now.toISOString(),
+  };
+}
+
 /** `YYYY-MM`, validated, because a typo here silently reports an empty month. */
 export function requireYearMonth(flags: ParsedArgs['flags'], name = 'month'): string {
   const value = requireString(flags, name);
@@ -143,6 +183,38 @@ store, never the energy database.
 
 The serving process runs usage:maintain on a timer already; these commands exist so an
 operator can run the same thing by hand, and so a month can be closed deliberately.
+
+Breach-detection reads (ABL-530, signals from ABL-524 'breach-signals' §2). These answer
+four questions an investigator would otherwise write SQL for at three in the morning.
+Each reports the window it actually covered: address history is scrubbed at
+USAGE_PII_RETENTION_DAYS, so every one of them has a memory and then has none.
+
+  security:auth-failures    [--hours 24]
+                    S3. Refusals grouped by source address and by presented prefix.
+                    Many prefixes from one address is enumeration; one prefix from many
+                    addresses is a leaked key. The presented *secret* is never recorded
+                    and is not in this table.
+
+  security:secret-holders   [--days 30]
+                    S4, and the highest specificity on the list. Refusals that happened
+                    *after* the secret matched — revoked, expired, disabled, environment
+                    mismatch. Anyone here holds a real key; there is no guessing path to
+                    it. Cross-referenced against the addresses that key was served from.
+
+  security:key-origins      [--days 30] [--key key_...]
+                    S2. Successful use per key per origin. Flags a new origin appearing
+                    while an older one keeps running — the stolen-credential shape, as
+                    opposed to a redeploy. Says "no history" rather than "never before"
+                    when the retained window cannot support the claim.
+
+  security:key-breadth      [--days 7] [--baseline-days 30]
+                    S5. Distinct request fingerprints per key, recent against that key's
+                    own baseline, never a global one. Reported and deliberately NOT
+                    graded: there is no live traffic on this surface to calibrate a
+                    cutoff against.
+
+None of these alerts anybody. Recording and reading is the whole of ABL-530; where an
+alert should go is an open Board decision (ABL-524 §6).
 `.trim();
 
 export function runCommand(
@@ -249,7 +321,9 @@ export function runCommand(
       if (typeof flags.out === 'string') {
         fs.writeFileSync(flags.out, json, 'utf8');
         log(
-          `wrote ${exported.events.length} request records, ${exported.rollups.length} monthly ` +
+          `wrote ${exported.events.length} request records, ` +
+            `${exported.authFailures.length} refused-request records, ` +
+            `${exported.rollups.length} monthly ` +
             `aggregates and ${exported.keys.length} keys for ${accountId} to ${flags.out}`
         );
         // The one warning worth printing every time. The file is the subject's
@@ -277,14 +351,29 @@ export function runCommand(
           `${policy.eventMonths} months`
       );
 
+      // The auth-failure record (ABL-530). Printed beside the request counts
+      // rather than under its own command, because it is inside the same
+      // retention promise and an operator checking that promise should see both
+      // tables in one place — the split is what would let one of them be
+      // forgotten.
+      log(`auth failures     ${stats.authFailures.records}`);
+      log(`  secret proven   ${stats.authFailures.secretVerifiedRecords}  (S4 — run security:secret-holders)`);
+      log(`  oldest          ${stats.authFailures.oldestAt ?? '-'}`);
+      log(`  newest          ${stats.authFailures.newestAt ?? '-'}`);
+
       if (stats.unscrubbedPastPii > 0) {
         log(
-          `\nNOT COMPLIANT: ${stats.unscrubbedPastPii} request records past ${policy.piiDays} days ` +
-            'still hold an IP address or user agent. The privacy notice says we delete these. ' +
-            'Run usage:retention.'
+          `\nNOT COMPLIANT: ${stats.unscrubbedPastPii} records past ${policy.piiDays} days ` +
+            'still hold an IP address or user agent ' +
+            `(${stats.unscrubbedPastPiiByTable.usageEvents} request, ` +
+            `${stats.unscrubbedPastPiiByTable.authFailures} auth-failure). The privacy notice ` +
+            'says we delete these. Run usage:retention.'
         );
       } else {
-        log(`\nRetention check: OK — no record past ${policy.piiDays} days holds personal data.`);
+        log(
+          `\nRetention check: OK — no record past ${policy.piiDays} days holds personal data, ` +
+            'in either table.'
+        );
       }
 
       if (stats.unrolledEvents > 0) {
@@ -296,9 +385,81 @@ export function runCommand(
       return;
     }
 
+    /*
+     * The four breach-detection reads (ABL-530). Each one hands the store's rows
+     * to a pure classifier and a pure renderer in `security/securityReport.ts`,
+     * so the judgement and the words are asserted by a test rather than captured
+     * from a console — which matters more here than for the billing commands,
+     * because the distinctions this report keeps ("we no longer remember" against
+     * "never seen from here") only exist if they survive into the output.
+     */
+    case 'security:auth-failures': {
+      const window = lookbackWindow(now, requirePositiveNumber(flags, 'hours', 24));
+      for (const line of renderEnumerationReport(
+        window,
+        store.failuresByOrigin(window),
+        store.failuresByPrefix(window)
+      )) {
+        log(line);
+      }
+      return;
+    }
+
+    case 'security:secret-holders': {
+      const window = lookbackWindow(now, requirePositiveNumber(flags, 'days', 30) * 24);
+      for (const line of renderSecretHolderReport(
+        window,
+        classifySecretHolderFailures(store.secretHolderFailures(window))
+      )) {
+        log(line);
+      }
+      return;
+    }
+
+    case 'security:key-origins': {
+      const days = requirePositiveNumber(flags, 'days', 30);
+      const since = new Date(now.getTime() - days * 86_400_000).toISOString();
+      const keyId = typeof flags.key === 'string' ? flags.key : undefined;
+      // The query is deliberately unwindowed and `since` is applied by the
+      // classifier — see `keyOrigins`. A windowed query cannot answer "has this
+      // key ever been used from here before", because every origin looks new if
+      // you only fetch the last week.
+      for (const line of renderKeyOriginReport(
+        since,
+        classifyKeyOrigins(store.keyOrigins(keyId), since),
+        describePolicy().piiDays
+      )) {
+        log(line);
+      }
+      return;
+    }
+
+    case 'security:key-breadth': {
+      const recentDays = requirePositiveNumber(flags, 'days', 7);
+      const baselineDays = requirePositiveNumber(flags, 'baseline-days', 30);
+      if (baselineDays <= recentDays) {
+        throw new UsageError(
+          `--baseline-days (${baselineDays}) must be greater than --days (${recentDays}): the ` +
+            'baseline is the period *before* the recent window, and overlapping them would ' +
+            'dilute a genuine widening with the very traffic being asked about.'
+        );
+      }
+      const recent = lookbackWindow(now, recentDays * 24);
+      const baselineSince = new Date(now.getTime() - baselineDays * 86_400_000).toISOString();
+      for (const line of renderFingerprintBreadthReport(
+        recent,
+        baselineSince,
+        classifyFingerprintBreadth(store.keyFingerprintBreadth(recent, baselineSince))
+      )) {
+        log(line);
+      }
+      return;
+    }
+
     case '':
     case 'help':
     case '--help':
+    case 'security:help':
       log(USAGE);
       return;
 
@@ -333,7 +494,7 @@ if (isMain) {
   let store: UsageAdminStore | undefined;
   try {
     const parsed = parseArgs(process.argv.slice(2));
-    if (parsed.command === '' || parsed.command === 'help' || parsed.command === '--help') {
+    if (['', 'help', '--help', 'security:help'].includes(parsed.command)) {
       console.log(USAGE);
       process.exit(0);
     }
