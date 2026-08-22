@@ -14,6 +14,7 @@ import { calculateAccuracy, NO_METRICS, type AccuracyMetrics } from '../data/acc
 import { resolveServingModel } from '../data/forecastsRepo.js';
 import { PUBLIC_FORECAST_MODELS } from '../data/models.js';
 import { ABLE_FORECAST } from '../data/attribution.js';
+import { OPEN_VERSION_GATE } from '../modelVersions/versionGuard.js';
 import type { SeriesDefinition } from '../data/series.js';
 import type { V1DataContext } from '../data/context.js';
 
@@ -183,8 +184,32 @@ function serveAccuracy(context: V1DataContext, req: Request, res: Response): voi
   // served model with rows for this zone, type and window. Reporting xgboost's
   // accuracy under catboost's name is the plausible-wrong-number-under-the-
   // wrong-label failure, and on this endpoint the label *is* the product.
+  //
+  // **Deliberately ungated** (ABL-529), and this is a scope decision rather than
+  // an omission, so it is stated where someone would look for it.
+  //
+  // The acknowledged-version guard restricts which artifact may serve *forecast
+  // values*. This endpoint scores **history**, and history is made of superseded
+  // artifacts by design — the ledger records what may be served now, not every
+  // version that ever ran, so filtering accuracy through it would silently drop
+  // every pre-swap sample and make a 90-day figure that straddles a promotion
+  // read as if the model only existed for the days since. Worse, the historical
+  // number would then *move when a ledger entry was added*, for a reason that
+  // has nothing to do with the data.
+  //
+  // The residual, named rather than left to be found: for a window reaching the
+  // present, an accuracy figure will reflect a newly promoted artifact while
+  // `/v1/forecasts` is still withholding it — so a subscriber can measure the
+  // accuracy of numbers they have not been served. That is bounded (it needs a
+  // window overlapping the swap forward), it is not the §9.3.1 failure this
+  // issue closes (§9.3.1 is about *forecast values under the same label*, and
+  // §10.2 already says derived figures follow revisions), and closing it needs
+  // the ledger to record every historical version rather than the servable ones.
+  // Filed as follow-up; do not bolt it on here by reusing the serving gate.
   const model =
-    requestedModel ?? resolveServingModel(context.source, zone, forecastType, window) ?? null;
+    requestedModel ??
+    resolveServingModel(context.source, zone, forecastType, window, OPEN_VERSION_GATE) ??
+    null;
 
   const query = model === null ? null : { zone, forecastType, model, window, horizonHours };
 

@@ -216,6 +216,12 @@ describe.each(ENTRIES)('$label', ({ file }) => {
     //   entry, like a key, is published by a person running a command; a serving
     //   path that could reach either could rewrite a notice we have already given
     //   or put an example on the page a subscriber is pointed at.
+    // - `modelVersionsCli.ts` (ABL-529) opens its own database handle and is the
+    //   operator's side of the ToS §9.3 trigger. The *rule* it reports on —
+    //   `versionGuard.ts` and the checked-in `acknowledgements.ts` — is in the
+    //   graph below, deliberately: that is the filter every forecast read
+    //   applies. The CLI is not, and must not be, because the acknowledgement is
+    //   a reviewed commit rather than something a request could reach.
     for (const operatorOnly of [
       'v1/keys/keysCli',
       'v1/keys/memoryApiKeyDirectory',
@@ -225,6 +231,7 @@ describe.each(ENTRIES)('$label', ({ file }) => {
       'v1/security/memoryAuthFailureSink',
       'v1/changelog/changelogCli',
       'v1/changelog/exampleEntries',
+      'v1/modelVersions/modelVersionsCli',
     ]) {
       expect(graph.modules.filter((m) => m.startsWith(operatorOnly))).toEqual([]);
     }
@@ -251,7 +258,7 @@ describe.each(ENTRIES)('$label', ({ file }) => {
 describe('the exact public module graph', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicApp.ts'), SRC_ROOT);
 
-  it('is these thirty-two modules and no others', () => {
+  it('is these thirty-four modules and no others', () => {
     // Pinned as an exact set on purpose. Any new edge out of the public app —
     // to a shared service, a middleware, the database config — shows up here as
     // a failing diff and gets justified in review rather than noticed later.
@@ -299,6 +306,17 @@ describe('the exact public module graph', () => {
     // the frozen `energy_renewable` table it maps to are **not** in this graph
     // and must not become so.
     //
+    // **ABL-529 adds two**, and they are the first modules here that exist to
+    // *withhold* data rather than to serve it: `acknowledgements.ts` is the
+    // checked-in set of forecast artifacts a human has signed off, and
+    // `versionGuard.ts` is the rule the forecast reads filter through. Both are
+    // pure — no database, no clock of their own, and `acknowledgements.ts`
+    // imports nothing at all — which is why the module that serves requests can
+    // hold the ToS §9.3 policy without gaining a dependency. What to look for if
+    // this changes again: `v1/modelVersions/servedLedger.ts` measures what the
+    // database actually serves and belongs to the entrypoint's graph below, not
+    // to this one; and `modelVersionsCli.ts` must appear in neither.
+    //
     // **ABL-532 adds three**, all under `v1/changelog/`: the router, the entry
     // model and the page renderer. Two things to look for if this part of the
     // list changes again:
@@ -335,6 +353,8 @@ describe('the exact public module graph', () => {
       'v1/data/series.ts',
       'v1/keys/apiKeyStore.ts',
       'v1/keys/keyFormat.ts',
+      'v1/modelVersions/acknowledgements.ts',
+      'v1/modelVersions/versionGuard.ts',
       'v1/publicApp.ts',
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',
@@ -403,14 +423,16 @@ describe('the exact public module graph', () => {
 describe('the entrypoint chooses the key store, and only there', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicIndex.ts'), SRC_ROOT);
 
-  it('is these forty-eight modules and no others', () => {
+  it('is these fifty-one modules and no others', () => {
     // **ABL-530 adds three**, all under `v1/security/`, and — like ABL-301's
     // metering and ABL-302's quota before them — they are here and *not* in
     // `createPublicApp`'s graph above. That is the property worth checking rather
     // than the count: the gate takes an `AuthFailureRecorder` as a type, this
     // file constructs one, and the module that serves requests still contains no
-    // recording code that could fail and no database driver behind it. The
-    // twenty-eight-module assertion above is unchanged by this issue.
+    // recording code that could fail and no database driver behind it. **No
+    // `v1/security/` module appears in the app-graph assertion above**, which is
+    // the claim; that list's own length has moved twice since this was written
+    // and neither move was ours.
     //
     // What to look for if this list changes again: nothing under `v1/security/`
     // should import a store. The recorder is handed an `AuthFailureSink` — one
@@ -423,6 +445,14 @@ describe('the entrypoint chooses the key store, and only there', () => {
     // it. (The total did move under this branch, and not for any reason of ours
     // — ABL-532's `sqliteChangelogStore.ts` opens a fourth handle. That is the
     // hazard of quoting a count: this comment claimed three while it was four.)
+    //
+    // **ABL-529 adds three**, and the split between this list and the app's is
+    // the point rather than an accident. `acknowledgements.ts` and
+    // `versionGuard.ts` are in both, because the filter runs on the request
+    // path; `servedLedger.ts` is only here, because it *measures* the database
+    // and is run once at startup as the notification half of the trigger. A
+    // detector on the request path would be a query per request to learn
+    // something static source already knows.
     //
     // **ABL-302 adds four**, all under `v1/quota/`, and they are here rather than
     // in the app's graph above for the same reason the whole of ABL-301's
@@ -463,6 +493,9 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/keys/apiKeyStore.ts',
       'v1/keys/keyFormat.ts',
       'v1/keys/sqliteApiKeyStore.ts',
+      'v1/modelVersions/acknowledgements.ts',
+      'v1/modelVersions/servedLedger.ts',
+      'v1/modelVersions/versionGuard.ts',
       'v1/publicApp.ts',
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',
