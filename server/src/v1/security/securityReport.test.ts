@@ -378,6 +378,70 @@ describe('S3 — the enumeration report', () => {
     );
   });
 
+  it('caps each table and says how many rows it did not show', () => {
+    // Found by running the command rather than by reasoning about it: the very
+    // shape this report exists to surface produces one row *per guessed prefix*,
+    // so a 900-prefix enumeration pushed the finding nine hundred lines off the
+    // top of a terminal. The flood is the signal, and printing all of it hides it.
+    //
+    // A silent truncation on a security report would be the worse defect, so the
+    // count and the total are on their own line.
+    const prefixes = Array.from({ length: 60 }, (_, i) => ({
+      presentedPrefix: `gs${String(i).padStart(6, '0')}`,
+      failures: 1,
+      distinctOrigins: 1,
+      errorCodes: 'key_invalid',
+      firstAt: at(-1),
+      lastAt: at(0),
+    }));
+
+    const lines = renderEnumerationReport(window, [], prefixes, 10);
+    // `byOrigin` empty short-circuits, so drive the cap through a populated one.
+    const full = renderEnumerationReport(
+      window,
+      [
+        {
+          clientIp: '203.0.113.5',
+          failures: 60,
+          distinctPrefixes: 60,
+          errorCodes: 'key_invalid',
+          secretVerifiedFailures: 0,
+          firstAt: at(-1),
+          lastAt: at(0),
+        },
+      ],
+      prefixes,
+      10
+    );
+
+    expect(lines.join('\n')).toContain('No authentication failures in this window.');
+    expect(full.filter((line) => line.includes('gs0000'))).toHaveLength(10);
+    expect(full.join('\n')).toContain('… and 50 more prefixes not shown (60 in total)');
+    expect(full.join('\n')).toContain('--limit');
+  });
+
+  it('adds no truncation line when nothing was dropped', () => {
+    // An ordinary report should carry no furniture about a cap it never hit.
+    const lines = renderEnumerationReport(
+      window,
+      [
+        {
+          clientIp: '203.0.113.5',
+          failures: 1,
+          distinctPrefixes: 1,
+          errorCodes: 'key_invalid',
+          secretVerifiedFailures: 0,
+          firstAt: at(-1),
+          lastAt: at(0),
+        },
+      ],
+      [],
+      10
+    ).join('\n');
+
+    expect(lines).not.toContain('not shown');
+  });
+
   it('points at the S4 command when a refusal proved a secret', () => {
     const lines = renderEnumerationReport(
       window,

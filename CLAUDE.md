@@ -845,6 +845,15 @@ from it. The three new entrypoint modules are named in that test.
 | `security:key-origins` | S2 | a new origin appearing **while an older one keeps running** — theft, as opposed to a redeploy |
 | `security:key-breadth` | S5 | distinct `request_fingerprint`s per key against **its own** baseline, never a global one |
 
+All four take `--limit` and print 25 rows per table by default, then say how
+many they did not show. That cap was found by running the command rather than by
+reasoning about it: the very shape S3 exists to surface — one address presenting
+hundreds of prefixes — produces one row *per guessed prefix*, so a 900-prefix
+enumeration pushes the finding nine hundred lines off the top of a terminal. The
+flood is the signal, and printing all of it is what hides it. A silent
+truncation on a security report would be the worse defect, so the dropped count
+and the total are on their own line.
+
 `securityReport.ts` holds the judgement, pure and colocated-tested, and **every
 verdict in it is a fact about timestamps or counts — none is a threshold.** That
 is this repository's own scar: `METRIC_THRESHOLDS` graded forecast error against
@@ -4553,9 +4562,9 @@ cd server && npx vitest run
 
 Green as of 2026-08-22, measured on ABL-530 branched from `origin/main` at
 `01e3160`, in a per-issue execution worktree with `node_modules` junctioned from
-the primary checkout, under **v24.18.0**: **server 111 files / 2,250 tests**,
+the primary checkout, under **v24.18.0**: **server 111 files / 2,252 tests**,
 `tsc --noEmit` exit 0. `origin/main` measures **107 / 2,132** on the same tree,
-so ABL-530 is **+4 files / +118 cases** — `security/requestTarget.test.ts` (21),
+so ABL-530 is **+4 files / +120 cases** — `security/requestTarget.test.ts` (21),
 `security/authFailureRecorder.test.ts` (16), `security/securityReport.test.ts`
 (22) and `security/sqliteAuthFailureStore.test.ts` (36) are 95 of them, and the
 rest are the recording block in `auth/apiKeyAuth.test.ts` (+14) and the four read

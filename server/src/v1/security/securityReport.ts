@@ -304,6 +304,33 @@ export const SCRUBBED = '(scrubbed at 90d)';
 /** How a value that was never present is written. A different claim from the above. */
 export const NONE = '(none)';
 
+/**
+ * How many rows of each S3 table are printed before the rest are summarised.
+ *
+ * Found by running the command rather than by reasoning about it. The very shape
+ * this report exists to surface — one address presenting hundreds of distinct
+ * prefixes — produces one row *per guessed prefix* in the second table, so a
+ * 900-prefix enumeration pushed the finding nine hundred lines off the top of a
+ * terminal. The flood is the signal, and printing all of it is what hides it.
+ *
+ * A cap on a security report is exactly where a silent truncation would be worst,
+ * so {@link truncated} states the count and the total on its own line. `--limit`
+ * raises it when somebody wants the whole thing.
+ */
+export const DEFAULT_ROW_LIMIT = 25;
+
+/**
+ * The line that keeps a cap from reading as "that was everything".
+ *
+ * Returns nothing when nothing was dropped, so an ordinary report carries no
+ * furniture.
+ */
+function truncated(shown: number, total: number, noun: string): string[] {
+  return total > shown
+    ? [`  … and ${total - shown} more ${noun} not shown (${total} in total). Raise --limit to see them.`]
+    : [];
+}
+
 function origin(clientIp: string | null): string {
   return clientIp ?? SCRUBBED;
 }
@@ -325,7 +352,8 @@ function windowLine(label: string, { since, until }: AuthFailureWindow): string 
 export function renderEnumerationReport(
   window: AuthFailureWindow,
   byOrigin: readonly OriginFailureRow[],
-  byPrefix: readonly PrefixFailureRow[]
+  byPrefix: readonly PrefixFailureRow[],
+  limit: number = DEFAULT_ROW_LIMIT
 ): string[] {
   const lines = [windowLine('Auth failures', window), ''];
 
@@ -336,23 +364,28 @@ export function renderEnumerationReport(
 
   lines.push('By origin — many distinct prefixes from one address is enumeration:');
   lines.push('  origin                          failures  prefixes  verified  first .. last');
-  for (const row of byOrigin) {
+  for (const row of byOrigin.slice(0, limit)) {
     lines.push(
       `  ${origin(row.clientIp).padEnd(30)}  ${String(row.failures).padStart(8)}  ` +
         `${String(row.distinctPrefixes).padStart(8)}  ${String(row.secretVerifiedFailures).padStart(8)}  ` +
         `${row.firstAt} .. ${row.lastAt}  [${row.errorCodes}]`
     );
   }
+  lines.push(...truncated(limit, byOrigin.length, 'origins'));
 
   lines.push('');
   lines.push('By presented prefix — one prefix from many addresses is a leaked key:');
   lines.push('  prefix    failures  origins  first .. last');
-  for (const row of byPrefix) {
+  for (const row of byPrefix.slice(0, limit)) {
     lines.push(
       `  ${(row.presentedPrefix ?? NONE).padEnd(8)}  ${String(row.failures).padStart(8)}  ` +
         `${String(row.distinctOrigins).padStart(7)}  ${row.firstAt} .. ${row.lastAt}  [${row.errorCodes}]`
     );
   }
+  // The table most likely to be capped, and the one where it matters most: an
+  // address walking the key space produces one row per prefix it guessed, so the
+  // *volume* of this section is itself the finding the section above names.
+  lines.push(...truncated(limit, byPrefix.length, 'prefixes'));
 
   lines.push('');
   lines.push('Reading it (ABL-524 §2, S3) — these are shapes, not thresholds:');
@@ -371,7 +404,8 @@ export function renderEnumerationReport(
 /** S4. */
 export function renderSecretHolderReport(
   window: AuthFailureWindow,
-  findings: readonly SecretHolderFinding[]
+  findings: readonly SecretHolderFinding[],
+  limit: number = DEFAULT_ROW_LIMIT
 ): string[] {
   const lines = [windowLine('Refusals by a caller holding a real secret', window), ''];
 
@@ -386,7 +420,7 @@ export function renderSecretHolderReport(
   lines.push('disabled, or an environment mismatch. There is no guessing path to any of them.');
   lines.push('');
 
-  for (const finding of findings) {
+  for (const finding of findings.slice(0, limit)) {
     lines.push(
       `  ${finding.verdict.padEnd(20)}  ${finding.errorCode.padEnd(17)}  ` +
         `${(finding.keyId ?? NONE).padEnd(18)}  prefix=${finding.presentedPrefix ?? NONE}  ` +
@@ -408,6 +442,8 @@ export function renderSecretHolderReport(
     }
   }
 
+  lines.push(...truncated(limit, findings.length, 'rows'));
+
   lines.push('');
   lines.push(
     'A key_revoked from an origin the key never used is close to proof the credential is'
@@ -421,7 +457,8 @@ export function renderSecretHolderReport(
 export function renderKeyOriginReport(
   since: string,
   findings: readonly KeyOriginFinding[],
-  piiDays: number
+  piiDays: number,
+  limit: number = DEFAULT_ROW_LIMIT
 ): string[] {
   const lines = [
     `New origins since: ${since} (UTC)`,
@@ -435,7 +472,7 @@ export function renderKeyOriginReport(
     return lines;
   }
 
-  for (const finding of findings) {
+  for (const finding of findings.slice(0, limit)) {
     lines.push(
       `  ${finding.verdict.padEnd(30)}  ${finding.keyId}  (${finding.origins.length} origin(s), ` +
         `history from ${finding.historyFrom ?? NONE})`
@@ -466,6 +503,7 @@ export function renderKeyOriginReport(
       lines.push('      conversation, not a breach candidate.');
     }
   }
+  lines.push(...truncated(limit, findings.length, 'keys'));
   return lines;
 }
 
@@ -473,7 +511,8 @@ export function renderKeyOriginReport(
 export function renderFingerprintBreadthReport(
   recent: AuthFailureWindow,
   baselineSince: string,
-  findings: readonly FingerprintBreadthFinding[]
+  findings: readonly FingerprintBreadthFinding[],
+  limit: number = DEFAULT_ROW_LIMIT
 ): string[] {
   const lines = [
     windowLine('Recent', recent),
@@ -487,7 +526,7 @@ export function renderFingerprintBreadthReport(
   }
 
   lines.push('  key                 recent fp / req   baseline fp / req   ratio');
-  for (const finding of findings) {
+  for (const finding of findings.slice(0, limit)) {
     lines.push(
       `  ${finding.keyId.padEnd(18)}  ${String(finding.recentFingerprints).padStart(6)} / ` +
         `${String(finding.recentRequests).padStart(6)}   ` +
@@ -498,6 +537,8 @@ export function renderFingerprintBreadthReport(
           : finding.breadthRatio.toFixed(2))
     );
   }
+
+  lines.push(...truncated(limit, findings.length, 'keys'));
 
   lines.push('');
   lines.push('The ratio is distinct request fingerprints, recent against this key’s own');

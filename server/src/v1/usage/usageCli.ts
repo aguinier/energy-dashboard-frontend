@@ -12,6 +12,7 @@ import {
   renderFingerprintBreadthReport,
   renderKeyOriginReport,
   renderSecretHolderReport,
+  DEFAULT_ROW_LIMIT,
 } from '../security/securityReport.js';
 import type { AuthFailureWindow } from '../security/authFailureStore.js';
 
@@ -123,6 +124,19 @@ export function requirePositiveNumber(
   return value;
 }
 
+/**
+ * How many rows of a security report to print.
+ *
+ * Capped by default, because the very shape these reports exist to surface — one
+ * address presenting hundreds of distinct prefixes — produces one row per prefix
+ * and pushes the finding off the top of a terminal. The renderers state the count
+ * they dropped rather than truncating silently, which is the part that makes a cap
+ * acceptable on a security report at all.
+ */
+export function rowLimit(flags: ParsedArgs['flags']): number {
+  return requirePositiveNumber(flags, 'limit', DEFAULT_ROW_LIMIT);
+}
+
 /** A half-open `[now - hours, now)` window, in the ISO form `received_at` holds. */
 export function lookbackWindow(now: Date, hours: number): AuthFailureWindow {
   return {
@@ -212,6 +226,11 @@ USAGE_PII_RETENTION_DAYS, so every one of them has a memory and then has none.
                     own baseline, never a global one. Reported and deliberately NOT
                     graded: there is no live traffic on this surface to calibrate a
                     cutoff against.
+
+All four take [--limit N] and print 25 rows per table by default, then say how many they
+did not show. The cap exists because the shape these reports surface — one address
+presenting hundreds of prefixes — produces one row per prefix and would otherwise push
+the finding off the top of the terminal.
 
 None of these alerts anybody. Recording and reading is the whole of ABL-530; where an
 alert should go is an open Board decision (ABL-524 §6).
@@ -398,7 +417,8 @@ export function runCommand(
       for (const line of renderEnumerationReport(
         window,
         store.failuresByOrigin(window),
-        store.failuresByPrefix(window)
+        store.failuresByPrefix(window),
+        rowLimit(flags)
       )) {
         log(line);
       }
@@ -409,7 +429,8 @@ export function runCommand(
       const window = lookbackWindow(now, requirePositiveNumber(flags, 'days', 30) * 24);
       for (const line of renderSecretHolderReport(
         window,
-        classifySecretHolderFailures(store.secretHolderFailures(window))
+        classifySecretHolderFailures(store.secretHolderFailures(window)),
+        rowLimit(flags)
       )) {
         log(line);
       }
@@ -427,7 +448,8 @@ export function runCommand(
       for (const line of renderKeyOriginReport(
         since,
         classifyKeyOrigins(store.keyOrigins(keyId), since),
-        describePolicy().piiDays
+        describePolicy().piiDays,
+        rowLimit(flags)
       )) {
         log(line);
       }
@@ -449,7 +471,8 @@ export function runCommand(
       for (const line of renderFingerprintBreadthReport(
         recent,
         baselineSince,
-        classifyFingerprintBreadth(store.keyFingerprintBreadth(recent, baselineSince))
+        classifyFingerprintBreadth(store.keyFingerprintBreadth(recent, baselineSince)),
+        rowLimit(flags)
       )) {
         log(line);
       }
