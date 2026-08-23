@@ -12,6 +12,8 @@
     "keys": "tsx --env-file-if-exists=.env.public src/v1/keys/keysCli.ts",
     "usage": "tsx --env-file-if-exists=.env.public src/v1/usage/usageCli.ts",
     "billing": "tsx --env-file-if-exists=.env.public src/v1/billing/billingCli.ts",
+    "changelog": "tsx --env-file-if-exists=.env.public src/v1/changelog/changelogCli.ts",
+    "modelversions": "tsx --env-file-if-exists=.env.public src/v1/modelVersions/modelVersionsCli.ts",
     "test": "vitest run",
     "openapi:generate": "tsx src/v1/openapi/generate.ts",
     "check:unmerged": "tsx src/release/checkUnmergedWork.ts"

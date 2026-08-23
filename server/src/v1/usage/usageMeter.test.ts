@@ -3,6 +3,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import type { Server } from 'node:http';
 import { requireApiKey } from '../auth/apiKeyAuth.js';
 import { createMemoryApiKeyDirectory } from '../keys/memoryApiKeyDirectory.js';
+import { createTestAuthFailureRecorder } from '../security/memoryAuthFailureSink.js';
 import { createMemoryUsageSink, type MemoryUsageSink } from './memoryUsageSink.js';
 import {
   createUsageMeter,
@@ -65,7 +66,9 @@ async function harness(
   openMeters.push(meter);
 
   const app = express();
-  app.use(requireApiKey({ directory: seeded.directory }));
+  app.use(
+    requireApiKey({ directory: seeded.directory, recorder: createTestAuthFailureRecorder().recorder })
+  );
   app.use(meter.middleware);
   build(app);
   // A minimal error handler, so a 4xx from a route is a 4xx and not Express's

@@ -94,18 +94,19 @@ Measured that way on ABL-42 (branch tip `e1f849f`, `origin/main` + 2 files):
 identical to the figure `origin/main` was green at. So an empty `.bin` says
 nothing about the suite.
 
-**Both suites run normally in the primary checkout as of 2026-08-20, and the
+**Both suites run normally in the primary checkout as of 2026-08-21, and the
 entry-point workarounds above are now a fallback rather than the standing
-procedure** (ABL-460). Between roughly 2026-08-13 and 2026-08-20 the root
-`node_modules` was **incompletely installed** — 106 of 605 packages absent and
-`node_modules/.bin` empty — and this section recorded three of the consequences
-as three separate, unrelated environment quirks. They were one defect:
+procedure** (ABL-460, and again under ABL-517 after the identical damage
+recurred). Between roughly 2026-08-13 and 2026-08-20 the root `node_modules`
+was missing 106 of 605 packages with `node_modules/.bin` empty, and this
+section recorded three of the consequences as three separate, unrelated
+environment quirks. They were one defect:
 
 | symptom recorded here | actually |
 |---|---|
-| `.bin` empty, `npx vitest` "is not recognized" | no `.bin` shims were ever written |
-| client suite "genuinely blocked" on an absent `@rolldown/pluginutils` | absent because the install was partial |
-| `tsx` failing `Host version "0.27.2" does not match binary version "0.28.1"` | `@esbuild/win32-x64` absent, so esbuild found no matching binary |
+| `.bin` empty, `npx vitest` "is not recognized" | all 129 shims had been deleted |
+| client suite "genuinely blocked" on an absent `@rolldown/pluginutils` | the package had been deleted |
+| `tsx` failing `Host version "0.27.2" does not match binary version "0.28.1"` | `@esbuild/win32-x64` deleted, so esbuild found no matching binary |
 
 Two further absences never made it into this file at all. `@babel/core` was
 **genuinely** missing, so note 1's stale-process story did not apply to it — and
@@ -114,6 +115,58 @@ exact error as a stale process. And every `@radix-ui/*` package was missing,
 which is what produced the "7 pre-existing `@radix-ui/*` TS2307 errors in
 `components/ui/*`" the Testing section used to tell you to expect. There are
 none now: `npx tsc -b --force` exits 0.
+
+**ABL-460 called this an incomplete *install*, and that was wrong — which is why
+it recurred within a day** (ABL-517, 2026-08-21, the same shape at 107
+packages). Nothing was ever half-installed: something **deleted** those packages
+out of the live tree, and the proof is in the shape rather than in any log. All
+107 are scoped; they run in unbroken alphabetical order from `@alloc` to
+`@rollup`; and they stop dead inside `@rollup/rollup-win32-x64-msvc`, whose
+*only* surviving file is `rollup.win32-x64-msvc.node`. That is a recursive
+delete walking the directory in name order and aborting on the first file
+Windows refuses to unlink — a native addon some live process has memory-mapped.
+An install failure has no reason to be alphabetical and no reason to stop there.
+
+**What ran it: `git worktree remove --force` on a scratch worktree whose
+`node_modules` was a junction to the shared tree.** Reproduced in an isolated
+scratch repo rather than inferred — junction a worktree's `node_modules` at a
+directory holding `@aaa @bbb @ccc zzz-survivor`, run `git worktree remove
+--force`, and that directory is left present and empty. Git does not treat an
+NTFS junction as a link to step over; it walks through and deletes the target's
+contents. On 2026-08-21 that call is timestamped `11:45:58Z`, the primary tree's
+`@rollup` directory carries an `11:45` mtime, and both suites are recorded green
+*through the same junction* fifteen seconds earlier — which is also what clears
+the `Remove-Item -Recurse` in the same run of suspicion.
+
+So the rule, and it costs nothing:
+
+**Drop the junction before removing the worktree, and never aim a
+`git worktree remove`, `rm -rf` or `Remove-Item -Recurse` at a path that still
+contains one.**
+
+```powershell
+cmd /c rmdir "<worktree>\node_modules"     # drops the reparse point only
+git worktree remove --force "<worktree>"   # now safe
+```
+
+`cmd /c rmdir` is the only removal in that pair guaranteed not to follow the
+junction.
+
+**And do not confirm the shared tree afterwards by probing an unscoped
+package.** The 2026-08-21 run checked `node_modules\vitest`, got `True`, and
+reported "shared node_modules intact" — thirty-five minutes before the client
+suite failed to boot. `vitest` sorts after every `@` scope, so the aborted walk
+had not reached it. Run the completeness check below instead; it cannot be
+fooled by ordering.
+
+**The blast radius is what makes this more than an inconvenience.** Measured
+2026-08-21, **17 of the 28 worktrees under `C:\Code\able` reach the primary
+`node_modules` through a junction**, so one delete-through-junction takes out
+seventeen checkouts at once and leaves each reporting a *different*
+plausible-looking environment fault. Giving every worktree its own tree would
+end that, at ~302 MB and one install each (~5 GB for the seventeen); the
+ordering rule above costs nothing and removes the same failure, so it is the
+answer unless those installs become desirable for another reason.
 
 The repair was **purely additive and changed no source file** — a clean `npm ci`
 into a scratch directory, then a copy of only the absent packages into the live
@@ -127,6 +180,25 @@ is what makes it safe against note 1's hazard, which is specifically about
 `npm install` *rewriting* modules under ~40 live agent processes: a running
 process cannot have an already-resolved module change underneath it if no
 existing file changes.
+
+**The `npm ci` into scratch is the fallback, not the first move — a
+verified-complete sibling worktree is a cheaper donor and needs no network.**
+ABL-517 repaired all 107 that way in under a minute: survey every
+`C:\Code\able\*/node_modules` against the damaged tree's own
+`package-lock.json`, take one reporting `missing=0` **and**
+`versionMismatch=0` (2026-08-21: `ABL-300-v1-api-key-auth`, `ABL-351-…`,
+`ed-wt-abl412`, `ed-wt-ceo`), and copy from it under exactly the rules above.
+Check both counts, not just the first: a tree can hold every package at a
+version the lockfile does not ask for. Two details that repair needs and a
+naive copy gets wrong — walk the missing list **shallowest path first**, or a
+package nested inside another arrives before its parent (12 of the 107 turned
+out to be carried in by a parent and had to be re-checked and skipped); and
+merge, never rename over, any directory that already partially exists, which
+is how `@rollup/rollup-win32-x64-msvc` keeps the mapped `.node` no process
+will release (verified byte-identical to the donor's before the two missing
+files were added beside it). The 129 `.bin` shims copy across safely too —
+they are generated with relative paths only (`%dp0%\..\vitest\vitest.mjs`),
+with zero absolute paths across all 129.
 
 So an empty `.bin` still says nothing about the suite, and a missing package
 still names its **bare specifier** where the stale-process trap resolves to a
@@ -342,7 +414,7 @@ repository.
 
 `server/src/v1/` holds a **separate Express application** for the commercial
 `/v1` surface, built by `createPublicApp`
-(`server/src/v1/publicApp.ts:154`) and run as its own process from
+(`server/src/v1/publicApp.ts:204`) and run as its own process from
 `server/src/v1/publicIndex.ts`. It is not `createApp()` with routes hidden.
 
 The distinction is the whole point (ABL-304, specified by ABL-293 §2f). A
@@ -469,7 +541,7 @@ and is opened readonly here (`config/database.ts:11`); writing accounts and
 keys into it would mean a write path contending with ingest, in a schema we do
 not own, and would undo the property ABL-304 established — that the public
 process holds no write handle on energy data. `resolveApiKeysDbPath`
-(`server/src/v1/keys/sqliteApiKeyStore.ts:88`) refuses to start when the two
+(`server/src/v1/keys/sqliteApiKeyStore.ts:89`) refuses to start when the two
 paths resolve to the same file, and refuses `config/database.ts`'s literal
 default too. There is no default for `API_KEYS_DB_PATH` itself, because a
 credentials file must not land somewhere nobody chose. ABL-301's
@@ -496,7 +568,7 @@ a key — the surface cannot be enumerated, and a resource ABL-303 adds to
 CORS sits ahead of the gate deliberately: `cors` answers a preflight itself,
 and a preflight carries no `Authorization` header by specification. Handlers
 read the caller with `requireApiPrincipal`
-(`server/src/v1/auth/apiKeyAuth.ts:77`), which **throws** rather than returning
+(`server/src/v1/auth/apiKeyAuth.ts:95`), which **throws** rather than returning
 `undefined` — a route mounted on the wrong side of the gate fails loudly the
 first time it is exercised instead of being metered to nobody.
 
@@ -517,7 +589,8 @@ relationship, none of which exist:
 ```bash
 cd server                        # reads server/.env.public — see .env.public.example
 npm run keys -- accounts:create --name "Acme Energy" --plan developer
-npm run keys -- keys:issue --account acct_... --label "prod ETL"
+npm run keys -- keys:issue --account acct_... --label "prod ETL" --contact ops@acme.example
+npm run keys -- keys:contacts
 npm run keys -- keys:rotate --key key_... --overlap-days 7
 npm run keys -- keys:revoke --key key_... --reason "leaked in a support ticket"
 ```
@@ -537,6 +610,81 @@ There is no `last_used_at`. It is the obvious column to want and it would cost
 a write on the critical path of every authenticated request to maintain a field
 nobody needs to the second; once ABL-301 lands it is a `MAX(received_at)` over
 `usage_events`. An unused column invites someone to start filling it.
+
+### A key carries the account contact, and one without it is refused (ABL-528)
+
+**ToS §9.3 commits us to publishing a material model change "through the
+changelog *and* to the account contact", and until this landed there was no
+contact field anywhere** — not in `v1/billing`, not in `v1/keys`. Half of a
+two-channel contractual notice resolved to nothing, and the way that fails is
+the worst available: nobody finds out until a model changes.
+
+The obvious reading is "wait for the account model". That is what makes it fail.
+The thing issued today **is** a key, issued to somebody by a human running
+`keysCli` — so the address goes on the record that already exists
+(`ApiKeyRecord.contactEmail`), not on an account model with no scheduled date.
+It also gives the field a natural enforcement point: a key with no contact is a
+subscriber we have promised to notify and cannot reach.
+
+Four properties, and the last two are the ones a re-reader will want:
+
+- **Required at issuance, nullable in the column.** `IssueKeyInput.contactEmail`
+  is a required `string`, so omitting it is a compile error **in production
+  code**; `insertMintedKey` additionally calls `requireContactEmail`, because a
+  flag, a JSON payload or a cast are paths a type cannot see. The *column* is
+  nullable because SQLite cannot `ADD COLUMN … NOT NULL` without a default and
+  every candidate default here is a fabricated address. `null` is reachable only
+  from a row written before the column existed.
+
+  **"Compile error" is narrower than it sounds, and the runtime guard is not
+  belt-and-braces — it is the only guard on a whole class of call site.**
+  `server/tsconfig.json` excludes `src/**/*.test.ts`, so **no test file is
+  typechecked**, and a test minting a contactless key compiles clean with
+  `tsc --noEmit` at exit 0. That is not hypothetical: merging ABL-530 in brought
+  `security/sqliteAuthFailureStore.test.ts`, which mints a key to build its
+  fixture, and all 36 of its cases failed in setup on `requireContactEmail` with
+  nothing to warn them at build time. If that guard is ever removed as
+  redundant-to-the-type, every test becomes a path that can write a contactless
+  key — and tests are where fixtures get copied from.
+- **Both doors, not just the obvious one.** `issueKey` and `rotateKey` are two
+  ways into one room, and both funnel through `insertMintedKey`, which is where
+  the refusal lives. A rotation carries the retiring key's contact forward — a
+  rotation is the same subscriber with a new secret — so `--contact` is needed
+  there only to change it.
+- **Existing rows are left null and reported as unreachable, never backfilled.**
+  `collectAccountContacts` (`server/src/v1/keys/accountContacts.ts`, pure,
+  colocated test) returns `{ recipients, unreachable, liveKeys }` and
+  `keys:contacts` prints **both halves, always** — including "Every live key has
+  a contact" when the second is empty, because a report that goes quiet when
+  nothing is wrong cannot be told from one that has stopped checking. The
+  tempting shape is a `string[]` of addresses, which silently drops every
+  contactless key and hands the sender a list that looks complete. Rotating such
+  a key with `--contact` is the migration path, and it is deliberately a human
+  decision. A placeholder would be an address a notice is "sent" to and lost —
+  an address we cannot deliver to wearing the costume of one we can, which is
+  this repository's defining defect applied to a contractual notice.
+- **Two modules name `contact_email` in SQL and only one of them can migrate**,
+  so both degrade rather than fail. The readonly serving handle cannot run the
+  migration, and naming a column that is not there fails at `prepare` — a server
+  pointed at a pre-ABL-528 file would refuse to authenticate *every customer*
+  over a notice address no authentication path reads. `lookupSql` selects a
+  literal `NULL` instead when the column is absent, and
+  `sqliteUsageStore.exportAccount` does the same through the **same** exported
+  guard (`hasContactEmailColumn`), not a second copy of it: that module opens
+  the file read-write but confines its DDL to the three usage tables and only
+  checks that `api_keys` *exists*, so it meets the identical file shape. Its
+  prepare is lazy, which is what makes the omission expensive rather than
+  obvious — nothing fails at open, and the throw lands on the one command whose
+  whole job is to be answerable on demand, a subject access request. Verify with
+  `grep -rn "FROM api_keys" server/src --include=*.ts`: the other three reads are
+  `SELECT *` inside the admin store, which migrates and cannot name a missing
+  column anyway.
+
+Scope is live keys: a revoked or expired key's holder is not a subscriber §9.3
+owes a notice to. `liveKeys` rides along so "0 recipients" can be told apart from
+"0 keys". The plausibility check on the address is a **typo-catcher, not a proof
+of validity** — deliverability is only ever established by delivering, which is
+ABL-529's problem. **Nothing here sends anything.**
 
 Not done by ABL-300: quotas, rate limits and the 429 contract (ABL-302), and the
 resources themselves (ABL-303). The `plan` on the principal is carried for
@@ -671,6 +819,161 @@ graph is one module. A plan buys more requests, never bigger ones — which is
 what makes requests-per-month a billing dimension that prices anything (brief
 §1.3).
 
+## `/v1` records the requests it **refuses**, in the table that already has a retention job
+
+ABL-530, ABL-349 gate item 2 Tier 1, implementing the `breach-signals` document
+on ABL-524. `server/src/v1/security/` records every refused authentication, and
+adds four investigation commands to `npm run usage`. **Recording and reading
+only — nothing here alerts anybody**; where an alert should go is an open Board
+decision (ABL-524 §6).
+
+**The gap it closes.** A failed authentication produced no durable record
+anywhere. `publicApp.ts` mounts the gate, then the meter, then the plan gate,
+and every refusal in `apiKeyAuth.ts` ends with `next(authError(...))` — which
+jumps to the error handler and never reaches the meter. `usage_events` could not
+have held the row in any case: `account_id` and `key_id` are both `NOT NULL` and
+a failed auth has neither. **This is not a defect in the metering work**; the
+meter is a billing meter and it is mounted exactly where a billing meter
+belongs. The only trace was `publicErrors.ts:112`'s `console.error`, over a body
+whose every message is a constant — so it said a 401 happened and nothing about
+who, from where, or against which prefix, and only if stdout were being captured
+somewhere, which it is not.
+
+**The prefix is the whole point of the record.** `ApiPrincipal.keyPrefix`
+(`server/src/v1/auth/apiKeyAuth.ts:68`) is documented as "the non-secret handle
+— safe to log, and the thing support will ask for", and
+it is the one column that separates *many prefixes from one address*
+(enumeration) from *one prefix from one address* (a customer with a stale key).
+Same status code, opposite meanings, and indistinguishable before this. The
+presented **secret** is never recorded — not hashed, not truncated, not
+prefixed-plus-N; there is no column that could hold one, and the test drives
+real keys through the real gate and asserts they are absent from the *bytes on
+disk*. A store of attempted secrets would be a second credential store, filled
+from the open internet, with none of the protections the real one has.
+
+Six properties, in rough order of how expensive each would be to rediscover:
+
+- **The response did not change, and that is the constraint the design is built
+  around.** `apiKeyAuth.ts` returns `key_invalid` for every pre-secret failure
+  and burns a `timingSafeEqual` on an unknown prefix so that "no such key" costs
+  what "wrong secret" costs — otherwise the *non-secret* prefix is an
+  enumeration oracle answerable by stopwatch. Recording must not hand that back,
+  so `recorder.record()` **does no I/O and cannot throw**: it stamps a few
+  fields and pushes onto an array, and the sink is touched by a timer and by
+  `setImmediate`, never by the request. Both branches gather the same fields,
+  including the prefix on the unknown-prefix path, because a field gathered on
+  one branch and not the other is work done on one branch and not the other.
+- **The early flush is `setImmediate` here where the meter's is inline, and the
+  difference is not stylistic.** The meter counts *authenticated* traffic, which
+  the plan gate has already bounded by a rate limit and a quota. This path is
+  mounted **ahead** of both, so a refused request is the one kind of traffic on
+  this surface that nothing throttles; an inline flush would let an attacker turn
+  each guess into a synchronous SQLite write in a single-threaded process — a
+  monitoring feature that is also a denial-of-service amplifier.
+- **`secret_verified` is written where it is known, not derived from
+  `error_code`.** Revoked, expired and disabled are reachable **only after**
+  `secretMatchesHash` succeeds, so anyone who triggers one holds a real key —
+  there is no guessing path to them (ABL-524 §2, S4). Deriving it from the code
+  would be wrong *today*, not merely fragile: `key_invalid` is produced on
+  **both** sides of that comparison, because an environment mismatch reaches it
+  having already proven the secret.
+- **The route template comes from a closed table** (`requestTarget.ts`), never
+  `req.path`. On a refused request the path is an unauthenticated,
+  caller-controlled string and this table is fed by the callers we trust least —
+  the free-text-shaped value ABL-297 §9(5) forbids, kept for thirteen months.
+  Anything unmatched is `(unrecognised)`, which is a finding in itself. The
+  meter's `resolveRouteTemplate` could not be reused: it reads `req.route`,
+  which Express never sets on a request the gate refused, so every row would
+  carry the constant `(unmatched)`.
+- **Retention shipped with the write path, and that ordering was the
+  requirement.** `auth_failures` holds `client_ip` and `user_agent`, so it is
+  inside the ABL-297 §5 promise from its first row. It is scrubbed and deleted by
+  `applyRetention` **in the same transaction** on the same two boundaries, and
+  `usage:stats`'s `unscrubbedPastPii` is now the sum across both tables with a
+  per-table breakdown. A compliance figure that kept covering one while a second
+  filled with addresses would still print `COMPLIANT` — a detection feature that
+  quietly becomes a privacy-notice violation is a worse outcome than not building
+  it. The subject access export covers it too, for the same reason one procedure
+  over.
+- **Its delete is unconditional where `usage_events`' waits for the rollup
+  watermark**, and the asymmetry is deliberate. That gate exists because an
+  un-aggregated event deleted at 13 months is a request permanently missing from
+  an invoice; nothing aggregates or invoices from this table, so a gate here
+  would be a condition that is always true — which reads to the next maintainer
+  as protection that is not there.
+
+**Where the code lives, and what is *not* in the serving graph.**
+`authFailureStore.ts` is the shape and the two capabilities (pure);
+`authFailureRecorder.ts` the buffer; `sqliteAuthFailureStore.ts` the SQL, handed
+an **already-open handle** rather than opening one, so
+it is absent from the list of database-opening modules `publicAppGraph.test.ts`
+names one by one. **Read that assertion's membership, never its count** — the
+count moved while this issue sat in review, when ABL-532's change-log store
+opened one; a count would also pass if somebody deleted a module and added
+another, which is why the test names them. `createPublicApp`'s module list is
+**unchanged by this
+issue** — the gate takes an `AuthFailureRecorder` as a type and `publicIndex.ts`
+constructs one, exactly as ABL-301's metering and ABL-302's quota are absent
+from it. The three new entrypoint modules are named in that test.
+
+**The four reads** (`npm run usage -- security:help`), one per ABL-524 §2 signal:
+
+| command | signal | the finding |
+|---|---|---|
+| `security:auth-failures` | S3 | refusals by origin and by prefix. Many prefixes from one address is enumeration; one prefix from many addresses is a leaked key |
+| `security:secret-holders` | S4 | refusals *after* the secret matched, cross-referenced against the addresses that key was actually served from |
+| `security:key-origins` | S2 | a new origin appearing **while an older one keeps running** — theft, as opposed to a redeploy |
+| `security:key-breadth` | S5 | distinct `request_fingerprint`s per key against **its own** baseline, never a global one |
+
+All four take `--limit` and print 25 rows per table by default, then say how
+many they did not show. That cap was found by running the command rather than by
+reasoning about it: the very shape S3 exists to surface — one address presenting
+hundreds of prefixes — produces one row *per guessed prefix*, so a 900-prefix
+enumeration pushes the finding nine hundred lines off the top of a terminal. The
+flood is the signal, and printing all of it is what hides it. A silent
+truncation on a security report would be the worse defect, so the dropped count
+and the total are on their own line.
+
+`securityReport.ts` holds the judgement, pure and colocated-tested, and **every
+verdict in it is a fact about timestamps or counts — none is a threshold.** That
+is this repository's own scar: `METRIC_THRESHOLDS` graded forecast error against
+uncalibrated cutoffs and stamped 24 countries "Needs Improvement" from 9.9% to
+76.8%. The temptation is worse here, because `/v1` has **no live traffic at
+all**, so any multiple picked today would be invented against zero observations
+and then read at 03:00 as though it meant something. So S5 reports its ratio and
+**declines to grade it**, and S3 prints two orderings with the ABL-524 reading
+guide and no verdict; S2 and S4 can speak plainly because their findings are
+comparisons, not quantities.
+
+**Three verdicts exist only to stop a confident false claim**, and all three
+come from the 90-day boundary being a published commitment rather than a
+tunable:
+
+- `no_history` (S2) — the key's whole retained address history begins with the
+  origin in question, so "never used from here before" is unfalsifiable. A
+  recently issued key and one whose earlier history was scrubbed look identical.
+- `origin_unknown` (S4) — the refusal's own address has been scrubbed, so the
+  question cannot be asked. **The trap this exists for is SQL's, not a
+  reader's**: `u.client_ip = f.client_ip` with a `NULL` on either side is not
+  true, so a plain `COUNT(*)` returns `0` — byte-identical to "never served from
+  here", which is the most alarming verdict on the page, manufactured out of a
+  row we deleted ourselves. The store returns `null` instead.
+- `onboarding` (S5) — no baseline of this key's own, so there is no ratio. A new
+  subscriber's first week looks like extraction against a global baseline and
+  like onboarding against their own.
+
+**Why now, with nothing to detect.** `/v1` is not exposed (`PUBLIC_BIND_HOST`
+defaults to `127.0.0.1`) and no external key exists, so this catches nothing on
+the day it lands. It is worth everything 90 days later: the window only holds
+what was recorded while it was running, and ABL-349 item 2 closes by the
+detection existing **before** the first external key, not by having watched and
+seen nothing.
+
+Not done here, and deliberately: S1 (who read `api_keys.db` — host and OS work,
+Operations Engineer, and the only signal on the list that *is* a personal data
+breach rather than evidence of one), S6 (conditions to attach to the ABL-291
+exposure decision), S7 (item 1's inbox, unowned), and any alerting at all.
+
 ## `/v1` billing maps the meter onto an invoice, in test mode, and reconciles
 
 ABL-307, in `server/src/v1/billing/`, driven by `npm run billing -- <command>`.
@@ -729,9 +1032,11 @@ loss window is stated as unmeasured, because those requests never reached
 **Billing is unreachable from the serving process, as a whole directory.**
 `publicAppGraph.test.ts` asserts `v1/billing/` is absent from both entrypoints —
 stricter than the module-by-module list beside it, and affordable because nothing
-here has a request-path role. `sqliteBillingStore.ts` opens a fourth handle on
-`API_KEYS_DB_PATH` and is reached from `billingCli.ts` alone, so the "exactly
-three modules open a database" assertion is unaffected.
+here has a request-path role. `sqliteBillingStore.ts` opens its own handle on
+`API_KEYS_DB_PATH` and is reached from `billingCli.ts` alone, so it is absent
+from the list of database-opening modules that test names — the assertion is
+about which modules are in it, not how many, and the count has moved twice since
+this paragraph was written.
 
 **Webhooks are design only** — Board ruling 2026-08-12, LAN-only. See
 `WEBHOOKS-DESIGN.md` beside the code. Its useful conclusion: the constraint costs
@@ -797,6 +1102,383 @@ implied: a query parameter the implementation accepts but the document omits
 (nothing can enumerate what a handler reads off `req.query`), and semantics —
 that a field means what its description says is not a shape, and
 `routes/v1Contract.test.ts` is what covers that.
+
+## The change log is a table, because publish latency is contractual
+
+ABL-532. `server/src/v1/changelog/` serves `/changelog` and `/changelog.json`,
+and the two decisions worth knowing before touching it are **where the URL is**
+and **why entries are not files**.
+
+**Entries are rows, not source.** ToS §9.3 commits us to publishing a material
+model change 30 days ahead; §9.3.2 lets a change that corrects *wrong* values be
+served immediately, with its entry published **at the same time as the change**.
+That makes publish latency a contractual property. This repository has no CI/CD
+and production is updated by hand (see **Deployment** above), so a change log
+whose entries were committed files would publish whenever somebody next
+deployed — we would serve the correction instantly and publish the required
+notice hours or days later. Publishing is instead:
+
+```bash
+cd server
+npm run changelog -- entries:publish --type correction --effective 2026-08-22T14:00:00Z \
+    --title "..." --detail "..." --what-was-wrong "..."
+```
+
+measured at **under half a second**, and the serving process picks the row up on
+its next request. Nothing to rebuild, nothing to restart. The cost, which is
+real: entry prose is typed at a terminal rather than reviewed in a diff. Three
+things bound it — publication is stamped by the store and has no parameter that
+could backdate it, there is **no update and no delete** anywhere in the module,
+and every rule the Terms put on the two instants is enforced at insert.
+
+**The URL is deliberately outside `/v1`.** §9.3 also commits us to giving six
+months' notice before retiring a major API version, *through this change log* — a
+change log at `/v1/changelog` would be withdrawn by the very event it exists to
+announce. It is unauthenticated, and it is the second thing on this surface that
+is, after the discovery root; `requireApiKey` still covers every path under `/v1`
+including `/v1/changelog`, which answers 401 like any other.
+
+**Two instants per entry, and a type that is enforced against them.** `published`
+and `effective`, ISO-8601 UTC, because 30 days' notice is a *duration* and "at the
+same time" is a claim about an *instant* — a date column can express neither
+without a convention nobody wrote down. A `planned` entry is refused unless it is
+effective at least 30 days out; a `correction` is refused if it is effective more
+than an hour ahead, because that is a planned change wearing a correction's label
+to escape the notice period. Publishing a correction **late** is warned about and
+not refused: by then the change is already being served, so refusing the entry
+would trade a late notice for no notice. Entries render newest-first by
+*publication*, never by effective instant — an entry never moves once published.
+
+**It renders nothing and cites nothing.** No stylesheet, script, font, image or
+favicon: the composition already sends `default-src 'none'`, so adding CSS would
+mean widening the one header that makes ABL-522's no-third-party-assets
+constraint a property of the deployment. No Terms link and no clause number
+either, for the same reason `GATED_INFO_FIELDS` withholds `termsOfService` — a
+citation points a reader at a document they cannot open while ABL-349 is holding
+publication. The page explains both dates and both types in its own words, and
+`changelog/changelogHtml.test.ts` asserts both properties against the rendered
+bytes.
+
+**Not live.** Built, tested and merged; the public process still binds loopback,
+is not deployed, and the change log is linked from no index — not the discovery
+root, not the OpenAPI document. `entries:seed --examples` installs two example
+entries that describe no real change and say so loudly on the page; do not seed
+them into a store that serves real subscribers.
+
+**`npm run changelog -- entries:init` is how the store gets created, and the
+distinction is not cosmetic.** Seeding is emphatically not the way: it publishes
+two entries that give notice of nothing, and this module has no update and no
+delete, so an operator who reaches for it once has published them permanently on
+the page §9.3 points subscribers at. Both of `openChangelogReader`'s refusals
+therefore name `entries:init` — a startup error is the one instruction an
+operator is guaranteed to read, so it must not be the one that costs them that.
+An **empty** change log is a healthy state and serves an empty page; only a
+**missing** table refuses to start. `entries:init` is idempotent and publishes
+nothing. It exists as a named command rather than as documentation of
+`entries:list`'s side effect because `list` is a read, and later handing it the
+readonly handle — the discipline applied everywhere else here — would silently
+falsify a string printed in a startup error;
+`changelog/changelogCli.test.ts` pins the operator's journey end to end (fresh
+path → `entries:init` → the reader that was refusing now opens) rather than
+pinning the wording.
+
+The store is `changelog_entries` in the **same** SQLite file as keys and usage,
+resolved through `resolveApiKeysDbPath` so the "never the energy database" guard
+stays singular. It is the fourth module in the public graph to open a database,
+and `publicAppGraph.test.ts` — which names a fourth as one of the three things it
+exists to catch — carries the argument for it.
+
+## A `/v1` forecast artifact nobody signed off is not served
+
+ABL-529, the trigger half of ToS §9.3's thirty days' notice. `server/src/v1/modelVersions/`.
+
+**The failure it closes is a notice that never happens, not a late one.**
+`PUBLIC_FORECAST_MODELS` is `['catboost', 'xgboost']` — a model **family** — and
+`forecastsRepo.ts` echoed `model_name` and never read `model_version`. So
+retraining the artifact behind a pair we already serve moved every number a
+subscriber receives while the response still said `catboost`. The subscriber
+could not see it and **neither could we**. §9.3.1 (Board-confirmed 2026-08-22)
+calls that material: *"a request you made yesterday, repeated unchanged today,
+would return different forecast values under the same `model` label"*.
+
+It is not hypothetical. Measured on the replica 2026-08-22, **13 of the 74
+public (zone, forecast_type, model) triples already hold more than one
+`model_version` across history** — FR `load` xgboost went `20251224_172741` →
+`20260201_221331`, DE `price` xgboost `20260112_093054` → `20260202_135018`.
+Each is an M1 material change that happened with no notice and no record.
+
+**Three parts, and the middle one is the whole design:**
+
+- `acknowledgements.ts` — the checked-in set a human signed. Records, not rows:
+  one `note`, one `serve_from`, and every pair it covers. That record *is* the
+  ToS §9.3 changelog source.
+- `versionGuard.ts` — pure. `createVersionGate(ledger, now)` answers, per
+  triple, which `model_version` values may reach a subscriber.
+- `servedLedger.ts` — reads the database **unfiltered** and diffs it against the
+  ledger. The detector must see what the gate is hiding, or it reports all-clear
+  for as long as the guard keeps withholding.
+
+**Four properties are load-bearing:**
+
+- **A triple absent from the ledger serves unfiltered.** §9.3.1: *"beginning to
+  serve a combination we did not serve before is not"* material — ruling A1, and
+  exactly what **ABL-525's eight new pairs are**. Absence is the exemption
+  expressed as data rather than as a flag somebody has to set. The guard
+  therefore costs nothing until the first retrain of an existing pair.
+- **It withholds; it does not refuse.** The queries filter `model_version`, so
+  the previously acknowledged artifact keeps serving and the subscriber gets
+  stale-but-honest numbers. ABL-529's own bar: *"a refusal that blanks a country
+  is worse than the problem"*.
+- **All four reads take the gate**, and `readForecastEdges` is the one that
+  matters least obviously. `latest_vintage_at` and `freshness.status` are built
+  from it, so leaving it unfiltered would date the *withheld* run over the
+  previous artifact's numbers — a series claiming to be current while serving
+  something older, a sharper false claim than the silent swap. The inner
+  correlated `MAX(generated_at)` carries the filter too, or the equality targets
+  a run the outer query then discards and the series develops **holes** instead
+  of falling back.
+- **The gate is built per request, not per process.** A material acknowledgement
+  matures at its `serve_from` instant; a gate resolved at startup would still be
+  withholding on day 31 until somebody restarted the server. The cutover is
+  automatic and needs no deploy — both versions become servable, and
+  `MAX(generated_at)` picks the newer rows.
+
+**`kind: 'correction'` skips the 30 days, and it is a requirement rather than a
+loophole.** ToS §9.3.2 permits a fix for values that are *wrong* to serve
+immediately; without that path this guard would block the one change §9.3
+explicitly lets us ship at once — the live case being the NL gross-basis load
+forecast (ABL-501 / ABL-505 / ABL-506). It is exempt from the wait, **not** from
+the changelog. `assertLedgerWellFormed` refuses a `material` record whose
+`serve_from` is under 30 days after `acknowledged_at`, so the clause is enforced
+by the file rather than remembered by whoever edits it.
+
+**The baseline seed says what it is.** 74 triples, measured read-only on
+2026-08-22, `kind: 'baseline'` — *nobody reviewed them for materiality*. Seeding
+was unavoidable (refusing all 74 blanks the whole forecast surface) and it
+grandfathers no breach, because no external key exists and ABL-349 forbids
+issuing one, so nothing has ever been published under any of them. Two
+measurements make the seed safe rather than assumed: **0 of 2,246,927 public
+rows carry a NULL or empty `model_version`**, and **every triple carried exactly
+one version at its newest vintage**, so "the version being served" was a single
+well-defined value everywhere. `npm run modelversions -- status` re-measures it
+and round-trips clean: 74 observed, 74 servable, 0 unacknowledged, exit 0.
+
+```bash
+cd server
+npm run modelversions -- status     # exit 1 when a served artifact is unsigned
+npm run modelversions -- draft --kind material|correction --by "<role>" --note "<text>"
+```
+
+`draft` **prints and does not write**. The acknowledgement's value is that a
+human read it; a command that edited the ledger would make "acknowledged" mean
+"somebody ran a script", which is the state this exists to end. The reviewed
+commit is the signature. It sends nothing either — §9.3's channels are the
+change log at `/changelog` (ABL-532) and `npm run keys -- keys:contacts`
+(ABL-528). See "Serving a changed model artifact: the ToS §9.3 sequence" in
+CLAUDE.md for the full sequence.
+
+**Two things it cannot do, stated rather than implied:**
+
+- **A withdrawal cannot be withheld.** §9.3.1's M4 makes it material to stop
+  covering a zone a model covered, and a read-side guard has no rows to filter.
+  `diffLedger` reports it (`triple_gone`) and nothing enforces it.
+- **`/v1/accuracy` is deliberately ungated.** It scores *history*, which is made
+  of superseded artifacts by design; filtering it through a ledger that records
+  only what may be served **now** would drop every pre-swap sample and make a
+  historical figure move when a ledger entry was added. The residual, named: for
+  a window reaching the present, an accuracy figure reflects a newly promoted
+  artifact while `/v1/forecasts` withholds it. Bounded, not the §9.3.1 failure
+  this closes, and closing it needs the ledger to record every historical
+  version. Follow-up; do not bolt it on by reusing the serving gate.
+
+**Cost, measured on the replica rather than waved at.** The serving filter adds
+nothing per request beyond the SQL — the gate reads static source, no query. The
+`IN` clause on the correlated subquery is the real price: DE/load over 7 days
+**4.7 ms → 8.4 ms**, and over the 366-day maximum window **105 ms → 186 ms**,
+same 5,232 rows either way. `resolveServingModel` got *faster* — it became two
+`LIMIT 1` index probes instead of one `DISTINCT` scan, **0.50 ms → 0.08 ms**
+worst case. The lever if the 186 ms ever matters is an index carrying
+`model_version`, which is a write to a database this repo does not own.
+
+The startup audit in `publicIndex.ts` costs one query, **2.9 s** against the
+9.4 GB replica. Note the shape: the obvious correlated `generated_at = (SELECT
+MAX(...) ...)` form **timed out past 120 s**, because
+`idx_forecasts_model_lookup` carries no `generated_at`. The CTE that computes
+the 74 maxima in one index scan and then seeks each triple once is what makes it
+a startup cost rather than an impossible one.
+
+## Serving a changed model artifact: the ToS §9.3 sequence
+
+ABL-528, ABL-529 and ABL-532 shipped three mechanisms. §9.3 is kept only if they
+are used in the right order, on the same day. This is that order.
+
+**Status, 2026-08-22:** nothing is published, no external API key exists, ABL-349
+forbids issuing one. No §9.3 clock is running today. This is the procedure for the
+first day one is.
+
+### The test that starts it
+
+§9.3.1, Board-confirmed 2026-08-22:
+
+> A model change is **material** if a request you made yesterday, repeated unchanged
+> today, would return different forecast values under the same `model` label.
+> Beginning to serve a combination we did not serve before is **not**.
+
+The second sentence does as much work as the first. `/v1` labels a model by
+*family* — `catboost`, `xgboost` — while the artifact identity is
+`forecasts.model_version`, which appears on no response. Retraining behind a pair
+we already serve moves every number under an unchanged label. That is the material
+case, and it is invisible from outside.
+
+| Situation | Procedure | Clock |
+|---|---|---|
+| Retrained artifact for a `(zone, forecast_type, model)` triple **already in the ledger** | **A** | 30 days before it may serve |
+| The values we are serving are **wrong**, and the change corrects them | **B** | none — entry goes up when the fix serves |
+| A combination we have **never** served | **C** | none — nothing to do |
+| We **stop** covering a zone a model covered | **D** | material, and nothing enforces it |
+
+### Procedure A — planned material change (30 days)
+
+Order matters: the ledger record is written first because the change-log entry is
+written *from* it, and the 30-day clock is the record's `serve_from`.
+
+**1. See it.**
+
+```bash
+cd server
+npm run modelversions -- status
+```
+
+Exit 1 with an unacknowledged list means the database holds a version no human has
+signed. Nothing is breached and there is no rush of hours — the guard is already
+withholding it and subscribers are getting the previously acknowledged artifact.
+
+**2. Draft the record.**
+
+```bash
+npm run modelversions -- draft --kind material --by "<a role, a human>" \
+    --note "<what changed and why, in a sentence a subscriber can read>"
+```
+
+It prints and writes nothing. That is deliberate: a command that edited the ledger
+would make "acknowledged" mean "somebody ran a script".
+
+**3. Sign it.** Paste the block into
+`server/src/v1/modelVersions/acknowledgements.ts`, open a PR, CEO merges. **The
+reviewed merge is the signature.** `assertLedgerWellFormed` refuses a `material`
+record whose `serve_from` is less than 30 days after `acknowledged_at`, so the
+clause is enforced by the file rather than remembered by whoever edits it.
+
+**4. Publish the notice — the same day you merge.**
+
+```bash
+npm run changelog -- entries:publish --type planned \
+    --effective "<serve_from, verbatim from the record>" \
+    --title "..." --detail "..."
+```
+
+`--effective` **must equal the record's `serve_from`.** If they disagree, the page
+says one thing and the server does another, and the subscriber is entitled to the
+earlier of the two. A `planned` entry is refused unless it is effective at least 30
+days out — the same rule as step 3, enforced a second time on purpose, because
+these are two different files that can drift.
+
+**The clock runs from publication, not from the merge.** The store stamps
+`published` at insert and has no parameter that could backdate it. Merge and publish
+on the same day and the question never arises.
+
+**5. Notify the account contact — the same day.**
+
+```bash
+npm run keys -- keys:contacts
+```
+
+Two halves, and it prints both even when the second is empty: the recipient list,
+and **every live key with no address**. If the second half is non-empty, **stop** —
+those subscribers are owed the same notice and cannot be reached. Then **send the
+mail by hand**; see *The one manual step* below.
+
+**6. The cutover needs no deploy.** The gate is built per request. At `serve_from`
+both the old and new versions become servable and `MAX(generated_at)` picks the
+newer rows. Do not delete the superseded record — during the 30 days it is what
+keeps the series alive, and the ledger is the audit trail of every version that
+ever reached a subscriber.
+
+### Procedure B — correction (§9.3.2, immediate)
+
+§9.3.2 exempts a fix for values that are *wrong* from the 30 days. It does **not**
+exempt it from the change log, and it does not exempt it from the contact.
+
+1. `npm run modelversions -- draft --kind correction --by "<role>" --note "<what was wrong>"` — refuses without a note, because that note is the entry's `--what-was-wrong`.
+2. Merge the record. `serve_from` may equal `acknowledged_at`.
+3. **At the moment it serves:**
+
+   ```bash
+   npm run changelog -- entries:publish --type correction --effective "<instant>" \
+       --title "..." --detail "..." --what-was-wrong "..."
+   ```
+
+   A correction effective more than an hour ahead is **refused** — that is a planned
+   change wearing a correction's label to escape the notice period. Publishing *late*
+   is warned about and not refused: by then the change is already being served, and
+   refusing the entry would trade a late notice for no notice.
+4. `keys:contacts`, and send, the same day.
+
+**Use `correction` only when the values being served are wrong.** "Better" is not
+"wrong" — a retrain that improves accuracy is Procedure A. The live case this path
+exists for is the NL gross-basis load forecast (ABL-501 / ABL-505 / ABL-506).
+
+### Procedure C — additive (nothing to do)
+
+A triple absent from the ledger serves unfiltered. That is ruling A1 expressed as
+data rather than as a flag somebody has to set correctly, and it is why the guard
+costs nothing until the first retrain of an existing pair. **ABL-525's eight new
+pairs are exactly this.**
+
+Do not draft an acknowledgement for a new combination. Adding one puts a pair under
+the guard that §9.1 says may ship at any time.
+
+### Procedure D — withdrawal, which nothing enforces
+
+§9.3.1's M4 makes it material to stop covering a zone a model covered. A read-side
+guard has no rows to filter, so it **cannot** withhold a withdrawal: `npm run
+modelversions -- status` reports it as `triple_gone` and that is the end of what
+the machine will do.
+
+If you are removing coverage, Procedure A applies in full and **only your discipline
+enforces it.**
+
+### The one manual step, named
+
+**Nothing in this repository sends mail.** `accountContacts.ts` produces the
+recipient list; there is no transport. So step 5 of A and step 4 of B are a human
+sending an email from what `keys:contacts` prints.
+
+That is a bounded choice, not an oversight:
+
+- ABL-528 **refuses to mint a key without a contact**, so every key issued from now
+  on is reachable, and the "no address" half of the output is the standing check
+  that the promise is keepable.
+- No external key exists today, so the list is empty and the first notice will go to
+  a list a person can read in one sitting.
+
+**Review trigger:** when the recipient list would take more than one sitting to send
+by hand — call it **20 live keys** — mechanising delivery becomes cheaper than the
+risk of a half-sent notice. File it then, not before.
+
+### What breaks if a step is skipped
+
+| Skipped | What a subscriber gets | What catches it |
+|---|---|---|
+| Draft / sign (2–3) | Nothing changes — the old artifact keeps serving. **Fails safe.** | `modelversions -- status`, exit 1 |
+| Change log (4) | Numbers move on `serve_from` with no published notice. **§9.3 breached.** | **Nothing.** |
+| Account contact (5) | Same breach, second channel. | `keys:contacts` shows who was owed it; nothing checks it was sent. |
+| The whole procedure — hand-editing `acknowledgements.ts` under time pressure and merging | Full silent breach | **Nothing.** The PR review is the only check. |
+
+The two unprotected steps are **4 and 5**. The guard cannot enforce them: it lives
+in the read path and knows nothing about publication. That is precisely why this is
+a runbook and not a test, and why it belongs in `CLAUDE.md` where a reviewer will
+see it before approving a change to `acknowledgements.ts`.
 
 ## Key Features
 
@@ -4337,6 +5019,163 @@ cd client && npx vitest run && npx tsc -b
 cd server && npx vitest run
 ```
 
+Green as of 2026-08-22, measured on ABL-528 after merging `origin/main` at
+`f5ec75c` (PR #46, ABL-530's auth-failure record) into it, in a per-issue
+execution worktree with `node_modules` junctioned from the primary checkout,
+under **v24.18.0**, with the shared replica reachable so
+`generationService.test.ts`'s opportunistic block is included:
+
+| suite | files | tests | typecheck |
+|---|---:|---:|---|
+| `cd server && npx vitest run` | **119** | **2,444** | `tsc --noEmit` exit 0 |
+| `cd client && npx vitest run` | **54** | **747** | `tsc -b --force` exit 0 |
+
+Both rows are fresh runs on the merged tree. The client row is unchanged from
+the entries below and was re-measured anyway rather than carried forward —
+neither ABL-528 nor ABL-530 touches a client file, so it is the row most likely
+to be asserted from memory and least likely to be checked.
+
+**State the delta beside the absolute, because only one of them keeps.** ABL-528
+is **+1 server file / +50 server cases against `origin/main@f5ec75c`**, and that
+sentence survives the next merge, when 119 / 2,444 will not. The absolute stays
+because it is the tripwire this section exists to be — "fewer than that means
+something broke" is not a claim a delta can make — but it is the half with a
+shelf life, and this entry has now had that shelf life expire **three times**
+before reaching `main`. Read the delta first; re-measure the absolute.
+
+That the delta is the durable half is not a hunch here — it is measured. The
+same **+1 / +50** held against all three bases this branch has been rebased
+onto (`01e3160`, `08b9cb6`, `9fd4bdb`, `f5ec75c`) while the absolute moved
+108 → 113 → 115 → 119 without a line of ABL-528 changing.
+
+**The delta is measured, not derived, and the split is worth keeping.** Running
+the same tree with only the new file excluded reports **118 / 2,415**, so
+`accountContacts.test.ts` is **29** cases and the edits to existing files are
+**21**. Note the 29 is *12* `it(` lines, three of them `it.each` tables — a grep
+undercounts any file that uses one, so take a new file's contribution from a run
+and only the *edits* from the grep.
+
+**Corroborated two ways.** The file count needs no run: `git ls-tree -r
+origin/main --name-only | grep -c '^server/src/.*\.test\.ts$'` returns **117** at
+`f5ec75c`, plus the one `scripts/` file the server suite also discovers
+(`server/vitest.config.ts:11`) = 118, plus this branch's one new file = **119**,
+matching the run. The test count reconciles against the entry below —
+`origin/main@f5ec75c` is 118 / 2,394, and 2,394 + 50 = **2,444**.
+
+**This entry was wrong on arrival three times, and every time a merge is why.**
+It first recorded **108 / 2,181** against `01e3160`; ABL-532 (PR #47) landed
+while ABL-528 sat in review, taking it to **113 / 2,297** against `08b9cb6`;
+then ABL-529 (PR #45) landed, taking it to **115 / 2,324** against `9fd4bdb`;
+then ABL-530 (PR #46) landed while it sat in review a third time. Not one of
+those figures was carelessly taken — all were honest runs — and each described a
+tree that had stopped existing by the time anyone could read it. That is the
+fifth, sixth and seventh occurrence this section records. Re-measure after
+merging the base in, not only after writing the code, and **again if the branch
+waits**.
+
+**The fourth merge is the one that stopped being free, and it is the warning
+worth keeping.** The first three conflicted on this paragraph alone. Merging
+`f5ec75c` conflicted on three files — this one, `usage/PRIVACY-AND-RETENTION.md`
+and `usage/sqliteUsageStore.ts` — and, more to the point, **broke 36 tests that
+git merged without a single marker.** `security/sqliteAuthFailureStore.test.ts`
+mints keys to build its fixture, and ABL-528 refuses a contactless mint, so every
+case in the file failed in setup. Both changes were correct; their composition
+was not. A conflict-free merge is not a working merge, and the only thing that
+said so was a run.
+
+**`tsc --noEmit` could not have caught it, and that is a property of this repo
+worth knowing.** `server/tsconfig.json` sets `"exclude": [… "src/**/*.test.ts"]`,
+so **test files are never typechecked**. `IssueKeyInput.contactEmail` is a
+required `string`, and a call site omitting it still compiled clean, because that
+call site was in a test. So "required at the type level" means *production* call
+sites here; in a test it is the runtime guard or nothing. That is the argument
+for `requireContactEmail` existing at all, arriving from a direction nobody
+predicted — see the ABL-528 section above, which now says so.
+
+**A scratch worktree was deliberately not created to measure the baseline.**
+That is the standard move, and it is the move that deleted 107 packages out of
+the shared tree twice (note 4, ABL-460 and ABL-517) — the removal, not the
+install, is the hazard. Excluding one file from a run in the tree you already
+have costs one command and cannot walk a junction.
+
+Green as of 2026-08-22, measured on ABL-530 **after merging `origin/main` at
+`9fd4bdb`** (which carries ABL-532's change log *and* ABL-529's served-version
+guard), in a per-issue execution worktree with `node_modules` junctioned from the
+primary checkout, under **v24.18.0**: **118 server test files / 2,394 tests**, all
+passing, `tsc --noEmit` exit 0. `origin/main` at that same commit measures
+**114 / 2,274**, run in a scratch worktree in the same session rather than taken
+from the paragraph below, so ABL-530 is **+4 files / +120 cases**.
+
+Every part of that delta was measured per file, and it adds up exactly, which is
+the only reason to write it down:
+
+| | cases |
+|---|---:|
+| `security/sqliteAuthFailureStore.test.ts` | 36 |
+| `security/securityReport.test.ts` | 24 |
+| `security/requestTarget.test.ts` | 21 |
+| `security/authFailureRecorder.test.ts` | 16 |
+| `auth/apiKeyAuth.test.ts` | 34 → 47 |
+| `usage/usageCli.test.ts` | 25 → 34 |
+| `publicAppGraph.test.ts` | 70 → 71 |
+| `publicApp.test.ts` | 48 → 48 |
+| | **+120** |
+
+`publicApp.test.ts` being **net zero** is worth a second look rather than a
+skim: ABL-530 does add a block there — that a refused request is recorded and
+*not* metered — and it replaced cases rather than adding to them. A file whose
+count did not move is not a file nobody touched.
+
+It touches no client test, and the client figure below is carried forward rather
+than re-measured.
+
+The file count needed no run and is the check to prefer: `git ls-tree -r
+origin/main --name-only | grep -c '^server/src/.*\.test\.ts$'` returns 113 at
+`9fd4bdb`, plus the one `scripts/` file the server suite also discovers
+(`server/vitest.config.ts:11`) = **114**, matching the baseline run; the same
+count over this tree's index returns 117 + 1 = **118**, matching the run here.
+**Pipe it through `sort -u` if you take it mid-merge** — `git ls-files` lists an
+unresolved path once per stage, and an un-deduplicated count read 115 for a tree
+holding 114 files while four paths were still conflicted. That duplication is not
+only a counting nuisance: `docs/claudeMdCitations.test.ts` resolves a cited path
+against the same tracked-file list, so a conflicted file makes every citation into
+it fail as `matches 3 files … Cite a longer path`. Stage the resolution before
+reading that failure as a stale citation.
+
+**This paragraph was rewritten twice in one sitting, and the second rewrite is
+the point.** It first read 111 / 2,252 against `origin/main` at `01e3160`, which
+was true when measured and stale by the time it was reviewed: ABL-532 landed as
+`08b9cb6` and ABL-529 as `9fd4bdb` while the PR sat. The baseline moved twice
+without a line of this branch changing. Re-measure both sides on the merged tree;
+never derive one from the other, and never add a delta to a figure recorded under
+a different commit.
+
+Green as of 2026-08-22, measured on ABL-529 **after merging `origin/main` at
+`08b9cb6`** (which carries ABL-532's change log), in a per-issue execution
+worktree with `node_modules` junctioned from the primary checkout, under
+**v24.18.0**: **114 server test files / 2,274 tests**, all passing,
+`tsc --noEmit` exit 0. ABL-529 is **+2 files / +27 cases**
+(`v1/modelVersions/versionGuard.test.ts`,
+`v1/modelVersions/servedVersionGate.test.ts`) and touches no client test — its
+edits to `publicAppGraph.test.ts` change three pinned module lists without
+changing their count, which is checked rather than asserted: that file holds 16
+`it(...)` cases on `origin/main` and 16 here.
+
+**The figure is a fresh run on the merged tree, and it had to be.** This entry
+read 109 / 2,159 one commit ago, measured honestly against `01e3160` — and
+ABL-532 landed underneath it with five new test files, so the same unchanged work
+now measures 114. That is the rule this section keeps re-learning: a count is only
+true of the tree it was measured on. Do not add 5 to 109.
+
+The delta was measured, not derived: `npx vitest run src/v1/modelVersions/`
+reports 2 files / 27 tests on its own. The file count needed no run at all —
+`git ls-tree -r origin/main --name-only | grep -c '^server/src/.*\.test\.ts$'`
+returns **111**, plus ABL-529's 2 = 113, plus the one `scripts/` file the server
+suite also discovers (`server/vitest.config.ts:11`) = **114**, matching the run.
+**Deduplicate that count if you take it mid-merge** — `git ls-files` lists an
+unresolved path once per stage, and it reported 115 here while
+`publicAppGraph.test.ts` was still conflicted.
+
 Green as of 2026-08-21, measured on ABL-493/ABL-501 after merging `origin/main`
 at `a508ba1` (the four-branch batch: ABL-460, ABL-494, ABL-498, ABL-469), in a
 per-issue execution worktree with `node_modules` junctioned from the primary
@@ -4361,9 +5200,13 @@ through this run, and the same completeness check found it.** The client suite
 ran green here at 13:5x and then failed to boot at 14:2x on
 `Cannot find package '@rolldown/pluginutils'` — the bare-specifier tell — with
 the note-4 check reporting **107 missing packages** again, `@babel/core` among
-them. Nothing in this branch touched `node_modules`; something rewrote the
-shared tree in place, which is what note 1 forbids. Worth knowing for two
-reasons: a green suite earlier in your own session is not evidence the tree is
+them. Nothing in this branch *edited* `node_modules` — but it did delete
+through it, which was not obvious at the time and is the whole finding of
+ABL-517: the run's own `git worktree remove --force` on a scratch baseline
+worktree, at `11:45:58Z`, walked the junction into the shared tree. Note 4
+carries the mechanism, the scratch-repo reproduction and the two-line ordering
+rule that prevents it. Two things are still worth knowing independently of the
+cause: a green suite earlier in your own session is not evidence the tree is
 still complete when you re-run it, and **the cheapest repair is often not a
 repair at all** — several per-issue worktrees carry their own complete
 `node_modules`, so verifying a candidate against your own `package-lock.json`
@@ -4424,14 +5267,15 @@ both of which had become false and neither of which was a code defect:
 
 - **"The client suite could not be run in this checkout"** — it was blocked
   before it booted by an absent `@rolldown/pluginutils`. That package was
-  missing because the root `node_modules` was incompletely installed; it is
+  missing because it had been deleted out of the root `node_modules` (note 4
+  — not the incomplete install ABL-460 recorded); it is
   present now and all 51 files run. The last figure recorded under the blockage
   was 50 files / 666 tests on 2026-08-13, so the repair reveals ABL-289's
   `lib/opsTrafficRows.test.ts` plus one more case than the +11 that entry
   predicted. Re-measure rather than reconciling against 666.
 - **"`tsc --noEmit` reports the same 7 pre-existing `@radix-ui/*` TS2307 errors
-  in `components/ui/*`"** — those were every `@radix-ui/*` package being absent
-  from the same partial install, not a pre-existing condition of the code.
+  in `components/ui/*`"** — those were every `@radix-ui/*` package having been
+  deleted by the same walk, not a pre-existing condition of the code.
   There are none: `npx tsc -b --force` exits 0 on `origin/main`. **A TS2307 in
   `components/ui/*` is now a real failure and must not be waved through as
   expected.**
@@ -5280,6 +6124,18 @@ predicate that keeps a withheld model out of `forecastGap.ts`'s "has no
 forecast for <country>" copy. Two modules rather than one because the server
 sends a differently worded sentence for a series than for a measure, and the
 two surfaces put different evidence in front of the reader),
+`server/src/v1/security/requestTarget.ts` (ABL-530 — the closed table of `/v1`
+path templates a refused request is classified against, so a caller-controlled
+path never reaches the record; its test also rebuilds the table from the route
+files as text, so a route added to `v1/routes/` and not added here is a failure
+rather than a column that quietly stops distinguishing anything),
+`server/src/v1/security/securityReport.ts` (ABL-530 — what the four breach
+signals *mean*. Pure so the verdicts can be driven without a database, which
+matters here because most of what it asserts is a **refusal to conclude**:
+three of the four turn on a distinction a naive implementation collapses —
+"we no longer remember" read as "never seen from here", "no baseline" read as a
+breadth of zero — and each collapse produces the most alarming reading
+available),
 `server/src/services/wape.ts` (ABL-388 — the single WAPE definition, moved
 out of `crossCountryMetricsService.ts` when `tsoForecastService` and
 `mlForecastService` became its second and third callers; its test needed a

@@ -1,6 +1,8 @@
 import { createPublicApp } from './publicApp.js';
 import { openApiKeyDirectory } from './keys/sqliteApiKeyStore.js';
+import { openChangelogReader } from './changelog/sqliteChangelogStore.js';
 import { openUsageStore } from './usage/sqliteUsageStore.js';
+import { createAuthFailureRecorder } from './security/authFailureRecorder.js';
 import { createUsageMeter } from './usage/usageMeter.js';
 import { startUsageMaintenance } from './usage/usageMaintenance.js';
 import { shutDownUsage } from './usage/usageShutdown.js';
@@ -9,6 +11,9 @@ import { openEnergyDatabase } from './data/sqliteEnergySource.js';
 import { createFreshnessMap } from './data/freshnessMap.js';
 import { createCatalogRepo } from './data/catalogRepo.js';
 import { resolvePublicBaseUrl } from './data/links.js';
+import { ACKNOWLEDGED_VERSIONS } from './modelVersions/acknowledgements.js';
+import { readServedVersionLedger } from './modelVersions/servedLedger.js';
+import { diffLedger } from './modelVersions/versionGuard.js';
 
 /**
  * Entrypoint for the public process.
@@ -88,6 +93,19 @@ const usageStore = openUsageStore();
 const usageMeter = createUsageMeter({ sink: usageStore });
 const usageMaintenance = startUsageMaintenance({ store: usageStore });
 
+// Where refused requests go (ABL-530). Handed the same store, narrowed by its
+// parameter type to `AuthFailureSink` — one method, appends rows — exactly as the
+// plan gate is handed it narrowed to `MonthlyUsageReader`. The recorder therefore
+// cannot read a key, close a month or delete a record, and that is a property of
+// the type rather than of anyone's restraint.
+//
+// One store and one file for both tables, deliberately: `auth_failures` holds
+// `client_ip` and `user_agent`, so it is inside the ABL-297 §5 promise from its
+// first row and has to be scrubbed by the same job on the same boundary. A second
+// store would be a second retention job to remember, and the one that got
+// forgotten would be the one nobody had ever printed a compliance line for.
+const authFailureRecorder = createAuthFailureRecorder({ sink: usageStore });
+
 // The plan gate (ABL-302), reading the same store the meter writes.
 //
 // It is handed `usageStore` where a `MonthlyUsageReader` is expected, so the gate
@@ -126,17 +144,86 @@ const catalog = createCatalogRepo({ source: energySource });
 // process for whoever happened to arrive first after a restart.
 catalog.warm();
 
+// The served-version audit (ABL-529), before `listen` and once per start.
+//
+// The *enforcement* is not here — it is the version gate the forecast routes
+// build per request from `ACKNOWLEDGED_VERSIONS`, which is static source and
+// costs no query. This is the **notification**: the guard withholds an
+// unacknowledged artifact silently and correctly, and a mechanism that refuses
+// without telling anyone is how a pair stays frozen for a month while everyone
+// assumes it is current.
+//
+// Boot rather than a timer, deliberately. The audit is a ~2.9 s query against
+// the 9.4 GB replica, and the event it watches for — a promotion writing a new
+// `model_version` — is not one that needs catching within minutes: the guard has
+// already stopped it reaching a subscriber, and what remains is a 30-day notice
+// somebody has to start. A restart is also the moment an operator is looking.
+//
+// It never throws. A monitoring read that can take the process down with it is
+// worse than one that stays quiet, and this one runs before the port is bound.
+try {
+  const diff = diffLedger(readServedVersionLedger(energySource), ACKNOWLEDGED_VERSIONS, new Date());
+  for (const row of diff.unacknowledged) {
+    console.error(
+      `[v1] WITHHELD: ${row.zone}/${row.forecast_type}/${row.model} is serving model_version ` +
+        `'${row.model_version}', which no acknowledgement covers. The previously acknowledged ` +
+        `artifact keeps serving. Under ToS §9.3.1 this is a material change and needs 30 days' ` +
+        `notice — or, if it corrects values that are wrong, a §9.3.2 correction entry. ` +
+        `Run: npm run modelversions -- status`
+    );
+  }
+  for (const row of diff.embargoed) {
+    console.warn(
+      `[v1] embargoed: ${row.zone}/${row.forecast_type}/${row.model} model_version ` +
+        `'${row.model_version}' is acknowledged but inside its notice period.`
+    );
+  }
+  for (const pair of diff.withdrawn.filter((p) => p.triple_gone)) {
+    console.warn(
+      `[v1] withdrawn: ${pair.zone}/${pair.forecast_type}/${pair.model} produces no rows at all. ` +
+        `Ceasing to cover a zone is material under ToS §9.3.1 (M4) and cannot be withheld — ` +
+        `it needs a notice, not a guard.`
+    );
+  }
+} catch (error) {
+  console.error('[v1] served-version audit could not run:', error);
+}
+
 // Configuration, never `req.get('host')` — trap 1 from the ABL-291 brief. Unset
 // is the safe and current state: `links.next` then comes back relative, which is
 // correct against whatever origin the client already used and cannot bake a
 // `192.168.x` address into a subscriber's stored URL.
 const publicBaseUrl = resolvePublicBaseUrl(process.env);
 
+// The change log (ABL-532), opened before `listen` for the fourth time and the
+// fourth reason: §9.3 points a subscriber at this page for advance notice of a
+// material model change, so a process that binds a port and then 500s on
+// `/changelog` is answering a contractual URL with an error. `fileMustExist`
+// makes a wrong path a startup failure rather than an empty change log, which is
+// the more dangerous shape — an empty page looks like "we have never changed
+// anything" and nothing about it reads as broken.
+//
+// **Readonly**, like the key directory and for the same kind of reason: this
+// process publishes nothing. A published entry is a statement we made at a time
+// we recorded, and the serving process should not be able to alter one even by
+// mistake. `npm run changelog -- entries:publish` holds the only read-write
+// handle, and it is that command — not a deploy — that is the publish path.
+const changelog = openChangelogReader();
+
 const app = createPublicApp({
   apiKeyDirectory,
+  authFailureRecorder,
   usageMeter,
   planGate,
-  data: { source: energySource, freshness, catalog, publicBaseUrl, now: () => new Date() },
+  data: {
+    source: energySource,
+    freshness,
+    catalog,
+    acknowledgedVersions: ACKNOWLEDGED_VERSIONS,
+    publicBaseUrl,
+    now: () => new Date(),
+  },
+  changelog,
 });
 
 const server = app.listen(PORT, HOST, () => {
@@ -147,8 +234,10 @@ const server = app.listen(PORT, HOST, () => {
 🔑 API-key auth: Authorization: Bearer able_<env>_<prefix>_<secret>
 📈 Usage metering: on — every authenticated request is counted per key
 🚦 Plan limits: on — per-account monthly quota and per-minute rate limit, 429 only
+🛡  Auth-failure recording: on — every refusal, by prefix and origin (npm run usage -- security:help)
 🚀 Listening on http://${HOST}:${PORT}
 📊 API base URL: http://${HOST}:${PORT}/v1
+📜 Change log:   http://${HOST}:${PORT}/changelog   (and /changelog.json) — outside /v1, no key
 🔗 Pagination links: ${publicBaseUrl ?? 'relative (PUBLIC_BASE_URL unset)'}
 
 Not on this surface, by composition: /api/*, /api/ops/*, /api/health,
@@ -190,8 +279,14 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     shuttingDown = true;
 
     server.close(() => {
-      shutDownUsage({ meter: usageMeter, maintenance: usageMaintenance, store: usageStore });
+      shutDownUsage({
+        meter: usageMeter,
+        authFailureRecorder,
+        maintenance: usageMaintenance,
+        store: usageStore,
+      });
       apiKeyDirectory.close();
+      changelog.close();
       // Nothing is buffered behind these two — the map is a read cache and the
       // handle is readonly — so closing them loses no data and is only about
       // not leaving a file handle and a timer behind.

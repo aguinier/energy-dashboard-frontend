@@ -205,12 +205,33 @@ describe.each(ENTRIES)('$label', ({ file }) => {
     //   test. On a serving path it would answer a customer's question with a
     //   fixture — the same class of mistake as the other two, with the failure
     //   pointed at the data rather than at the auth.
+    // - `memoryAuthFailureSink.ts` (ABL-530) would record a credential attack
+    //   into an array that disappears with the process. It is listed by name for
+    //   the same reason the other fakes are, and with one extra edge: it exports
+    //   `createTestAuthFailureRecorder`, which every test that mounts the gate
+    //   now imports, so it is the fake most likely to be reached for by
+    //   accident.
+    // - `changelogCli.ts` (ABL-532) holds the only read-write handle on published
+    //   change-log entries, and `exampleEntries.ts` describes no real change. An
+    //   entry, like a key, is published by a person running a command; a serving
+    //   path that could reach either could rewrite a notice we have already given
+    //   or put an example on the page a subscriber is pointed at.
+    // - `modelVersionsCli.ts` (ABL-529) opens its own database handle and is the
+    //   operator's side of the ToS §9.3 trigger. The *rule* it reports on —
+    //   `versionGuard.ts` and the checked-in `acknowledgements.ts` — is in the
+    //   graph below, deliberately: that is the filter every forecast read
+    //   applies. The CLI is not, and must not be, because the acknowledgement is
+    //   a reviewed commit rather than something a request could reach.
     for (const operatorOnly of [
       'v1/keys/keysCli',
       'v1/keys/memoryApiKeyDirectory',
       'v1/usage/usageCli',
       'v1/usage/memoryUsageSink',
       'v1/data/memoryEnergySource',
+      'v1/security/memoryAuthFailureSink',
+      'v1/changelog/changelogCli',
+      'v1/changelog/exampleEntries',
+      'v1/modelVersions/modelVersionsCli',
     ]) {
       expect(graph.modules.filter((m) => m.startsWith(operatorOnly))).toEqual([]);
     }
@@ -224,8 +245,8 @@ describe.each(ENTRIES)('$label', ({ file }) => {
     // gate already reads through the key store, so billing has no read the
     // request path needs and no capability worth exposing to it.
     //
-    // Two things this keeps true. `sqliteBillingStore.ts` opens a fourth handle
-    // on `API_KEYS_DB_PATH`, and it must never appear in the "exactly three
+    // Two things this keeps true. `sqliteBillingStore.ts` opens its own handle
+    // on `API_KEYS_DB_PATH`, and it must never appear in the "exactly four
     // modules open a database" assertion below — it is reached from
     // `billingCli.ts` alone. And `invoice.ts` decides amounts of money; a
     // pricing module on a serving path is a latency and a failure mode taken on
@@ -237,7 +258,7 @@ describe.each(ENTRIES)('$label', ({ file }) => {
 describe('the exact public module graph', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicApp.ts'), SRC_ROOT);
 
-  it('is these twenty-eight modules and no others', () => {
+  it('is these thirty-four modules and no others', () => {
     // Pinned as an exact set on purpose. Any new edge out of the public app —
     // to a shared service, a middleware, the database config — shows up here as
     // a failing diff and gets justified in review rather than noticed later.
@@ -284,12 +305,39 @@ describe('the exact public module graph', () => {
     // constant `/v1/observations` reads, so `services/mlForecastService.ts` and
     // the frozen `energy_renewable` table it maps to are **not** in this graph
     // and must not become so.
+    //
+    // **ABL-529 adds two**, and they are the first modules here that exist to
+    // *withhold* data rather than to serve it: `acknowledgements.ts` is the
+    // checked-in set of forecast artifacts a human has signed off, and
+    // `versionGuard.ts` is the rule the forecast reads filter through. Both are
+    // pure — no database, no clock of their own, and `acknowledgements.ts`
+    // imports nothing at all — which is why the module that serves requests can
+    // hold the ToS §9.3 policy without gaining a dependency. What to look for if
+    // this changes again: `v1/modelVersions/servedLedger.ts` measures what the
+    // database actually serves and belongs to the entrypoint's graph below, not
+    // to this one; and `modelVersionsCli.ts` must appear in neither.
+    //
+    // **ABL-532 adds three**, all under `v1/changelog/`: the router, the entry
+    // model and the page renderer. Two things to look for if this part of the
+    // list changes again:
+    //
+    // - `v1/changelog/changelogStore.ts` is **absent**, and that absence is the
+    //   point — `publicApp.ts` and the router both import only the
+    //   `ChangelogReader` *type*, which `tsc` erases. The composition names the
+    //   shape of a change log and chooses no storage, exactly as it does for the
+    //   key store, the meter and the data source.
+    // - `v1/changelog/sqliteChangelogStore.ts` is absent for the same reason, and
+    //   so is `changelogCli.ts`: the module that serves requests can read a
+    //   published notice and has no way to write one.
     expect(graph.modules).toEqual([
       'services/freshness.ts',
       'services/loadQuality.ts',
       'services/wape.ts',
       'utils/timestamp.ts',
       'v1/auth/apiKeyAuth.ts',
+      'v1/changelog/changelogEntry.ts',
+      'v1/changelog/changelogHtml.ts',
+      'v1/changelog/changelogRoutes.ts',
       'v1/data/accuracyMetrics.ts',
       'v1/data/accuracyRepo.ts',
       'v1/data/attribution.ts',
@@ -305,6 +353,8 @@ describe('the exact public module graph', () => {
       'v1/data/series.ts',
       'v1/keys/apiKeyStore.ts',
       'v1/keys/keyFormat.ts',
+      'v1/modelVersions/acknowledgements.ts',
+      'v1/modelVersions/versionGuard.ts',
       'v1/publicApp.ts',
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',
@@ -366,13 +416,44 @@ describe('the exact public module graph', () => {
     expect(graph.modules).not.toContain('v1/keys/sqliteApiKeyStore.ts');
     expect(graph.modules).not.toContain('v1/usage/sqliteUsageStore.ts');
     expect(graph.modules).not.toContain('v1/data/sqliteEnergySource.ts');
+    expect(graph.modules).not.toContain('v1/changelog/sqliteChangelogStore.ts');
   });
 });
 
 describe('the entrypoint chooses the key store, and only there', () => {
   const graph = walkModuleGraph(path.join(HERE, 'publicIndex.ts'), SRC_ROOT);
 
-  it('is these forty modules and no others', () => {
+  it('is these fifty-one modules and no others', () => {
+    // **ABL-530 adds three**, all under `v1/security/`, and — like ABL-301's
+    // metering and ABL-302's quota before them — they are here and *not* in
+    // `createPublicApp`'s graph above. That is the property worth checking rather
+    // than the count: the gate takes an `AuthFailureRecorder` as a type, this
+    // file constructs one, and the module that serves requests still contains no
+    // recording code that could fail and no database driver behind it. **No
+    // `v1/security/` module appears in the app-graph assertion above**, which is
+    // the claim; that list's own length has moved twice since this was written
+    // and neither move was ours.
+    //
+    // What to look for if this list changes again: nothing under `v1/security/`
+    // should import a store. The recorder is handed an `AuthFailureSink` — one
+    // method, appends rows — so it cannot read a key, close a month or delete a
+    // record, and `sqliteAuthFailureStore.ts` is handed an already-open handle
+    // rather than opening one, which is why it appears in this list without
+    // appearing in the database-opening assertion below. That assertion names
+    // its modules rather than counting them, so what ABL-530 leaves true is the
+    // membership, not a total: `v1/security/sqliteAuthFailureStore.ts` is not in
+    // it. (The total did move under this branch, and not for any reason of ours
+    // — ABL-532's `sqliteChangelogStore.ts` opens a fourth handle. That is the
+    // hazard of quoting a count: this comment claimed three while it was four.)
+    //
+    // **ABL-529 adds three**, and the split between this list and the app's is
+    // the point rather than an accident. `acknowledgements.ts` and
+    // `versionGuard.ts` are in both, because the filter runs on the request
+    // path; `servedLedger.ts` is only here, because it *measures* the database
+    // and is run once at startup as the notification half of the trigger. A
+    // detector on the request path would be a query per request to learn
+    // something static source already knows.
+    //
     // **ABL-302 adds four**, all under `v1/quota/`, and they are here rather than
     // in the app's graph above for the same reason the whole of ABL-301's
     // metering is: `publicApp.ts` takes a `PlanGate` as a type and this file
@@ -391,6 +472,10 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'services/wape.ts',
       'utils/timestamp.ts',
       'v1/auth/apiKeyAuth.ts',
+      'v1/changelog/changelogEntry.ts',
+      'v1/changelog/changelogHtml.ts',
+      'v1/changelog/changelogRoutes.ts',
+      'v1/changelog/sqliteChangelogStore.ts',
       'v1/data/accuracyMetrics.ts',
       'v1/data/accuracyRepo.ts',
       'v1/data/attribution.ts',
@@ -408,6 +493,9 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/keys/apiKeyStore.ts',
       'v1/keys/keyFormat.ts',
       'v1/keys/sqliteApiKeyStore.ts',
+      'v1/modelVersions/acknowledgements.ts',
+      'v1/modelVersions/servedLedger.ts',
+      'v1/modelVersions/versionGuard.ts',
       'v1/publicApp.ts',
       'v1/publicEnv.ts',
       'v1/publicErrors.ts',
@@ -422,6 +510,9 @@ describe('the entrypoint chooses the key store, and only there', () => {
       'v1/routes/index.ts',
       'v1/routes/observations.ts',
       'v1/routes/root.ts',
+      'v1/security/authFailureRecorder.ts',
+      'v1/security/requestTarget.ts',
+      'v1/security/sqliteAuthFailureStore.ts',
       'v1/usage/sqliteUsageStore.ts',
       'v1/usage/usageMaintenance.ts',
       'v1/usage/usageMeter.ts',
@@ -430,7 +521,7 @@ describe('the entrypoint chooses the key store, and only there', () => {
     ]);
   });
 
-  it('opens a database in exactly three modules, and all three are named here', () => {
+  it('opens a database in exactly four modules, and all four are named here', () => {
     // ABL-300 wrote this as "exactly one module, and that module is the key
     // store", and predicted its own change in the next sentence: *"if a future
     // issue needs another store — ABL-301's usage tables are the obvious
@@ -477,6 +568,27 @@ describe('the entrypoint chooses the key store, and only there', () => {
     // What would be a real loosening, and what this test still catches: a
     // *fourth* module, a non-readonly handle on the energy database, or this
     // module appearing in `createPublicApp`'s graph.
+    //
+    // ## ABL-532 is that fourth, and it named itself here on purpose
+    //
+    // The sentence above predicted the shape of the next diff and asked for it
+    // to be argued rather than absorbed. So, the argument:
+    //
+    // - It opens **no new file**. `v1/changelog/sqliteChangelogStore.ts` resolves
+    //   its path through `resolveApiKeysDbPath`, like the usage store, so the
+    //   "never the 376 GiB energy database" guard is still a single decision in a
+    //   single module — three of these four handles are the same small file we
+    //   own, and the fourth is the readonly energy handle explained above.
+    // - The handle this process holds on it is **readonly**, and that is the
+    //   property worth having rather than the count. A published change-log entry
+    //   is a statement we made to a subscriber at a time we recorded; the serving
+    //   process can render one and cannot alter one. The read-write handle is
+    //   `changelogCli.ts`'s alone, and the block above asserts that module is
+    //   unreachable from here.
+    // - It is opened **only from the entrypoint**, so `createPublicApp` still
+    //   chooses no storage.
+    //
+    // A *fifth* fails this test, which is still the point.
     const importers = graph.modules.filter((module) =>
       collectImportSpecifiers(fs.readFileSync(path.join(SRC_ROOT, module), 'utf8')).runtime.includes(
         'better-sqlite3'
@@ -484,10 +596,51 @@ describe('the entrypoint chooses the key store, and only there', () => {
     );
 
     expect(importers).toEqual([
+      'v1/changelog/sqliteChangelogStore.ts',
       'v1/data/sqliteEnergySource.ts',
       'v1/keys/sqliteApiKeyStore.ts',
       'v1/usage/sqliteUsageStore.ts',
     ]);
+  });
+
+  it('records auth failures into the key store file, on a handle it is given', () => {
+    // ABL-530's table lives in `API_KEYS_DB_PATH` beside `usage_events`, because
+    // it holds `client_ip` and `user_agent` and has to be scrubbed by the same
+    // retention job on the same boundary. The obvious way to write it — one more
+    // module calling `new Database(...)` — would have failed the named-module
+    // assertion above, and rightly: it would also be a second place
+    // `resolveApiKeysDbPath` had to be remembered, on the one file that must
+    // never become the energy database.
+    //
+    // So the security store is handed an open handle and imports the driver for
+    // its *type* only. Checked as text, like everything else in this file,
+    // because the claim is about what the module says and importing it would open
+    // a database to find out.
+    const source = fs.readFileSync(
+      path.join(SRC_ROOT, 'v1/security/sqliteAuthFailureStore.ts'),
+      'utf8'
+    );
+    const specifiers = collectImportSpecifiers(source);
+
+    expect(specifiers.runtime).not.toContain('better-sqlite3');
+    expect(specifiers.typeOnly).toContain('better-sqlite3');
+    expect(source).not.toContain('new Database(');
+  });
+
+  it('opens the change log readonly, and through the key store path resolver', () => {
+    // The two properties that make the fourth handle safe, checked as text for
+    // the same reason the rest of this file is.
+    const source = fs.readFileSync(
+      path.join(SRC_ROOT, 'v1/changelog/sqliteChangelogStore.ts'),
+      'utf8'
+    );
+
+    expect(source).toContain('resolveApiKeysDbPath');
+    expect(source).not.toMatch(/env\.API_KEYS_DB_PATH/);
+    // `openChangelogReader` — the one the entrypoint calls — opens it readonly.
+    // `openChangelogAdminStore` in the same module does not, and is reached only
+    // from the CLI, which the block above asserts is not in this graph.
+    expect(source).toMatch(/readonly: true, fileMustExist: true/);
   });
 
   it('opens the energy database readonly, and through the key store path resolver', () => {

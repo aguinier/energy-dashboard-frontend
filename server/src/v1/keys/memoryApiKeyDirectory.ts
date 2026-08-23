@@ -26,6 +26,18 @@ export interface MemoryKeySeed {
   accountDisabledAt?: string | null;
   environment?: KeyEnvironment;
   label?: string;
+  /**
+   * The ToS §9.3 account contact.
+   *
+   * Defaults to a plausible address, so the ordinary seed matches what the real
+   * store would have written. Set it to `null` for the one row shape the real
+   * store cannot produce and this fake exists to supply: a key issued **before**
+   * the contact column existed (ABL-528). `accountContacts.ts` has to report
+   * that row as unreachable, and there is no other way to construct it — a
+   * migrated SQLite file has the column, and every write path through it
+   * refuses to leave the column empty.
+   */
+  contactEmail?: string | null;
   expiresAt?: string | null;
   revokedAt?: string | null;
   revokedReason?: string | null;
@@ -80,6 +92,11 @@ export function createMemoryApiKeyDirectory(seeds: MemoryKeySeed[] = []): {
       prefix: minted.prefix,
       secretSha256: seed.secretSha256 ?? minted.secretSha256,
       label: seed.label ?? `key ${counter}`,
+      // `undefined` means "not specified", which gets the default; an explicit
+      // `null` means "this row predates the column" and must survive as null.
+      // `??` alone would collapse the two.
+      contactEmail:
+        seed.contactEmail === undefined ? `ops${counter}@memory.example` : seed.contactEmail,
       createdAt: '2026-01-01T00:00:00.000Z',
       expiresAt: seed.expiresAt ?? null,
       revokedAt: seed.revokedAt ?? null,

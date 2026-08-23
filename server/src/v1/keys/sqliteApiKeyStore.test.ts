@@ -10,6 +10,7 @@ import {
   resolveApiKeysDbPath,
 } from './sqliteApiKeyStore.js';
 import { MAX_LIVE_KEYS_PER_ACCOUNT, resolveKeyState, type ApiKeyAdminStore } from './apiKeyStore.js';
+import { collectAccountContacts } from './accountContacts.js';
 import { hashKeySecret, parseApiKey } from './keyFormat.js';
 
 /**
@@ -27,6 +28,14 @@ import { hashKeySecret, parseApiKey } from './keyFormat.js';
  */
 
 const tmpRoots: string[] = [];
+
+/**
+ * The ToS §9.3 account contact every issued key needs (ABL-528).
+ *
+ * A constant rather than a literal per call, so the cases that are *about* the
+ * contact stand out from the ~30 that merely have to supply one.
+ */
+const TEST_CONTACT = 'ops@acme.example';
 
 function tmpDbPath(name = 'api_keys.db'): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'able-keys-'));
@@ -141,7 +150,7 @@ describe('what reaches the disk', () => {
     // bytes rather than against the schema: once a key exists in clear it
     // exists in every backup and every debug dump, and no later migration can
     // recover those copies.
-    const { key, record } = store.issueKey({ accountId, label: 'prod ETL', environment: 'live' });
+    const { key, record } = store.issueKey({ accountId, label: 'prod ETL', contactEmail: TEST_CONTACT, environment: 'live' });
     const secret = parseApiKey(key)?.secret as string;
     const bytes = bytesOnDisk();
 
@@ -159,7 +168,7 @@ describe('what reaches the disk', () => {
     // text verbatim in `sqlite_master`, comments included — which is why the
     // schema comment in `sqliteApiKeyStore.ts` does not name these either. It
     // caught exactly that on the first run.
-    store.issueKey({ accountId, label: 'x', environment: 'live' });
+    store.issueKey({ accountId, label: 'x', contactEmail: TEST_CONTACT, environment: 'live' });
     const bytes = bytesOnDisk();
 
     for (const forbidden of ['raw_key', 'encrypted_key', 'key_hint', 'last_four', 'secret_plain']) {
@@ -185,7 +194,7 @@ describe('what reaches the disk', () => {
 
 describe('issuing', () => {
   it('returns a parseable key whose hash is what was stored', () => {
-    const { key, record } = store.issueKey({ accountId, label: 'prod ETL', environment: 'live' });
+    const { key, record } = store.issueKey({ accountId, label: 'prod ETL', contactEmail: TEST_CONTACT, environment: 'live' });
     const parsed = parseApiKey(key);
 
     expect(parsed?.prefix).toBe(record.prefix);
@@ -196,7 +205,7 @@ describe('issuing', () => {
   });
 
   it('finds the key it just issued, joined to its account', () => {
-    const { key } = store.issueKey({ accountId, label: 'k', environment: 'live' });
+    const { key } = store.issueKey({ accountId, label: 'k', contactEmail: TEST_CONTACT, environment: 'live' });
     const found = store.findByPrefix(parseApiKey(key)?.prefix as string);
 
     expect(found?.account.id).toBe(accountId);
@@ -211,7 +220,7 @@ describe('issuing', () => {
 
   it('mints distinct keys and prefixes every time', () => {
     const issued = Array.from({ length: 4 }, (_, i) =>
-      store.issueKey({ accountId, label: `k${i}`, environment: 'live' })
+      store.issueKey({ accountId, label: `k${i}`, contactEmail: TEST_CONTACT, environment: 'live' })
     );
     expect(new Set(issued.map((i) => i.key)).size).toBe(4);
     expect(new Set(issued.map((i) => i.record.prefix)).size).toBe(4);
@@ -219,55 +228,56 @@ describe('issuing', () => {
   });
 
   it('refuses an unknown account rather than orphaning a key', () => {
-    expect(() => store.issueKey({ accountId: 'acct_nope', label: 'k', environment: 'live' })).toThrow(
+    expect(() => store.issueKey({ accountId: 'acct_nope', label: 'k', contactEmail: TEST_CONTACT, environment: 'live' })).toThrow(
       /No such account/
     );
   });
 
   it(`caps an account at ${MAX_LIVE_KEYS_PER_ACCOUNT} live keys`, () => {
     for (let i = 0; i < MAX_LIVE_KEYS_PER_ACCOUNT; i += 1) {
-      store.issueKey({ accountId, label: `k${i}`, environment: 'live' });
+      store.issueKey({ accountId, label: `k${i}`, contactEmail: TEST_CONTACT, environment: 'live' });
     }
-    expect(() => store.issueKey({ accountId, label: 'one too many', environment: 'live' })).toThrow(
+    expect(() => store.issueKey({ accountId, label: 'one too many', contactEmail: TEST_CONTACT, environment: 'live' })).toThrow(
       /maximum is 5/
     );
   });
 
   it('counts only live keys against the cap', () => {
     const keys = Array.from({ length: MAX_LIVE_KEYS_PER_ACCOUNT }, (_, i) =>
-      store.issueKey({ accountId, label: `k${i}`, environment: 'live' })
+      store.issueKey({ accountId, label: `k${i}`, contactEmail: TEST_CONTACT, environment: 'live' })
     );
     store.revokeKey(keys[0].record.id, 'making room');
 
-    expect(() => store.issueKey({ accountId, label: 'replacement', environment: 'live' })).not.toThrow();
+    expect(() => store.issueKey({ accountId, label: 'replacement', contactEmail: TEST_CONTACT, environment: 'live' })).not.toThrow();
   });
 
   it('counts an expired key as free capacity too', () => {
     for (let i = 0; i < MAX_LIVE_KEYS_PER_ACCOUNT - 1; i += 1) {
-      store.issueKey({ accountId, label: `k${i}`, environment: 'live' });
+      store.issueKey({ accountId, label: `k${i}`, contactEmail: TEST_CONTACT, environment: 'live' });
     }
     store.issueKey({
       accountId,
       label: 'already expired',
+      contactEmail: TEST_CONTACT,
       environment: 'live',
       expiresAt: '2020-01-01T00:00:00.000Z',
     });
 
-    expect(() => store.issueKey({ accountId, label: 'fits', environment: 'live' })).not.toThrow();
+    expect(() => store.issueKey({ accountId, label: 'fits', contactEmail: TEST_CONTACT, environment: 'live' })).not.toThrow();
   });
 
   it('caps per account, not globally', () => {
     const other = store.createAccount({ name: 'Beta Energy', plan: 'explorer' }).id;
     for (let i = 0; i < MAX_LIVE_KEYS_PER_ACCOUNT; i += 1) {
-      store.issueKey({ accountId, label: `k${i}`, environment: 'live' });
+      store.issueKey({ accountId, label: `k${i}`, contactEmail: TEST_CONTACT, environment: 'live' });
     }
-    expect(() => store.issueKey({ accountId: other, label: 'first', environment: 'live' })).not.toThrow();
+    expect(() => store.issueKey({ accountId: other, label: 'first', contactEmail: TEST_CONTACT, environment: 'live' })).not.toThrow();
   });
 });
 
 describe('revoking', () => {
   it('is soft: the row survives so usage history keeps a real key to point at', () => {
-    const { record } = store.issueKey({ accountId, label: 'k', environment: 'live' });
+    const { record } = store.issueKey({ accountId, label: 'k', contactEmail: TEST_CONTACT, environment: 'live' });
     const revoked = store.revokeKey(record.id, 'leaked in a support ticket');
 
     expect(revoked.revokedAt).not.toBeNull();
@@ -280,7 +290,7 @@ describe('revoking', () => {
     // A revoked key that vanished from lookup would answer `key_invalid`, and
     // the customer who revoked it would have no way to tell "I did that" from
     // "this was never a key".
-    const { key, record } = store.issueKey({ accountId, label: 'k', environment: 'live' });
+    const { key, record } = store.issueKey({ accountId, label: 'k', contactEmail: TEST_CONTACT, environment: 'live' });
     store.revokeKey(record.id, null);
 
     const found = store.findByPrefix(parseApiKey(key)?.prefix as string);
@@ -289,7 +299,7 @@ describe('revoking', () => {
   });
 
   it('is idempotent and keeps the first timestamp', () => {
-    const { record } = store.issueKey({ accountId, label: 'k', environment: 'live' });
+    const { record } = store.issueKey({ accountId, label: 'k', contactEmail: TEST_CONTACT, environment: 'live' });
     const first = store.revokeKey(record.id, 'first reason');
     const second = store.revokeKey(record.id, 'second reason');
 
@@ -304,7 +314,7 @@ describe('revoking', () => {
 
 describe('rotating', () => {
   it('issues a new key and gives the old one a deadline', () => {
-    const original = store.issueKey({ accountId, label: 'grafana', environment: 'live' });
+    const original = store.issueKey({ accountId, label: 'grafana', contactEmail: TEST_CONTACT, environment: 'live' });
     const { issued, retired } = store.rotateKey({ keyId: original.record.id, overlapDays: 7 });
 
     expect(issued.key).not.toBe(original.key);
@@ -318,7 +328,7 @@ describe('rotating', () => {
   });
 
   it('keeps both keys working during the overlap — that is the whole point', () => {
-    const original = store.issueKey({ accountId, label: 'k', environment: 'live' });
+    const original = store.issueKey({ accountId, label: 'k', contactEmail: TEST_CONTACT, environment: 'live' });
     const { issued } = store.rotateKey({ keyId: original.record.id, overlapDays: 7 });
     const now = new Date();
 
@@ -329,7 +339,7 @@ describe('rotating', () => {
   });
 
   it('revokes the old one immediately at zero overlap, which is what a leak wants', () => {
-    const original = store.issueKey({ accountId, label: 'k', environment: 'live' });
+    const original = store.issueKey({ accountId, label: 'k', contactEmail: TEST_CONTACT, environment: 'live' });
     const { retired } = store.rotateKey({ keyId: original.record.id, overlapDays: 0 });
 
     expect(retired.revokedAt).not.toBeNull();
@@ -339,7 +349,7 @@ describe('rotating', () => {
 
   it('can rotate a full account at zero overlap, because the outgoing key frees its slot', () => {
     const keys = Array.from({ length: MAX_LIVE_KEYS_PER_ACCOUNT }, (_, i) =>
-      store.issueKey({ accountId, label: `k${i}`, environment: 'live' })
+      store.issueKey({ accountId, label: `k${i}`, contactEmail: TEST_CONTACT, environment: 'live' })
     );
     expect(() => store.rotateKey({ keyId: keys[0].record.id, overlapDays: 0 })).not.toThrow();
     expect(store.listKeys(accountId).filter((k) => resolveKeyState(k, new Date()) === 'active')).toHaveLength(
@@ -349,7 +359,7 @@ describe('rotating', () => {
 
   it('refuses to rotate a full account with an overlap, and leaves it untouched', () => {
     const keys = Array.from({ length: MAX_LIVE_KEYS_PER_ACCOUNT }, (_, i) =>
-      store.issueKey({ accountId, label: `k${i}`, environment: 'live' })
+      store.issueKey({ accountId, label: `k${i}`, contactEmail: TEST_CONTACT, environment: 'live' })
     );
     expect(() => store.rotateKey({ keyId: keys[0].record.id, overlapDays: 7 })).toThrow(/maximum is 5/);
 
@@ -361,7 +371,7 @@ describe('rotating', () => {
   });
 
   it('carries the environment over and accepts a new label', () => {
-    const original = store.issueKey({ accountId, label: 'old', environment: 'test' });
+    const original = store.issueKey({ accountId, label: 'old', contactEmail: TEST_CONTACT, environment: 'test' });
     const { issued } = store.rotateKey({
       keyId: original.record.id,
       label: 'renamed',
@@ -376,7 +386,7 @@ describe('rotating', () => {
 
 describe('accounts', () => {
   it('disables and re-enables without touching the keys', () => {
-    const { record } = store.issueKey({ accountId, label: 'k', environment: 'live' });
+    const { record } = store.issueKey({ accountId, label: 'k', contactEmail: TEST_CONTACT, environment: 'live' });
 
     const disabled = store.setAccountDisabled(accountId, true);
     expect(disabled.disabledAt).not.toBeNull();
@@ -396,7 +406,7 @@ describe('accounts', () => {
 
 describe('the serving handle', () => {
   it('reads what the CLI wrote', () => {
-    const { key } = store.issueKey({ accountId, label: 'k', environment: 'live' });
+    const { key } = store.issueKey({ accountId, label: 'k', contactEmail: TEST_CONTACT, environment: 'live' });
     store.close();
 
     const directory = openApiKeyDirectory({ API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv);
@@ -516,7 +526,222 @@ describe('isRetryableCollision — which insert failures are worth another draw'
     // The retry loop itself is not directly reachable without forcing a
     // collision, so this is the end-to-end check that the refactor did not break
     // the ordinary path.
-    expect(store.issueKey({ accountId, label: 'after the hardening', environment: 'live' }).key)
+    expect(store.issueKey({ accountId, label: 'after the hardening', contactEmail: TEST_CONTACT, environment: 'live' }).key)
       .toMatch(/^able_live_/);
+  });
+});
+
+/**
+ * The account contact ToS §9.3 promises to notify (ABL-528).
+ *
+ * Two claims here and a third in the block below, which is the one that needed
+ * a real file to make: that a store written *before* this column exists keeps
+ * working, migrates when the CLI next opens it, and reports its old rows as
+ * unreachable rather than as nobody.
+ */
+describe('the account contact', () => {
+  it('stores the address on the key and hands it back', () => {
+    const { record } = store.issueKey({
+      accountId,
+      label: 'prod ETL',
+      contactEmail: '  Ops@Acme.example ',
+      environment: 'live',
+    });
+
+    // Trimmed, and otherwise byte-for-byte what the operator gave: the local
+    // part of an address is case-sensitive by specification.
+    expect(record.contactEmail).toBe('Ops@Acme.example');
+    expect(store.getKey(record.id)?.contactEmail).toBe('Ops@Acme.example');
+  });
+
+  it('refuses to mint without one, whatever route reaches the store', () => {
+    // The type already makes omission a compile error. This is the runtime
+    // half, for the value that arrives from a flag, a JSON payload or a cast —
+    // the paths a type cannot see. The casts below are how the test reaches
+    // them, and are the only reason this case can exist.
+    for (const contactEmail of ['', '   ', 'acct_7f3a9c21']) {
+      expect(() => store.issueKey({ accountId, label: 'k', contactEmail, environment: 'live' })).toThrow(
+        /§9\.3/
+      );
+    }
+    expect(() =>
+      store.issueKey({ accountId, label: 'k', environment: 'live' } as unknown as Parameters<
+        typeof store.issueKey
+      >[0])
+    ).toThrow(/§9\.3/);
+
+    // And nothing was written on the way to refusing.
+    expect(store.listKeys(accountId)).toEqual([]);
+  });
+
+  it('carries the contact through a rotation, because it is the same subscriber', () => {
+    const { record } = store.issueKey({
+      accountId,
+      label: 'grafana',
+      contactEmail: 'ops@acme.example',
+      environment: 'live',
+    });
+
+    const { issued } = store.rotateKey({ keyId: record.id, overlapDays: 7 });
+    expect(issued.record.contactEmail).toBe('ops@acme.example');
+  });
+
+  it('lets a rotation change the contact', () => {
+    const { record } = store.issueKey({
+      accountId,
+      label: 'grafana',
+      contactEmail: 'ops@acme.example',
+      environment: 'live',
+    });
+
+    const { issued } = store.rotateKey({
+      keyId: record.id,
+      contactEmail: 'newops@acme.example',
+      overlapDays: 0,
+    });
+    expect(issued.record.contactEmail).toBe('newops@acme.example');
+  });
+
+  it('guards rotation as well as issuance', () => {
+    // `issueKey` and `rotateKey` are two doors into one room. A guard on each
+    // door is a guard somebody forgets to add to the third, so both funnel
+    // through `insertMintedKey` and the refusal lives there.
+    const { record } = store.issueKey({
+      accountId,
+      label: 'k',
+      contactEmail: 'ops@acme.example',
+      environment: 'live',
+    });
+    expect(() =>
+      store.rotateKey({ keyId: record.id, contactEmail: 'not-an-address', overlapDays: 7 })
+    ).toThrow(/does not look like an email address/);
+  });
+});
+
+describe('a store written before the contact column existed', () => {
+  /**
+   * Build the pre-ABL-528 file by hand.
+   *
+   * The DDL is the `api_keys` schema as it stood at ABL-300, copied verbatim
+   * with the column simply absent — which is the only way to produce this
+   * state, because every write path through the current store refuses to leave
+   * it empty. Migrating this file is the behaviour under test, so the fixture
+   * has to be the genuine old shape rather than a current file with a column
+   * dropped out of it.
+   */
+  function legacyStore(): { path: string; keyId: string; prefix: string } {
+    const legacyPath = tmpDbPath('legacy.db');
+    const db = new Database(legacyPath);
+    db.exec(`
+      CREATE TABLE accounts (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, plan TEXT NOT NULL,
+        created_at TEXT NOT NULL, disabled_at TEXT
+      );
+      CREATE TABLE api_keys (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id),
+        key_env TEXT NOT NULL,
+        key_prefix TEXT NOT NULL UNIQUE,
+        secret_sha256 TEXT NOT NULL,
+        label TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT, revoked_at TEXT, revoked_reason TEXT
+      );
+      INSERT INTO accounts VALUES
+        ('acct_legacy', 'Legacy Energy', 'developer', '2026-01-01T00:00:00.000Z', NULL);
+      INSERT INTO api_keys VALUES
+        ('key_legacy', 'acct_legacy', 'live', 'legacy00', 'deadbeef', 'prod ETL',
+         '2026-01-01T00:00:00.000Z', NULL, NULL, NULL);
+    `);
+    db.close();
+    return { path: legacyPath, keyId: 'key_legacy', prefix: 'legacy00' };
+  }
+
+  const AT = new Date('2026-08-22T12:00:00.000Z');
+
+  it('migrates the column in, without disturbing the row', () => {
+    const legacy = legacyStore();
+    const migrated = openApiKeyAdminStore({ API_KEYS_DB_PATH: legacy.path } as NodeJS.ProcessEnv);
+    try {
+      // `CREATE TABLE IF NOT EXISTS` is idempotent and therefore silently does
+      // nothing to a table that already exists. This is the first migration
+      // this file has needed, and the assertion that it actually ran.
+      const key = migrated.getKey(legacy.keyId);
+      expect(key?.label).toBe('prod ETL');
+      expect(key?.contactEmail).toBeNull();
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it('leaves the row null rather than backfilling a placeholder', () => {
+    // The stated disposition. A placeholder is an address a notice would be
+    // "sent" to and silently lost — one we cannot deliver to wearing the
+    // costume of one we can. An absence is recoverable because it is visible;
+    // a fabricated address is not, because nothing afterwards can tell it from
+    // a real one.
+    const legacy = legacyStore();
+    const migrated = openApiKeyAdminStore({ API_KEYS_DB_PATH: legacy.path } as NodeJS.ProcessEnv);
+    try {
+      const set = collectAccountContacts(migrated.listKeys(), AT);
+
+      expect(set.recipients).toEqual([]);
+      expect(set.liveKeys).toBe(1);
+      expect(set.unreachable).toEqual([
+        {
+          keyId: 'key_legacy',
+          accountId: 'acct_legacy',
+          label: 'prod ETL',
+          reason: 'no_contact_recorded',
+        },
+      ]);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it('gives the old key an address by rotating it, which is the migration path', () => {
+    const legacy = legacyStore();
+    const migrated = openApiKeyAdminStore({ API_KEYS_DB_PATH: legacy.path } as NodeJS.ProcessEnv);
+    try {
+      // Rotating without one is refused: the replacement is a fresh key, and
+      // minting a contactless key is refused however it is reached.
+      expect(() => migrated.rotateKey({ keyId: legacy.keyId, overlapDays: 7 })).toThrow(/§9\.3/);
+      // And the refusal landed before the retiring key was touched, so a usage
+      // mistake never leaves a credential half-rotated.
+      expect(migrated.getKey(legacy.keyId)?.expiresAt).toBeNull();
+
+      const { issued } = migrated.rotateKey({
+        keyId: legacy.keyId,
+        contactEmail: 'ops@legacy.example',
+        overlapDays: 7,
+      });
+      expect(issued.record.contactEmail).toBe('ops@legacy.example');
+
+      const set = collectAccountContacts(migrated.listKeys(), AT);
+      expect(set.recipients.map((r) => r.email)).toEqual(['ops@legacy.example']);
+      // The old key is live through its overlap and still unreachable, which is
+      // correct rather than untidy — and is why the report counts keys and not
+      // accounts.
+      expect(set.unreachable.map((u) => u.keyId)).toEqual([legacy.keyId]);
+    } finally {
+      migrated.close();
+    }
+  });
+
+  it('still authenticates through a readonly handle, un-migrated', () => {
+    // The serving handle is opened readonly and *cannot* run the migration, so
+    // naming a column that is not there would fail at `prepare` — a server
+    // pointed at a pre-ABL-528 file refusing every customer over a notice
+    // address that no authentication path reads. It degrades to `null` instead.
+    const legacy = legacyStore();
+    const directory = openApiKeyDirectory({ API_KEYS_DB_PATH: legacy.path } as NodeJS.ProcessEnv);
+    try {
+      const found = directory.findByPrefix(legacy.prefix);
+      expect(found?.account.name).toBe('Legacy Energy');
+      expect(found?.key.contactEmail).toBeNull();
+    } finally {
+      directory.close();
+    }
   });
 });

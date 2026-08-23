@@ -7,6 +7,7 @@ import { openApiKeyAdminStore } from '../keys/sqliteApiKeyStore.js';
 import { openUsageStore } from './sqliteUsageStore.js';
 import { describeRollup, parseArgs, requireYearMonth, runCommand } from './usageCli.js';
 import { requestFingerprint, type UsageAdminStore, type UsageEvent } from './usageStore.js';
+import type { AuthFailureEvent } from '../security/authFailureStore.js';
 
 /**
  * The operator tool, driven against a real store on a temp file.
@@ -47,7 +48,7 @@ beforeEach(() => {
 
   const keys = openApiKeyAdminStore({ API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv);
   accountId = keys.createAccount({ name: 'Acme Energy', plan: 'developer' }).id;
-  keyId = keys.issueKey({ accountId, label: 'prod ETL', environment: 'live' }).record.id;
+  keyId = keys.issueKey({ accountId, label: 'prod ETL', contactEmail: 'ops@acme.example', environment: 'live' }).record.id;
   keys.close();
 
   store = openUsageStore({
@@ -85,6 +86,27 @@ function event(overrides: Partial<UsageEvent> = {}): UsageEvent {
     fingerprint: requestFingerprint('GET', ROUTE, 'country=BE'),
     clientIp: '192.0.2.10',
     userAgent: 'able-sdk/1.0',
+    ...overrides,
+  };
+}
+
+/** One refused request, for the ABL-530 reads and the widened compliance check. */
+function failure(overrides: Partial<AuthFailureEvent> = {}): AuthFailureEvent {
+  sequence += 1;
+  return {
+    eventId: `af_${sequence}`,
+    receivedAt: '2026-08-21T12:00:00.000Z',
+    errorCode: 'key_invalid',
+    status: 401,
+    presentedPrefix: '7f3a9c21',
+    keyEnvironment: 'live',
+    secretVerified: false,
+    accountId: null,
+    keyId: null,
+    routeTemplate: '/v1/observations/load',
+    method: 'GET',
+    clientIp: '198.51.100.7',
+    userAgent: 'curl/8.4.0',
     ...overrides,
   };
 }
@@ -305,6 +327,130 @@ describe('usage:stats — the standing compliance check', () => {
 
     expect(printed()).toContain('not yet rolled  3');
     expect(printed()).toMatch(/3 events are not in the rollup/);
+  });
+
+  it('counts an unscrubbed auth failure toward the compliance verdict — ABL-530', () => {
+    // The check the issue calls out in terms: without this, the second table
+    // fills with addresses past the boundary and this command still prints OK.
+    store.writeAuthFailures([failure({ receivedAt: '2026-01-01T00:00:00.000Z' })]);
+
+    run(['usage:stats'], new Date('2026-08-12T00:00:00Z'));
+
+    expect(printed()).toContain('NOT COMPLIANT');
+    // And it names which table, so a non-zero total does not send an operator
+    // looking in the wrong one.
+    expect(printed()).toMatch(/0 request, 1 auth-failure/);
+  });
+
+  it('reports the auth-failure counts beside the request ones', () => {
+    store.writeAuthFailures([
+      failure(),
+      failure({ secretVerified: true, accountId, keyId, errorCode: 'key_revoked' }),
+    ]);
+
+    run(['usage:stats'], new Date('2026-08-12T00:00:00Z'));
+
+    expect(printed()).toContain('auth failures     2');
+    expect(printed()).toContain('secret proven   1');
+    expect(printed()).toContain('Retention check: OK');
+  });
+});
+
+describe('the breach-detection reads — ABL-530', () => {
+  const NOW = new Date('2026-08-22T00:00:00Z');
+
+  it('security:auth-failures groups by origin and by prefix', () => {
+    store.writeAuthFailures([
+      failure({ clientIp: '203.0.113.5', presentedPrefix: 'guessaa1' }),
+      failure({ clientIp: '203.0.113.5', presentedPrefix: 'guessaa2' }),
+      failure({ clientIp: '198.51.100.1', presentedPrefix: 'leaked01' }),
+      failure({ clientIp: '198.51.100.2', presentedPrefix: 'leaked01' }),
+    ]);
+
+    run(['security:auth-failures', '--hours', '48'], NOW);
+
+    expect(printed()).toContain('203.0.113.5');
+    expect(printed()).toContain('leaked01');
+    expect(printed()).toContain('someone is guessing at our key space');
+  });
+
+  it('security:auth-failures says so plainly when there is nothing in the window', () => {
+    // The default window is 24 hours; the seeded refusal is three days old, so
+    // this also checks the window is applied rather than ignored.
+    store.writeAuthFailures([failure({ receivedAt: '2026-08-19T00:00:00.000Z' })]);
+
+    run(['security:auth-failures'], NOW);
+
+    expect(printed()).toContain('No authentication failures in this window.');
+  });
+
+  it('security:secret-holders separates a real-secret refusal from a guess', () => {
+    // The key has been served from its own address, so "never served from
+    // 203.0.113.9" is a claim the retained history can actually support. Without
+    // this the verdict is `no_usage_history`, which is the correct — and
+    // different — answer for a key that has only ever failed.
+    store.writeEvents([event({ clientIp: '192.0.2.10' })]);
+    store.writeAuthFailures([
+      failure({ presentedPrefix: 'guessaa1' }),
+      failure({
+        secretVerified: true,
+        accountId,
+        keyId,
+        errorCode: 'key_revoked',
+        clientIp: '203.0.113.9',
+      }),
+    ]);
+
+    run(['security:secret-holders', '--days', '7'], NOW);
+
+    expect(printed()).toContain('key_revoked');
+    expect(printed()).toContain('origin_never_served');
+    // The guess is not on this page at all: there is no guessing path to any of
+    // these codes, which is the whole reason S4 is separate from S3.
+    expect(printed()).not.toContain('guessaa1');
+  });
+
+  it('security:key-origins flags a new origin while the old one keeps running', () => {
+    store.writeEvents([
+      event({ receivedAt: '2026-06-20T00:00:00.000Z', clientIp: '192.0.2.10' }),
+      event({ receivedAt: '2026-08-21T00:00:00.000Z', clientIp: '192.0.2.10' }),
+      event({ receivedAt: '2026-08-20T00:00:00.000Z', clientIp: '198.51.100.7' }),
+    ]);
+
+    run(['security:key-origins', '--days', '7'], NOW);
+
+    expect(printed()).toContain('new_origin_while_old_continues');
+    expect(printed()).toContain('stolen-credential shape, not a redeploy');
+    // And it states the horizon of the claim, because past 90 days there is none.
+    expect(printed()).toContain('Address history retained: 90 days');
+  });
+
+  it('security:key-breadth reports a ratio and refuses to grade it', () => {
+    store.writeEvents([
+      event({ receivedAt: '2026-08-01T00:00:00.000Z' }),
+      event({ receivedAt: '2026-08-21T00:00:00.000Z', fingerprint: 'fp-a' }),
+      event({ receivedAt: '2026-08-21T00:00:00.000Z', fingerprint: 'fp-b' }),
+    ]);
+
+    run(['security:key-breadth', '--days', '7', '--baseline-days', '60'], NOW);
+
+    expect(printed()).toContain('2.00');
+    expect(printed()).toContain('deliberately not graded');
+  });
+
+  it('refuses a baseline that does not precede the recent window', () => {
+    // Overlapping them would dilute a genuine widening with the very traffic
+    // being asked about, which is the direction that hides the signal.
+    expect(() => run(['security:key-breadth', '--days', '30', '--baseline-days', '7'], NOW)).toThrow(
+      /must be greater than/
+    );
+  });
+
+  it('refuses an unreadable lookback rather than silently using the default', () => {
+    // An investigator who typed `--days 7d` and got a silent 24-hour window would
+    // draw a conclusion from a period they did not choose.
+    expect(() => run(['security:auth-failures', '--hours', '24h'], NOW)).toThrow(/positive number/);
+    expect(() => run(['security:secret-holders', '--days', '-3'], NOW)).toThrow(/positive number/);
   });
 });
 

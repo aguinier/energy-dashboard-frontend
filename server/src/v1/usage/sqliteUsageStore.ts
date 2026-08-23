@@ -1,5 +1,6 @@
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
-import { resolveApiKeysDbPath } from '../keys/sqliteApiKeyStore.js';
+import { hasContactEmailColumn, resolveApiKeysDbPath } from '../keys/sqliteApiKeyStore.js';
+import { createAuthFailureStore } from '../security/sqliteAuthFailureStore.js';
 import {
   DEFAULT_RETENTION_POLICY,
   IDEMPOTENCY_WINDOW_MS,
@@ -352,6 +353,25 @@ SELECT COUNT(*) AS v
 `;
 
 /**
+ * The `api_keys` half of a subject access request.
+ *
+ * `hasContactColumn` is deliberately the same parameter shape as `lookupSql` in
+ * `sqliteApiKeyStore.ts`, because it is the same problem: this module can be
+ * pointed at a key store file that predates `contact_email`, and naming a column
+ * that is not there fails at `prepare`. The columns are listed rather than taken
+ * with `SELECT *` so that a column added to `api_keys` later is absent from an
+ * export until somebody decides it belongs — see the call site for why that
+ * default is right in this direction, and why `contact_email` is the exception
+ * that was decided in.
+ */
+const exportKeysSql = (hasContactColumn: boolean) => `
+  SELECT id, account_id, key_env, key_prefix, label,
+         ${hasContactColumn ? 'contact_email' : 'NULL'} AS contact_email,
+         created_at, expires_at, revoked_at, revoked_reason
+    FROM api_keys WHERE account_id = ? ORDER BY created_at, id
+`;
+
+/**
  * The first instant of a `YYYY-MM`, in the same text form `received_at` holds.
  *
  * `Date#toISOString()` is what the meter writes, so the bounds are built the same
@@ -435,6 +455,21 @@ export function openUsageStore({
   db.pragma('journal_mode = WAL');
   db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
+
+  // The auth-failure record (ABL-530), on this same handle rather than on a
+  // second one. `sqliteAuthFailureStore.ts` holds its schema and its SQL and
+  // imports `better-sqlite3` for its *type* only, so it is absent from the list
+  // of database-opening modules `publicAppGraph.test.ts` names — which is the
+  // assertion, and not the module count, that was ever the control. (The count
+  // itself has already moved once without this table: ABL-532's change-log store
+  // is a fourth. Quote the membership, not the total.)
+  //
+  // Same file for a reason that is not tidiness: that table holds `client_ip` and
+  // `user_agent`, so it is inside the ABL-297 §5 promise from its first row and
+  // has to be scrubbed by `applyRetention` below, atomically, on the same
+  // boundary. A second store would be a second retention job, and the forgotten
+  // one would be the table nobody had ever printed a compliance line for.
+  const authFailures = createAuthFailureStore(db);
 
   const insertEvent = db.prepare(INSERT_EVENT);
   const findPrior = db.prepare(FIND_IDEMPOTENT_PRIOR);
@@ -641,10 +676,25 @@ export function openUsageStore({
       .prepare('DELETE FROM usage_events WHERE received_at < ? AND id <= ?')
       .run(deleteBefore, watermark).changes;
 
-    return { scrubbed, deleted, keptPendingRollup };
+    // Inside this same transaction, on the same two boundaries. Both tables hold
+    // an address, `usage:stats` reports one compliance figure across both, and a
+    // pass that committed one and failed the other would print a non-zero total
+    // with no failed job to point at.
+    return {
+      scrubbed,
+      deleted,
+      keptPendingRollup,
+      authFailures: authFailures.applyAuthFailureRetention(scrubBefore, deleteBefore, nowIso),
+    };
   });
 
   return {
+    // The auth-failure record's append and its four investigation reads
+    // (ABL-530). Spread first so the explicit members below cannot be shadowed
+    // by one of them: `applyRetention` and `stats` here are the whole-store
+    // versions and must win over anything the sub-store happens to export.
+    ...authFailures,
+
     writeEvents(events) {
       if (events.length === 0) {
         return { inserted: 0, alreadyPresent: 0, suppressedAsDuplicate: 0 };
@@ -694,12 +744,24 @@ export function openUsageStore({
         // the columns rather than deleting the field afterwards means a column
         // added to `api_keys` later is absent from the export until somebody
         // decides it belongs, which is the right default for this direction.
+        //
+        // `contact_email` (ABL-528) is that decision made: it is an email
+        // address the subject gave us and that we hold about them, which is
+        // squarely what a subject access request is for. It is not a credential
+        // — the exclusion above is about `secret_sha256` specifically — and
+        // omitting it would make the export quietly incomplete in the one
+        // direction §9(3) cares about.
+        //
+        // `hasContactEmailColumn` is the same guard `sqliteApiKeyStore.ts`'s
+        // `lookupSql` uses, imported rather than restated. This module applies
+        // no keys migration — its DDL is confined to the three usage tables and
+        // it only checks that `api_keys` *exists* — so it can meet a
+        // pre-ABL-528 file, and this prepare is lazy, which means the failure
+        // would land at the moment somebody answers a subject access request
+        // rather than at open. Selecting a literal NULL degrades that to the
+        // true claim about those rows: they have no contact.
         keys: db
-          .prepare(
-            `SELECT id, account_id, key_env, key_prefix, label, created_at,
-                    expires_at, revoked_at, revoked_reason
-               FROM api_keys WHERE account_id = ? ORDER BY created_at, id`
-          )
+          .prepare(exportKeysSql(hasContactEmailColumn(db)))
           .all(accountId) as Array<Record<string, unknown>>,
         events: db
           .prepare('SELECT * FROM usage_events WHERE account_id = ? ORDER BY id')
@@ -711,6 +773,21 @@ export function openUsageStore({
             )
             .all(accountId) as Record<string, unknown>[]
         ).map(readRollup),
+        // Refusals this account's own key can be tied to (ABL-530). Only the
+        // rows carrying an `account_id`, which the gate writes on exactly the
+        // branch where the secret has already matched — a refusal that named no
+        // key belongs to nobody, and attributing one would put a stranger's
+        // address in a subscriber's file.
+        //
+        // `SELECT *` rather than a named column list, and the difference from
+        // `keys` above is the direction of the risk: that table holds a
+        // credential (`secret_sha256`) that must never leave, so it is listed
+        // explicitly; this one holds no credential by construction, and a column
+        // added later is the subject's data and should appear without anybody
+        // remembering to add it here.
+        authFailures: db
+          .prepare('SELECT * FROM auth_failures WHERE account_id = ? ORDER BY id')
+          .all(accountId) as Array<Record<string, unknown>>,
       };
     },
 
@@ -720,6 +797,12 @@ export function openUsageStore({
 
       const watermark = readWatermark();
       const scrubBefore = subtractDays(now, retention.piiDays).toISOString();
+      const authFailureStats = authFailures.authFailureStats(scrubBefore);
+      const unscrubbedUsageEvents = one<number>(
+        `SELECT COUNT(*) AS v FROM usage_events
+          WHERE received_at < ? AND (client_ip IS NOT NULL OR user_agent IS NOT NULL)`,
+        scrubBefore
+      );
 
       return {
         events: one<number>('SELECT COUNT(*) AS v FROM usage_events'),
@@ -735,11 +818,17 @@ export function openUsageStore({
         // either personal-data field — not rows where `pii_scrubbed_at` is
         // unset, which would also count rows that never had an IP to begin
         // with and would make a clean store look non-compliant.
-        unscrubbedPastPii: one<number>(
-          `SELECT COUNT(*) AS v FROM usage_events
-            WHERE received_at < ? AND (client_ip IS NOT NULL OR user_agent IS NOT NULL)`,
-          scrubBefore
-        ),
+        //
+        // The **sum across both tables** since ABL-530. A figure that kept
+        // covering `usage_events` alone while `auth_failures` filled with
+        // addresses would still print COMPLIANT, and a check that silently
+        // stopped covering a table is worse than one that was never claimed.
+        unscrubbedPastPii: unscrubbedUsageEvents + authFailureStats.unscrubbedPastPii,
+        unscrubbedPastPiiByTable: {
+          usageEvents: unscrubbedUsageEvents,
+          authFailures: authFailureStats.unscrubbedPastPii,
+        },
+        authFailures: authFailureStats,
       };
     },
 

@@ -25,6 +25,7 @@ import {
 } from '../data/forecastsRepo.js';
 import { PUBLIC_FORECAST_MODELS, PUBLIC_FORECAST_TYPE_IDS } from '../data/models.js';
 import { forecastSeries } from '../data/series.js';
+import { createVersionGate, type VersionGate } from '../modelVersions/versionGuard.js';
 import type { V1DataContext } from '../data/context.js';
 
 /**
@@ -79,6 +80,11 @@ function serveForecasts(context: V1DataContext, req: Request, res: Response): vo
     required: false,
   });
 
+  // Built per request, not per process: an acknowledgement matures at its own
+  // instant, and a gate resolved at startup would keep withholding a cleared
+  // artifact until someone restarted the server (ABL-529).
+  const gate = createVersionGate(context.acknowledgedVersions, context.now());
+
   // An explicit model is honoured strictly; an absent one resolves to the first
   // served model that actually has rows for this zone, type and window.
   // catboost and xgboost cover disjoint zone sets — `load` is xgboost for
@@ -86,7 +92,7 @@ function serveForecasts(context: V1DataContext, req: Request, res: Response): vo
   // zones rather than harmonise them, and a silent substitution under an
   // explicit request would answer a question nobody asked.
   const model =
-    requestedModel ?? resolveServingModel(context.source, zone, forecastType, window) ?? null;
+    requestedModel ?? resolveServingModel(context.source, zone, forecastType, window, gate) ?? null;
 
   const path = '/v1/forecasts';
   const fingerprint = queryFingerprint(path, {
@@ -114,12 +120,13 @@ function serveForecasts(context: V1DataContext, req: Request, res: Response): vo
           horizonHours,
           after,
           limit,
+          gate,
         });
 
   const edges =
     model === null
       ? { newestTarget: null, newestVintage: null }
-      : readForecastEdges(context.source, zone, forecastType, model);
+      : readForecastEdges(context.source, zone, forecastType, model, gate);
 
   const linkParams = {
     zone,
@@ -217,12 +224,14 @@ function serveLatest(context: V1DataContext, req: Request, res: Response): void 
     required: false,
   });
 
-  const model = requestedModel ?? firstModelWithRows(context, zone, forecastType);
-  const rows = model === null ? [] : readLatestVintage(context.source, zone, forecastType, model);
+  const gate = createVersionGate(context.acknowledgedVersions, context.now());
+  const model = requestedModel ?? firstModelWithRows(context, zone, forecastType, gate);
+  const rows =
+    model === null ? [] : readLatestVintage(context.source, zone, forecastType, model, gate);
   const edges =
     model === null
       ? { newestTarget: null, newestVintage: null }
-      : readForecastEdges(context.source, zone, forecastType, model);
+      : readForecastEdges(context.source, zone, forecastType, model, gate);
 
   const path = '/v1/forecasts/latest';
   const body: Envelope<ForecastRow> & { meta: ForecastMetaExtras } = {
@@ -275,16 +284,29 @@ function serveLatest(context: V1DataContext, req: Request, res: Response): void 
  * Here the question is simply "which model has ever written for this zone and
  * type", and the catalogue already knows: it is memoized coverage, so this costs
  * a lookup rather than a query.
+ *
+ * The catalogue is deliberately **not** filtered by the acknowledged-version
+ * gate — it publishes which zones a model covers, which is a fact about the data
+ * and not about what we are currently cleared to serve, and rebuilding it per
+ * request to apply a filter would undo the memoization it exists for. What is
+ * checked here is the one case where that could mislead: a triple whose entire
+ * servable set is empty cannot answer, so it is skipped rather than resolved to
+ * and then found silent. That state is a misconfigured ledger rather than a
+ * normal one — `npm run modelversions -- status` names it — and skipping is what
+ * keeps `/latest` resolving the same way `/forecasts` does.
  */
 function firstModelWithRows(
   context: V1DataContext,
   zone: string,
-  forecastType: string
+  forecastType: string,
+  gate: VersionGate
 ): string | null {
   const coverage = context.catalog.modelCoverage();
   for (const model of PUBLIC_FORECAST_MODELS) {
     const entry = coverage.find((c) => c.forecast_type === forecastType && c.model === model);
-    if (entry && entry.zones.includes(zone)) return model;
+    if (!entry || !entry.zones.includes(zone)) continue;
+    if (gate.servableVersions(zone, forecastType, model)?.length === 0) continue;
+    return model;
   }
   return null;
 }

@@ -146,7 +146,7 @@ beforeEach(() => {
 
   const keys = openApiKeyAdminStore({ API_KEYS_DB_PATH: dbPath } as NodeJS.ProcessEnv);
   accountId = keys.createAccount({ name: 'Acme Energy', plan: 'developer' }).id;
-  keyId = keys.issueKey({ accountId, label: 'prod ETL', environment: 'test' }).record.id;
+  keyId = keys.issueKey({ accountId, label: 'prod ETL', contactEmail: 'ops@acme.example', environment: 'test' }).record.id;
   keys.close();
 
   // Opening the usage store applies ABL-301's schema, which billing requires

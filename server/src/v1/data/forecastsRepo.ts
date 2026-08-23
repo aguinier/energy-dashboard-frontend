@@ -3,6 +3,7 @@ import { toWireInstant } from './freshnessMap.js';
 import { PUBLIC_FORECAST_MODELS } from './models.js';
 import type { EnergyQuery, SqlParam } from './energySource.js';
 import type { TimeWindow } from './params.js';
+import type { VersionGate } from '../modelVersions/versionGuard.js';
 
 /**
  * Reading our own forecast output.
@@ -44,6 +45,32 @@ import type { TimeWindow } from './params.js';
  * `normalizeForForecastsTable` fell into (`forecastService.ts:7-12`). Ordering
  * on the raw column would interleave the two forms wrongly and break cursor
  * monotonicity, so ordering and the cursor both run on `REPLACE(..., 'T', ' ')`.
+ *
+ * ## 4. Every read is restricted to acknowledged artifacts
+ *
+ * ABL-529. `model_name` names a **family**, so replacing the artifact behind a
+ * pair we already serve moves every number under an unchanged label — ToS
+ * §9.3.1's material change, invisible on this surface and, until now, invisible
+ * to us. A `VersionGate` (`v1/modelVersions/versionGuard.ts`) supplies the
+ * `model_version` values a human has signed off, and **all four reads take it**,
+ * which is the part that has to stay true:
+ *
+ * - `readForecasts` and `readLatestVintage` filter the rows, so an
+ *   unacknowledged artifact cannot reach a subscriber.
+ * - `readForecastEdges` filters too, because `latest_vintage_at` and
+ *   `freshness.data_through` are built from it. Leaving it unfiltered would
+ *   report the withheld run's timestamp over the previous artifact's numbers —
+ *   a series that says it is current while serving something older, which is a
+ *   worse claim than the one the guard was added to prevent.
+ * - `resolveServingModel` filters as well, so a model whose only rows in the
+ *   window are unacknowledged does not win the resolution and then answer with
+ *   nothing while the other family had servable rows.
+ *
+ * The gate withholds rather than rejects, and that is deliberate: the previously
+ * acknowledged version keeps serving, so the subscriber gets stale-but-honest
+ * numbers instead of an empty page. Nothing about the response *shape* changes —
+ * putting `model_version` on the wire is a contract change and explicitly not
+ * this issue's.
  */
 
 export interface ForecastRow {
@@ -72,6 +99,39 @@ export interface ForecastQuery {
   horizonHours?: number;
   after?: string;
   limit: number;
+  /** Which artifacts a human has signed off for this triple. See the module note, §4. */
+  gate: VersionGate;
+}
+
+/**
+ * The acknowledged-artifact restriction, as SQL.
+ *
+ * Three cases, and the middle one is the one an `IN ()` would get wrong:
+ *
+ * - `null` — the triple is absent from the ledger, so it is a combination we
+ *   have never served and is additive under ToS §9.1. No clause.
+ * - `[]` — the triple is known and nothing is servable yet, because every
+ *   acknowledgement for it is still inside its 30-day notice period. `IN ()` is
+ *   a syntax error in SQLite, so this is spelled `AND 1 = 0`: an empty page,
+ *   which is the correct answer to "serve me an artifact nobody has cleared".
+ * - a list — `AND <prefix>model_version IN (?, …)`.
+ *
+ * `prefix` exists because the correlated `MAX(generated_at)` subquery has to
+ * carry the same restriction under its own alias. Without it the subquery would
+ * pick the newest *unacknowledged* run as the target of an equality the outer
+ * query then filters away, and every target hour covered by that run would
+ * vanish — the series would develop holes rather than fall back.
+ */
+function versionClause(
+  versions: readonly string[] | null,
+  prefix: string
+): { sql: string; params: SqlParam[] } {
+  if (versions === null) return { sql: '', params: [] };
+  if (versions.length === 0) return { sql: 'AND 1 = 0', params: [] };
+  return {
+    sql: `AND ${prefix}model_version IN (${versions.map(() => '?').join(', ')})`,
+    params: [...versions],
+  };
 }
 
 interface RawForecastRow {
@@ -100,42 +160,59 @@ export function resolveServingModel(
   source: EnergyQuery,
   zone: string,
   forecastType: string,
-  window: TimeWindow
+  window: TimeWindow,
+  gate: VersionGate
 ): string | null {
   const range = timestampRange(window.sqlStart, window.sqlEndInclusive);
-  const placeholders = PUBLIC_FORECAST_MODELS.map(() => '?').join(', ');
 
-  const found = source.all<{ model_name: string }>(
-    `SELECT DISTINCT model_name
-       FROM forecasts
-      WHERE country_code = ?
-        AND forecast_type = ?
-        AND model_name IN (${placeholders})
-        AND ${rangeClause('target_timestamp_utc')}`,
-    [zone, forecastType, ...PUBLIC_FORECAST_MODELS, ...rangeArgs(range)]
-  );
-
-  const available = new Set(found.map((row) => row.model_name));
-  return PUBLIC_FORECAST_MODELS.find((model) => available.has(model)) ?? null;
+  // One query per model rather than one `IN` over both, because the acknowledged
+  // artifact set is per triple: catboost and xgboost for the same zone and type
+  // are two different rows in the ledger with two different notice periods, and
+  // a single `IN` could not carry both restrictions. Two index seeks against
+  // `idx_forecasts_model_lookup`, and `PUBLIC_FORECAST_MODELS` is length 2.
+  for (const model of PUBLIC_FORECAST_MODELS) {
+    const versions = versionClause(gate.servableVersions(zone, forecastType, model), '');
+    const hit = source.get<{ one: number }>(
+      `SELECT 1 AS one
+         FROM forecasts
+        WHERE country_code = ?
+          AND forecast_type = ?
+          AND model_name = ?
+          AND ${rangeClause('target_timestamp_utc')}
+          ${versions.sql}
+        LIMIT 1`,
+      [zone, forecastType, model, ...rangeArgs(range), ...versions.params]
+    );
+    if (hit !== undefined) return model;
+  }
+  return null;
 }
 
 /** Read one page of forecasts. `limit + 1` is fetched so truncation is a fact. */
 export function readForecasts(source: EnergyQuery, query: ForecastQuery): ForecastPage {
-  const { zone, forecastType, model, window, horizonHours, after, limit } = query;
+  const { zone, forecastType, model, window, horizonHours, after, limit, gate } = query;
   const range = timestampRange(after ?? window.sqlStart, window.sqlEndInclusive);
 
   const horizonClause = horizonHours === undefined ? '' : 'AND horizon_hours = ?';
   const cursorClause = after === undefined ? '' : `AND REPLACE(target_timestamp_utc, 'T', ' ') > ?`;
+  const servable = gate.servableVersions(zone, forecastType, model);
+  const outerVersions = versionClause(servable, '');
+  const innerVersions = versionClause(servable, 'f2.');
 
   const params: SqlParam[] = [zone, forecastType, model, ...rangeArgs(range)];
   if (horizonHours !== undefined) params.push(horizonHours);
   if (after !== undefined) params.push(after);
+  params.push(...outerVersions.params);
   // The correlated subquery repeats the model and, when present, the horizon —
   // the newest vintage *for the same slice*, not the newest vintage overall.
   // Dropping the horizon from the inner query would compare a 6-hour-ahead run
-  // against a 60-hour-ahead one and return neither consistently.
+  // against a 60-hour-ahead one and return neither consistently. It repeats the
+  // version restriction for the same reason: the newest *servable* run, or the
+  // equality would target a run the outer filter then discards, punching holes
+  // in the series instead of falling back to the acknowledged artifact.
   params.push(model);
   if (horizonHours !== undefined) params.push(horizonHours);
+  params.push(...innerVersions.params);
   params.push(limit + 1);
 
   const rows = source.all<RawForecastRow>(
@@ -151,6 +228,7 @@ export function readForecasts(source: EnergyQuery, query: ForecastQuery): Foreca
         AND ${rangeClause('target_timestamp_utc')}
         ${horizonClause}
         ${cursorClause}
+        ${outerVersions.sql}
         AND generated_at = (
           SELECT MAX(f2.generated_at)
             FROM forecasts f2
@@ -159,6 +237,7 @@ export function readForecasts(source: EnergyQuery, query: ForecastQuery): Foreca
              AND f2.target_timestamp_utc = f1.target_timestamp_utc
              AND f2.model_name = ?
              ${horizonClause.replace('horizon_hours', 'f2.horizon_hours')}
+             ${innerVersions.sql}
         )
       ORDER BY REPLACE(target_timestamp_utc, 'T', ' ')
       LIMIT ?`,
@@ -189,8 +268,13 @@ export function readLatestVintage(
   source: EnergyQuery,
   zone: string,
   forecastType: string,
-  model: string
+  model: string,
+  gate: VersionGate
 ): ForecastRow[] {
+  const servable = gate.servableVersions(zone, forecastType, model);
+  const outer = versionClause(servable, '');
+  const inner = versionClause(servable, '');
+
   const rows = source.all<RawForecastRow>(
     `SELECT REPLACE(target_timestamp_utc, 'T', ' ') AS "__ts",
             forecast_value AS "value",
@@ -201,15 +285,26 @@ export function readLatestVintage(
       WHERE country_code = ?
         AND forecast_type = ?
         AND model_name = ?
+        ${outer.sql}
         AND generated_at = (
           SELECT MAX(generated_at)
             FROM forecasts
            WHERE country_code = ?
              AND forecast_type = ?
              AND model_name = ?
+             ${inner.sql}
         )
       ORDER BY REPLACE(target_timestamp_utc, 'T', ' ')`,
-    [zone, forecastType, model, zone, forecastType, model]
+    [
+      zone,
+      forecastType,
+      model,
+      ...outer.params,
+      zone,
+      forecastType,
+      model,
+      ...inner.params,
+    ]
   );
   return rows.map(shape);
 }
@@ -239,15 +334,26 @@ export function readForecastEdges(
   source: EnergyQuery,
   zone: string,
   forecastType: string,
-  model: string
+  model: string,
+  gate: VersionGate
 ): ForecastEdges {
+  // Both edges are restricted to the acknowledged artifacts, and that is not
+  // tidiness. These two values become `latest_vintage_at`, `freshness.status`
+  // and `freshness.data_through`. Reading them unfiltered while the rows are
+  // filtered would date a withheld run over the previous artifact's numbers —
+  // a series reporting itself fresh while serving something older, which is a
+  // sharper false claim than the silent swap the guard exists to stop.
+  const servable = gate.servableVersions(zone, forecastType, model);
+  const versions = versionClause(servable, '');
+
   const tail = source.all<{ target_timestamp_utc: string }>(
     `SELECT target_timestamp_utc
        FROM forecasts
       WHERE country_code = ? AND forecast_type = ? AND model_name = ?
+        ${versions.sql}
       ORDER BY target_timestamp_utc DESC
       LIMIT 500`,
-    [zone, forecastType, model]
+    [zone, forecastType, model, ...versions.params]
   );
 
   let newestTarget: string | null = null;
@@ -259,8 +365,9 @@ export function readForecastEdges(
   const vintage = source.get<{ mx: string | null }>(
     `SELECT MAX(generated_at) AS mx
        FROM forecasts
-      WHERE country_code = ? AND forecast_type = ? AND model_name = ?`,
-    [zone, forecastType, model]
+      WHERE country_code = ? AND forecast_type = ? AND model_name = ?
+        ${versions.sql}`,
+    [zone, forecastType, model, ...versions.params]
   );
 
   return { newestTarget, newestVintage: vintage?.mx ?? null };
