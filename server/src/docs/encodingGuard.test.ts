@@ -50,6 +50,19 @@ function hasUtf8Bom(buf: Buffer): boolean {
   return buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
 }
 
+/**
+ * CR byte (0x0D): present as a line terminator in CRLF (\r\n) or bare CR (\r)
+ * files.  Source files in this repo must use LF-only (\n) line endings.
+ * Operates on the raw buffer so it cannot be fooled by a text-mode decode that
+ * silently strips \r bytes.
+ */
+function hasCrByte(buf: Buffer): boolean {
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x0d) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Self-tests -- a detector that passes vacuously is worse than no detector
 // ---------------------------------------------------------------------------
@@ -95,6 +108,22 @@ describe('encoding detector self-tests', () => {
 
   it('hasUtf8Bom does not fire on a clean buffer', () => {
     expect(hasUtf8Bom(Buffer.from('hello', 'utf8'))).toBe(false);
+  });
+
+  it('hasCrByte fires on a CRLF buffer', () => {
+    expect(hasCrByte(Buffer.from('line one\r\nline two\r\n', 'utf8'))).toBe(true);
+  });
+
+  it('hasCrByte fires on a CR-only buffer', () => {
+    expect(hasCrByte(Buffer.from('line one\rline two\r', 'utf8'))).toBe(true);
+  });
+
+  it('hasCrByte does NOT fire on a LF-only buffer', () => {
+    expect(hasCrByte(Buffer.from('line one\nline two\n', 'utf8'))).toBe(false);
+  });
+
+  it('hasCrByte does NOT fire on a clean ASCII buffer with no newlines', () => {
+    expect(hasCrByte(Buffer.from('hello world', 'utf8'))).toBe(false);
   });
 });
 
@@ -164,5 +193,47 @@ describe('encoding guard (repo-wide, git-tracked files only)', () => {
       }
     }
     expect(failures, `UTF-8 BOM found in:\n${failures.join('\n')}`).toEqual([]);
+  });
+
+  it('the 4 ABL-513 repaired files store no CR bytes in the git object', () => {
+    // On Windows with core.autocrlf=true the working-tree copy of every file
+    // is checked out with CRLF, so reading from disk is not a useful check.
+    // git objects bypass core.autocrlf: the stored blob contains the canonical
+    // line endings, so a file committed as LF has no CR byte in its blob.
+    //
+    // ABL-513's first fix introduced CR CR LF in exactly 4 files because the
+    // encoding-repair script wrote content through a code path that added CRs
+    // before staging.  This guard pins those 4 files specifically: if any
+    // future re-run of the repair script reintroduces CRs the test fails here,
+    // with the file name, before a PR is opened.
+    //
+    // Eight other committed .ts files in the repo already carry CR bytes from
+    // earlier work; fixing them is out of ABL-513's scope.  The .gitattributes
+    // entry added by ABL-513 (*.ts eol=lf, *.tsx eol=lf) prevents new CRs from
+    // being committed into any file going forward.
+    const REPAIRED_FILES = [
+      'client/src/components/map/EuropeMap.tsx',
+      'client/src/components/charts/AbleLineChart.tsx',
+      'client/src/components/comparison/ComparisonMap.tsx',
+      'client/src/hooks/usePrefetch.ts',
+    ];
+    const failures: string[] = [];
+    for (const rel of REPAIRED_FILES) {
+      let buf: Buffer;
+      try {
+        buf = execFileSync('git', ['cat-file', 'blob', `:${rel}`], {
+          cwd: repoRoot,
+          encoding: 'buffer',
+          maxBuffer: 10 * 1024 * 1024,
+        });
+      } catch {
+        // Not yet staged -- skip (pre-commit environment); will be caught on CI.
+        continue;
+      }
+      if (hasCrByte(buf)) {
+        failures.push(rel);
+      }
+    }
+    expect(failures, `CR bytes (CRLF/CR line endings) in git objects:\n${failures.join('\n')}`).toEqual([]);
   });
 });
