@@ -6652,10 +6652,14 @@ sentence instead of numbers:**
   each stream carries `latest`, `ageHours` and `status`, so it names which one
   is behind and by how much.
 - `stale` on `load`/`generation` means the newest *measurement* is over 18h old,
-  which is past the longest scheduled gap plus the slowest TSO's own lag: at
-  least one full ingest pass stored nothing for that country. Settle it on prod
-  (`/app/logs/pipeline.log`), not the workstation replica — the replica can be
-  hours behind prod even with a fresh mtime.
+  which is past the longest scheduled gap plus the slowest TSO's own lag. It does
+  **not** follow that a pass stored nothing — this clause used to say it did, and
+  that reading is what framed ABL-554 as a defect. A zone publishing one daily
+  batch is refreshed in full by whichever pass first runs after the batch lands,
+  and reads `stale` for the hours before it while every pass in between stores
+  rows normally. Settle it on prod (`/app/logs/pipeline.log`), not the
+  workstation replica — the replica can be hours behind prod even with a fresh
+  mtime.
 - `stale` on `price` means the day-ahead result does not reach the market day it
   should. After 14:00 UTC that is tomorrow. This is ABL-51's signature.
 - `ended` is not an alarm: the stream was held before but its newest usable row
@@ -6664,6 +6668,45 @@ sentence instead of numbers:**
   self-clears when a newer row lands; do not replace it with a country list.
 - See "Data freshness" above before changing a threshold — all are sized from
   measurements recorded there.
+
+**A country still reads `stale` on prod minutes after a cron pass "completed":**
+- **A read taken shortly after the cron minute is not a post-pass read.** A pass
+  walks 39 countries in one sequential alphabetical loop over 17-55 min (see
+  "Data freshness" above), so a country's refresh instant is set by its position
+  in the alphabet, not by the cron minute. Measured on the 2026-08-24 06:30 pass:
+  AL finished at 06:31:51, BG's generation fetch landed at **06:37:54**. A prod
+  check at 06:35 therefore observed BG *before the pass had requested it* and
+  read the pre-pass value. That is ABL-554 exactly — filed as "the pass ran and
+  did not absorb upstream rows", when the pass absorbed them in full three
+  minutes later (`2026-08-23 07:00` -> `2026-08-24 01:00`, 151 -> 163 records,
+  contiguous hourly with no holes).
+- **`GET /api/data-freshness/:cc/ingest` answers this without an SSH**, and is
+  what ABL-295 built it for: `lastChecked` per stream is when a pass last
+  *looked* at that country. At 06:35 BG generation read `00:33:31`, which settles
+  "has the pass reached BG yet" in one request. Compare it against the cron
+  minute before concluding anything from `latest`.
+- **Otherwise grep that country's own line, never the pass boundary:**
+  ```bash
+  docker exec energy-data-gathering \
+    grep "full-generation / .* for BG " /app/logs/cron_update.log | tail -3
+  ```
+  `Retrieved N …` followed by `Upserted N` is a pass that stored what upstream
+  offered. No line yet means the pass has not got there.
+- **A falling `Retrieved N` is not row loss.** The fetch window is
+  `now - 7d .. now` at time-of-day precision (`get_recent_date_range`,
+  `../energy-data-gathering/utils.py`) while the log prints dates only, so two
+  passes on one day look like the same window and are not. BG generation read
+  163 -> 162 -> 157 -> 151 across 2026-08-23/24 as old hours left the window
+  faster than its leading edge advanced; the arithmetic closes exactly
+  (151 − 6 leaving + 18 arriving = 163) and nothing already stored is deleted.
+- **A target timestamp later than the fetch instant cannot have been stored by
+  that pass**, because the window ends at `now`. ABL-554's upstream probe found
+  BG at `2026-08-24 01:00`, 27 minutes *ahead* of the 00:33 fetch — so the 00:30
+  pass could not have held it under any implementation, and the 06:30 pass was
+  the first that could.
+- Regional context, measured 2026-08-24 06:43 UTC once the pass had passed BG:
+  BG generation 5.7h, GR 6.7h, RO 6.5h, HU 6.7h, RS 8.7h, DE 0.7h. A Balkan zone
+  sitting hours behind DE is the ordinary case, not a finding.
 
 **Data freshness returning nothing:**
 - Verify `/api/data-freshness/:countryCode` endpoint is responding
