@@ -4750,7 +4750,12 @@ nothing in the result saying which is wrong.
   coverage"*) is **cancelled** — source coverage is a settled Board question.
   **Re-file rule:** a stall at `2026-08-05 21:00` is known; if the cutoff
   *moves and re-freezes at a new timestamp*, that is a genuinely new upstream
-  fact worth filing.
+  fact worth filing. **A confirmed-upstream cutoff earns a registry entry here
+  only once it survives past the rolling 7-day refetch window** (ABL-85: a gap
+  that slides out of the window can never self-heal, so the stall is permanent
+  until upstream resumes). Before that threshold, confirmation lives on the
+  issue, not in this file — an entry written across the resumption boundary
+  becomes wrong the moment the zone heals, as happened with AL generation.
 - **A real publication time.** `publication_timestamp_utc` exists on eight
   tables and **does not mean what its name says**. It is filled from the ENTSO-E
   response's `createdDateTime`, but ENTSO-E builds the document *on request* and
@@ -4835,16 +4840,38 @@ nothing in the result saying which is wrong.
   GB stops at `2021-06-14` and UA at `2022-02-25`. **Before filing a
   "table X is stale for country Y" bug, probe upstream**, and judge freshness
   by `MAX(timestamp_utc)` on prod, never by `data_ingestion_log`. If your
-  remit is read-only (no ENTSO-E API access to probe), the frozen
-  `MAX(timestamp_utc)` is the fingerprint for an upstream outage. **First,
-  grep this file** — `grep "2026-XX-XX HH:MM" CLAUDE.md` with your frozen
-  timestamp — because the known-gap entries above record every confirmed
-  upstream outage with its exact cutoff; a hit means the condition is already
-  on file and you can stop. Only if the grep returns nothing should you fall
-  back to closed-issue archaeology (searching issue titles and bodies for the
-  same frozen timestamp). `data_ingestion_log` records an `INSERT OR REPLACE`
-  rowcount, so rewriting rows that already existed logs as inserts and a
-  healthy ingest looks identical to a five-day upstream stall.
+  remit is read-only (no ENTSO-E API access to probe), a frozen
+  `MAX(timestamp_utc)` has three possible causes that cannot be separated
+  without a live upstream probe: (a) **between passes** — the cron runs at
+  `30 0,6,13,18` UTC, up to ~7h apart, so a freeze younger than one pass
+  interval is ordinary and not reportable until it survives the next scheduled
+  pass; (b) **ingest error** — the pass ran but wrote nothing, which
+  `data_ingestion_log` cannot distinguish from a healthy rewrite (see below);
+  (c) **upstream stopped publishing.** The honest read-only disposition is
+  *"frozen, cause not yet determined; upstream probe required before filing."*
+  Check other streams for the same zone first: if `energy_load` and
+  `energy_generation` are both frozen at the same timestamp it is *more likely*
+  upstream, but still not certain — two pipelines share one cron pass and both
+  fail together when a pass errors. **First, grep this file** —
+  `grep "2026-XX-XX HH:MM" CLAUDE.md` with your frozen timestamp — because
+  the known-gap entries above record every confirmed upstream outage with its
+  exact cutoff; a hit means the condition is already on file and you can stop.
+  Only if the grep returns nothing should you fall back to closed-issue
+  archaeology (searching issue titles and bodies for the same frozen timestamp).
+  `data_ingestion_log` records an `INSERT OR REPLACE` rowcount, so rewriting
+  rows that already existed logs as inserts and a healthy ingest looks identical
+  to a five-day upstream stall.
+
+  **The 21:00 UTC local-day boundary is a distinct upstream signature** (ABL-551).
+  Balkan and CET zones (AL, MK, BA, ME, RS) whose local time is CEST (UTC+2) end
+  their calendar day at 22:00 local = 21:59 last market hour = `21:00:00` UTC.
+  ENTSO-E publishes one row per hour; a stream that ran fully through its last
+  local day and then stopped will have exactly 22 rows on the terminal date
+  (hours 00–21 UTC), not 24. Two consequences: (a) two zones/streams "stopping
+  at the exact same timestamp" means only the same *calendar date* — it is not
+  evidence of a shared cause; (b) a clean unbroken run to a local-day boundary
+  is the **upstream publication stopped** signature, whereas a real ingest break
+  cuts at an arbitrary hour mid-pass.
 
   **Re-confirmed by direct measurement under ABL-295, and it is AL load.**
   Measured on the replica 2026-08-12: AL's `energy_load`
