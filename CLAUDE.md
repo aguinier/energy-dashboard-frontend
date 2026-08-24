@@ -4750,7 +4750,10 @@ nothing in the result saying which is wrong.
   coverage"*) is **cancelled** — source coverage is a settled Board question.
   **Re-file rule:** a stall at `2026-08-05 21:00` is known; if the cutoff
   *moves and re-freezes at a new timestamp*, that is a genuinely new upstream
-  fact worth filing.
+  fact worth filing. A confirmed-upstream cutoff earns a registry entry here
+  only once it survives past the rolling 7-day refetch window — a gap that
+  slides out of that window can never self-heal (ABL-85), so before that point
+  the confirmation lives on the issue, not in this file.
 - **A real publication time.** `publication_timestamp_utc` exists on eight
   tables and **does not mean what its name says**. It is filled from the ENTSO-E
   response's `createdDateTime`, but ENTSO-E builds the document *on request* and
@@ -4835,8 +4838,21 @@ nothing in the result saying which is wrong.
   GB stops at `2021-06-14` and UA at `2022-02-25`. **Before filing a
   "table X is stale for country Y" bug, probe upstream**, and judge freshness
   by `MAX(timestamp_utc)` on prod, never by `data_ingestion_log`. If your
-  remit is read-only (no ENTSO-E API access to probe), the frozen
-  `MAX(timestamp_utc)` is the fingerprint for an upstream outage. **First,
+  remit is read-only (no ENTSO-E API access to probe), a frozen
+  `MAX(timestamp_utc)` is consistent with at least three states — upstream
+  stopped publishing, the zone is between cron passes and upstream published
+  after the last capture, or upstream has rows but ingest failed to store them —
+  and cannot distinguish them alone. Read-only discriminators: (1) age under ~7h
+  plus the zone's own publication lag (ME ~9h, MK/BA similarly) is between
+  passes, not an outage; (2) if every stream for that zone is frozen by similar
+  amounts, it is a between-passes snapshot; (3) if one stream is frozen while
+  others for the same zone advanced, it is stream-specific. AL/MK/BA/ME/RS
+  zones publish whole local days hourly, so their stalls almost always terminate
+  at exactly `21:00:00` UTC (23:00 CEST, the last hour of the local day) — two
+  zones sharing that timestamp is not evidence of a shared cause, just the same
+  date boundary; a real ingest break cuts at an arbitrary hour mid-pass. The
+  honest read-only disposition is "frozen, cause not yet determined" — not
+  "upstream outage". **First,
   grep this file** — `grep "2026-XX-XX HH:MM" CLAUDE.md` with your frozen
   timestamp — because the known-gap entries above record every confirmed
   upstream outage with its exact cutoff; a hit means the condition is already
