@@ -1,4 +1,4 @@
-﻿import { useState, useCallback, useMemo, useId, memo } from 'react';
+import { useState, useCallback, useMemo, useId, memo } from 'react';
 import { m } from 'framer-motion';
 import { ComposableMap, Geographies, Geography } from 'react-simple-maps';
 import { useDashboardStore } from '@/store/dashboardStore';
@@ -34,18 +34,18 @@ interface HoveredCountryInfo {
   metrics: Record<string, CrossCountryMetricsEntry>;
 }
 
-// WAPE can be null (no denominator â€” e.g. all-zero actuals in the window).
+// WAPE can be null (no denominator — e.g. all-zero actuals in the window).
 // Render that as absent rather than coercing to 0, which would read as a
 // perfect forecast.
 function formatMetricValue(value: number | null, asPercent: boolean): string {
-  if (value === null) return 'â€“';
+  if (value === null) return '–';
   return asPercent ? `${value.toFixed(1)}%` : value.toFixed(2);
 }
 
 export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMapProps) {
   const { comparisonMetric, comparisonForecastType, goToCountry } = useDashboardStore();
   const [hovered, setHovered] = useState<HoveredCountryInfo | null>(null);
-  // Unique per mounted instance, as in EuropeMap â€” a hardcoded pattern id
+  // Unique per mounted instance, as in EuropeMap — a hardcoded pattern id
   // collides if both maps ever share a page, and a collided fragment reference
   // silently paints the wrong pattern.
   const hatchId = `no-data-hatch-${useId()}`;
@@ -62,7 +62,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
     if (data[code]) goToCountry(code, 'analytics');
   }, [data, goToCountry]);
 
-  // The scale is this forecast type's own observed spread across countries â€”
+  // The scale is this forecast type's own observed spread across countries —
   // the same relative basis the heatmap and leaderboard use. The legend below
   // prints its real ends rather than a fixed cutoff, so the colours and the
   // legend cannot disagree. See accuracyScale.ts.
@@ -77,7 +77,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
           load. Say so, rather than leaving the choice implicit.
 
           A row of forecast-type buttons used to sit here with an empty
-          onClick â€” "Load" rendered as selected and every other button did
+          onClick — "Load" rendered as selected and every other button did
           nothing when pressed, so it read as a filter that silently refused to
           filter. The Type control in the filter bar above does the real thing
           and is always visible, so the dead copy is gone rather than wired up
@@ -85,7 +85,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
       {comparisonForecastType === 'all' && (
         <div className="absolute top-4 left-4 z-10 rounded-lg border bg-background/90 px-3 py-1.5 backdrop-blur">
           <span className="text-xs text-muted-foreground">
-            Coloured by <span className="font-medium text-foreground">load</span> â€” pick a Type above
+            Coloured by <span className="font-medium text-foreground">load</span> — pick a Type above
             to map another
           </span>
         </div>
@@ -111,7 +111,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
                 const entry = countryData?.[mapForecastType];
                 const metricValue = entry?.[comparisonMetric];
 
-                // Ranked ramp / flat "has a number" / hatched "not measured" â€”
+                // Ranked ramp / flat "has a number" / hatched "not measured" —
                 // see mapFill.ts. An unmeasured country is deliberately NOT the
                 // same mark at lower opacity: it used to be flat `--muted` at
                 // 0.5, which reads as background rather than as an answer
@@ -119,7 +119,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
                 const { kind, fill } = countryFill(metricValue, comparisonMetric, scale, noDataHatchUrl(hatchId));
 
                 // Clicking navigates whenever the country is in the response at
-                // all, even if this forecast type is unmeasured for it â€” so the
+                // all, even if this forecast type is unmeasured for it — so the
                 // cursor follows that, not the fill.
                 const clickable = !!countryData;
 
@@ -223,7 +223,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
               <span>{scale.max.toFixed(1)}%</span>
             </div>
             <p className="mt-1 text-micro text-muted-foreground max-w-[15rem]">
-              rank, best â†’ worst of {scale.count}
+              rank, best → worst of {scale.count}
             </p>
           </>
         )}
@@ -232,11 +232,11 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
           <p className="text-micro text-muted-foreground max-w-[15rem]">
             {scale.count === 0
               ? 'No country has a measurable WAPE for this type in this window.'
-              : `Only ${scale.count} measured â€” too few to rank, so no country is coloured by rank.`}
+              : `Only ${scale.count} measured — too few to rank, so no country is coloured by rank.`}
           </p>
         )}
 
-        {/* The flat fill only exists on maps that draw it â€” see usesFlatFill. */}
+        {/* The flat fill only exists on maps that draw it — see usesFlatFill. */}
         {usesFlatFill(comparisonMetric, scale) && (
           <div className="mt-2 flex items-center gap-1.5 border-t pt-2">
             <span
@@ -244,7 +244,7 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
               style={{ backgroundColor: MEASURED_FLAT_FILL }}
             />
             <span className="text-micro text-muted-foreground">
-              {comparisonMetric === 'wape' ? 'measured, not ranked' : 'measured â€” read the value'}
+              {comparisonMetric === 'wape' ? 'measured, not ranked' : 'measured — read the value'}
             </span>
           </div>
         )}

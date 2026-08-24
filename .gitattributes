@@ -9,3 +9,10 @@
 # the *published* document byte-stable across platforms, which matters for a
 # file a docs pipeline and a client generator both consume.
 docs/api/v1/openapi.json text eol=lf
+
+# TypeScript source files must use LF line endings.  On Windows checkouts with
+# core.autocrlf=true a tool that re-encodes file content (e.g. a mojibake repair
+# script) can silently write CRLF or CR CR LF.  Declaring eol=lf here prevents
+# git from converting these files on checkout and makes any stray CR visible.
+*.ts  text eol=lf
+*.tsx text eol=lf

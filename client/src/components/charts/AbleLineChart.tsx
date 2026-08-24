@@ -1,4 +1,4 @@
-﻿import { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { chartTimeTicks, niceTicks } from '@/lib/chartTicks';
 import { trailingGapLabel } from '@/lib/trailingGap';
 import { summarizeSeries } from '@/lib/chartSummary';
@@ -19,7 +19,7 @@ export interface AbleSeriesPoint {
   forecast: number | null;
   /**
    * Named forecast series, keyed by an id from the chart's `forecastSeries`
-   * prop â€” net position's multi-model picker (ABL-203), which can put several
+   * prop — net position's multi-model picker (ABL-203), which can put several
    * forecast lines on one chart at once. Every other caller (Load, Price,
    * ForecastTab's overlay) leaves this undefined and the chart draws the
    * single `forecast` field above exactly as it always has.
@@ -29,7 +29,7 @@ export interface AbleSeriesPoint {
   min?: number | null;
   max?: number | null;
   /**
-   * Provenance of the forecast value at this point â€” which run produced it
+   * Provenance of the forecast value at this point — which run produced it
    * and how far ahead it was, e.g. net position's D+1/D+2 vintages. Optional:
    * only series that can carry several forecast vintages at once set these.
    */
@@ -44,19 +44,19 @@ export interface AbleForecastSeriesSpec {
   color: string;
   /**
    * SVG stroke-dasharray for this line. Defaults to `'4 4'` (the single-line
-   * forecast dash every caller used before ABL-204) when omitted â€” net
+   * forecast dash every caller used before ABL-204) when omitted — net
    * position's picker (ABL-203) does not set this, so its lines are
    * unaffected. Load/Price's picker (ABL-204) sets a distinct dash per model
    * via `forecastLineTokens.ts`, because models trained on the same data
-   * routinely predict near-identical values â€” the normal case, not an edge
-   * case â€” and a shared dash rhythm hides the far line under the near one.
+   * routinely predict near-identical values — the normal case, not an edge
+   * case — and a shared dash rhythm hides the far line under the near one.
    */
   dash?: string;
   /**
    * False when this model was explicitly selected but returned zero rows for
    * the current country/window. Defaults to true (drawn normally). A false
    * entry draws no line (there is nothing to draw) but stays IN the legend
-   * with a hatched key instead of being silently dropped â€” the ABL-205
+   * with a hatched key instead of being silently dropped — the ABL-205
    * "selected but not covered" mark, carrying forward `NoDataHatch`'s
    * semantic that a texture signals absence, never a quiet/low value.
    */
@@ -82,24 +82,24 @@ export interface AbleLineChartProps {
    * pill, and the trailing-gap label. For a chart that is entirely historical
    * (ForecastTab's forecast-vs-actual overlay) those marks describe nothing.
    *
-   * It does NOT decide where the forecast line starts â€” both series always draw
+   * It does NOT decide where the forecast line starts — both series always draw
    * wherever they hold a value. It used to do both, which is how the Load,
    * Price and Net position tabs lost every past-dated forecast point (ABL-92).
    */
   overlay?: boolean;
   /** Disable smoothing (Catmull-Rom). */
   smooth?: boolean;
-  /** Active time preset (e.g. '24h', '7d') â€” chooses hour vs. date X-axis labels. */
+  /** Active time preset (e.g. '24h', '7d') — chooses hour vs. date X-axis labels. */
   preset?: string;
   /**
-   * What the series measures, e.g. "Electricity load" â€” used only to build
+   * What the series measures, e.g. "Electricity load" — used only to build
    * the screen-reader text summary (summarizeSeries in lib/chartSummary.ts).
    * Falls back to "Value" if omitted; the visible chart is unaffected.
    */
   label?: string;
   /**
-   * When present and non-empty, draws one dashed line per spec â€” reading
-   * `point.forecasts[spec.id]`, in `spec.color` â€” instead of the single
+   * When present and non-empty, draws one dashed line per spec — reading
+   * `point.forecasts[spec.id]`, in `spec.color` — instead of the single
    * teal `forecast` field, plus a legend naming them. Absent or empty falls
    * back to today's single-forecast behaviour untouched.
    */
@@ -217,7 +217,7 @@ export function AbleLineChart({
 
     // One point array per named forecast series (net position's multi-model
     // picker). Built unconditionally and cheaply even when `forecastSeries`
-    // is empty â€” every other caller never reads it.
+    // is empty — every other caller never reads it.
     const multiFpts: Record<string, Array<[number, number]>> = {};
     for (const spec of forecastSeries ?? []) {
       multiFpts[spec.id] = series.map((d, i): [number, number] => {
@@ -269,10 +269,10 @@ export function AbleLineChart({
   // the served series was discarded at draw time. Because FR's actuals ran ~14h
   // behind, that left a band with neither series on it and no way to read
   // forecast against realised at all. `overlay` still suppresses the now marker
-  // and the future shading â€” it no longer decides which forecast points exist.
+  // and the future shading — it no longer decides which forecast points exist.
   const drawPath = (points: Array<[number, number]>) => {
     // Empty slots are dropped, but only a gap the series' own cadence explains
-    // is bridged â€” a missing sample stays a hole rather than becoming a
+    // is bridged — a missing sample stays a hole rather than becoming a
     // straight line through hours nothing was published for. See
     // lib/seriesSegments.ts.
     const present: number[] = [];
@@ -307,7 +307,7 @@ export function AbleLineChart({
 
   // ENTSO-E actuals routinely arrive hours late, so the solid line stops
   // well short of the `now` marker. Name the gap instead of leaving it
-  // unexplained â€” the header's freshness note is easy to miss.
+  // unexplained — the header's freshness note is easy to miss.
   let lastActualIso: string | undefined;
   for (let i = series.length - 1; i >= 0; i--) {
     if (series[i].value != null) {
@@ -345,7 +345,7 @@ export function AbleLineChart({
         className="flex items-center justify-center text-meta text-ink-muted"
         style={{ height }}
       >
-        No data in this window â€” try a longer range like 30d.
+        No data in this window — try a longer range like 30d.
       </div>
     );
   }
@@ -355,7 +355,7 @@ export function AbleLineChart({
   // The SVG below carries the visual: a smoothed path plus axis tick text,
   // none of which is annotated with what the data actually is. Rather than
   // trying to make ~700 individual points navigable, this gives a screen
-  // reader the same "ranged Xâ€“Y, currently Z" framing a sighted user gets by
+  // reader the same "ranged X–Y, currently Z" framing a sighted user gets by
   // glancing at the chart, and hides the SVG's own (partial, unlabelled)
   // text from the accessibility tree so it doesn't also announce raw axis
   // numbers with no unit or meaning attached.
@@ -465,7 +465,7 @@ export function AbleLineChart({
           </>
         )}
 
-        {/* Forecast dashed line(s) â€” one named line per spec when the caller
+        {/* Forecast dashed line(s) — one named line per spec when the caller
             passed `forecastSeries` (net position's multi-model picker),
             otherwise the single teal line every other caller has always had. */}
         {multi
@@ -521,7 +521,7 @@ export function AbleLineChart({
           />
         )}
 
-        {/* Actual line â€” pathLength normalizes the draw-on animation so it
+        {/* Actual line — pathLength normalizes the draw-on animation so it
             always covers the full path; a fixed dasharray left anything past
             that many units invisible on long windows. */}
         {actualPath && (
@@ -566,7 +566,7 @@ export function AbleLineChart({
           </g>
         )}
 
-        {/* Trailing gap â€” ENTSO-E actuals lag, so the solid line stops short
+        {/* Trailing gap — ENTSO-E actuals lag, so the solid line stops short
             of `now` with no explanation on the chart itself otherwise. */}
         {!overlay && gapLabel && (
           <text
@@ -618,10 +618,10 @@ export function AbleLineChart({
         )}
       </svg>
 
-      {/* Legend â€” only when several named forecast series are on screen.
+      {/* Legend — only when several named forecast series are on screen.
           Colour is never the only way to tell them apart: each swatch carries
           its model's label as text right beside it. A `covered: false` entry
-          stays in this list rather than being dropped â€” a selected model with
+          stays in this list rather than being dropped — a selected model with
           no rows for this country/window gets a hatched key and explicit
           text, the same "texture signals absence" rule NoDataHatch uses on
           the choropleth maps (ABL-205). */}
@@ -652,7 +652,7 @@ export function AbleLineChart({
                 )}
                 <span>
                   {spec.label}
-                  {notCovered && <span className="text-ink-faint"> â€” {spec.coverageNote ?? 'not available'}</span>}
+                  {notCovered && <span className="text-ink-faint"> — {spec.coverageNote ?? 'not available'}</span>}
                 </span>
               </span>
             );
@@ -670,10 +670,10 @@ export function AbleLineChart({
           }}
         >
           <div className="mb-0.5 text-micro opacity-60">
-            {multi ? '' : `${h.value != null ? (h.future ? 'published' : 'actual') : 'forecast'} Â· `}
+            {multi ? '' : `${h.value != null ? (h.future ? 'published' : 'actual') : 'forecast'} · `}
             {new Date(h.ts).toLocaleString([], { hour: '2-digit', minute: '2-digit', month: 'short', day: 'numeric' })}
           </div>
-          {/* Per-point provenance â€” a single forecast series can carry
+          {/* Per-point provenance — a single forecast series can carry
               several vintages, so the generation time is named per point
               rather than once for the whole series. Only meaningful with one
               forecast series on screen; with several, each is already
@@ -682,7 +682,7 @@ export function AbleLineChart({
             <div className="mb-0.5 text-micro opacity-60">
               {h.forecastDayLabel}
               {h.forecastGeneratedAt &&
-                ` Â· run ${new Date(h.forecastGeneratedAt).toLocaleString([], {
+                ` · run ${new Date(h.forecastGeneratedAt).toLocaleString([], {
                   month: 'short',
                   day: 'numeric',
                   hour: '2-digit',
@@ -709,7 +709,7 @@ export function AbleLineChart({
                     <span className="h-1.5 w-1.5 rounded-full" style={{ background: spec.color }} />
                     <span className="opacity-60">{spec.label}</span>
                     <span className="font-semibold">
-                      {v != null ? tipFmt(v) : 'â€”'}
+                      {v != null ? tipFmt(v) : '—'}
                       {v != null && unit && <span className="ml-0.5 opacity-60">{unit}</span>}
                     </span>
                   </div>
