@@ -213,6 +213,21 @@ Invariants:
   because ToS §9.3 makes publish latency contractual —
   `npm run changelog -- entries:publish …` from `server/`. The full §9.3
   serving sequence: `docs/claude/16-serving-a-changed-model-artifact….md`.
+- **Breach detection reads `/v1`'s tables from the *private* process.** ABL-530
+  records auth failures into the key-store file; the ABL-578 watcher
+  (`startBreachWatchScheduler`, `server/src/services/breachWatchScheduler.ts:477`)
+  runs in `index.ts` beside the ops schedulers, opens that file **readonly**
+  (`openAuthFailureReader`, `server/src/services/breachWatch/authFailureReader.ts:92`),
+  and on a trip opens a `priority: high` `INCIDENT:` issue for the CEO — the
+  channel ABL-524 §6 fixed by Board decision. It lives there, not in the public
+  process, so the Paperclip credential stays out of the process ABL-291 may
+  expose; that makes it a **third** documented reader of `api_keys.db`, which
+  whoever builds Tier 2 (S1) must add to the baseline. Signals S4 and S2 fire on
+  ABL-524 verdicts with no threshold; S3's cutoff
+  (`PROVISIONAL_MIN_PREFIXES_PER_ORIGIN`,
+  `server/src/services/breachWatch/signals.ts:155`) is **provisional** and says so
+  in every incident it raises. S5 is deliberately not wired — it is ungraded by
+  design.
 - Launch is gated by ABL-349: no subscriber terms published, no external key
   issued until it closes.
 
