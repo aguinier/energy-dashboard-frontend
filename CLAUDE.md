@@ -10,7 +10,11 @@ This file auto-loads into every agent context, so its size is a per-turn tax on
 the whole fleet. It once grew to 6,700 lines and killed runs outright.
 
 - **Hard budget: 700 lines / 35 KB.** If an edit would cross it, move material
-  to `docs/claude/` first.
+  to `docs/claude/` first. Enforced, not merely asked for: the test below fails
+  the suite when this file crosses either limit, and again if this sentence and
+  `CLAUDE_MD_BUDGET` stop agreeing. Bytes are counted LF-normalised, as git
+  stores the file, so the verdict is the same on every platform. Raising the
+  budget to fit an edit is not the remedy — moving the material is.
 - **Durable rules only.** Commands, maps, invariants, gotchas — each stated
   once, tersely. Incident narratives, dated measurements, per-issue forensics
   and evidence trails go in the matching `docs/claude/` topic file; append
