@@ -115,7 +115,7 @@ const ALL_GENERATION_KEYS = COLUMNS.filter((c) => c.endsWith('_mw'));
  * plain JS from the same row objects the tests insert, so a test failure
  * means the SQL and this description of "renewable ÷ total positive
  * generation" actually disagree - not a hand-copied expected number. */
-function expectedRenewableShare(rows: Array<Record<string, number | null | undefined>>): number | null {
+function expectedRenewableShare(rows: Array<Record<string, string | number | null | undefined>>): number | null {
   let renewableSum = 0;
   let totalPositiveSum = 0;
   for (const row of rows) {
@@ -123,8 +123,8 @@ function expectedRenewableShare(rows: Array<Record<string, number | null | undef
     // measure a negative reading the same way or the fraction mixes two
     // definitions of one - the numerator letting it subtract while the
     // denominator ignores it.
-    for (const key of RENEWABLE_KEYS) renewableSum += Math.max(row[key] ?? 0, 0);
-    for (const key of ALL_GENERATION_KEYS) totalPositiveSum += Math.max(row[key] ?? 0, 0);
+    for (const key of RENEWABLE_KEYS) renewableSum += Math.max((row[key] as number | null | undefined) ?? 0, 0);
+    for (const key of ALL_GENERATION_KEYS) totalPositiveSum += Math.max((row[key] as number | null | undefined) ?? 0, 0);
   }
   if (totalPositiveSum <= 0) return null;
   return Math.round((renewableSum / totalPositiveSum) * 10000) / 100;

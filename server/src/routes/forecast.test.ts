@@ -275,10 +275,10 @@ describe('GET /api/forecasts — serving is data-driven, not country-gated', () 
 
     expect(status).toBe(200);
     expect(body.data).toHaveLength(4);
-    expect(body.data.map((p: { value: number }) => p.value)).toEqual([700, 710, 720, 730]);
+    expect((body.data as Array<{ value: number }>).map((p) => p.value)).toEqual([700, 710, 720, 730]);
     // Nothing in the registry pins offshore per country — BE resolves through
     // the same stream-keyed ladder every other country would.
-    expect(body.data.every((p: { model_name: string }) => p.model_name === 'xgboost')).toBe(true);
+    expect((body.data as Array<{ model_name: string }>).every((p) => p.model_name === 'xgboost')).toBe(true);
   });
 
   it('degrades to an empty series for a country with no rows, rather than erroring', async () => {
@@ -289,9 +289,9 @@ describe('GET /api/forecasts — serving is data-driven, not country-gated', () 
     expect(status).toBe(200);
     expect(body.success).toBe(true);
     expect(body.data).toEqual([]);
-    expect(body.meta.count).toBe(0);
+    expect((body.meta as Record<string, unknown>).count).toBe(0);
     // No model is claimed to have served, because none did.
-    expect(body.meta.model).toBeNull();
+    expect((body.meta as Record<string, unknown>).model).toBeNull();
   });
 
   it('does not gate the country — the same country serves a stream it does have', async () => {
@@ -302,7 +302,7 @@ describe('GET /api/forecasts — serving is data-driven, not country-gated', () 
     const { status, body } = await get(`?country=DE&type=load&${WINDOW_QS}`);
 
     expect(status).toBe(200);
-    expect(body.data.length).toBeGreaterThan(0);
+    expect((body.data as unknown[]).length).toBeGreaterThan(0);
   });
 
   it('derives the available-type list from the rows that exist', async () => {
@@ -336,8 +336,8 @@ describe('GET /api/forecasts — serving is data-driven, not country-gated', () 
 
     expect(status).toBe(200);
     expect(body.data).toEqual([]);
-    expect(body.meta.modelRequested).toBe('xgboost-retrain-v1');
-    expect(body.meta.model).toBeNull();
+    expect((body.meta as Record<string, unknown>).modelRequested).toBe('xgboost-retrain-v1');
+    expect((body.meta as Record<string, unknown>).model).toBeNull();
   });
 });
 
@@ -359,12 +359,13 @@ describe('GET /api/forecasts — divergent forecast basis (ABL-501)', () => {
 
     expect(status).toBe(200);
     expect(body.data).toEqual([]);
-    expect(body.meta.basis).toBe('divergent_basis');
-    expect(body.meta.basisNote).toContain('behind-the-meter solar');
+    const meta0 = body.meta as Record<string, unknown>;
+    expect(meta0.basis).toBe('divergent_basis');
+    expect(meta0.basisNote).toContain('behind-the-meter solar');
     // Four rows exist and are being held back. `count: 0` alone would be
     // indistinguishable from a country nobody forecasts.
-    expect(body.meta.withheldPoints).toBe(4);
-    expect(body.meta.count).toBe(0);
+    expect(meta0.withheldPoints).toBe(4);
+    expect(meta0.count).toBe(0);
   });
 
   it('still names the model whose rows were withheld', async () => {
@@ -372,7 +373,7 @@ describe('GET /api/forecasts — divergent forecast basis (ABL-501)', () => {
     // case where there is no model to name. Read before the withholding, not
     // off the empty array afterwards.
     const { body } = await get(`?country=NL&type=load&${NEXT_DAY_QS}`);
-    expect(body.meta.model).toBe('catboost');
+    expect((body.meta as Record<string, unknown>).model).toBe('catboost');
   });
 
   it('leaves NL price alone — the finding is about the load pair only', async () => {
@@ -383,9 +384,10 @@ describe('GET /api/forecasts — divergent forecast basis (ABL-501)', () => {
 
     expect(status).toBe(200);
     expect((body.data as unknown[]).length).toBe(4);
-    expect(body.meta.basis).toBe('comparable');
-    expect(body.meta.basisNote).toBeNull();
-    expect(body.meta.withheldPoints).toBe(0);
+    const meta1 = body.meta as Record<string, unknown>;
+    expect(meta1.basis).toBe('comparable');
+    expect(meta1.basisNote).toBeNull();
+    expect(meta1.withheldPoints).toBe(0);
   });
 
   it('leaves every other country\'s load alone', async () => {
@@ -393,8 +395,9 @@ describe('GET /api/forecasts — divergent forecast basis (ABL-501)', () => {
 
     expect(status).toBe(200);
     expect((body.data as unknown[]).length).toBeGreaterThan(0);
-    expect(body.meta.basis).toBe('comparable');
-    expect(body.meta.withheldPoints).toBe(0);
+    const meta2 = body.meta as Record<string, unknown>;
+    expect(meta2.basis).toBe('comparable');
+    expect(meta2.withheldPoints).toBe(0);
   });
 
   it('withholds a pinned model too, not just the ladder\'s pick', async () => {
@@ -403,7 +406,7 @@ describe('GET /api/forecasts — divergent forecast basis (ABL-501)', () => {
     // covered without a second code path.
     const { body } = await get(`?country=NL&type=load&model=catboost&${NEXT_DAY_QS}`);
     expect(body.data).toEqual([]);
-    expect(body.meta.withheldPoints).toBe(4);
+    expect((body.meta as Record<string, unknown>).withheldPoints).toBe(4);
   });
 });
 
@@ -419,16 +422,18 @@ describe('GET /api/forecasts/compare — divergent forecast basis (ABL-501)', ()
     const data = body.data as Compare;
     expect(data.forecasts).toEqual([]);
     expect(data.actuals.map((a) => a.value)).toEqual([900, 700, 500, 300]);
-    expect(body.meta.basis).toBe('divergent_basis');
-    expect(body.meta.withheldPoints).toBe(4);
+    const meta3 = body.meta as Record<string, unknown>;
+    expect(meta3.basis).toBe('divergent_basis');
+    expect(meta3.withheldPoints).toBe(4);
   });
 
   it('is unchanged for a comparable country', async () => {
     const { body } = await get(`compare?country=DE&type=load&${WINDOW_QS}`);
     const data = body.data as Compare;
     expect(data.forecasts.length).toBeGreaterThan(0);
-    expect(body.meta.basis).toBe('comparable');
-    expect(body.meta.withheldPoints).toBe(0);
+    const meta4 = body.meta as Record<string, unknown>;
+    expect(meta4.basis).toBe('comparable');
+    expect(meta4.withheldPoints).toBe(0);
   });
 });
 
@@ -438,14 +443,16 @@ describe('GET /api/forecasts/multi-horizon — divergent forecast basis (ABL-501
 
     expect(status).toBe(200);
     expect(body.data).toEqual([]);
-    expect(body.meta.basis).toBe('divergent_basis');
-    expect(body.meta.withheldPoints).toBeGreaterThan(0);
+    const meta5 = body.meta as Record<string, unknown>;
+    expect(meta5.basis).toBe('divergent_basis');
+    expect(meta5.withheldPoints).toBeGreaterThan(0);
   });
 
   it('is unchanged for a comparable country', async () => {
     const { body } = await get(`multi-horizon?country=DE&type=load&${NEXT_DAY_QS}`);
-    expect(body.meta.basis).toBe('comparable');
-    expect(body.meta.withheldPoints).toBe(0);
+    const meta6 = body.meta as Record<string, unknown>;
+    expect(meta6.basis).toBe('comparable');
+    expect(meta6.withheldPoints).toBe(0);
   });
 });
 

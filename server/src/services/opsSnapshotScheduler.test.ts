@@ -37,6 +37,7 @@ function status(): OpsStatus {
       counts: { live: 35, stale: 0, ended: 0, none: 0 },
       staleCountries: [],
     },
+    visitors: { countingSince: NOW.toISOString(), day: '2026-08-15', today: { page: 0, api: 0, asset: 0, automated: 0 }, window: { page: 0, api: 0, asset: 0, automated: 0 }, windowDaysCovered: 1, windowComplete: false, distinctClientsToday: 0 },
   };
 }
 
@@ -46,6 +47,11 @@ const combined: CombinedOpsStatus = {
   peer: { reachable: false, latencyMs: null, error: 'OPS_PEER_URL is not configured' },
   peerConfigured: false,
   syncBlackout: { active: false, label: null },
+  derived: {
+    local: { environment: 'ok', disk: 'ok', freshness: 'ok' },
+    peer: { environment: 'unknown', disk: 'unknown', freshness: 'unknown' },
+    commitDrift: 'ok',
+  },
 };
 
 beforeEach(() => {

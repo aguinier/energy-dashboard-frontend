@@ -168,7 +168,7 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
 
     expect(status).toBe(200);
     expect(body.data).toHaveLength(4);
-    for (const point of body.data) {
+    for (const point of body.data as Array<{ actual_value: number; error_pct: number | null }>) {
       expect(point.actual_value).toBe(-26.26);
       expect(point.actual_value).not.toBe(0);
       // A percentage error is undefined at a non-positive actual, and must be
@@ -177,16 +177,17 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
     }
 
     // The headline: a real error, where the frozen table published none.
-    expect(body.metrics.mae).toBe(26.26);
-    expect(body.metrics.mae).not.toBe(0);
-    expect(body.metrics.rmse).toBe(26.26);
-    expect(body.metrics.bias).toBe(-26.26);
+    const metrics0 = body.metrics as Record<string, unknown>;
+    expect(metrics0.mae).toBe(26.26);
+    expect(metrics0.mae).not.toBe(0);
+    expect(metrics0.rmse).toBe(26.26);
+    expect(metrics0.bias).toBe(-26.26);
     // MAPE has no measurable sample here (no positive actual) and must be null,
     // never 0. WAPE is defined, because it divides by sum|actual|.
-    expect(body.metrics.mape).toBeNull();
-    expect(body.metrics.mapeSamples).toBe(0);
-    expect(body.metrics.wape).toBe(100);
-    expect(body.meta.coverage).toBe('served');
+    expect(metrics0.mape).toBeNull();
+    expect(metrics0.mapeSamples).toBe(0);
+    expect(metrics0.wape).toBe(100);
+    expect((body.meta as Record<string, unknown>).coverage).toBe('served');
   });
 
   it('measures the newest vintage only, never a superseded run', async () => {

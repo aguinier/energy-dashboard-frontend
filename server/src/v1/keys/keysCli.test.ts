@@ -111,7 +111,7 @@ describe('keys:issue', () => {
     // would not, and counting is how that stays true.
     const found = text.match(/able_live_[0-9A-Za-z]{8}_[0-9A-Za-z]{43}/g) ?? [];
     expect(found).toHaveLength(1);
-    expect(parseApiKey(found[0])?.prefix).toBe(key.prefix);
+    expect(parseApiKey(found[0]!)?.prefix).toBe(key.prefix);
   });
 
   it('defaults to the live environment and no expiry', () => {

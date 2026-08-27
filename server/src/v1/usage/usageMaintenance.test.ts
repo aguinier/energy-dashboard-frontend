@@ -73,11 +73,17 @@ function stubStore({
     // maintenance pass that touched it would be reaching across the split the
     // two sit either side of.
     servedRequestsInMonth: () => 0,
-    exportAccount: () => ({ exportedAt: '', accountId: '', keys: [], events: [], rollups: [] }),
+    exportAccount: () => ({ exportedAt: '', accountId: '', keys: [], events: [], rollups: [], authFailures: [] }),
     stats: () => {
       throw new Error('not used here');
     },
-    close: () => calls.push('close'),
+    writeAuthFailures: () => ({ inserted: 0, alreadyPresent: 0 }),
+    failuresByOrigin: () => [],
+    failuresByPrefix: () => [],
+    secretHolderFailures: () => [],
+    keyOrigins: () => [],
+    keyFingerprintBreadth: () => [],
+    close: () => { calls.push('close'); },
   };
 }
 
