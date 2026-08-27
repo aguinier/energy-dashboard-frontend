@@ -44,10 +44,10 @@ router.get('/status', (_req, res) => {
  * when to render that as a known, expected state instead of a red alarm.
  *
  * `derived` (ABL-292) carries the warn/error verdict per KPI for both lanes,
- * computed from `lib/opsStatusThresholds.ts` — the single home of
- * `DISK_WARN_RATIO`/`DISK_ERROR_RATIO` since the derivation moved off the
- * client, where a server-side scheduled job (ABL-287's alert engine) could not
- * reach it. Purely additive: every raw field above is unchanged, so anything
+ * computed from `lib/opsStatusThresholds.ts` — the single home of the disk
+ * ratios and their ABL-586 free-bytes floors since the derivation moved off
+ * the client, where a server-side scheduled job (ABL-287's alert engine) could
+ * not reach it. Purely additive: every raw field above is unchanged, so anything
  * still reading the old shape is unaffected.
  */
 router.get('/status/combined', async (_req, res, next) => {

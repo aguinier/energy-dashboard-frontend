@@ -106,10 +106,10 @@ describe('evaluateAlerts — transitions', () => {
 
   it('carries the observation detail into the notification as the evidence', () => {
     const observation = obs('local:disk', 'warn', {
-      detail: '85.11% of disk used (warn; warn at 75%, error at 90%)',
+      detail: '91.58% of disk used, 156.8 GiB free (warn; warn at >=75% used with <=250 GiB free, error at >=90% with <=100 GiB free)',
     });
     const { notifications } = evaluate([observation], stateWith('local:disk', 'ok'));
-    expect(notifications[0].detail).toBe('85.11% of disk used (warn; warn at 75%, error at 90%)');
+    expect(notifications[0].detail).toBe('91.58% of disk used, 156.8 GiB free (warn; warn at >=75% used with <=250 GiB free, error at >=90% with <=100 GiB free)');
     expect(notifications[0].observedAt).toBe(NOW.toISOString());
   });
 

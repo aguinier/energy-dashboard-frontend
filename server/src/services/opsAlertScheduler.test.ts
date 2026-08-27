@@ -137,11 +137,15 @@ describe('runOpsAlertCheck — end to end against a real state file', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('fires once on the live 2026-08-12 breach, then goes silent — the whole point of the issue', () => {
-    // Acceptance disk at 85.11% (warn) and freshness stale on both lanes, with
-    // no prior state: exactly the world the engine boots into.
+  it('fires once on the live breach, then goes silent — the whole point of the issue', () => {
+    // Acceptance disk at 91.58% with 156.83 GiB free (warn) and freshness stale
+    // on both lanes, with no prior state: exactly the world the engine boots
+    // into. Re-read off prod's `/api/ops/status/combined` at 2026-08-27T18:06Z
+    // when ABL-586 put a free-bytes floor under the escalation — the original
+    // 2026-08-12 reading (85.11%, 277.27 GiB free) is `ok` under that rule and
+    // would have quietly turned this into a two-KPI test.
     const acceptance = opsStatus({
-      usedBytes: 1_701_490_991_104,
+      usedBytes: 1_830_809_317_376,
       totalBytes: 1_999_203_463_168,
       freshness: 'stale',
       staleCountries: ['AL', 'CH', 'MK'],

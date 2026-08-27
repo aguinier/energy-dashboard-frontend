@@ -4,7 +4,13 @@ import {
   resolveSnapshotConfig,
   type OpsSnapshotConfig,
 } from './opsSnapshotStore.js';
-import { computeDiskHeadroom, type DiskHeadroom, type DiskPoint } from '../lib/diskHeadroom.js';
+import {
+  computeDiskHeadroom,
+  DISK_THRESHOLD_PERCENT,
+  type DiskHeadroom,
+  type DiskPoint,
+} from '../lib/diskHeadroom.js';
+import { diskErrorPercentForVolume } from '../lib/opsStatusThresholds.js';
 
 /**
  * The `/api/ops/status/history` payload (ABL-288): the stored snapshots inside
@@ -71,6 +77,40 @@ export function toDiskPoints(snapshots: OpsSnapshot[], side: 'local' | 'peer'): 
   return points;
 }
 
+/**
+ * Pure: the used-percent this side's badge actually turns red at, from the most
+ * recent snapshot that reported a usable volume size (ABL-586).
+ *
+ * The error verdict is a conjunction — over the reference volume size, passing
+ * 90% is necessary but not sufficient — so projecting against a flat 90 would
+ * have the trend card announce a crossing the badge does not act on. On
+ * acceptance's 1861.90 GiB volume that gap is 90% vs 94.63%, and today it is
+ * the difference between "Already at or above 90%" in alarm red and a `warn`
+ * badge two cards up.
+ *
+ * *Most recent*, not first or mean: a volume can be resized, and the number
+ * that decides today's badge is today's. Scanned by timestamp rather than array
+ * position because the store is append-order and a clock step or a merged file
+ * can leave it unsorted (`computeDiskHeadroom` sorts for the same reason).
+ * With no usable reading at all the ratio line stands — earlier than the real
+ * crossing, never later.
+ */
+export function sideErrorPercent(snapshots: OpsSnapshot[], side: 'local' | 'peer'): number {
+  let latestAt = -Infinity;
+  let totalBytes: number | null = null;
+
+  for (const snapshot of snapshots) {
+    const total = snapshot[side].diskTotalBytes;
+    if (total === null || total <= 0) continue;
+    const at = Date.parse(snapshot.t);
+    if (!Number.isFinite(at) || at < latestAt) continue;
+    latestAt = at;
+    totalBytes = total;
+  }
+
+  return totalBytes === null ? DISK_THRESHOLD_PERCENT : diskErrorPercentForVolume(totalBytes);
+}
+
 export interface OpsHistoryDeps {
   config?: OpsSnapshotConfig;
   read?: typeof readSnapshots;
@@ -83,6 +123,10 @@ export interface OpsHistoryDeps {
  * charts and what it projects from are the same readings — a headroom figure
  * fitted to history the reader cannot see would be unfalsifiable by the chart
  * next to it.
+ *
+ * The two sides' `thresholdPercent` can differ (ABL-586, `sideErrorPercent`):
+ * each is the line *that* volume escalates at. Anything rendering them shares
+ * that assumption or draws one side's line over the other's data.
  */
 export function getOpsStatusHistory(
   now: Date = new Date(),
@@ -102,8 +146,12 @@ export function getOpsStatusHistory(
     windowHours,
     snapshots: windowed,
     headroom: {
-      local: computeDiskHeadroom(toDiskPoints(windowed, 'local')),
-      peer: computeDiskHeadroom(toDiskPoints(windowed, 'peer')),
+      local: computeDiskHeadroom(toDiskPoints(windowed, 'local'), {
+        thresholdPercent: sideErrorPercent(windowed, 'local'),
+      }),
+      peer: computeDiskHeadroom(toDiskPoints(windowed, 'peer'), {
+        thresholdPercent: sideErrorPercent(windowed, 'peer'),
+      }),
     },
     storage: {
       captureEnabled: config.enabled,

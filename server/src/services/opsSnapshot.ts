@@ -79,7 +79,7 @@ export function toOpsSnapshot(combined: CombinedOpsStatus): OpsSnapshot {
  * `totalBytes <= 0` is `null`, not `0%` — a filesystem that reports zero total
  * bytes was not measured, and a division by it would render an environment as
  * comfortably empty. Same rule as `deriveDiskState`
- * (`server/src/lib/opsStatusThresholds.ts:47`), which reports `'unknown'` for
+ * (`server/src/lib/opsStatusThresholds.ts:115`), which reports `'unknown'` for
  * the same input.
  */
 export function diskPercent(side: OpsSideSnapshot): number | null {

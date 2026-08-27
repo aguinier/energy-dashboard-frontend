@@ -208,9 +208,18 @@ function EnvironmentCard({
           value={status.provenance.commit ? status.provenance.commit.slice(0, 7) : `— (${status.provenance.runtime})`}
         />
         <Row label="Freshness" value={describeFreshnessRollup(status.freshness)} state={derived.freshness} />
+        {/* Free bytes beside the percentage because the verdict is made from
+            both (ABL-586): a badge reading `warn` at 92% is only legible next
+            to the 157 GiB that kept it out of `error`. */}
         <Row
           label="Disk"
-          value={disk ? `${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)} (${diskPercent}%)` : 'not measured'}
+          value={
+            disk
+              ? `${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)} (${diskPercent}%, ${formatBytes(
+                  disk.freeBytes,
+                )} free)`
+              : 'not measured'
+          }
           state={derived.disk}
         />
         <Row label="Memory (RSS)" value={formatBytes(status.process.memory.rssBytes)} />

@@ -6,7 +6,9 @@ import {
   describeStorage,
   diskSeries,
   hasReadings,
+  thresholdLines,
   type DiskSeriesPoint,
+  type ThresholdLine,
 } from '@/lib/opsHistorySeries';
 import type { DiskHeadroom, OpsStatusHistory } from '@/types';
 
@@ -42,7 +44,7 @@ export function OpsHistoryCard({ history }: { history: OpsStatusHistory }) {
         <p className="text-meta text-ink-dim">{caption}</p>
       </CardHeader>
       <CardContent className="space-y-4 pt-0">
-        {series.length > 0 && <DiskChart series={series} threshold={history.headroom.local.thresholdPercent} />}
+        {series.length > 0 && <DiskChart series={series} thresholds={thresholdLines(history.headroom)} />}
         <div className="grid gap-3 sm:grid-cols-2">
           <HeadroomBlock label="This environment" headroom={history.headroom.local} color={LOCAL_COLOR} />
           <HeadroomBlock label="Peer environment" headroom={history.headroom.peer} color={PEER_COLOR} />
@@ -101,7 +103,7 @@ function niceDomain(values: number[]): { min: number; max: number } {
   return { min: Math.max(0, min - 2), max: Math.min(100, max + 2) };
 }
 
-function DiskChart({ series, threshold }: { series: DiskSeriesPoint[]; threshold: number }) {
+function DiskChart({ series, thresholds }: { series: DiskSeriesPoint[]; thresholds: ThresholdLine[] }) {
   const values = series.flatMap((p) => [p.local, p.peer].filter((v): v is number => v !== null));
   if (values.length === 0) {
     return (
@@ -133,7 +135,7 @@ function DiskChart({ series, threshold }: { series: DiskSeriesPoint[]; threshold
   };
 
   const ticks = [min, (min + max) / 2, max];
-  const thresholdVisible = threshold >= min && threshold <= max;
+  const visibleThresholds = thresholds.filter((t) => t.percent >= min && t.percent <= max);
   const first = series[0];
   const last = series[series.length - 1];
 
@@ -169,16 +171,18 @@ function DiskChart({ series, threshold }: { series: DiskSeriesPoint[]; threshold
           </g>
         ))}
 
-        {/* The threshold the badge already turns red at — drawn only when it
-            is inside the plotted range, since a rule pinned to the top edge
-            of a chart it is far outside of reads as "nearly there". */}
-        {thresholdVisible && (
-          <>
+        {/* The percent each side's badge actually turns red at — one rule when
+            both volumes agree on it, two labelled ones when they do not
+            (ABL-586). Drawn only when inside the plotted range, since a rule
+            pinned to the top edge of a chart it is far outside of reads as
+            "nearly there". */}
+        {visibleThresholds.map((t) => (
+          <g key={t.label}>
             <line
               x1={PAD_L}
               x2={WIDTH - PAD_R}
-              y1={yFor(threshold)}
-              y2={yFor(threshold)}
+              y1={yFor(t.percent)}
+              y2={yFor(t.percent)}
               stroke="hsl(var(--destructive))"
               strokeWidth={1}
               strokeDasharray="4 4"
@@ -186,16 +190,16 @@ function DiskChart({ series, threshold }: { series: DiskSeriesPoint[]; threshold
             />
             <text
               x={WIDTH - PAD_R}
-              y={yFor(threshold) - 4}
+              y={yFor(t.percent) - 4}
               fill="hsl(var(--destructive))"
               fontSize="10"
               textAnchor="end"
               fontFamily="'JetBrains Mono', monospace"
             >
-              {threshold}%
+              {t.label}
             </text>
-          </>
-        )}
+          </g>
+        ))}
 
         <path d={pathFor('peer')} fill="none" stroke={PEER_COLOR} strokeWidth={1.75} strokeLinecap="round" />
         <path d={pathFor('local')} fill="none" stroke={LOCAL_COLOR} strokeWidth={2} strokeLinecap="round" />

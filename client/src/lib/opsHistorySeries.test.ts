@@ -6,6 +6,7 @@ import {
   diskSeries,
   hasReadings,
   sideDiskPercent,
+  thresholdLines,
 } from './opsHistorySeries';
 import type { DiskHeadroom, OpsSideSnapshot, OpsSnapshot, OpsStatusHistory } from '@/types';
 
@@ -260,5 +261,29 @@ describe('describeStorage', () => {
     );
 
     expect(result).toContain('2 damaged lines skipped');
+  });
+});
+
+describe('thresholdLines', () => {
+  it('draws one unqualified rule when both sides turn red at the same percent', () => {
+    expect(thresholdLines({ local: headroom(), peer: headroom() })).toEqual([
+      { percent: 90, label: '90%' },
+    ]);
+  });
+
+  it('draws a labelled rule per side when the volumes escalate at different percents', () => {
+    // Acceptance's 1.86 TiB workstation volume passes 90% with 186 GiB still
+    // free and does not escalate until 94.62% (ABL-586); prod's 907 GiB volume
+    // still turns red at 90%. One rule labelled "90%" across both series would
+    // be a wrong number in the place a reader looks to judge the gap.
+    const lines = thresholdLines({
+      local: headroom({ thresholdPercent: 94.62 }),
+      peer: headroom({ thresholdPercent: 90 }),
+    });
+
+    expect(lines).toEqual([
+      { percent: 94.62, label: '94.62% this env' },
+      { percent: 90, label: '90% peer' },
+    ]);
   });
 });
