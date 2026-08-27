@@ -4,8 +4,11 @@ import {
   deriveFreshnessState,
   deriveEnvironmentState,
   deriveSideState,
+  diskErrorPercentForVolume,
   DISK_WARN_RATIO,
   DISK_ERROR_RATIO,
+  DISK_WARN_FREE_BYTES,
+  DISK_ERROR_FREE_BYTES,
 } from './opsStatusThresholds.js';
 import type { OpsStatus } from '../services/opsStatusService.js';
 import type { SideStatus } from '../services/peerOpsStatus.js';
@@ -21,6 +24,21 @@ import type { SideStatus } from '../services/peerOpsStatus.js';
  */
 
 const disk = (usedBytes: number, totalBytes: number) => ({ totalBytes, freeBytes: totalBytes - usedBytes, usedBytes });
+
+const GIB = 1024 ** 3;
+
+/**
+ * The two real volumes, byte-exact off `/api/ops/status/combined` on prod at
+ * 2026-08-27T18:06Z. Prod's is a provisioned server volume; acceptance's is a
+ * workstation `C:` the containers are one tenant on, ~92% of whose used space
+ * belongs to a third party (ABL-586).
+ */
+const PROD_VOLUME_BYTES = 974_021_873_664; // 907.13 GiB
+const ACCEPTANCE_VOLUME_BYTES = 1_999_203_463_168; // 1861.90 GiB
+
+/** Used-bytes at a given used-percent, rounded up so the ratio is at or above it. */
+const atPercent = (totalBytes: number, percent: number) =>
+  disk(Math.ceil((totalBytes * percent) / 100), totalBytes);
 
 describe('deriveDiskState', () => {
   it('is unknown when disk usage could not be measured', () => {
@@ -55,20 +73,183 @@ describe('deriveDiskState', () => {
     expect(deriveDiskState(disk(0, 0))).toBe('unknown');
   });
 
-  /**
-   * The live acceptance reading that made ABL-292 high priority: 85.11% is
-   * genuinely warn, not error, and this asserts the relocation did not quietly
-   * change which side of the line it falls on. Under 5 points of headroom
-   * against a DB growing ~3 GB/day (ABL-163), so if a future re-tuning moves
-   * `DISK_ERROR_RATIO` below 0.8511 this test is the one that should object.
-   */
-  it('reads the live acceptance disk figure (85.11%) as warn, not error', () => {
-    expect(deriveDiskState(disk(8511, 10_000))).toBe('warn');
+  it('is unknown, not ok, when a byte count is not a finite number', () => {
+    // `NaN >= 0.9` is false, so before ABL-586 this fell out of the bottom of
+    // the ladder as 'ok' — an unmeasured disk rendering as a clean bill.
+    expect(deriveDiskState(disk(Number.NaN, 100))).toBe('unknown');
+    expect(deriveDiskState({ totalBytes: Number.NaN, freeBytes: 1, usedBytes: 1 })).toBe('unknown');
   });
 
-  it('holds the relocated threshold values — ABL-292 moved them, it did not re-tune them', () => {
+  it('holds the ratio thresholds — ABL-292 moved them, ABL-586 did not re-tune them either', () => {
     expect(DISK_WARN_RATIO).toBe(0.75);
     expect(DISK_ERROR_RATIO).toBe(0.9);
+  });
+
+  it('holds the free-bytes floors at 250 GiB (warn) and 100 GiB (error)', () => {
+    expect(DISK_WARN_FREE_BYTES).toBe(250 * GIB);
+    expect(DISK_ERROR_FREE_BYTES).toBe(100 * GIB);
+  });
+});
+
+/**
+ * ABL-586: escalation needs the volume to be *both* proportionally full and
+ * absolutely low.
+ *
+ * The two describe blocks below are the pair this change has to be judged on
+ * together. The first is the suppression the issue asked for; the second is the
+ * positive control that the suppression did not swallow a real one. Deleting
+ * either half of the conjunction in `deriveDiskState` turns one of them red.
+ */
+describe('deriveDiskState — the free-bytes floor', () => {
+  /**
+   * The exhaustive form of "prod's behaviour is unchanged" — not a spot check
+   * at the two lines, but every 0.01% of prod's real volume compared against a
+   * local re-implementation of the pre-ABL-586 ratio-only rule. Zero
+   * disagreements across 10,001 points.
+   *
+   * It holds because both floors sit *below* their ratio lines on a volume this
+   * size: prod crosses 250 GiB free at 72.44% used and 100 GiB free at 88.98%,
+   * so by the time either ratio line is reached its floor is long since
+   * breached and the ratio is still the binding constraint. Anything at or
+   * under the 1,000 GiB reference volume behaves this way; prod is 907.13 GiB.
+   */
+  it('is bit-identical to the ratio-only rule at every point of prod’s real volume', () => {
+    const ratioOnly = (used: number, total: number) => {
+      const ratio = used / total;
+      if (ratio >= DISK_ERROR_RATIO) return 'error';
+      if (ratio >= DISK_WARN_RATIO) return 'warn';
+      return 'ok';
+    };
+
+    const disagreements: number[] = [];
+    for (let i = 0; i <= 10_000; i += 1) {
+      const used = Math.round((PROD_VOLUME_BYTES * i) / 10_000);
+      if (deriveDiskState(disk(used, PROD_VOLUME_BYTES)) !== ratioOnly(used, PROD_VOLUME_BYTES)) {
+        disagreements.push(i / 100);
+      }
+    }
+
+    expect(disagreements).toEqual([]);
+  });
+
+  it('shows why: prod is already under both floors when it reaches each ratio line', () => {
+    expect(atPercent(PROD_VOLUME_BYTES, 75).freeBytes).toBeLessThanOrEqual(DISK_WARN_FREE_BYTES);
+    expect(atPercent(PROD_VOLUME_BYTES, 90).freeBytes).toBeLessThanOrEqual(DISK_ERROR_FREE_BYTES);
+    // 226.78 GiB and 90.71 GiB respectively — the floors do not bind here.
+    expect(deriveDiskState(atPercent(PROD_VOLUME_BYTES, 74.99))).toBe('ok');
+    expect(deriveDiskState(atPercent(PROD_VOLUME_BYTES, 75))).toBe('warn');
+    expect(deriveDiskState(atPercent(PROD_VOLUME_BYTES, 89.99))).toBe('warn');
+    expect(deriveDiskState(atPercent(PROD_VOLUME_BYTES, 90))).toBe('error');
+  });
+
+  /**
+   * The defect, in the numbers that were live when it was filed. 91.58% of a
+   * 1861.90 GiB workstation volume left 156.83 GiB free — 73% more headroom
+   * than prod holds at the moment prod first turns red (90.71 GiB) — and read
+   * `error` on the strength of the denominator alone.
+   *
+   * **This is the test that goes red if the floor is deleted from the error
+   * branch**, so it is also the guard on the whole change.
+   */
+  it('reads the live acceptance breach (91.58%, 156.83 GiB free) as warn, not error', () => {
+    const acceptance = disk(1_830_809_317_376, ACCEPTANCE_VOLUME_BYTES);
+
+    expect(acceptance.freeBytes).toBeGreaterThan(DISK_ERROR_FREE_BYTES);
+    expect(acceptance.freeBytes).toBeGreaterThan(PROD_VOLUME_BYTES * (1 - DISK_ERROR_RATIO));
+    expect(deriveDiskState(acceptance)).toBe('warn');
+  });
+
+  /**
+   * Deliberately replaces ABL-292's "85.11% is warn" pin, which expressed the
+   * acceptance reading as a ratio on a 10,000-byte volume and so kept passing
+   * unchanged through ABL-586 while no longer describing the reading it named.
+   * On the real volume 85.11% left 277.27 GiB free — more absolute headroom
+   * than prod's *entire* warn line (226.78 GiB) — so it is `ok` now, and the
+   * warn floor is what says so.
+   *
+   * ABL-292's comment invited an objection if a re-tuning moved
+   * `DISK_ERROR_RATIO` below 0.8511. That objection is not owed here: neither
+   * ratio moved, and this reading changed lane because a second, absolute
+   * condition was added, not because the percentage line did.
+   */
+  it('reads ABL-292’s 85.11% acceptance reading as ok on the real volume — 277 GiB free', () => {
+    const abl292 = disk(1_701_490_991_104, ACCEPTANCE_VOLUME_BYTES);
+
+    expect(abl292.freeBytes).toBeGreaterThan(DISK_WARN_FREE_BYTES);
+    expect(abl292.freeBytes).toBeGreaterThan(PROD_VOLUME_BYTES * (1 - DISK_WARN_RATIO));
+    expect(deriveDiskState(abl292)).toBe('ok');
+  });
+
+  it('still warns on the acceptance volume — the floor suppresses the red, not the signal', () => {
+    // 86.58% is the first point past the 250 GiB warn floor on that volume.
+    expect(deriveDiskState(atPercent(ACCEPTANCE_VOLUME_BYTES, 86.58))).toBe('warn');
+    expect(deriveDiskState(atPercent(ACCEPTANCE_VOLUME_BYTES, 94.63))).toBe('error');
+  });
+});
+
+describe('deriveDiskState — positive control: a genuinely exhausting volume still escalates', () => {
+  /** 200 GiB volume at 95% used: 10 GiB left. Small, proportionally full, and actually nearly gone. */
+  const small = disk(Math.ceil(200 * GIB * 0.95), 200 * GIB);
+
+  it('is error at 95% of a 200 GiB volume with 10 GiB free', () => {
+    expect(small.freeBytes).toBeLessThanOrEqual(10 * GIB);
+    expect(deriveDiskState(small)).toBe('error');
+  });
+
+  it('escalates a small volume through ok -> warn -> error as it fills', () => {
+    expect(deriveDiskState(atPercent(200 * GIB, 50))).toBe('ok');
+    expect(deriveDiskState(atPercent(200 * GIB, 80))).toBe('warn');
+    expect(deriveDiskState(atPercent(200 * GIB, 91))).toBe('error');
+  });
+
+  it('escalates on a volume with only bytes left, whatever its size', () => {
+    expect(deriveDiskState(disk(999_999, 1_000_000))).toBe('error');
+    expect(deriveDiskState(disk(9_999 * GIB, 10_000 * GIB))).toBe('error');
+  });
+
+  /**
+   * The floor is read from `freeBytes`, which arrives from an unvalidated peer
+   * payload (`peerOpsStatus.ts` casts `envelope.data`). A peer that omitted it
+   * must not silently suppress the escalation — the fallback recomputes it from
+   * the two fields the ratio already needs.
+   */
+  it('falls back to total-minus-used when a peer reports no freeBytes', () => {
+    const missing = { totalBytes: 200 * GIB, usedBytes: Math.ceil(200 * GIB * 0.95) } as {
+      totalBytes: number;
+      freeBytes: number;
+      usedBytes: number;
+    };
+
+    expect(deriveDiskState(missing)).toBe('error');
+  });
+});
+
+describe('diskErrorPercentForVolume', () => {
+  it('is the ratio line on any volume at or under the 1,000 GiB reference', () => {
+    expect(diskErrorPercentForVolume(PROD_VOLUME_BYTES)).toBe(90);
+    expect(diskErrorPercentForVolume(200 * GIB)).toBe(90);
+    expect(diskErrorPercentForVolume(1000 * GIB)).toBe(90);
+  });
+
+  it('is the floor crossing on a larger volume — 94.62% on acceptance, not 90%', () => {
+    expect(diskErrorPercentForVolume(ACCEPTANCE_VOLUME_BYTES)).toBe(94.62);
+  });
+
+  it('agrees with deriveDiskState about where the badge turns red', () => {
+    const percent = diskErrorPercentForVolume(ACCEPTANCE_VOLUME_BYTES);
+    expect(deriveDiskState(atPercent(ACCEPTANCE_VOLUME_BYTES, percent - 0.01))).not.toBe('error');
+    // Floored to 2 dp, so the named percent can sit a sliver under the true
+    // crossing; a hundredth of a point past it is red on both sides.
+    expect(deriveDiskState(atPercent(ACCEPTANCE_VOLUME_BYTES, percent + 0.01))).toBe('error');
+  });
+
+  it('never returns less than the ratio line, and returns exactly it for an unmeasurable volume', () => {
+    expect(diskErrorPercentForVolume(0)).toBe(90);
+    expect(diskErrorPercentForVolume(-1)).toBe(90);
+    expect(diskErrorPercentForVolume(Number.NaN)).toBe(90);
+    for (const total of [1, GIB, 900 * GIB, 5000 * GIB, 1e15]) {
+      expect(diskErrorPercentForVolume(total)).toBeGreaterThanOrEqual(90);
+    }
   });
 });
 

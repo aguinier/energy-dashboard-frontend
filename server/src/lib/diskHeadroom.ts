@@ -77,11 +77,24 @@ export interface DiskHeadroom {
 }
 
 /**
- * The percent the status page already paints a side red at, expressed from the
- * one constant that defines it (`DISK_ERROR_RATIO`, ABL-292) rather than
- * restated as a literal. The countdown and the badge have to agree on what
- * "full" means, or the page says the disk is fine and that it crosses "full"
+ * The *ratio* half of the error condition as a percent, expressed from the one
+ * constant that defines it (`DISK_ERROR_RATIO`, ABL-292) rather than restated
+ * as a literal. The countdown and the badge have to agree on what "full"
+ * means, or the page says the disk is fine and that it crosses "full"
  * tomorrow — and a mirrored copy is exactly how that drift happens.
+ *
+ * **This is the whole error condition only on a volume at or under the ABL-586
+ * reference size** (1,000 GiB — see `DISK_WARN_FREE_BYTES`), where the
+ * free-bytes floor is crossed first and the ratio is therefore binding. That
+ * covers prod at 907.13 GiB, and it is the right default for a caller that
+ * does not know the volume size, because it can only place the crossing
+ * earlier than the real one, never later.
+ *
+ * A caller that *does* know the volume — `opsHistoryService.ts` reads
+ * `diskTotalBytes` off the snapshot it is already projecting from — should pass
+ * `diskErrorPercentForVolume(totalBytes)` as `thresholdPercent` instead, which
+ * is where the badge actually turns red on a larger volume (94.63% on
+ * acceptance's 1861.90 GiB, not 90%).
  */
 export const DISK_THRESHOLD_PERCENT = DISK_ERROR_RATIO * 100;
 

@@ -49,6 +49,40 @@ export function hasReadings(series: DiskSeriesPoint[], side: 'local' | 'peer'): 
   return series.some((p) => p[side] !== null);
 }
 
+/** One dashed rule on the disk chart: the used-percent at which a badge turns red. */
+export interface ThresholdLine {
+  percent: number;
+  /** What the chart prints at the end of the rule. */
+  label: string;
+}
+
+/**
+ * The threshold rules to draw, one per *distinct* threshold (ABL-586).
+ *
+ * Escalation to `error` now needs a used-ratio breach and a free-bytes floor
+ * breach together, so the percent at which a side turns red depends on the size
+ * of its volume: 90% on prod's 907 GiB, 94.62% on the 1.86 TiB workstation
+ * volume acceptance shares. The chart used to draw a single rule taken from
+ * `headroom.local` and label it as "the" threshold, which over two differently
+ * sized volumes would have drawn one side's line across the other side's data —
+ * a wrong number rendered confidently, in the one place a reader looks to see
+ * how close the red line is.
+ *
+ * Collapsed to a single unlabelled-by-lane rule when the two agree, which is
+ * every deployment where both volumes are at or under the reference size, so
+ * the common case reads exactly as it did before.
+ */
+export function thresholdLines(headroom: OpsStatusHistory['headroom']): ThresholdLine[] {
+  const { local, peer } = headroom;
+  if (local.thresholdPercent === peer.thresholdPercent) {
+    return [{ percent: local.thresholdPercent, label: `${local.thresholdPercent}%` }];
+  }
+  return [
+    { percent: local.thresholdPercent, label: `${local.thresholdPercent}% this env` },
+    { percent: peer.thresholdPercent, label: `${peer.thresholdPercent}% peer` },
+  ];
+}
+
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { getOpsStatusHistory, resolveWindowHours, toDiskPoints } from './opsHistoryService.js';
+import {
+  getOpsStatusHistory,
+  resolveWindowHours,
+  sideErrorPercent,
+  toDiskPoints,
+} from './opsHistoryService.js';
 import type { OpsSnapshot, OpsSideSnapshot } from './opsSnapshot.js';
 import type { OpsSnapshotConfig } from './opsSnapshotStore.js';
 
@@ -149,5 +154,88 @@ describe('getOpsStatusHistory', () => {
     });
 
     expect(history.storage.skippedLines).toBe(3);
+  });
+});
+
+/**
+ * ABL-586: the badge escalates on a ratio *and* a free-bytes floor, so the
+ * used-percent a side actually turns red at depends on how big its volume is.
+ * The projection has to count down to that percent, or the trend card announces
+ * a crossing the badge does not act on.
+ */
+describe('sideErrorPercent', () => {
+  const PROD_VOLUME_BYTES = 974_021_873_664;
+  const ACCEPTANCE_VOLUME_BYTES = 1_999_203_463_168;
+
+  const withTotals = (locals: Array<number | null>, peer = 1000): OpsSnapshot[] =>
+    locals.map((diskTotalBytes, i) => ({
+      t: new Date(NOW.getTime() - (locals.length - 1 - i) * HOUR_MS).toISOString(),
+      local: side({ diskTotalBytes, diskUsedBytes: diskTotalBytes === null ? null : 1 }),
+      peer: side({ diskTotalBytes: peer }),
+    }));
+
+  it('is the 90% ratio line on prod’s volume — under the reference size, nothing moves', () => {
+    expect(sideErrorPercent(withTotals([PROD_VOLUME_BYTES]), 'local')).toBe(90);
+  });
+
+  it('is 94.62% on the acceptance volume, where 90% still leaves 186 GiB free', () => {
+    expect(sideErrorPercent(withTotals([ACCEPTANCE_VOLUME_BYTES]), 'local')).toBe(94.62);
+  });
+
+  it('falls back to the ratio line — earlier, never later — when no side reported a volume', () => {
+    expect(sideErrorPercent(withTotals([null, null]), 'local')).toBe(90);
+    expect(sideErrorPercent([], 'local')).toBe(90);
+  });
+
+  it('ignores a zero total rather than treating it as a measured volume', () => {
+    expect(sideErrorPercent(withTotals([ACCEPTANCE_VOLUME_BYTES, 0]), 'local')).toBe(94.62);
+  });
+
+  it('takes the most recent reading by timestamp, not by array position', () => {
+    // Append-order stores can end up unsorted after a clock step or a merge;
+    // the number that decides today's badge is today's volume, not the file's
+    // last line. Newest (the acceptance volume) is deliberately written first.
+    const unsorted: OpsSnapshot[] = [
+      { t: NOW.toISOString(), local: side({ diskTotalBytes: ACCEPTANCE_VOLUME_BYTES }), peer: side() },
+      {
+        t: new Date(NOW.getTime() - 5 * HOUR_MS).toISOString(),
+        local: side({ diskTotalBytes: PROD_VOLUME_BYTES }),
+        peer: side(),
+      },
+    ];
+
+    expect(sideErrorPercent(unsorted, 'local')).toBe(94.62);
+  });
+
+  it('gives each side its own threshold on the wire when the two volumes differ', () => {
+    const snapshots: OpsSnapshot[] = [
+      {
+        t: NOW.toISOString(),
+        local: side({ diskTotalBytes: ACCEPTANCE_VOLUME_BYTES, diskUsedBytes: 1_830_809_317_376 }),
+        peer: side({ diskTotalBytes: PROD_VOLUME_BYTES, diskUsedBytes: 569_465_774_080 }),
+      },
+    ];
+    const history = getOpsStatusHistory(NOW, 168, { config: CONFIG, read: readStub(snapshots) });
+
+    expect(history.headroom.local.thresholdPercent).toBe(94.62);
+    expect(history.headroom.peer.thresholdPercent).toBe(90);
+  });
+
+  /**
+   * The contradiction this plumbing exists to prevent: acceptance sat at 91.58%
+   * on 2026-08-27, which is past the ratio line but not past its volume's real
+   * escalation point. Projected against a flat 90 the card would have said
+   * "Already at or above 90%" in alarm red beside a `warn` badge.
+   */
+  it('does not report the live acceptance reading as already breached', () => {
+    const snapshots = Array.from({ length: 8 }, (_, i) => ({
+      t: new Date(NOW.getTime() - (7 - i) * 24 * HOUR_MS).toISOString(),
+      local: side({ diskTotalBytes: ACCEPTANCE_VOLUME_BYTES, diskUsedBytes: 1_830_809_317_376 }),
+      peer: side(),
+    }));
+    const history = getOpsStatusHistory(NOW, 168, { config: CONFIG, read: readStub(snapshots) });
+
+    expect(history.headroom.local.thresholdPercent).toBe(94.62);
+    expect(history.headroom.local.reason).not.toBe('already_breached');
   });
 });

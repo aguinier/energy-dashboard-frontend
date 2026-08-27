@@ -3,6 +3,8 @@ import type { SideStatus } from '../services/peerOpsStatus.js';
 import {
   DISK_WARN_RATIO,
   DISK_ERROR_RATIO,
+  DISK_WARN_FREE_BYTES,
+  DISK_ERROR_FREE_BYTES,
   type ThresholdState,
 } from './opsStatusThresholds.js';
 
@@ -40,7 +42,7 @@ export interface AlertObservation {
   lane: AlertLane;
   kpi: AlertKpi;
   state: ThresholdState;
-  /** Human-readable evidence, e.g. "85.11% of disk used (warn at 75%, error at 90%)". */
+  /** Human-readable evidence, e.g. "91.58% of disk used, 156.8 GiB free (warn; ...)". */
   detail: string;
   /**
    * True for the KPIs the ABL-220 sync blackout can knock over on its own —
@@ -70,6 +72,20 @@ export function laneLabel(lane: AlertLane): string {
   return LANE_LABEL[lane];
 }
 
+const GIB = 1024 ** 3;
+
+const gib = (bytes: number, decimals = 0): string => `${(bytes / GIB).toFixed(decimals)} GiB`;
+
+/**
+ * Both halves of the verdict, in the message (ABL-586).
+ *
+ * The old text named only the percentages, which described a rule the code no
+ * longer implements: a reader seeing "91.58% of disk used (warn; warn at 75%,
+ * error at 90%)" would reasonably conclude the alert engine was broken. The
+ * free-bytes reading is stated beside the percentage, and both floors beside
+ * both ratios, so the sentence is checkable against `deriveDiskState` by
+ * reading it.
+ */
 function describeDisk(side: SideStatus, state: ThresholdState): string {
   if (!side.reachable) return `not measured — side unreachable (${side.error})`;
   const disk = side.status.host.disk;
@@ -77,7 +93,11 @@ function describeDisk(side: SideStatus, state: ThresholdState): string {
   const pct = ((disk.usedBytes / disk.totalBytes) * 100).toFixed(2);
   const warnPct = (DISK_WARN_RATIO * 100).toFixed(0);
   const errorPct = (DISK_ERROR_RATIO * 100).toFixed(0);
-  return `${pct}% of disk used (${state}; warn at ${warnPct}%, error at ${errorPct}%)`;
+  return (
+    `${pct}% of disk used, ${gib(disk.freeBytes, 1)} free ` +
+    `(${state}; warn at >=${warnPct}% used with <=${gib(DISK_WARN_FREE_BYTES)} free, ` +
+    `error at >=${errorPct}% with <=${gib(DISK_ERROR_FREE_BYTES)} free)`
+  );
 }
 
 function describeFreshness(side: SideStatus): string {

@@ -127,24 +127,34 @@ describe('observeCombinedStatus — KPI set', () => {
 });
 
 describe('observeCombinedStatus — disk', () => {
-  it('reads the verdict from derived and reports the live acceptance figure as warn', () => {
-    // The exact numbers observed on acceptance at 12:36 UTC on 2026-08-12.
-    const status = opsStatus({ usedBytes: 1_701_490_991_104, totalBytes: 1_999_203_463_168 });
+  /**
+   * The message has to name both halves of the rule (ABL-586). Text that said
+   * only "warn at 75%, error at 90%" described a rule the code stopped
+   * implementing the moment a free-bytes floor was added to the conjunction —
+   * a reader seeing 91.58% beside a `warn` would have concluded the engine was
+   * broken rather than that 156.8 GiB is above the error floor.
+   */
+  it('reads the verdict from derived and names both halves of the rule', () => {
+    // The exact numbers observed on acceptance at 18:06 UTC on 2026-08-27.
+    const status = opsStatus({ usedBytes: 1_830_809_317_376, totalBytes: 1_999_203_463_168 });
     const observations = observeCombinedStatus(combined(reachable(status), reachable(opsStatus())));
     const disk = byKey(observations, 'local:disk');
 
     expect(disk.state).toBe('warn');
-    expect(disk.detail).toBe('85.11% of disk used (warn; warn at 75%, error at 90%)');
+    expect(disk.detail).toBe(
+      '91.58% of disk used, 156.8 GiB free ' +
+        '(warn; warn at >=75% used with <=250 GiB free, error at >=90% with <=100 GiB free)',
+    );
   });
 
-  it('is error above the 90% threshold', () => {
+  it('is error above the 90% threshold once the volume is genuinely low', () => {
     const status = opsStatus({ usedBytes: 950, totalBytes: 1000 });
     const disk = byKey(
       observeCombinedStatus(combined(reachable(status), reachable(opsStatus()))),
       'local:disk',
     );
     expect(disk.state).toBe('error');
-    expect(disk.detail).toContain('95.00% of disk used');
+    expect(disk.detail).toContain('95.00% of disk used, 0.0 GiB free');
   });
 
   it('is unknown — not ok — for an unreachable side, and says why', () => {
