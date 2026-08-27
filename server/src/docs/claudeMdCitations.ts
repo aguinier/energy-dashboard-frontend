@@ -92,17 +92,6 @@ export const COMMENT_CITATION_ALLOWLIST: CommentAllowance[] = [
     reason:
       'CLAUDE.md cites this comment to say the comment itself is now stale for `price`.',
   },
-  {
-    file: 'server/src/config/forecastModels.ts',
-    excerpt: 'An explicit request is honoured strictly',
-    reason: 'CLAUDE.md quotes this comment verbatim as the rule it states.',
-  },
-  {
-    file: 'server/src/services/forecastVintageArchiveScheduler.ts',
-    excerpt: 'Computed locally rather than imported from',
-    reason:
-      "CLAUDE.md's ABL-287 section cites this comment as the precedent for why the ops alert scheduler imports `combinedOpsStatusService` dynamically: importing it statically would open a database handle as a side effect. The comment is itself the explanation being pointed at.",
-  },
 ];
 
 const SOURCE_EXTENSIONS = new Set([

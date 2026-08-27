@@ -459,8 +459,9 @@ describe('CLAUDE.md citations', () => {
   it('finds the citations, so a silent parse failure cannot pass as a clean run', () => {
     // Guards the check itself: if a regex change stopped matching, `problems`
     // would be empty and the real assertion below would go green for the wrong
-    // reason.
-    expect(result.citations.length).toBeGreaterThan(40);
+    // reason. The floor tracks the lean CLAUDE.md (ABL-536): ~20 citations,
+    // down from ~60 before the narrative moved to docs/claude/.
+    expect(result.citations.length).toBeGreaterThan(15);
   });
 
   it('every citation points at real code', () => {
