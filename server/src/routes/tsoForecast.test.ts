@@ -266,11 +266,11 @@ describe('generation accuracy reads energy_generation, not the frozen table (ABL
     // aggregated branch, average the 9999 into the bucket. Neither may happen.
     const hourly = await get(`accuracy/generation/DE?${WINDOW}&type=solar`);
     expect(hourly.body.data).toHaveLength(4);
-    expect(hourly.body.data.map((d: { actual_value: number }) => d.actual_value)).toEqual([100, 100, 100, 100]);
+    expect((hourly.body.data as Array<{ actual_value: number }>).map((d) => d.actual_value)).toEqual([100, 100, 100, 100]);
 
     const daily = await get(`accuracy/generation/DE?${WINDOW}&type=solar&granularity=daily`);
     expect(daily.body.data).toHaveLength(1);
-    expect(daily.body.data[0].actual_value).toBe(100);
+    expect((daily.body.data as Array<{ actual_value: number }>)[0].actual_value).toBe(100);
   });
 });
 
@@ -343,50 +343,55 @@ describe('divergent forecast basis (ABL-277)', () => {
     // missing — the numbers are withheld because the difference is a
     // definitional gap, not forecast error.
     const { body } = await get(`accuracy/load/NL?${NEXT_DAY}`);
-    expect(body.metrics.mae).toBeNull();
-    expect(body.metrics.mape).toBeNull();
-    expect(body.metrics.rmse).toBeNull();
+    const metricsNl = body.metrics as Record<string, unknown>;
+    expect(metricsNl.mae).toBeNull();
+    expect(metricsNl.mape).toBeNull();
+    expect(metricsNl.rmse).toBeNull();
     // WAPE too (ABL-388). It is immune to the near-zero-actual defect that
     // makes a MAPE unreadable, which makes it tempting to let through as the
     // one honest number here — but this rule is not about a metric misbehaving.
     // The two series measure different quantities, and a magnitude-weighted
     // average of a definitional gap is still a definitional gap.
-    expect(body.metrics.wape).toBeNull();
+    expect(metricsNl.wape).toBeNull();
   });
 
   it('keeps the pairing counts, so the answer cannot read as "no data"', async () => {
     const { body } = await get(`accuracy/load/NL?${NEXT_DAY}`);
-    expect(body.metrics.dataPoints).toBe(4);
-    expect(body.metrics.mapeSamples).toBe(4);
+    const metricsCounts = body.metrics as Record<string, unknown>;
+    expect(metricsCounts.dataPoints).toBe(4);
+    expect(metricsCounts.mapeSamples).toBe(4);
     expect(body.data).toHaveLength(4);
   });
 
   it('says why, in words, on the response itself', async () => {
     const { body } = await get(`accuracy/load/NL?${NEXT_DAY}`);
-    expect(body.meta.basis).toBe('divergent_basis');
-    expect(body.meta.basisNote).toContain('behind-the-meter solar');
+    const metaNlBasis = body.meta as Record<string, unknown>;
+    expect(metaNlBasis.basis).toBe('divergent_basis');
+    expect(metaNlBasis.basisNote).toContain('behind-the-meter solar');
   });
 
   it('still measures DE, so the rule is not a blanket kill switch', async () => {
     const { body } = await get(`accuracy/load/DE?${WINDOW}`);
-    expect(body.meta.basis).toBe('comparable');
-    expect(body.meta.basisNote).toBeNull();
-    expect(body.metrics.mae).toBe(50);
+    const metaDe = body.meta as Record<string, unknown>;
+    expect(metaDe.basis).toBe('comparable');
+    expect(metaDe.basisNote).toBeNull();
+    expect((body.metrics as Record<string, unknown>).mae).toBe(50);
   });
 
   it('suppresses the same country on the aggregate /metrics route', async () => {
     // The rule lives in the service, not the route, so every consumer of
     // getLoadForecastAccuracyMetrics inherits it.
     const { body } = await get(`metrics/NL?${NEXT_DAY}`);
-    expect(body.data.load.mape).toBeNull();
-    expect(body.data.load.basis).toBe('divergent_basis');
+    const dataMetrics = body.data as Record<string, Record<string, unknown>>;
+    expect(dataMetrics.load.mape).toBeNull();
+    expect(dataMetrics.load.basis).toBe('divergent_basis');
   });
 
   it('keeps NL out of the horizon bars rather than drawing an uninterpretable one', async () => {
     // /forecast-comparison/:cc/summary reads the same service; buildHorizonBars
     // drops a bar whose mape is null, so the TSO D+1 bar simply is not there.
     const { body } = await api.get(`forecast-comparison/NL?${NEXT_DAY}&forecastType=load`);
-    expect(body.data.tso.dayAhead.mape).toBeNull();
+    expect((body.data as Record<string, Record<string, Record<string, unknown>>>).tso.dayAhead.mape).toBeNull();
   });
 
   it('nulls MAE, RMSE and bias there too, rather than coercing them to a flawless 0', async () => {
@@ -395,7 +400,7 @@ describe('divergent forecast basis (ABL-277)', () => {
     // — a clean systematic over-forecast the TSO could supposedly correct,
     // when it is the behind-the-meter solar the two series disagree about.
     const { body } = await api.get(`forecast-comparison/NL?${NEXT_DAY}&forecastType=load`);
-    const da = body.data.tso.dayAhead;
+    const da = (body.data as Record<string, Record<string, Record<string, unknown>>>).tso.dayAhead;
     expect(da.mae).toBeNull();
     expect(da.rmse).toBeNull();
     expect(da.bias).toBeNull();
@@ -404,7 +409,7 @@ describe('divergent forecast basis (ABL-277)', () => {
 
   it("keeps DE's summary numbers intact", async () => {
     const { body } = await api.get(`forecast-comparison/DE?${WINDOW}&forecastType=load`);
-    const da = body.data.tso.dayAhead;
+    const da = (body.data as Record<string, Record<string, Record<string, unknown>>>).tso.dayAhead;
     expect(da.mae).toBe(50);
     expect(da.bias).toBe(-50); // forecast 50 MW under the actual at every hour
   });
@@ -422,10 +427,11 @@ describe('GET /api/tso-forecast/load/:cc — divergent forecast basis (ABL-501)'
 
     expect(status).toBe(200);
     expect(body.data).toEqual([]);
-    expect(body.meta.count).toBe(0);
-    expect(body.meta.withheldPoints).toBe(4);
-    expect(body.meta.basis).toBe('divergent_basis');
-    expect(body.meta.basisNote).toContain('behind-the-meter solar');
+    const metaNlLoad = body.meta as Record<string, unknown>;
+    expect(metaNlLoad.count).toBe(0);
+    expect(metaNlLoad.withheldPoints).toBe(4);
+    expect(metaNlLoad.basis).toBe('divergent_basis');
+    expect(metaNlLoad.basisNote).toContain('behind-the-meter solar');
   });
 
   it('withholds the week-ahead horizon too', async () => {
@@ -435,7 +441,7 @@ describe('GET /api/tso-forecast/load/:cc — divergent forecast basis (ABL-501)'
     // NL together — so the series half has to match.
     const { body } = await get(`load/NL?${NEXT_DAY}&forecastType=week_ahead`);
     expect(body.data).toEqual([]);
-    expect(body.meta.basis).toBe('divergent_basis');
+    expect((body.meta as Record<string, unknown>).basis).toBe('divergent_basis');
   });
 
   it('leaves DE alone', async () => {
@@ -443,9 +449,10 @@ describe('GET /api/tso-forecast/load/:cc — divergent forecast basis (ABL-501)'
 
     expect(status).toBe(200);
     expect((body.data as unknown[]).length).toBeGreaterThan(0);
-    expect(body.meta.basis).toBe('comparable');
-    expect(body.meta.basisNote).toBeNull();
-    expect(body.meta.withheldPoints).toBe(0);
+    const metaDe2 = body.meta as Record<string, unknown>;
+    expect(metaDe2.basis).toBe('comparable');
+    expect(metaDe2.basisNote).toBeNull();
+    expect(metaDe2.withheldPoints).toBe(0);
   });
 
   it('does not touch the generation forecast, for NL or anyone', async () => {

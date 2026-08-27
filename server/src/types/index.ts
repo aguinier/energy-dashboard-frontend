@@ -219,7 +219,8 @@ export type ForecastType =
   | 'wind_onshore'
   | 'wind_offshore'
   | 'hydro_total'
-  | 'biomass';
+  | 'biomass'
+  | 'net_position';
 
 export interface ForecastDataPoint {
   timestamp: string;

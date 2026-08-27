@@ -277,6 +277,7 @@ const SAMPLE_STATUS: OpsStatus = {
   host: { platform: 'linux', disk: disk(50, 100), cpuLoad: { load1: 0.1, load5: 0.2, load15: 0.3 } },
   process: { uptimeSeconds: 100, memory: { rssBytes: 1, heapUsedBytes: 1, heapTotalBytes: 1, externalBytes: 1 } },
   freshness: { status: 'live', countriesChecked: 7, streamsChecked: 35, counts: { live: 35, stale: 0, ended: 0, none: 0 }, staleCountries: [] },
+  visitors: { countingSince: '2026-08-11T00:00:00.000Z', day: '2026-08-11', today: { page: 0, api: 0, asset: 0, automated: 0 }, window: { page: 0, api: 0, asset: 0, automated: 0 }, windowDaysCovered: 1, windowComplete: false, distinctClientsToday: 0 },
 };
 
 function reachable(overrides: Partial<OpsStatus> = {}): SideStatus {

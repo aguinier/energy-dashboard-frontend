@@ -23,6 +23,7 @@ function status(overrides: Partial<OpsStatus> = {}): OpsStatus {
       counts: { live: 30, stale: 5, ended: 0, none: 0 },
       staleCountries: ['BE', 'DE'],
     },
+    visitors: { countingSince: '2026-08-12T00:00:00.000Z', day: '2026-08-12', today: { page: 0, api: 0, asset: 0, automated: 0 }, window: { page: 0, api: 0, asset: 0, automated: 0 }, windowDaysCovered: 1, windowComplete: false, distinctClientsToday: 0 },
     ...overrides,
   };
 }
@@ -34,6 +35,11 @@ function combined(overrides: Partial<CombinedOpsStatus> = {}): CombinedOpsStatus
     peer: { reachable: true, latencyMs: 40, status: status() },
     peerConfigured: true,
     syncBlackout: { active: false, label: null },
+    derived: {
+      local: { environment: 'ok', disk: 'warn', freshness: 'warn' },
+      peer: { environment: 'ok', disk: 'warn', freshness: 'warn' },
+      commitDrift: 'ok',
+    },
     ...overrides,
   };
 }

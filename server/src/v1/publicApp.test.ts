@@ -339,9 +339,10 @@ describe('the public composition does answer /v1', () => {
     });
 
     expect(forecast.status).toBe(400);
-    expect(forecast.json().error.code).toBe('invalid_type');
+    const forecastBody = forecast.json() as { error: { code: string; message: string } };
+    expect(forecastBody.error.code).toBe('invalid_type');
     // The message lists what *is* offered, and net_position is not in it.
-    expect(forecast.json().error.message).not.toContain('net_position');
+    expect(forecastBody.error.message).not.toContain('net_position');
   });
 
   it('401s an unimplemented path without a key, so the surface cannot be enumerated', async () => {

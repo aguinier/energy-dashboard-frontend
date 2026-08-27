@@ -415,7 +415,7 @@ type ForecastModelRegistry = Record<string, ForecastTypeConfig>;
 The client's `TSOLoadForecastDataPoint` (`client/src/types/index.ts:281`) adds
 `forecast_min_mw`/`forecast_max_mw` (week-ahead only, `tsoForecastService.ts:71-72`,
 NULL on day-ahead) that the server's (`server/src/types/index.ts:170`) lacks;
-`TSOGenerationForecastDataPoint` is server-only (`server/src/types/index.ts:244`,
+`TSOGenerationForecastDataPoint` is server-only (`server/src/types/index.ts:245`,
 duplicated at `tsoForecastService.ts:27`). Check which side you are on.
 
 ## Debugging Tips
