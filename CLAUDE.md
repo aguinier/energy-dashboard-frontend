@@ -215,7 +215,7 @@ Invariants:
   serving sequence: `docs/claude/16-serving-a-changed-model-artifact….md`.
 - **Breach detection reads `/v1`'s tables from the *private* process.** ABL-530
   records auth failures into the key-store file; the ABL-578 watcher
-  (`startBreachWatchScheduler`, `server/src/services/breachWatchScheduler.ts:434`)
+  (`startBreachWatchScheduler`, `server/src/services/breachWatchScheduler.ts:477`)
   runs in `index.ts` beside the ops schedulers, opens that file **readonly**
   (`openAuthFailureReader`, `server/src/services/breachWatch/authFailureReader.ts:92`),
   and on a trip opens a `priority: high` `INCIDENT:` issue for the CEO — the

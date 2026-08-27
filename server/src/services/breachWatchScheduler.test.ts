@@ -77,10 +77,16 @@ function fakeSource(rows: Rows = {}) {
   return { source, seen, closed: () => closed };
 }
 
-/** A channel that records every incident and hands back an id, like the real one. */
+/**
+ * A channel that records every incident and hands back an id, like the real one.
+ *
+ * `closed` is the set of issues a responder has since triaged and closed, so a
+ * test can do to an incident what the CEO did to ABL-582.
+ */
 function recordingChannel() {
   const opened: Incident[] = [];
   const updates: Array<{ issueId: string; body: string }> = [];
+  const closed = new Set<string>();
   let next = 0;
   const channel: IncidentChannel = {
     name: 'recording',
@@ -92,8 +98,11 @@ function recordingChannel() {
     async update(issueId, body) {
       updates.push({ issueId, body });
     },
+    async isOpen(issueId) {
+      return !closed.has(issueId);
+    },
   };
-  return { channel, opened, updates };
+  return { channel, opened, updates, closed };
 }
 
 describe('scheduler decisions are pure and fail safe', () => {
@@ -370,6 +379,85 @@ describe('idempotency — one open incident per window, updated not duplicated',
     await tick(rows, '2026-08-28T01:00:00.000Z', channel);
 
     expect(opened).toHaveLength(2);
+  });
+
+  it('re-opens rather than commenting onto an incident somebody has closed', async () => {
+    // "One open incident per window" has to mean *open*. A comment on a closed
+    // issue is inert, so a genuine second attack posted there would land on a
+    // triaged-and-dismissed thread nobody reopens. This is ABL-582's own shape:
+    // an incident delivered, triaged DISMISSED, and closed inside the window.
+    const { channel, opened, updates, closed } = recordingChannel();
+    const rows = { secretHolderRows: [secretHolder({ failures: 4 })] };
+
+    await tick(rows, '2026-08-27T00:00:00.000Z', channel);
+    expect(opened).toHaveLength(1);
+
+    closed.add('issue-1');
+
+    // Still inside the 24h incident window, and the count has not even grown.
+    const second = await tick(rows, '2026-08-27T00:15:00.000Z', channel);
+
+    expect(second.opened).toEqual(['ABL-902']);
+    expect(updates).toHaveLength(0);
+    expect(opened).toHaveLength(2);
+    expect(opened[1].description).toContain('`issue-1`');
+    expect(opened[1].description).toContain('is closed — but the signal is still firing');
+  });
+
+  it('re-opens once, not once per tick — the new incident suppresses again', async () => {
+    const { channel, opened, closed } = recordingChannel();
+    const rows = { secretHolderRows: [secretHolder()] };
+
+    await tick(rows, '2026-08-27T00:00:00.000Z', channel);
+    closed.add('issue-1');
+    await tick(rows, '2026-08-27T00:15:00.000Z', channel);
+    await tick(rows, '2026-08-27T00:30:00.000Z', channel);
+    const fourth = await tick(rows, '2026-08-27T00:45:00.000Z', channel);
+
+    expect(opened).toHaveLength(2);
+    expect(fourth.suppressed).toEqual(['s4:key_live_001']);
+  });
+
+  it('does NOT duplicate when it cannot tell whether the incident is still open', async () => {
+    // The conservative half of the same rule: guessing "closed" on a flaky
+    // control plane would file a fresh priority:high issue every 15 minutes.
+    const { channel, opened } = recordingChannel();
+    const flaky: IncidentChannel = {
+      ...channel,
+      async isOpen() {
+        throw new Error('control plane unreachable');
+      },
+    };
+    const rows = { secretHolderRows: [secretHolder()] };
+
+    await tick(rows, '2026-08-27T00:00:00.000Z', flaky);
+    const second = await tick(rows, '2026-08-27T00:15:00.000Z', flaky);
+
+    expect(opened).toHaveLength(1);
+    expect(second.suppressed).toEqual(['s4:key_live_001']);
+    expect(second.warnings.join(' ')).toContain('will not duplicate it');
+  });
+
+  it('a channel that cannot answer at all still suppresses', async () => {
+    // The logging fallback has no issues to check; absence of `isOpen` must not
+    // be read as "closed".
+    const opened: Incident[] = [];
+    let next = 0;
+    const channel: IncidentChannel = {
+      name: 'no-liveness-check',
+      async open(incident) {
+        opened.push(incident);
+        next += 1;
+        return { issueId: `issue-${next}`, reference: `ABL-90${next}` };
+      },
+      async update() {},
+    };
+    const rows = { secretHolderRows: [secretHolder()] };
+
+    await tick(rows, '2026-08-27T00:00:00.000Z', channel);
+    await tick(rows, '2026-08-27T00:15:00.000Z', channel);
+
+    expect(opened).toHaveLength(1);
   });
 
   it('records nothing when delivery failed, so the next tick retries', async () => {

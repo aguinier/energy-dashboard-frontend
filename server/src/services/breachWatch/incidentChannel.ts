@@ -47,7 +47,25 @@ export interface IncidentChannel {
   open(incident: Incident): Promise<OpenedIncident>;
   /** Add to an alarm already raised. Allowed to reject. */
   update(issueId: string, body: string): Promise<void>;
+  /**
+   * Is that alarm still somewhere a responder will see it?
+   *
+   * `true` open, `false` closed or gone, **`null` cannot tell**. Absent on a
+   * channel that has no issues to check. See `deliverFinding` for why `null` and
+   * `true` are treated identically and `false` is not.
+   */
+  isOpen?(issueId: string): Promise<boolean | null>;
 }
+
+/**
+ * The statuses that mean nobody is reading the thread any more.
+ *
+ * Taken from the control plane's own vocabulary — `backlog`, `in_progress`,
+ * `in_review` and `blocked` are the live ones. A status we do not recognise is
+ * deliberately **not** treated as terminal: a new status added upstream must not
+ * silently start re-opening incidents.
+ */
+export const TERMINAL_ISSUE_STATUSES: ReadonlySet<string> = new Set(['done', 'cancelled']);
 
 export interface PaperclipConfig {
   baseUrl: string;
@@ -143,6 +161,17 @@ function readIssueId(payload: unknown): string | null {
   return null;
 }
 
+function readStatus(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.status === 'string') return record.status;
+  const nested = record.issue;
+  if (nested && typeof nested === 'object' && typeof (nested as Record<string, unknown>).status === 'string') {
+    return (nested as Record<string, unknown>).status as string;
+  }
+  return null;
+}
+
 function readIdentifier(payload: unknown): string | null {
   if (!payload || typeof payload !== 'object') return null;
   const record = payload as Record<string, unknown>;
@@ -212,6 +241,59 @@ export function createPaperclipIncidentChannel({
     async update(issueId: string, body: string): Promise<void> {
       await post(config, fetchImpl, `/api/issues/${issueId}/comments`, { body });
     },
+
+    /**
+     * Whether the incident is still a live thread.
+     *
+     * A closed incident is not a place an alarm can be delivered: an agent comment
+     * on a closed issue is inert by default, so a genuine second attack posted
+     * there lands on a triaged-and-dismissed thread nobody reopens.
+     *
+     * The three outcomes are deliberate. A **404** is `false` — a record whose
+     * issue no longer exists is not an open incident, and staying silent against
+     * nothing for the rest of the window is the failure this method exists to
+     * remove. A transport failure or an unreadable body is `null`, never `false`:
+     * guessing "closed" on a flaky network would open a duplicate `priority: high`
+     * issue every tick, which is the noise the state file exists to prevent.
+     */
+    async isOpen(issueId: string): Promise<boolean | null> {
+      const url = `${config.baseUrl}/api/issues/${issueId}`;
+      let response: Response;
+      try {
+        response = await fetchImpl(url, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${config.apiKey}` },
+        });
+      } catch (err) {
+        logger.warn(
+          `🚨 breach watch: could not reach the control plane to check whether incident ` +
+            `${issueId} is still open (${(err as Error).message}); assuming it is, so this ` +
+            'tick will not duplicate it.'
+        );
+        return null;
+      }
+
+      if (response.status === 404) return false;
+
+      if (!response.ok) {
+        logger.warn(
+          `🚨 breach watch: checking incident ${issueId} returned ${response.status} ` +
+            `${response.statusText}; assuming it is still open, so this tick will not duplicate it.`
+        );
+        return null;
+      }
+
+      const status = readStatus(await response.json().catch(() => null));
+      if (status === null) {
+        logger.warn(
+          `🚨 breach watch: incident ${issueId} was fetched but carried no readable status; ` +
+            'assuming it is still open, so this tick will not duplicate it.'
+        );
+        return null;
+      }
+
+      return !TERMINAL_ISSUE_STATUSES.has(status);
+    },
   };
 }
 
@@ -246,5 +328,9 @@ export function createLoggingIncidentChannel(
     async update(_issueId: string, body: string): Promise<void> {
       logger.error(`🚨 breach watch update (logged only, nobody woken):\n${body}`);
     },
+
+    // No `isOpen`: this channel never returns an issue id, so the scheduler never
+    // has one to check. Omitted rather than stubbed to `true`, which would be a
+    // claim about an issue that does not exist.
   };
 }

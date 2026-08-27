@@ -48,6 +48,9 @@ import type { AuthFailureAdminStore, AuthFailureWindow } from '../v1/security/au
  * 3. An update is posted only when the count has **grown** *and* the update
  *    interval has elapsed — so a live-but-unchanged incident is silent, and a
  *    growing one is one thread with a rising number rather than twenty issues.
+ * 4. The remembered incident is confirmed **still open** before it suppresses
+ *    anything ({@link stillOpen}). Suppression that outlives the thread it points
+ *    at is not idempotency, it is a second attack landing on a closed issue.
  *
  * ## Default on
  *
@@ -346,9 +349,40 @@ interface DeliverOutcome {
   record: IncidentRecord | null;
 }
 
+/**
+ * "Is the incident I remember still somewhere a responder will look?"
+ *
+ * The state file records that an issue was opened; it cannot record that somebody
+ * has since triaged and closed it. Without this check, a signal that keeps firing
+ * after a dismissal is silent for the rest of the 24h window, or — if the count
+ * grows — comments onto a closed thread, where an agent comment is inert by
+ * default. Either way the second attack lands nowhere. *One open incident per
+ * window* has to mean **open**.
+ *
+ * Only a definite `false` forgets the record. A channel that cannot answer, or one
+ * with no issues to check, keeps it: re-opening on an unanswered question would
+ * duplicate a live incident every tick on nothing worse than a flaky network.
+ */
+async function stillOpen(
+  channel: IncidentChannel,
+  existing: IncidentRecord | undefined,
+  warnings: string[]
+): Promise<boolean> {
+  if (!existing || existing.issueId === null || !channel.isOpen) return true;
+  try {
+    return (await channel.isOpen(existing.issueId)) !== false;
+  } catch (err) {
+    warnings.push(
+      `breach watch could not tell whether incident ${existing.issueId} is still open ` +
+        `(${(err as Error).message}); treating it as open, so this tick will not duplicate it.`
+    );
+    return true;
+  }
+}
+
 async function deliverFinding({
   finding,
-  existing,
+  existing: remembered,
   channel,
   context,
   now,
@@ -363,9 +397,18 @@ async function deliverFinding({
   settings: BreachWatchSettings;
   warnings: string[];
 }): Promise<DeliverOutcome> {
+  const closed = !(await stillOpen(channel, remembered, warnings));
+  const existing = closed ? undefined : remembered;
+
   if (!existing) {
     try {
-      const result = await channel.open(buildIncident(finding, context));
+      const result = await channel.open(
+        buildIncident(
+          finding,
+          context,
+          closed && remembered?.issueId ? { closedIssueId: remembered.issueId } : undefined
+        )
+      );
       return {
         kind: 'opened',
         reference: result.reference,

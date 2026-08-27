@@ -136,15 +136,42 @@ function windowLines(finding: BreachFinding, context: IncidentContext): string[]
 }
 
 /**
+ * Set when this subject already had an incident and that incident is now closed.
+ *
+ * Worth saying out loud in the body rather than filing silently: the recipient is
+ * about to receive a second `priority: high` issue about something they have
+ * already triaged, and whether that is alarming or annoying depends entirely on
+ * knowing it is deliberate.
+ */
+export interface IncidentReopen {
+  closedIssueId: string;
+}
+
+/**
  * One alarm, ready to post.
  *
  * The description is deliberately self-sufficient; see this file's header for why
  * the evidence lives in a separate comment rather than being appended here.
  */
-export function buildIncident(finding: BreachFinding, context: IncidentContext): Incident {
+export function buildIncident(
+  finding: BreachFinding,
+  context: IncidentContext,
+  reopen?: IncidentReopen
+): Incident {
   const title = assertNoSecret(
     `${TITLE_PREFIX}: ${finding.signal} — ${finding.headline}`
   );
+
+  const reopenLines = reopen
+    ? [
+        '',
+        `**This subject was reported before, in \`${reopen.closedIssueId}\`, and that incident ` +
+          'is closed — but the signal is still firing.** A new issue rather than a comment on a ' +
+          'closed thread, because a comment there would be inert and this would go unread. If ' +
+          'the earlier one was dismissed, note that the dismissal did not stop the traffic: ' +
+          'dismissing again without changing anything will produce this issue again.',
+      ]
+    : [];
 
   const description = [
     `**Signal:** ${SIGNAL_NAME[finding.signal]}`,
@@ -156,6 +183,7 @@ export function buildIncident(finding: BreachFinding, context: IncidentContext):
     SIGNAL_MEANING[finding.signal],
     '',
     basisLine(finding, context),
+    ...reopenLines,
     '',
     'Opened automatically by the ABL-578 breach watcher, which reads the tables ABL-530 ' +
       'fills. **This is step 1 of `breach-procedure` (ABL-524)** — the same artefact, so ' +

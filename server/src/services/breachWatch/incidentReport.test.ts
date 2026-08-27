@@ -105,6 +105,22 @@ describe('the basis of the firing condition travels with the alarm', () => {
   });
 });
 
+describe('a re-opened incident says it is a re-open', () => {
+  it('names the closed incident and warns that dismissing again repeats this', () => {
+    // The recipient is about to get a second priority:high issue about something
+    // they already triaged. Whether that reads as alarming or as a broken watcher
+    // depends entirely on the body saying it is deliberate.
+    const { description } = buildIncident(S4_FINDING, CONTEXT, { closedIssueId: 'issue-1' });
+    expect(description).toContain('`issue-1`');
+    expect(description).toContain('is closed — but the signal is still firing');
+    expect(description).toContain('dismissing again without changing anything');
+  });
+
+  it('says nothing of the sort on a first incident', () => {
+    expect(buildIncident(S4_FINDING, CONTEXT).description).not.toContain('reported before');
+  });
+});
+
 describe('never a full key', () => {
   it('passes a bare prefix through — it is the non-secret handle', () => {
     // ABL-524 §2 S3 is explicit that recording the prefix is the point; it is

@@ -155,6 +155,70 @@ describe('opening an incident', () => {
   });
 });
 
+describe('checking whether an incident is still open', () => {
+  function fetchReturning(response: Partial<Response> & { json?: () => Promise<unknown> }) {
+    const calls: string[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push(`${init.method} ${url}`);
+      return { ok: true, status: 200, statusText: 'OK', json: async () => ({}), ...response } as Response;
+    };
+    return { fetchImpl, calls };
+  }
+
+  it('reads the live statuses as open', async () => {
+    for (const status of ['backlog', 'in_progress', 'in_review', 'blocked']) {
+      const { fetchImpl, calls } = fetchReturning({ json: async () => ({ id: 'i1', status }) });
+      const channel = createPaperclipIncidentChannel({ config: CONFIG, fetchImpl });
+      expect(await channel.isOpen?.('i1')).toBe(true);
+      expect(calls).toEqual(['GET http://192.168.86.237:3100/api/issues/i1']);
+    }
+  });
+
+  it('reads done and cancelled as closed, so the next trip files a fresh incident', async () => {
+    for (const status of ['done', 'cancelled']) {
+      const { fetchImpl } = fetchReturning({ json: async () => ({ id: 'i1', status }) });
+      expect(await createPaperclipIncidentChannel({ config: CONFIG, fetchImpl }).isOpen?.('i1')).toBe(false);
+    }
+  });
+
+  it('treats a status it does not recognise as open', async () => {
+    // A status added upstream must not silently start re-opening incidents.
+    const { fetchImpl } = fetchReturning({ json: async () => ({ status: 'triaging' }) });
+    expect(await createPaperclipIncidentChannel({ config: CONFIG, fetchImpl }).isOpen?.('i1')).toBe(true);
+  });
+
+  it('treats a deleted issue as closed — a record pointing at nothing is not an open incident', async () => {
+    const { fetchImpl } = fetchReturning({ ok: false, status: 404, statusText: 'Not Found' });
+    expect(await createPaperclipIncidentChannel({ config: CONFIG, fetchImpl }).isOpen?.('i1')).toBe(false);
+  });
+
+  it('answers "cannot tell" rather than "closed" when the control plane errors', async () => {
+    // Guessing "closed" on a flaky network would open a duplicate priority:high
+    // issue every tick — the noise the state file exists to prevent.
+    const warn = vi.fn();
+    const { fetchImpl } = fetchReturning({ ok: false, status: 500, statusText: 'Internal Server Error' });
+    const channel = createPaperclipIncidentChannel({ config: CONFIG, fetchImpl, logger: { warn } });
+
+    expect(await channel.isOpen?.('i1')).toBeNull();
+    expect(warn.mock.calls[0][0]).toContain('will not duplicate it');
+  });
+
+  it('answers "cannot tell" when the transport throws or the body is unreadable', async () => {
+    const warn = vi.fn();
+    const throwing: FetchLike = async () => {
+      throw new Error('ECONNREFUSED');
+    };
+    expect(
+      await createPaperclipIncidentChannel({ config: CONFIG, fetchImpl: throwing, logger: { warn } }).isOpen?.('i1')
+    ).toBeNull();
+
+    const { fetchImpl } = fetchReturning({ json: async () => ({ id: 'i1' }) });
+    expect(
+      await createPaperclipIncidentChannel({ config: CONFIG, fetchImpl, logger: { warn } }).isOpen?.('i1')
+    ).toBeNull();
+  });
+});
+
 describe('the logging fallback', () => {
   it('says in words that nobody was woken', async () => {
     // The one thing worse than an alarm nobody receives is an alarm nobody
