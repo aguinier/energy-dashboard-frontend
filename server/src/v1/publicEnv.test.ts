@@ -33,6 +33,29 @@ describe('forbiddenPublicEnvPresent', () => {
   it('does not treat a lookalike name as forbidden', () => {
     expect(forbiddenPublicEnvPresent({ HELIO_WRITE_TOKEN_PATH: 'x', COMMIT_SHA_SHORT: 'y' })).toEqual([]);
   });
+
+  it('catches PAPERCLIP_API_KEY — the credential the breach watcher runs on (ABL-591)', () => {
+    // The one entry here that is not a dashboard capability. ABL-578 put the
+    // breach watcher in the private process so that the process ABL-291 may
+    // expose could not reach the alarm describing whoever took it; before this
+    // entry, one shared docker/.env would have handed the public process that
+    // credential silently.
+    expect(forbiddenPublicEnvPresent({ PAPERCLIP_API_KEY: 'able_secret' })).toEqual([
+      'PAPERCLIP_API_KEY',
+    ]);
+  });
+
+  it('leaves the Paperclip address and identifiers alone', () => {
+    // Deliberate, not an oversight: without the key these authorise nothing, and
+    // forbidding a setting rather than a capability only breaks deployments.
+    expect(
+      forbiddenPublicEnvPresent({
+        PAPERCLIP_API_URL: 'http://192.168.86.237:3100',
+        PAPERCLIP_COMPANY_ID: 'c',
+        PAPERCLIP_PROJECT_ID: 'p',
+      })
+    ).toEqual([]);
+  });
 });
 
 describe('assertPublicEnvironment', () => {
