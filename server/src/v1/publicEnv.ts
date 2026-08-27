@@ -26,12 +26,32 @@
  * process a write token fail at startup rather than run with a capability
  * nobody meant to grant it. Absent capability beats unused capability, because
  * "unused" is a property of today's code.
+ *
+ * `PAPERCLIP_API_KEY` (ABL-591) is the odd one out, and the most consequential.
+ * It is not a dashboard capability at all: it is the credential the ABL-578
+ * breach watcher uses to open a `priority:high` `INCIDENT:` issue on our own
+ * control plane. `breachWatch/authFailureReader.ts` argues at length that the
+ * watcher belongs in the *private* process precisely so that the process
+ * ABL-291 may expose cannot reach the alarm describing an attacker who took it
+ * — "a detector whose alarm can be turned off by the thing it detects is not a
+ * detector". Until this entry existed that argument was enforced by convention
+ * only: one shared `docker/.env` feeding both compositions would have armed the
+ * public process with it silently, which is the failure this file exists to
+ * make impossible.
+ *
+ * Its siblings `PAPERCLIP_API_URL`, `PAPERCLIP_COMPANY_ID` and
+ * `PAPERCLIP_PROJECT_ID` are deliberately **not** listed. They are an address
+ * and two identifiers; without the key they authorise nothing, and forbidding a
+ * setting rather than a capability buys no safety while turning a harmless
+ * shared env file into a startup failure. The rule stays "capabilities, not
+ * settings".
  */
 export const FORBIDDEN_PUBLIC_ENV = [
   'HELIO_WRITE_TOKEN',
   'JAO_CORE_NET_POSITION_ENABLED',
   'OPS_PEER_URL',
   'COMMIT_SHA',
+  'PAPERCLIP_API_KEY',
 ] as const;
 
 export type PublicEnv = Record<string, string | undefined>;
@@ -61,9 +81,9 @@ export function assertPublicEnvironment(env: PublicEnv): void {
   throw new Error(
     `Refusing to build the public app: ${present.join(', ')} ${
       present.length === 1 ? 'is' : 'are'
-    } set in this process. The public composition must run with no write or ` +
-      'ops capability in its environment (ABL-304). Give the private app those ' +
-      'variables instead — it is a separate process.'
+    } set in this process. The public composition must run with no write, ops ` +
+      'or control-plane capability in its environment (ABL-304, ABL-591). Give ' +
+      'the private app those variables instead — it is a separate process.'
   );
 }
 

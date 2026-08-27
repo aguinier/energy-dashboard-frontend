@@ -8,6 +8,7 @@ import {
   type FetchLike,
   type PaperclipConfig,
 } from './incidentChannel.js';
+import { FORBIDDEN_PUBLIC_ENV } from '../../v1/publicEnv.js';
 import type { Incident } from './incidentReport.js';
 
 /**
@@ -74,6 +75,25 @@ describe('resolvePaperclipConfig', () => {
     expect(normalisePaperclipBaseUrl('http://h:3100/api')).toBe('http://h:3100');
     expect(normalisePaperclipBaseUrl('http://h:3100/')).toBe('http://h:3100');
     expect(normalisePaperclipBaseUrl('http://h:3100')).toBe('http://h:3100');
+  });
+
+  it('reads a credential the public composition is forbidden to hold (ABL-591)', () => {
+    // The lock on the placement argument in `authFailureReader.ts`: this watcher
+    // lives in the private process so that the process ABL-291 may expose cannot
+    // silence the alarm that describes whoever took it. That is a property of
+    // the deployment, not of this module, so it is pinned from the side that
+    // owns the credential — rename the variable here and the public app must be
+    // taught the new name in the same commit, or this goes red.
+    const credentialVar = 'PAPERCLIP_API_KEY';
+    expect(resolvePaperclipConfig({ PAPERCLIP_API_URL: 'http://h:3100', PAPERCLIP_COMPANY_ID: 'c' })).toBeNull();
+    expect(
+      resolvePaperclipConfig({
+        [credentialVar]: 'k',
+        PAPERCLIP_API_URL: 'http://h:3100',
+        PAPERCLIP_COMPANY_ID: 'c',
+      })
+    ).not.toBeNull();
+    expect(FORBIDDEN_PUBLIC_ENV).toContain(credentialVar);
   });
 });
 

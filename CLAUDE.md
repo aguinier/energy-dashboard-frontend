@@ -193,9 +193,11 @@ Invariants:
   `publicApp.test.ts` (behavioural) and `publicAppGraph.test.ts` (structural,
   reads the app as text) both pin this; a `/v1` route that reaches back into
   `routes/`, an ops service or a write handle fails the graph test.
-- `HELIO_WRITE_TOKEN`, `JAO_CORE_NET_POSITION_ENABLED`, `OPS_PEER_URL` and
-  `COMMIT_SHA` must not be in the public process's environment
-  (`FORBIDDEN_PUBLIC_ENV`, `server/src/v1/publicEnv.ts:30`) — construction throws.
+- `HELIO_WRITE_TOKEN`, `JAO_CORE_NET_POSITION_ENABLED`, `OPS_PEER_URL`,
+  `COMMIT_SHA` and `PAPERCLIP_API_KEY` must not be in the public process's
+  environment (`FORBIDDEN_PUBLIC_ENV`, `server/src/v1/publicEnv.ts:49`) —
+  construction throws. The list is capabilities, not settings: the breach
+  watcher's credential is on it (ABL-591), its address and ids are not.
 - CORS is an allowlist (`PUBLIC_CORS_ORIGINS`), default deny, credentials
   always false. Errors reach a caller only as `PublicApiError`
   (`server/src/v1/publicErrors.ts:27`); everything else collapses to a constant
@@ -221,7 +223,8 @@ Invariants:
   and on a trip opens a `priority: high` `INCIDENT:` issue for the CEO — the
   channel ABL-524 §6 fixed by Board decision. It lives there, not in the public
   process, so the Paperclip credential stays out of the process ABL-291 may
-  expose; that makes it a **third** documented reader of `api_keys.db`, which
+  expose — enforced by `FORBIDDEN_PUBLIC_ENV` above, not convention (ABL-591).
+  That makes it a **third** documented reader of `api_keys.db`, which
   whoever builds Tier 2 (S1) must add to the baseline. Signals S4 and S2 fire on
   ABL-524 verdicts with no threshold; S3's cutoff
   (`PROVISIONAL_MIN_PREFIXES_PER_ORIGIN`,
