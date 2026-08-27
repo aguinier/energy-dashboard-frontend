@@ -271,17 +271,26 @@ document) is the table for anything new. `energy_renewable` is **frozen**;
 are written from **one** A75 fetch — never add a second request to fill one.
 
 **Freshness and staleness.** Stream verdicts are `live | stale | ended | none`
-(`services/freshness.ts`); `stale` load/generation means >18h — at least one
-full ingest pass stored nothing; `ended` means >30 days and self-clears; both
-are derived, never hard-coded country lists. The ingest cron runs at
-`30 0,6,13,18` UTC and refetches a rolling 7-day window, so interior holes
-self-heal while inside it. Judge freshness by `MAX(timestamp_utc)` **on prod**,
-never by `data_ingestion_log` (INSERT OR REPLACE rowcounts make a healthy
-rewrite indistinguishable from a stall). Read-only remit: a frozen
+(`services/freshness.ts`); `stale` load/generation means >18h; `ended` means
+>30 days and self-clears; both are derived, never hard-coded country lists. The
+ingest cron runs at `30 0,6,13,18` UTC and refetches a rolling 7-day window, so
+interior holes self-heal while inside it. Judge freshness by `MAX(timestamp_utc)`
+**on prod**, never by `data_ingestion_log` (INSERT OR REPLACE rowcounts make a
+healthy rewrite indistinguishable from a stall). Read-only remit: a frozen
 `MAX(timestamp_utc)` has three inseparable causes (between passes / ingest
 error / upstream stopped) — the honest verdict is "frozen, cause not yet
 determined; upstream probe required". Grep `docs/claude/20-data-the-database-does-not-have.md`
 for the frozen timestamp first — known upstream cutoffs are on file there.
+**A read taken minutes after the cron minute is not a post-pass read** (ABL-554):
+the pass walks 39 countries in one sequential alphabetical loop over 17-55 min,
+so a country's refresh instant is its alphabetical position, not the cron minute
+— AL finishes first, RS last. Before concluding a country was missed, check
+`GET /api/data-freshness/:cc/ingest` → `lastChecked` per stream (built by
+ABL-295): if it pre-dates the cron minute, the pass has not got there yet. A
+falling `Retrieved N` across passes is a window artifact, not row loss — the
+7-day window shrinks as old hours age out. Derive staleness from the pass
+**end** time, never the cron start.
+
 **The 21:00 UTC local-day boundary is an upstream signature** (ABL-551): CEST
 zones (AL, MK, BA, ME, RS) that stop cleanly at `21:00:00` UTC with 22 rows on
 the terminal date ran out their local day — upstream stopped; a real ingest
