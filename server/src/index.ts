@@ -5,6 +5,7 @@ import { startForecastVintageArchiveScheduler } from './services/forecastVintage
 import { startCoreNetPositionScheduler } from './services/coreNetPositionScheduler.js';
 import { startOpsAlertScheduler } from './services/opsAlertScheduler.js';
 import { startOpsSnapshotScheduler } from './services/opsSnapshotScheduler.js';
+import { startBreachWatchScheduler } from './services/breachWatchScheduler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3001;
@@ -68,5 +69,19 @@ startOpsSnapshotScheduler();
 // lib/opsAlertStateStore.ts for why re-deriving alert state from stored
 // readings would let a threshold change suppress its own alert.
 startOpsAlertScheduler();
+
+// ABL-578: reads the /v1 auth-failure tables ABL-530 fills and opens a
+// priority:high INCIDENT issue for the CEO when an ABL-524 Tier 1 signal trips.
+// Until this existed, a credential attack was fully visible in storage and seen
+// by nobody.
+//
+// It runs *here*, in the private process, rather than in the /v1 process that
+// owns those tables — the reasoning is at the top of
+// services/breachWatch/authFailureReader.ts, and it comes down to keeping a
+// Paperclip API credential out of the process ABL-291 may expose. It opens the
+// key store readonly and only when API_KEYS_DB_PATH is set; in a deployment not
+// running /v1 (the common case, including every dev checkout) it reports "nothing
+// to watch" once and does nothing further.
+startBreachWatchScheduler();
 
 export default app;
