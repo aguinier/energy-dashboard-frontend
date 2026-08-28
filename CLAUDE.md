@@ -162,6 +162,15 @@ Anything about prod health or freshness must be settled against prod directly
 (`http://192.168.86.36:3001/api/...`, read-only). The replica is the right
 place to measure *shapes* (row counts, distributions), never currency.
 
+**The replica is locked to all readers twice a day while `able-db-sync` runs**
+(`sync-db-v2.ps1`, Scheduled Task at 07:00 and 16:30 local time). The task
+rebuilds every non-weather table inside one SQLite transaction, which holds an
+exclusive write lock for the duration — currently 30–60 min but variable (the
+16:30 run on 2026-08-28 took roughly twice its own baseline). A `database is
+locked` error on the workstation replica is planned maintenance, not a hang or a
+bug; check the journal-file mtime and the Scheduled Task history before
+escalating (ABL-612).
+
 ## Deployment
 
 Merging to `main` does **not** deploy — no CI/CD. Production is
@@ -468,6 +477,10 @@ Condensed diagnostics — full entries with the reasoning in
 
 - **"Cannot connect to database":** `ENERGY_DB_PATH` unset or pointing at a
   missing file.
+- **`database is locked` on the workstation replica:** `able-db-sync` is mid-run
+  (Scheduled Task at 07:00 / 16:30 local, 30–60 min variable window — see
+  Database Connection). Check the `.db-journal` / `.db-wal` mtime and the
+  Scheduled Task history; wait for the lock to clear. Not a bug (ABL-612).
 - **Forecast-accuracy tab shows a sentence instead of numbers / Load tab draws
   no forecast line (NL):** the divergent-basis rule working — see Data
   semantics. Not missing data; do not "fix" it.
