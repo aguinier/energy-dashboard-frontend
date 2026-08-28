@@ -590,14 +590,16 @@ export async function fetchForecastModels(): Promise<ForecastModelRegistry> {
 export async function fetchRecommendedModel(params: {
   country: string;
   type: string;
-}): Promise<RecommendedModel | undefined> {
+}): Promise<RecommendedModel | null> {
   const { data } = await api.get<ApiResponse<ForecastModelRegistry>>('/forecasts/models', {
     params: { type: params.type, country: params.country },
   });
   // `unwrap`'s body parameter is `unknown`, so `T` is only inferable from the
   // return position — and this one indexes into the result rather than
   // returning it, which would leave `T` as `unknown`. Named explicitly.
-  return unwrap<ForecastModelRegistry>(data, '/forecasts/models')[params.type]?.recommended;
+  // React Query forbids `undefined` from a queryFn — return `null` when the
+  // server omits `recommended` (e.g. pre-ABL-469 server or unmeasurable stream).
+  return unwrap<ForecastModelRegistry>(data, '/forecasts/models')[params.type]?.recommended ?? null;
 }
 
 // ============================================================================
