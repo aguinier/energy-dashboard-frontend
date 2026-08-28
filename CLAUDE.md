@@ -363,6 +363,14 @@ cd server && npx vitest run
   `LoadTab.test.tsx` and hid the problem for every other file. On Node 25 the
   run also prints a `--localstorage-file was provided without a valid path`
   warning per worker; that is Node's, not ours, and is not a failure.
+- **The client suite is Node-agnostic; the server suite is not — use Node 24
+  for both.** `server/node_modules/better-sqlite3` is compiled for Node 24
+  (ABI 137), so `cd server && npx vitest run` under Node 25 halts on the
+  ABL-309 preflight (`server/src/test/nativeAbiPreflight.ts`) rather than
+  running. That one names its own cause, so it needs no triage — but do not
+  read "the client passes on 25" as clearance to run the whole repo on 25.
+  Both Nodes are installed here: `C:\Program Files\nodejs` is v25.6.1 and the
+  nvm4w default on `PATH` is v24.18.0.
 - **Server test files are not typechecked** — `server/tsconfig.json` excludes
   `src/**/*.test.ts`, so a required-argument omission compiles clean (ABL-533).
 - **Before you mark an issue `done`:** `npm run predone` (from the repo root).
