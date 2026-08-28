@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useDashboardStore } from './dashboardStore';
+import { PERSIST_VERSION } from './migrate';
 import { PRESET_SHIFT_HOURS } from '@/lib/constants';
 
 // setServedModel is written from a useEffect in useLoadChartData/usePriceChartData
@@ -154,5 +155,47 @@ describe('setTimePreset', () => {
     useDashboardStore.setState({ timePreset: '7d', timeOffset: -84 });
     useDashboardStore.getState().setTimePreset('24h');
     expect(useDashboardStore.getState().timeOffset).toBe(0);
+  });
+});
+
+// Everything above would still pass with the persist middleware disabled — and
+// for the whole life of this file it *was* disabled, because vitest ran without
+// a usable `localStorage` and zustand degrades to a no-op when it cannot get
+// one (ABL-320). These assertions are what tell the difference: they fail if
+// the store stops persisting, which is the state the rest of the file cannot
+// see. `migratePersisted` and `PERSIST_VERSION` exist to protect this blob.
+describe('persisted blob', () => {
+  const KEY = 'energy-dashboard-storage';
+
+  const readBlob = () => {
+    const raw = globalThis.localStorage.getItem(KEY);
+    expect(raw, `nothing was written to ${KEY} — is the persist middleware live?`).not.toBeNull();
+    return JSON.parse(raw as string) as { state: Record<string, unknown>; version: number };
+  };
+
+  it('writes a state change through to storage, stamped with the current version', () => {
+    useDashboardStore.setState({ selectedCountry: 'PT' });
+
+    const blob = readBlob();
+    expect(blob.version).toBe(PERSIST_VERSION);
+    expect(blob.state.selectedCountry).toBe('PT');
+  });
+
+  it('carries only the partialized keys, not the whole store', () => {
+    useDashboardStore.setState({ selectedCountry: 'PT' });
+    const { state } = readBlob();
+
+    // Partialized in, so a reload restores them.
+    expect(state).toHaveProperty('selectedCountry');
+    expect(state).toHaveProperty('timePreset');
+
+    // Deliberately out: `servedModelByType` describes the last network
+    // response, and `timeOffset` is a live cursor. Persisting either would
+    // restore a stale answer as though it had just been fetched.
+    expect(state).not.toHaveProperty('servedModelByType');
+    expect(state).not.toHaveProperty('timeOffset');
+
+    // Actions are not state; zustand would happily serialise them to null.
+    expect(state).not.toHaveProperty('setTimePreset');
   });
 });

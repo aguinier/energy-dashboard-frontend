@@ -342,7 +342,27 @@ cd server && npx vitest run
 - **Baselines rot; the delta is the durable half.** Re-measure after merging
   the base in, and again if the branch waits. A conflict-free merge is not a
   working merge — run the suite on the merged tree. Current tripwire absolutes
-  and their history: `docs/claude/21-testing.md`.
+  and their history: `docs/claude/21-testing.md`. Client at `6b2fe01` +
+  ABL-320: **55 files / 769 tests**, identical on Node 24 and Node 25.
+- **A green client suite is a claim about your Node major unless the run says
+  otherwise.** `dashboardStore` is a persisted zustand store; its middleware
+  resolves the bare global `localStorage` once, at import, and calls
+  `storage.setItem` on every `setState`. That global is broken in a *different*
+  way on each Node: absent on 24 and earlier (zustand catches the
+  ReferenceError and persist silently no-ops, so the suite is green but nothing
+  about persistence is exercised), and present-without-`setItem` on 25, which
+  threw `TypeError: storage.setItem is not a function` — 20 failures on the
+  same commit that was green on 24 (ABL-320). **`@vitest-environment jsdom`
+  does not fix this**: vitest aliases `window` to `globalThis`, Node's global
+  wins over jsdom's, and all 20 failures survive `environment: 'jsdom'`
+  (measured on 25.6.1 + jsdom 30). What fixes it is
+  `client/vite.config.ts:88`, whose `setupFiles` installs a real Storage
+  (`installMemoryStorage`, `client/src/test/memoryStorage.ts:105`) before any
+  test module is imported. Do not replace it with an environment switch, and
+  do not add a per-file `localStorage` shim — one existed in
+  `LoadTab.test.tsx` and hid the problem for every other file. On Node 25 the
+  run also prints a `--localstorage-file was provided without a valid path`
+  warning per worker; that is Node's, not ours, and is not a failure.
 - **Server test files are not typechecked** — `server/tsconfig.json` excludes
   `src/**/*.test.ts`, so a required-argument omission compiles clean (ABL-533).
 - **Before you mark an issue `done`:** `npm run predone` (from the repo root).
