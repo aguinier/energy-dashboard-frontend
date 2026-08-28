@@ -508,3 +508,154 @@ export function formatProblems(problems: Problem[]): string {
     .map((p) => (p.docLine > 0 ? `CLAUDE.md:${p.docLine}  ${p.message}` : `  ${p.message}`))
     .join('\n');
 }
+
+// Size budget enforcement is in claudeMdBudget.ts; the real-document assertion
+// runs from claudeMdCitations.test.ts so one command covers both checks.
+
+/** KB means KiB throughout this repo, so the 35 KB budget is 35,840 B. */
+const KB = 1024;
+
+/** A document measured in both dimensions the budget bounds. */
+export interface DocSize {
+  /** Lines of text. A trailing newline terminates the last line, it does not start an empty one. */
+  lines: number;
+  /** UTF-8 bytes of the LF-normalised text, BOM excluded — see `measureDocSize`. */
+  bytes: number;
+}
+
+/**
+ * The enforced budget, and the other half of the rule CLAUDE.md states in prose.
+ *
+ * CLAUDE.md auto-loads into every agent context, so its size is a per-turn tax
+ * on the whole fleet rather than a cost paid by whoever opens it: it reached
+ * 6,752 lines / 426,865 B and killed runs outright, and ABL-536 trimmed it to
+ * 450 lines / 25,849 B. That fixed the level, not the slope — the file grew
+ * because each issue appended its findings and no merge ever removed anything,
+ * with nothing standing against it but a paragraph asking people not to. This
+ * is that paragraph with teeth.
+ *
+ * Both dimensions are checked because they fail differently: a wall of short
+ * bullets blows the line count while staying small, and a few long unwrapped
+ * paragraphs blow the byte count while staying short.
+ */
+export const CLAUDE_MD_BUDGET: DocSize = { lines: 700, bytes: 35 * KB };
+
+/**
+ * Measure a document the same way on every platform.
+ *
+ * **Bytes are the LF-normalised UTF-8 length, BOM excluded** — every CRLF counts
+ * as the one byte git stores, so this figure is `git cat-file -s` on the blob.
+ * Measuring the file as it sits on disk would make "35 KB" mean something
+ * different per platform: `core.autocrlf` is `true` on the Windows checkouts
+ * this repo is developed on and `.gitattributes` does not pin `*.md`, so the
+ * working-tree copy carries CRLF — 26,299 B against 25,849 B in the blob when
+ * this was written. That 450 B is one byte per line and no content at all, and
+ * it is invisible until a document sits within it of the ceiling; then the same
+ * commit fails here and passes on an LF checkout. Same reasoning as the OpenAPI
+ * drift check — see `.gitattributes`.
+ *
+ * Bytes, not characters: the document is dense with em dashes and ellipses, each
+ * three bytes of UTF-8, so a character count understates it by ~2%.
+ */
+export function measureDocSize(text: string): DocSize {
+  // `\uFEFF` written as an escape, never as a literal: a BOM character in this
+  // source would be invisible in every editor, and any tool that repairs
+  // encodings would strip it — silently turning the BOM handling into a no-op.
+  const normalised = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+  if (normalised === '') return { lines: 0, bytes: 0 };
+  return {
+    lines: normalised.split('\n').length - (normalised.endsWith('\n') ? 1 : 0),
+    bytes: new TextEncoder().encode(normalised).length,
+  };
+}
+
+/** `35 KB` for an exact multiple, `36.4 KB` otherwise — never a pointless `.0`. */
+function formatKb(bytes: number): string {
+  const kb = (bytes / KB).toFixed(1);
+  return `${kb.endsWith('.0') ? kb.slice(0, -2) : kb} KB`;
+}
+
+/** `12 lines and 1.4 KB` — a sub-KB overage stays in bytes, since "0.0 KB" says nothing. */
+function formatOverage(size: DocSize, budget: DocSize): string {
+  const parts: string[] = [];
+  if (size.lines > budget.lines) {
+    const over = size.lines - budget.lines;
+    parts.push(`${over} line${over === 1 ? '' : 's'}`);
+  }
+  if (size.bytes > budget.bytes) {
+    const over = size.bytes - budget.bytes;
+    parts.push(over < KB ? `${over} B` : formatKb(over));
+  }
+  return parts.join(' and ');
+}
+
+/**
+ * The budget assertion's message, or `null` when the document fits.
+ *
+ * The message is as much the deliverable as the assertion. Whoever trips this is
+ * mid-landing on something else, so it has to say how far over, on which
+ * dimension, and where the material goes — without sending anyone to read this
+ * module first, and without leaving "raise the budget" looking like an option.
+ */
+export function checkSizeBudget(
+  text: string,
+  budget: DocSize = CLAUDE_MD_BUDGET,
+  name = 'CLAUDE.md'
+): string | null {
+  const size = measureDocSize(text);
+  const overLines = size.lines > budget.lines;
+  const overBytes = size.bytes > budget.bytes;
+  if (!overLines && !overBytes) return null;
+
+  const breach =
+    overLines && overBytes ? 'both line count and size' : overLines ? 'line count' : 'size';
+  return (
+    `${name} is ${size.lines.toLocaleString('en-US')} lines / ${formatKb(size.bytes)}, over ` +
+    `the ABL-536 budget of ${budget.lines.toLocaleString('en-US')} lines / ` +
+    `${formatKb(budget.bytes)} on ${breach} — ${formatOverage(size, budget)} too much. ` +
+    `Move narrative, dated measurements or per-issue forensics into ` +
+    `docs/claude/<topic>.md and leave a one-line pointer here. Do not raise the ` +
+    `budget to fit: every line here is paid on every turn by every run. ` +
+    `(Bytes are LF-normalised, as git stores the file.)`
+  );
+}
+
+/**
+ * The budget as CLAUDE.md states it in prose: "**Hard budget: 700 lines / 35 KB.**"
+ *
+ * Tolerant of the bold markers, of thousands separators and of the sentence
+ * rewrapping, because reflowing a paragraph must never fail the suite.
+ */
+const STATED_BUDGET = /Hard budget:\s*\**\s*([\d,]+)\s*lines?\s*\/\s*([\d,]+)\s*KB/i;
+
+/**
+ * Check that the rule the document *states* is the rule this module *enforces*,
+ * or `null` if they agree.
+ *
+ * Agents learn this rule by reading CLAUDE.md, not by reading here. The two
+ * drifting apart puts us back where ABL-536 started: a stated rule nothing
+ * enforces, or an enforced rule nobody was told about.
+ */
+export function checkStatedBudget(
+  text: string,
+  budget: DocSize = CLAUDE_MD_BUDGET
+): string | null {
+  const match = STATED_BUDGET.exec(text.replace(/\r\n/g, '\n'));
+  if (match === null) {
+    return (
+      `CLAUDE.md no longer states its own size budget. Agents learn this rule by ` +
+      `reading the file, so restate it as "Hard budget: ${budget.lines} lines / ` +
+      `${formatKb(budget.bytes)}." in the "How to maintain this file" section.`
+    );
+  }
+
+  const digits = (s: string) => Number(s.replace(/,/g, ''));
+  const stated: DocSize = { lines: digits(match[1]), bytes: digits(match[2]) * KB };
+  if (stated.lines === budget.lines && stated.bytes === budget.bytes) return null;
+
+  return (
+    `CLAUDE.md states a budget of ${stated.lines} lines / ${formatKb(stated.bytes)}, but ` +
+    `${budget.lines} lines / ${formatKb(budget.bytes)} is enforced (CLAUDE_MD_BUDGET, ` +
+    `server/src/docs/claudeMdCitations.ts). Change both together.`
+  );
+}
