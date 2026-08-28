@@ -375,8 +375,11 @@ cd server && npx vitest run
   read "the client passes on 25" as clearance to run the whole repo on 25.
   Both Nodes are installed here: `C:\Program Files\nodejs` is v25.6.1 and the
   nvm4w default on `PATH` is v24.18.0.
-- **Server test files are not typechecked** — `server/tsconfig.json` excludes
-  `src/**/*.test.ts`, so a required-argument omission compiles clean (ABL-533).
+- **Server test files are excluded from the default typecheck** —
+  `server/tsconfig.json` excludes `src/**/*.test.ts`, so a required-argument
+  omission compiles clean (ABL-533). Use `npm run typecheck:test` (from
+  `server/`) to typecheck them explicitly; that script is known-red on
+  pre-existing errors, so a red run is not necessarily a regression.
 - **Before you mark an issue `done`:** `npm run predone` (from the repo root).
   Three gates: per-branch shipping gap (patch identity via `git cherry`, not
   ancestry), unpublished local `main`, and stranded work on any local branch.
