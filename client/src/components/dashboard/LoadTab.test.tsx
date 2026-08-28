@@ -2,7 +2,7 @@
 //
 // Component tests need a DOM; the rest of the suite is pure-module and runs in
 // vitest's default node environment. The annotation above opts this file in on
-// its own so the other 16 test files keep running exactly as before.
+// its own so the other test files keep running exactly as before.
 //
 // Regression guard for the bug fixed in b057f63: LoadTab gated its forecast
 // overlay on `layers.ml/tso.enabled`, a store slice nothing wrote to and that
@@ -25,22 +25,11 @@ import { WITHHELD_LEGEND_NOTE } from './forecastBasisNote';
 import * as api from '@/services/api';
 import { useDashboardStore } from '@/store/dashboardStore';
 
-// Ensure a functional localStorage is present before the zustand persist
-// middleware initialises (which happens at dashboardStore module import time).
-// jsdom 30 + vitest worker threads may expose localStorage without a proper
-// Storage prototype in some configurations, so we normalise it here.
-vi.hoisted(() => {
-  const store: Record<string, string> = {};
-  const mock = {
-    getItem: (key: string) => store[key] ?? null,
-    setItem: (key: string, value: string) => { store[key] = value; },
-    removeItem: (key: string) => { delete store[key]; },
-    clear: () => { Object.keys(store).forEach(k => delete store[k]); },
-    get length() { return Object.keys(store).length; },
-    key: (i: number) => Object.keys(store)[i] ?? null,
-  };
-  Object.defineProperty(globalThis, 'localStorage', { value: mock, writable: true });
-});
+// The functional `localStorage` this file used to install for itself now comes
+// from `src/test/setup.ts`, which does it for every test file rather than only
+// this one (ABL-320). A setup file still runs before this module is imported,
+// so it is ahead of the zustand persist middleware, which resolves storage at
+// `dashboardStore` import time and never looks again.
 
 // vi.mock factories run before the module body, so shared fixtures have to be
 // hoisted alongside them rather than declared as ordinary consts below.

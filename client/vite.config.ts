@@ -1,4 +1,5 @@
-import { defineConfig, loadEnv } from 'vite'
+import { loadEnv } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 import { visualizer } from 'rollup-plugin-visualizer'
@@ -68,6 +69,23 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
         },
       },
+    },
+    test: {
+      // The suite stays in vitest's default `node` environment: it is
+      // overwhelmingly pure-module, and the one component-test file opts itself
+      // into jsdom with a per-file `@vitest-environment` docblock
+      // (`src/components/dashboard/LoadTab.test.tsx`).
+      //
+      // What every file does need is a `localStorage` that works, because
+      // `dashboardStore` is a persisted zustand store whose middleware calls
+      // `storage.setItem` on every `setState`. The host's own global is not
+      // that, and which way it is wrong depends on the Node major — absent on
+      // Node 24, present-without-`setItem` on Node 25, and a jsdom environment
+      // does not override either. That made the same commit green on one Node
+      // and 20 failures on the next (ABL-320). `setup.ts` installs a real one
+      // before any test module is imported, which is early enough for the
+      // persist middleware; see `src/test/memoryStorage.ts` for the measurements.
+      setupFiles: ['./src/test/setup.ts'],
     },
   }
 })
