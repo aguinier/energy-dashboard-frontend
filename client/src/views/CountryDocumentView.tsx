@@ -30,7 +30,7 @@ const HOUR_MS = 60 * 60 * 1000;
  * scope for this figure — this normalizes only the two series this view
  * itself fetches, so the residual strip does not go straight to zero pairs.
  */
-function asUtc(ts: string): string {
+export function asUtc(ts: string): string {
   return /[zZ]|[+-]\d{2}:?\d{2}$/.test(ts) ? ts : `${ts}Z`;
 }
 
@@ -38,7 +38,7 @@ function asUtc(ts: string): string {
  * load is quarter-hourly and the day-ahead forecast is hourly; the last
  * actual value observed in an hour wins, mirroring `buildSeriesGrid`'s own
  * bucketing (`chartAdapters.ts`). */
-function hourBucket(ts: string): string {
+export function hourBucket(ts: string): string {
   const ms = Math.floor(new Date(asUtc(ts)).getTime() / HOUR_MS) * HOUR_MS;
   return new Date(ms).toISOString();
 }
