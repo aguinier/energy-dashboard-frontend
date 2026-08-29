@@ -40,6 +40,37 @@ describe('Figure', () => {
     expect(figcaption?.textContent).toContain('Nuclear absent');
   });
 
+  it('takes its accessible name from the title, not the figcaption footnote', () => {
+    // A <figure> takes its accessible name from <figcaption> by default. If
+    // that were still true here, this query — asking for a figure named after
+    // its title — would find nothing, because the name would instead be the
+    // footnote's provenance/badge text.
+    render(
+      <Figure
+        number={1}
+        anchorId="load"
+        title="Electricity demand"
+        caption="What it shows."
+        footnote={<span>WAPE 3.33% over 30 days</span>}
+      >
+        <div />
+      </Figure>
+    );
+    expect(screen.getByRole('figure', { name: 'Electricity demand' })).not.toBeNull();
+  });
+
+  it('associates the descriptive caption as the figure\'s accessible description', () => {
+    const { container } = render(
+      <Figure number={1} anchorId="load" title="Electricity demand" caption="What it shows.">
+        <div />
+      </Figure>
+    );
+    const figure = screen.getByRole('figure');
+    const describedBy = figure.getAttribute('aria-describedby');
+    expect(describedBy).not.toBeNull();
+    expect(container.querySelector(`#${describedBy}`)?.textContent).toBe('What it shows.');
+  });
+
   it('omits the footnote row entirely when there is no footnote', () => {
     const { container } = render(
       <Figure number={4} anchorId="wind" title="Wind" caption="c"><div /></Figure>
