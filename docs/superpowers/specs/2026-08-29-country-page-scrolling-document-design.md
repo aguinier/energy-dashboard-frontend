@@ -58,6 +58,12 @@ Each was checked against the source or the database, not assumed.
   gross of behind-the-meter solar and the actuals are net. The difference is
   definitional, not forecast error. Every surface must route through that
   module.
+- **Solar coverage is already established per country, and NL is the outlier.**
+  `services/solarCoverage.ts` compares our actual sums against ENTSO-E's own
+  forecast sums over a long window and returns `consistent` / `partial_subset`
+  / `unknown` per country. Eighteen countries land between 0.95 and 1.29;
+  NL sits at 18.28x. The service is data-driven, not a country list, and is
+  already tested — so the badge can consult it rather than reimplement it.
 - **The API serialises requests.** `client/src/App.tsx` states the API is
   "single-threaded and synchronous; a slow query blocks every other request",
   which is why `shouldRetryQuery` caps retries at one. Today exactly one tab
@@ -96,7 +102,7 @@ control bar           one global window control + forecast selector
 summary strip         four computed figures
 figure 1  Load        actual vs day-ahead        badge + residual strip
 figure 2  Price       day-ahead clearing         badge + residual strip
-figure 3  Generation  stacked mix, gaps hatched  solar-only badge
+figure 3  Generation  stacked mix, gaps hatched  solar badge, coverage-gated
 figure 4  Wind        onshore / offshore         badge + residual strip
 figure 5  Net position                           no badge; provenance only
 footer                per-figure API endpoint
@@ -130,10 +136,40 @@ A `<Figure>` primitive, used five times:
 The badge derives all three from `services/loadForecastBasis.ts`; it must not
 re-derive withholding from a threshold or a country list.
 
+#### Coverage gating on generation figures (binding for Task 7)
+
+`loadForecastBasis.ts` covers **load only**. The generation-side counterpart is
+ABL-400 and is still open (`loadForecastBasis.ts:145`), so on generation figures
+the badge has no server rule to lean on and would report whatever arithmetic
+came back. For the Netherlands that is a **WAPE of 1,727.81%** rendered with a
+green check — a number `tsoForecastService.ts:532` itself calls "arithmetically
+correct and still not an accuracy figure", because ENTSO-E forecasts the whole
+Dutch solar fleet while our metered actuals are a small grid-visible subset
+(ABL-325). The two series sum 18.28x apart.
+
+**The rule:** a generation figure's badge is gated on
+`services/solarCoverage.ts`. Where its verdict is `consistent`, the badge
+renders normally. Where it is `partial_subset` or `unknown`, the badge is
+suppressed and the footnote states why — that the forecast and the metered
+actuals describe different populations, so no accuracy figure is meaningful.
+
+This is deliberately narrower than "no badges on generation figures". Eighteen
+countries land between 0.95 and 1.29 on that same ratio — ordinary forecast
+bias — and blanket suppression would destroy a valid badge for all of them to
+fix one. `solarCoverage.ts` already computes the verdict per country from data
+this codebase holds, so gating on it costs a lookup rather than any of ABL-400's
+work.
+
+**Wind is unevidenced, not verified.** There is no wind counterpart to
+`solarCoverage.ts`. Wind figures therefore render the badge, on the grounds
+that no divergence has been measured — not on the grounds that none exists.
+ABL-400 should look there; if it finds one, this rule extends rather than
+changes shape.
+
 Not every figure can carry an accuracy claim, and the design does not fake
-one. Figure 3's badge reports the **solar component only** and says so on its
-face; figure 5 carries no badge, and its footnote states that no forecast is
-published for net position. An honest absence is the point of the treatment —
+one. Figure 3's badge reports the **solar component only**, says so on its
+face, and is coverage-gated per the rule above; figure 5 carries no badge at
+all, and its footnote states that no forecast is published for net position. An honest absence is the point of the treatment —
 a badge that appears everywhere by inventing a denominator would be worse than
 the orphaned tab this design replaces.
 
