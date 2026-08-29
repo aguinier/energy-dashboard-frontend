@@ -2,6 +2,7 @@ import { ForecastType } from '../types/index.js';
 import * as tsoForecastService from './tsoForecastService.js';
 import * as mlForecastService from './mlForecastService.js';
 import type { LoadForecastBasis } from './loadForecastBasis.js';
+import { wapeFromAccuracyPoints } from './wapeFromAccuracyPoints.js';
 
 /**
  * Forecast Comparison Service
@@ -26,6 +27,14 @@ export interface AccuracyMetrics {
    */
   mae: number | null;
   mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
+  /**
+   * Weighted Absolute Percentage Error — `100 * sum|actual - forecast| / sum|actual|`.
+   * The ranking measure (ABL-388): MAPE divides each point by its own actual,
+   * so a series that goes to zero nightly is unbounded — measured BE solar at
+   * 58,186% MAPE against 62.37% WAPE. Null on a divergent basis and when the
+   * window's actuals sum to zero.
+   */
+  wape: number | null;
   rmse: number | null;     // Root Mean Square Error
   /**
    * Mean Error (positive = over-forecast), null on a divergent basis — there
@@ -253,7 +262,7 @@ function addBiasToTSOMetrics(
   // +2,435 MW that reads as a systematic over-forecast the TSO could correct,
   // when it is the behind-the-meter solar the two series disagree about.
   if (metrics.basis === 'divergent_basis') {
-    return { mae: null, mape: null, rmse: null, bias: null, dataPoints: metrics.dataPoints };
+    return { mae: null, mape: null, wape: null, rmse: null, bias: null, dataPoints: metrics.dataPoints };
   }
 
   // Get accuracy data to calculate bias
@@ -272,6 +281,7 @@ function addBiasToTSOMetrics(
     // function already checked dataPoints > 0 before calling it.
     mae: metrics.mae ?? 0,
     mape: metrics.mape,
+    wape: wapeFromAccuracyPoints(data),
     rmse: metrics.rmse ?? 0,
     bias: Math.round(bias * 100) / 100,
     dataPoints: metrics.dataPoints,
@@ -304,6 +314,7 @@ function addBiasToGenerationMetrics(
     // function already checked dataPoints > 0 before calling it.
     mae: metrics.mae ?? 0,
     mape: metrics.mape,
+    wape: wapeFromAccuracyPoints(data),
     rmse: metrics.rmse ?? 0,
     bias: Math.round(bias * 100) / 100,
     dataPoints: metrics.dataPoints,
@@ -319,6 +330,7 @@ function addBiasToMetrics(metrics: mlForecastService.MLForecastAccuracyMetrics):
     // function already checked dataPoints > 0 before calling it.
     mae: metrics.mae ?? 0,
     mape: metrics.mape,
+    wape: metrics.wape,
     rmse: metrics.rmse ?? 0,
     bias: metrics.bias ?? 0,
     dataPoints: metrics.dataPoints,

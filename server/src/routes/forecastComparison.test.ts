@@ -424,4 +424,24 @@ describe('GET /:countryCode/summary', () => {
     expect(data.price.ml).toEqual({});
     expect(body.meta).toMatchObject({ countryCode: 'DE' });
   });
+
+  it('reports wape beside mape on every summary entry that has metrics', async () => {
+    const { status, body } = await get(`BE/summary?${WINDOW}`);
+    expect(status).toBe(200);
+
+    const entries = Object.values(body.data as Record<string, unknown>) as Array<{
+      tso: Record<string, { wape: number | null; dataPoints: number } | undefined>;
+      ml: Record<string, { wape: number | null; dataPoints: number } | undefined>;
+    }>;
+    expect(entries.length).toBeGreaterThan(0);
+
+    for (const entry of entries) {
+      for (const metrics of [...Object.values(entry.tso), ...Object.values(entry.ml)]) {
+        if (!metrics) continue;
+        // The field must be PRESENT on every metrics object. Its value may be
+        // null (no magnitude, or withheld) — absence is the bug, null is not.
+        expect(metrics).toHaveProperty('wape');
+      }
+    }
+  });
 });
