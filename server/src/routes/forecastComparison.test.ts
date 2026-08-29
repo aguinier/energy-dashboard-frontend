@@ -426,20 +426,37 @@ describe('GET /:countryCode/summary', () => {
   });
 
   it('reports wape beside mape on every summary entry that has metrics', async () => {
-    const { status, body } = await get(`BE/summary?${WINDOW}`);
+    // DE, not BE: BE's fixture has no measurable magnitude for these forecast
+    // types (its actuals sum to zero — solar overnight, the offshore-wind
+    // case), so every wape there is null. A presence-only assertion against
+    // BE would pass just as well against a broken implementation (wrong `data`
+    // variable at an assembly point, or `error - actual_value` instead of
+    // `actual_value - error`) as against a correct one. DE's fixture has real
+    // magnitude across all three assembly points, so it can distinguish them.
+    const { status, body } = await get(`DE/summary?${WINDOW}`);
     expect(status).toBe(200);
 
-    const entries = Object.values(body.data as Record<string, unknown>) as Array<{
-      tso: Record<string, { wape: number | null; dataPoints: number } | undefined>;
-      ml: Record<string, { wape: number | null; dataPoints: number } | undefined>;
-    }>;
-    expect(entries.length).toBeGreaterThan(0);
+    const data = body.data as Record<string, { tso: Record<string, { wape: number | null } | undefined>; ml: Record<string, { wape: number | null } | undefined> }>;
 
+    // addBiasToTSOMetrics (load day-ahead and week-ahead).
+    expect(data.load.tso.dayAhead?.wape).toBe(4.35);
+    expect(data.load.tso.weekAhead?.wape).toBe(17.39);
+    // addBiasToGenerationMetrics (solar and wind_onshore day-ahead).
+    expect(data.solar.tso.dayAhead?.wape).toBe(25);
+    expect(data.wind_onshore.tso.dayAhead?.wape).toBe(5);
+    // addBiasToMetrics — the ml pass-through of MLForecastAccuracyMetrics.wape.
+    expect(data.load.ml.d1?.wape).toBe(8.7);
+    expect(data.load.ml.d2?.wape).toBe(17.39);
+
+    // The presence invariant is real too, and null is a legitimate value
+    // elsewhere (e.g. price/wind_offshore have no metrics object at all here,
+    // and a divergent-basis or zero-magnitude country would report wape:
+    // null) — absence of the field is the bug, not a null value.
+    const entries = Object.values(data);
+    expect(entries.length).toBeGreaterThan(0);
     for (const entry of entries) {
       for (const metrics of [...Object.values(entry.tso), ...Object.values(entry.ml)]) {
         if (!metrics) continue;
-        // The field must be PRESENT on every metrics object. Its value may be
-        // null (no magnitude, or withheld) — absence is the bug, null is not.
         expect(metrics).toHaveProperty('wape');
       }
     }
