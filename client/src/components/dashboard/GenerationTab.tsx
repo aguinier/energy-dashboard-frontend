@@ -7,6 +7,7 @@ import { buildSourceRows, type SourceRow } from './sourceRows';
 import {
   buildGenerationMixSeries,
   describeNegativeGroups,
+  describeGenerationGaps,
   GENERATION_GROUP_COLORS,
   GENERATION_GROUP_LABELS,
 } from './generationSeries';
@@ -26,7 +27,24 @@ import { useDashboardStore } from '@/store/dashboardStore';
 // non-renewable members it also contains.
 const GREEN_KEYS = new Set<SourceRow['key']>(['solar', 'wind', 'hydro', 'biomass']);
 
-export function GenerationTab() {
+export interface GenerationTabProps {
+  /**
+   * 'tab' (default) is the existing `CountryDashboardView` tab body: the
+   * "Generation mix" `AbleCard` carries its own title/subtitle, and the
+   * "Window average" donut / "By source" table pair renders below it.
+   * 'figure' is the country document's plot slot
+   * (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+   * one plot per figure, so only the stacked-mix trend draws — no `AbleCard`
+   * header, and the donut/table pair (a second and third chart, not an
+   * annotation on the trend) is omitted entirely, the same way `LoadTab`
+   * drops its hour×day heatmap. Default omitted so the existing caller
+   * (`CountryDashboardView`) is unaffected.
+   */
+  variant?: 'tab' | 'figure';
+}
+
+export function GenerationTab({ variant = 'tab' }: GenerationTabProps = {}) {
+  const isFigure = variant === 'figure';
   // Both queries read energy_generation through the same nine-family grouping
   // (ABL-44). Before that the trend came from the frozen, renewable-only
   // energy_renewable while the donut and table came from the full A75
@@ -50,6 +68,11 @@ export function GenerationTab() {
     [seriesData, todayWindow],
   );
   const negativeNote = describeNegativeGroups(negativeGroups);
+  // Real gaps, named rather than silently interpolated (`AbleStackedMix`
+  // hatches the same holes rather than drawing a line through them — see
+  // `lib/stackedMixGaps.ts`). Independent of `variant`: this is a fact about
+  // the data, not something the figure composition should suppress.
+  const gapNote = useMemo(() => describeGenerationGaps(points), [points]);
 
   // Donut input — the full measured mix, shared with SourceTable via
   // buildSourceRows so the two can never disagree about what's measured or
@@ -116,7 +139,10 @@ export function GenerationTab() {
         </div>
       )}
 
-      <AbleCard title="Generation mix" subtitle="GW · stacked by source · ENTSO-E">
+      <AbleCard
+        title={isFigure ? undefined : 'Generation mix'}
+        subtitle={isFigure ? undefined : 'GW · stacked by source · ENTSO-E'}
+      >
         {isLoading ? (
           <div className="flex h-[220px] items-center justify-center text-meta text-ink-muted">
             Loading…
@@ -135,6 +161,13 @@ export function GenerationTab() {
               nowIndex={nowIndex}
               preset={timePreset}
             />
+            {/* In the figure composition the card carries no header, so the
+                "GW · stacked by source · ENTSO-E" line that would otherwise
+                live in the title's subtitle is stated here instead — see
+                LoadTab.tsx's identical treatment. */}
+            {isFigure && (
+              <p className="mt-2 text-micro text-ink-muted">GW · stacked by source · ENTSO-E</p>
+            )}
             {/*
               The legend lists only the groups actually drawn. A country that
               does not report nuclear gets no nuclear swatch, rather than a
@@ -157,53 +190,69 @@ export function GenerationTab() {
                 {negativeNote}
               </p>
             )}
+            {/* Real holes, not interpolated (see `gapNote` above). Its own
+                paragraph rather than folded into `negativeNote`: one names a
+                sign convention, the other names missing data, and conflating
+                them would bury the more serious of the two claims. */}
+            {gapNote && (
+              <p className="mt-2 border-t border-input pt-2 text-micro text-ink-muted">
+                {gapNote}
+              </p>
+            )}
           </>
         )}
       </AbleCard>
 
-      {/*
-        The header stat row's "Renewable share" tile and this donut used to
-        disagree: the header divided by load (a different denominator) using
-        a mean of per-hour ratios (a different aggregation), while the donut
-        summed this card's own window-average rows. Both now read
-        `renewable_percentage` from generationService.getRenewableShare - a
-        single server-side ratio of window sums (renewable ÷ total positive
-        generation, from energy_generation) that the header, the map, and
-        this donut all consume rather than recompute. They cannot drift
-        apart, so the subtitle only needs to state the denominator, not
-        explain a discrepancy.
-      */}
-      <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
-        <AbleCard title="Window average" subtitle="share of generation">
-          {mixLoading ? (
-            <div className="flex h-[180px] items-center justify-center text-meta text-ink-muted">
-              Loading…
-            </div>
-          ) : mixError || !mix || mix.renewable_percentage == null || totalMw == null || totalMw <= 0 ? (
-            <div className="flex h-[180px] items-center justify-center text-center text-meta text-ink-muted">
-              Generation mix unavailable.
-            </div>
-          ) : (
-            <div className="flex justify-center py-2">
-              <AbleDonut values={donutValues} pct={mix.renewable_percentage} colors={GENERATION_GROUP_COLORS} />
-            </div>
-          )}
-        </AbleCard>
+      {/* One plot per figure (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+          the renewable-share donut and by-source table are a second and
+          third chart, not an annotation on the trend above, so the figure
+          composition omits them entirely — same treatment as LoadTab's
+          hour×day heatmap. */}
+      {!isFigure && (
+        /*
+          The header stat row's "Renewable share" tile and this donut used to
+          disagree: the header divided by load (a different denominator) using
+          a mean of per-hour ratios (a different aggregation), while the donut
+          summed this card's own window-average rows. Both now read
+          `renewable_percentage` from generationService.getRenewableShare - a
+          single server-side ratio of window sums (renewable ÷ total positive
+          generation, from energy_generation) that the header, the map, and
+          this donut all consume rather than recompute. They cannot drift
+          apart, so the subtitle only needs to state the denominator, not
+          explain a discrepancy.
+        */
+        <div className="grid gap-3.5 md:grid-cols-[280px_1fr]">
+            <AbleCard title="Window average" subtitle="share of generation">
+              {mixLoading ? (
+                <div className="flex h-[180px] items-center justify-center text-meta text-ink-muted">
+                  Loading…
+                </div>
+              ) : mixError || !mix || mix.renewable_percentage == null || totalMw == null || totalMw <= 0 ? (
+                <div className="flex h-[180px] items-center justify-center text-center text-meta text-ink-muted">
+                  Generation mix unavailable.
+                </div>
+              ) : (
+                <div className="flex justify-center py-2">
+                  <AbleDonut values={donutValues} pct={mix.renewable_percentage} colors={GENERATION_GROUP_COLORS} />
+                </div>
+              )}
+            </AbleCard>
 
-        <AbleCard title="By source" subtitle="GW · window average">
-          {mixLoading ? (
-            <div className="flex h-[180px] items-center justify-center text-meta text-ink-muted">
-              Loading…
-            </div>
-          ) : mixError || !mix ? (
-            <div className="flex h-[180px] items-center justify-center text-center text-meta text-ink-muted">
-              Generation mix unavailable.
-            </div>
-          ) : (
-            <SourceTable mix={mix} />
-          )}
-        </AbleCard>
-      </div>
+            <AbleCard title="By source" subtitle="GW · window average">
+              {mixLoading ? (
+                <div className="flex h-[180px] items-center justify-center text-meta text-ink-muted">
+                  Loading…
+                </div>
+              ) : mixError || !mix ? (
+                <div className="flex h-[180px] items-center justify-center text-center text-meta text-ink-muted">
+                  Generation mix unavailable.
+                </div>
+              ) : (
+                <SourceTable mix={mix} />
+              )}
+            </AbleCard>
+          </div>
+      )}
     </div>
   );
 }
