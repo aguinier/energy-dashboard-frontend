@@ -16,6 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { WindTab } from './WindTab';
 import { useDashboardStore } from '@/store/dashboardStore';
+import { fetchWindGenerationSeries } from '@/services/api';
 
 const fx = vi.hoisted(() => {
   const HOUR = 60 * 60 * 1000;
@@ -120,5 +121,48 @@ describe('WindTab — variant="figure"', () => {
 
     await screen.findByTestId('line-chart');
     expect(screen.queryByText('Onshore wind generation')).not.toBeNull();
+  });
+});
+
+describe('useWindChartData — shared actuals request (Task 8)', () => {
+  // `/generation/wind` returns both `wind_onshore` and `wind_offshore` on
+  // every row regardless of which type is asked for, so an onshore instance
+  // and an offshore instance mounted together — as the country document does
+  // for figures 4 and 5 — should share one request rather than issue the
+  // identical one twice.
+  beforeEach(() => {
+    useDashboardStore.setState({
+      selectedCountry: 'BE',
+      timePreset: '24h',
+      timeOffset: 0,
+      selectedModelsByType: {},
+      forecastHiddenByType: {},
+      showComparisonMode: false,
+      showTSOComparisonMode: false,
+    });
+  });
+
+  afterEach(() => cleanup());
+
+  it('fetches wind actuals once for onshore and offshore mounted together', async () => {
+    // The mock is module-scoped and accumulates calls across every test in
+    // this file (no global `clearMocks`), so it is reset here rather than
+    // relying on it starting at zero.
+    vi.mocked(fetchWindGenerationSeries).mockClear();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    render(
+      <>
+        <WindTab windType="wind_onshore" variant="figure" />
+        <WindTab windType="wind_offshore" variant="figure" />
+      </>,
+      { wrapper },
+    );
+
+    await screen.findAllByTestId('line-chart');
+    expect(screen.getAllByTestId('line-chart')).toHaveLength(2);
+    expect(fetchWindGenerationSeries).toHaveBeenCalledTimes(1);
   });
 });
