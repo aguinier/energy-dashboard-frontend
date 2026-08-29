@@ -28,15 +28,16 @@ describe('Figure', () => {
     expect(container.querySelector('#figure-price')).not.toBeNull();
   });
 
-  it('renders as a semantic figure with its caption in a figcaption', () => {
-    render(
+  it('renders the footnote inside the figcaption of a semantic figure', () => {
+    const { container } = render(
       <Figure number={3} anchorId="mix" title="Mix" caption="c" footnote={<span>Nuclear absent</span>}>
         <div />
       </Figure>
     );
-    const fig = screen.getByRole('figure');
-    expect(fig).not.toBeNull();
-    expect(screen.queryByText('Nuclear absent')).not.toBeNull();
+    expect(screen.getByRole('figure')).not.toBeNull();
+    const figcaption = container.querySelector('figcaption');
+    expect(figcaption).not.toBeNull();
+    expect(figcaption?.textContent).toContain('Nuclear absent');
   });
 
   it('omits the footnote row entirely when there is no footnote', () => {
