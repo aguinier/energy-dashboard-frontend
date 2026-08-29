@@ -11,6 +11,7 @@ const MapView = lazy(() => import('@/views/MapView').then(m => ({ default: m.Map
 const CountryDashboardView = lazy(() => import('@/views/CountryDashboardView').then(m => ({ default: m.CountryDashboardView })));
 const ComparisonView = lazy(() => import('@/views/ComparisonView'));
 const OpsStatusView = lazy(() => import('@/views/OpsStatusView'));
+const CountryDocumentView = lazy(() => import('@/views/CountryDocumentView').then(m => ({ default: m.CountryDocumentView })));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -90,6 +91,22 @@ function AppContent() {
           <OpsStatusView />
         </Suspense>
       </main>
+    );
+  }
+
+  // The scrolling-document country view, reachable only by adding ?document=1.
+  // Deliberately outside the persisted store and AbleHeader's nav until it has
+  // cleared the paint-time gate against the tab view it would replace.
+  if (window.location.search.includes('document=1')) {
+    return (
+      <div className="flex h-screen w-full flex-col bg-background text-foreground">
+        <AbleHeader />
+        <main className="flex flex-1 flex-col overflow-hidden">
+          <Suspense fallback={<ViewSkeleton />}>
+            <CountryDocumentView />
+          </Suspense>
+        </main>
+      </div>
     );
   }
 
