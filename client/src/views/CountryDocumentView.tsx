@@ -140,8 +140,20 @@ export function CountryDocumentView() {
             </>
           }
         >
-          <LoadTab />
-          <AbleResidualStrip points={residuals} unit="MW" />
+          <LoadTab variant="figure" />
+          <AbleResidualStrip
+            points={residuals}
+            unit="MW"
+            // Hour-aligned so it lands exactly on the same grid `hourBucket`
+            // built `residuals` on. Not read off LoadTab's own chart — that
+            // plot is a black box from here by design (Problem 1) and its
+            // domain shifts with whichever forecast source is active. This
+            // window is what `dayAheadForecast` above was fetched over, so
+            // no residual bar can fall outside it; for the common
+            // `timePreset === 'today'` case it is also exactly what LoadTab's
+            // own chart draws.
+            domain={{ start: hourBucket(start.toISOString()), end: hourBucket(end.toISOString()) }}
+          />
         </Figure>
       </div>
     </div>
