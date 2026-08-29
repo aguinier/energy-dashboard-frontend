@@ -33,6 +33,15 @@ describe('accuracyBadgeState', () => {
       .toEqual({ kind: 'not_measurable', reason: 'no_magnitude' });
   });
 
+  it('is not measurable, never measured, when wape is missing entirely', () => {
+    // undefined, not null: a server built before this field existed omits the
+    // key rather than sending null, and the client can deploy ahead of the
+    // server. `=== null` would miss this and fall through to `measured`,
+    // where AccuracyBadge calls `.toFixed(2)` on undefined and throws.
+    expect(accuracyBadgeState({ wape: undefined, mae: 210, dataPoints: 720 }))
+      .toEqual({ kind: 'not_measurable', reason: 'no_magnitude' });
+  });
+
   it('refuses to publish a number over too few points', () => {
     expect(accuracyBadgeState({ wape: 3.42, mae: 210, dataPoints: 4 }))
       .toEqual({ kind: 'not_measurable', reason: 'no_data' });

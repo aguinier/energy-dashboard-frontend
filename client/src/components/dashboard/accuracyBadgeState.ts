@@ -17,7 +17,14 @@ export type AccuracyBadgeState =
   | { kind: 'absent' };
 
 export interface AccuracyBadgeInput {
-  wape: number | null;
+  /**
+   * Optional, not just nullable: absent (`undefined`) rather than `null` on a
+   * response from a server built before this field existed — the client can
+   * deploy ahead of the server. The guard below is `== null`, loose, so both
+   * forms land on `not_measurable` instead of falling through to `measured`
+   * and crashing on `.toFixed()`.
+   */
+  wape?: number | null;
   mae: number | null;
   dataPoints: number;
 }
@@ -46,7 +53,11 @@ export function accuracyBadgeState(
     return { kind: 'withheld' };
   }
 
-  if (metrics.wape === null) {
+  // Loose: `undefined` (server predates this field) must read the same as an
+  // explicit `null` (computed and found unmeasurable). Only `mae` above needs
+  // the strict form — a missing `mae` is not evidence of `withheld`, which is
+  // a positive claim requiring an explicit null.
+  if (metrics.wape == null) {
     return { kind: 'not_measurable', reason: 'no_magnitude' };
   }
 
