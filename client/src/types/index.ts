@@ -723,6 +723,7 @@ export interface AccuracyMetrics {
    */
   mae: number | null;
   mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
+  wape: number | null; // Weighted Absolute Percentage Error — `100 * sum|actual - forecast| / sum|actual|`. The ranking measure (ABL-388). Null on a divergent basis and when the window's actuals sum to zero.
   rmse: number | null;     // Root Mean Square Error
   /** Mean Error (positive = over-forecast); null on a divergent basis, where the mean difference is definitional, not bias. */
   bias: number | null;
