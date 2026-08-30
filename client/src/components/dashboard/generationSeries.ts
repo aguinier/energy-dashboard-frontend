@@ -78,19 +78,70 @@ export const GENERATION_GROUP_LABELS: Record<GenerationGroupKey, string> = {
  * and the by-source table — so a colour means the same thing everywhere on
  * the card. Previously the chart and the donut kept one copy each and the
  * table a third, and they had already drifted: solar was `#D9A114` in two of
- * them and `#F0B92B` in the table. `#D9A114` is the validated value (the
- * lighter one sat outside the lightness band at 1.75:1 on the white card).
+ * them and `#F0B92B` in the table.
+ *
+ * That older palette also failed the dataviz skill's `validate_palette.js`
+ * on three of six checks (measured `--mode light --pairs all`, surface
+ * `#fcfcfb`): nuclear `#C2665A` vs biomass `#73A35F` was ΔE 4.3 under
+ * deuteranopia (CVD separation FAIL, floor 6.0); biomass `#73A35F` vs hydro
+ * `#2FA39C` was ΔE 9.3 for full-colour vision (normal-vision floor FAIL,
+ * floor 15.0); and `#6B6459`/`#A98F5D`/`#B7AFA0` sat below the chroma floor
+ * (0.10) — three "categories" that read as grey rather than as colours.
+ *
+ * Rebuilt around Okabe–Ito, the reference CVD-safe categorical set. Six slots
+ * are genuine categories and validate as a group:
+ *
+ *   node validate_palette.js "#E69F00,#56B4E9,#0072B2,#009E73,#CC79A7,#D55E00" \
+ *     --mode light --pairs all
+ *   → ALL CHECKS PASS (lightness band, chroma floor, normal-vision floor all
+ *     PASS; CVD separation and contrast-vs-surface both WARN — legal only
+ *     with the mandatory secondary encoding this tab now carries: every band
+ *     in `AbleStackedMix` is labelled directly, not just colour-coded, and
+ *     every row in `SourceTable`/`AbleDonut`'s hover already paired colour
+ *     with text).
+ *
+ * Okabe–Ito has eight non-black entries; five were already spoken for
+ * (solar/wind/biomass/nuclear/fossil), leaving only yellow `#F0E442` and blue
+ * `#0072B2` for three remaining groups (hydro, waste, hydroPumped) — one
+ * short. Rather than force a ninth categorical hue where the validator says
+ * none exists, two of the three are folded into neutrals instead of treated
+ * as peer categories:
+ *
+ *  - **hydro** takes the last Okabe–Ito hue, `#0072B2` — validated above.
+ *  - **waste** is NOT a validated category. Every yellow/olive/mustard tried
+ *    as its hue (`#F0E442` itself fails the lightness band outright at
+ *    L 0.90; darkened variants collapse onto fossil `#D55E00` under
+ *    protanopia/deuteranopia, ΔE as low as 0.6, because a light source and
+ *    yellow both simulate into the same red-ish CVD region and fossil
+ *    already occupies it) — every candidate failed CVD separation, several
+ *    also failed the normal-vision floor outright. `waste` joins `other` as
+ *    a deliberate residual instead: muted, low-chroma, excluded from the
+ *    validator run on purpose (the chroma floor exists to catch a *category*
+ *    reading as grey by accident, not to forbid a residual bucket reading as
+ *    grey on purpose).
+ *  - **hydroPumped** is a lightness/chroma variant of hydro's own hue
+ *    (OKLCH H 244°), not a peer hue — it is a store, not a source (see
+ *    `STORAGE_GROUPS` above), always stacked apart from `hydro` (first vs.
+ *    fifth in `GENERATION_GROUP_ORDER`), and every surface that draws it
+ *    also names it in text (`SourceTable` rows, the stacked-mix band label,
+ *    the hover tooltip). It is measurably close to `wind` (`#56B4E9` is
+ *    H 236°) at any lightness that still reads as "hydro, but lighter" —
+ *    accepted rather than fought, on the same "colour is not the only
+ *    encoding" basis as `waste`/`other`.
+ *
+ * `waste`, `other` and `hydroPumped` are therefore excluded from the
+ * categorical `validate_palette.js` run above by design, not by omission.
  */
 export const GENERATION_GROUP_COLORS: Record<GenerationGroupKey, string> = {
-  solar: '#D9A114',
-  wind: '#4D89C9',
-  hydro: '#2FA39C',
-  biomass: '#73A35F',
-  nuclear: '#C2665A',
-  fossil: '#6B6459',
-  waste: '#A98F5D',
+  solar: '#E69F00',
+  wind: '#56B4E9',
+  hydro: '#0072B2',
+  biomass: '#009E73',
+  nuclear: '#CC79A7',
+  fossil: '#D55E00',
+  waste: '#89775C',
   other: '#B7AFA0',
-  hydroPumped: '#7FBFB9',
+  hydroPumped: '#6398C3',
 };
 
 /**

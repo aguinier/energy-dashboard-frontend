@@ -56,6 +56,27 @@ function scale(val: number, dMin: number, dMax: number, rMin: number, rMax: numb
   return rMin + ((val - dMin) / (dMax - dMin)) * (rMax - rMin);
 }
 
+const LABEL_FONT_SIZE = 10;
+const LABEL_SWATCH_WIDTH = 12;
+const LABEL_GUTTER = 6; // px between the plot's right edge and a label's swatch
+const LABEL_TEXT_GAP = 5; // px between a label's swatch and its text
+// A band's own last-reported height must clear this before it gets a label
+// at all, and two labels must clear it from each other - both roughly one
+// line of LABEL_FONT_SIZE text plus a hair of breathing room. Below either
+// threshold the label is dropped rather than forced: the hover tooltip
+// already lists every drawn group by name and colour regardless, so a
+// dropped label does not make that band unidentifiable, only un-annotated
+// at rest.
+const LABEL_MIN_BAND_HEIGHT = 12;
+const LABEL_MIN_VERTICAL_GAP = 13;
+
+// No canvas to measure real glyph widths against (this chart is hand-built
+// SVG, not a text-layout engine) - an average-char-width estimate is close
+// enough to size the right margin so the longest visible label doesn't clip.
+function estimateLabelWidth(text: string): number {
+  return text.length * LABEL_FONT_SIZE * 0.56;
+}
+
 function smoothPath(points: Array<[number, number]>): string {
   if (points.length < 2) return '';
   const p = points;
@@ -89,7 +110,17 @@ export function AbleStackedMix({
   const hatchId = `stacked-mix-gap-${useId()}`;
 
   const padL = 44;
-  const padR = 16;
+  // Wide enough for the longest visible band label plus its swatch, since
+  // labels now render directly beside each band's end rather than in a
+  // legend below the chart (see the label block near the bottom of this
+  // component). Keys with no label recorded fall back to the raw key so the
+  // margin is never sized against an empty string.
+  const padR = Math.max(
+    16,
+    Math.ceil(
+      keys.reduce((m, k) => Math.max(m, estimateLabelWidth(labels[k] ?? k)), 0),
+    ) + LABEL_GUTTER + LABEL_SWATCH_WIDTH + LABEL_TEXT_GAP,
+  );
   const padT = 12;
   const padB = 26;
   const iw = width - padL - padR;
@@ -177,6 +208,58 @@ export function AbleStackedMix({
 
     return { areas, yMin, yMax, zeroY: yFor(0) };
   }, [series, keys, colors, padL, ih, iw, padT]);
+
+  /**
+   * Direct band labels — one per group, at the right end of its own band,
+   * replacing the swatch-row legend GenerationTab used to render below the
+   * chart. Anchored at each key's own *last reported* index rather than a
+   * shared right edge: a group with a trailing gap (unpublished latest hour)
+   * or one that stopped reporting mid-window gets its label where its real
+   * line actually ends, not floated past it.
+   *
+   * Two things suppress a label rather than force it: a band shorter than
+   * `LABEL_MIN_BAND_HEIGHT` at that point (nothing to visually attach a line
+   * of text to), and a label that would land within `LABEL_MIN_VERTICAL_GAP`
+   * of one already kept (processed bottom-of-stack first, i.e. in `keys`
+   * order, so a collision drops the higher band's label rather than the
+   * lower one's). Either way the group stays identifiable — the hover
+   * tooltip lists every drawn key by name and colour regardless of whether
+   * it earned a resting label.
+   */
+  const bandLabels = useMemo(() => {
+    if (series.length === 0 || keys.length === 0) return [];
+    const xFor = (i: number) => padL + (i / Math.max(1, series.length - 1)) * iw;
+    const yFor = (v: number) => padT + ih - scale(v, yMin, yMax, 0, ih);
+
+    const candidates = keys
+      .map((k) => {
+        let idx = -1;
+        for (let i = series.length - 1; i >= 0; i--) {
+          if (series[i].values[k] != null) { idx = i; break; }
+        }
+        if (idx === -1) return null;
+        const band = divergingStack(keys, series[idx].values).find((b) => b.key === k);
+        if (!band) return null;
+        const yTop = yFor(band.y1);
+        const yBottom = yFor(band.y0);
+        return {
+          key: k,
+          text: labels[k] ?? k,
+          x: xFor(idx),
+          y: (yTop + yBottom) / 2,
+          height: Math.abs(yBottom - yTop),
+        };
+      })
+      .filter((c): c is NonNullable<typeof c> => c !== null && c.height >= LABEL_MIN_BAND_HEIGHT);
+
+    const kept: typeof candidates = [];
+    for (const c of candidates) {
+      const prev = kept[kept.length - 1];
+      if (prev && Math.abs(prev.y - c.y) < LABEL_MIN_VERTICAL_GAP) continue;
+      kept.push(c);
+    }
+    return kept;
+  }, [series, keys, labels, padL, padT, ih, iw, yMin, yMax]);
 
   const nowX = padL + (NOW / Math.max(1, series.length - 1)) * iw;
   const xTicks = chartTimeTicks(series.map((d) => d.ts), preset, NOW);
@@ -362,6 +445,38 @@ export function AbleStackedMix({
             </text>
           );
         })}
+
+        {/*
+          Direct band labels (see `bandLabels` above) — a swatch dash plus the
+          group's name, sitting in the right margin at that band's own height.
+          Text is drawn in the muted ink colour, not the band's own colour:
+          the contrast-vs-surface WARN some of `GENERATION_GROUP_COLORS` carry
+          (see that constant's comment) is about a *mark* being hard to see
+          against the card, not about what colour identifies it in text — the
+          swatch still carries the category colour, same as `SourceTable`'s
+          rows.
+        */}
+        {bandLabels.map((l) => (
+          <g key={`label-${l.key}`} data-band-label-key={l.key}>
+            <rect
+              x={l.x + LABEL_GUTTER}
+              y={l.y - 1}
+              width={LABEL_SWATCH_WIDTH}
+              height={2}
+              rx={1}
+              fill={colors[l.key]}
+            />
+            <text
+              x={l.x + LABEL_GUTTER + LABEL_SWATCH_WIDTH + LABEL_TEXT_GAP}
+              y={l.y + 3}
+              fill="hsl(var(--ink-muted))"
+              fontSize={LABEL_FONT_SIZE}
+              textAnchor="start"
+            >
+              {l.text}
+            </text>
+          </g>
+        ))}
 
         {h && (
           <g style={{ pointerEvents: 'none' }}>
