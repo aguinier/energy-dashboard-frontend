@@ -4,15 +4,20 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  CLAUDE_MD_BUDGET,
   COMMENT_CITATION_ALLOWLIST,
   checkCitations,
+  checkSizeBudget,
+  checkStatedBudget,
   classifyLine,
   findTopLevelDeclaration,
   formatProblems,
   isExternalPath,
   looksLikeSourcePath,
+  measureDocSize,
   parseCitations,
   resolveCitedPath,
+  type DocSize,
   type RepoView,
 } from './claudeMdCitations.js';
 
@@ -360,6 +365,129 @@ describe('checkCitations', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Size budget (ABL-536)
+//
+// Kept in this file, not a new one, because CLAUDE.md names exactly one command
+// to run after editing it and that command names this file. A second command is
+// a second thing to remember, and the thing nobody remembers is the guard.
+// ---------------------------------------------------------------------------
+
+/**
+ * A document measuring exactly `lines` lines and `bytes` LF bytes, so a failure
+ * message can be pinned against figures chosen for the assertion.
+ */
+function docOf(lines: number, bytes: number): string {
+  const content = bytes - lines; // one newline terminates each line
+  const base = Math.floor(content / lines);
+  const long = content - base * lines;
+  return (
+    Array.from({ length: lines }, (_, i) => 'x'.repeat(base + (i < long ? 1 : 0))).join('\n') + '\n'
+  );
+}
+
+describe('measureDocSize', () => {
+  it('measures a CRLF and an LF copy of the same document identically', () => {
+    // The trap this closes: CLAUDE.md is CRLF in a Windows working tree and LF
+    // in git — 450 B apart on today's document, one byte per line and no
+    // content. Whichever platform runs the suite must reach the same verdict.
+    const lf = 'alpha\nbeta\ngamma\n';
+    expect(measureDocSize(lf.replace(/\n/g, '\r\n'))).toEqual(measureDocSize(lf));
+    expect(measureDocSize(lf)).toEqual({ lines: 3, bytes: 17 });
+  });
+
+  it('lets a trailing newline terminate the last line rather than start an empty one', () => {
+    expect(measureDocSize('one\ntwo\n').lines).toBe(2);
+    expect(measureDocSize('one\ntwo').lines).toBe(2);
+  });
+
+  it('counts an empty document as nothing', () => {
+    expect(measureDocSize('')).toEqual({ lines: 0, bytes: 0 });
+  });
+
+  it('counts UTF-8 bytes, not characters — the document is dense with em dashes', () => {
+    expect(measureDocSize('—')).toEqual({ lines: 1, bytes: 3 });
+  });
+
+  it('does not charge the budget for a BOM', () => {
+    expect(measureDocSize('\uFEFFalpha\n')).toEqual(measureDocSize('alpha\n'));
+  });
+
+  it('builds the documents the message assertions are pinned against', () => {
+    // Guards the helper above: a docOf that measured something other than what
+    // it was asked for would make every message assertion below meaningless.
+    expect(measureDocSize(docOf(712, 37_274))).toEqual({ lines: 712, bytes: 37_274 });
+  });
+});
+
+describe('checkSizeBudget', () => {
+  const budget: DocSize = { lines: 10, bytes: 100 };
+
+  it('passes a document inside both limits', () => {
+    expect(checkSizeBudget(docOf(9, 90), budget)).toBeNull();
+  });
+
+  it('passes a document exactly at both limits — the budget is a ceiling, not a target', () => {
+    expect(checkSizeBudget(docOf(10, 100), budget)).toBeNull();
+  });
+
+  it('names line count alone when only the line count is over', () => {
+    const message = checkSizeBudget(docOf(11, 90), budget);
+    expect(message).toContain('11 lines');
+    expect(message).toContain('budget of 10 lines');
+    expect(message).toContain('on line count');
+    expect(message).toContain('1 line too much');
+  });
+
+  it('names size alone when only the byte count is over', () => {
+    const message = checkSizeBudget(docOf(9, 150), budget);
+    expect(message).toContain('on size');
+    expect(message).not.toContain('line count');
+    // A sub-KB overage stays in bytes: "0.0 KB too much" tells nobody anything.
+    expect(message).toContain('50 B too much');
+  });
+
+  it('reads the way the failure was specified, against the real budget', () => {
+    // 712 lines / 36.4 KB is the worked example in the issue. Pinned whole, and
+    // not merely by substring, because the message is the deliverable: whoever
+    // trips this is mid-landing on something else and the message is all they
+    // get. A reword should have to be deliberate.
+    expect(checkSizeBudget(docOf(712, 37_274))).toBe(
+      'CLAUDE.md is 712 lines / 36.4 KB, over the ABL-536 budget of 700 lines / 35 KB ' +
+        'on both line count and size — 12 lines and 1.4 KB too much. Move narrative, dated ' +
+        'measurements or per-issue forensics into docs/claude/<topic>.md and leave a one-line ' +
+        'pointer here. Do not raise the budget to fit: every line here is paid on every turn ' +
+        'by every run. (Bytes are LF-normalised, as git stores the file.)'
+    );
+  });
+});
+
+describe('checkStatedBudget', () => {
+  const budget: DocSize = { lines: 700, bytes: 35 * 1024 };
+
+  it('accepts the sentence CLAUDE.md actually writes', () => {
+    expect(checkStatedBudget('- **Hard budget: 700 lines / 35 KB.** If an edit', budget)).toBeNull();
+  });
+
+  it('survives the paragraph being rewrapped or the bold markers moving', () => {
+    expect(checkStatedBudget('Hard budget:  700  lines / 35 KB', budget)).toBeNull();
+    expect(checkStatedBudget('**Hard budget: 700 lines / 35 KB**', budget)).toBeNull();
+  });
+
+  it('catches prose and enforcement drifting apart, in either dimension', () => {
+    expect(checkStatedBudget('**Hard budget: 900 lines / 35 KB.**', budget)).toContain(
+      'states a budget of 900 lines'
+    );
+    expect(checkStatedBudget('**Hard budget: 700 lines / 50 KB.**', budget)).toContain('50 KB');
+  });
+
+  it('catches the rule being deleted from the document', () => {
+    expect(checkStatedBudget('no budget stated here', budget)).toContain(
+      'no longer states its own size budget'
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The real document
 // ---------------------------------------------------------------------------
 
@@ -466,5 +594,22 @@ describe('CLAUDE.md citations', () => {
 
   it('every citation points at real code', () => {
     expect(formatProblems(result.problems)).toBe('');
+  });
+
+  const claudeMd = readClaudeMd();
+
+  it('measures the real document, so a budget assertion cannot pass on nothing', () => {
+    // Guards the guard: if readClaudeMd() ever returned '' — a renamed file, a
+    // ref that does not carry it — the two assertions below would go green on a
+    // zero-byte document. The floor is well under the trimmed 450 lines.
+    expect(measureDocSize(claudeMd).lines).toBeGreaterThan(100);
+  });
+
+  it('CLAUDE.md is within the ABL-536 size budget', () => {
+    expect(checkSizeBudget(claudeMd) ?? '').toBe('');
+  });
+
+  it('states the same budget it is held to', () => {
+    expect(checkStatedBudget(claudeMd) ?? '').toBe('');
   });
 });

@@ -28,7 +28,7 @@ export function useForecastModels() {
  */
 export function useRecommendedModel(forecastType: string) {
   const country = useDashboardStore((s) => s.selectedCountry);
-  return useQuery<RecommendedModel | undefined>({
+  return useQuery<RecommendedModel | null>({
     queryKey: ['forecast-recommended', country, forecastType],
     queryFn: () => fetchRecommendedModel({ country, type: forecastType }),
     enabled: Boolean(country && forecastType),
@@ -172,7 +172,7 @@ export function useModelSelection(forecastType: string): ActiveModelSelection {
   // each tab's data hook; this is its first reader.
   const servedModelId = useDashboardStore((s) => s.servedModelByType[forecastType]);
   return {
-    ...resolveSelection(registry, forecastType, pinnedId, hidden, recommended, servedModelId),
+    ...resolveSelection(registry, forecastType, pinnedId, hidden, recommended ?? undefined, servedModelId),
     isLoading,
   };
 }

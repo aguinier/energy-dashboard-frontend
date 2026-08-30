@@ -10,7 +10,11 @@ This file auto-loads into every agent context, so its size is a per-turn tax on
 the whole fleet. It once grew to 6,700 lines and killed runs outright.
 
 - **Hard budget: 700 lines / 35 KB.** If an edit would cross it, move material
-  to `docs/claude/` first.
+  to `docs/claude/` first. Enforced, not merely asked for: the test below fails
+  the suite when this file crosses either limit, and again if this sentence and
+  `CLAUDE_MD_BUDGET` stop agreeing. Bytes are counted LF-normalised, as git
+  stores the file, so the verdict is the same on every platform. Raising the
+  budget to fit an edit is not the remedy — moving the material is.
 - **Durable rules only.** Commands, maps, invariants, gotchas — each stated
   once, tersely. Incident narratives, dated measurements, per-issue forensics
   and evidence trails go in the matching `docs/claude/` topic file; append
@@ -157,6 +161,17 @@ authoritative target and the separate local-server procedure.
 Anything about prod health or freshness must be settled against prod directly
 (`http://192.168.86.36:3001/api/...`, read-only). The replica is the right
 place to measure *shapes* (row counts, distributions), never currency.
+
+**The replica is locked to all readers twice a day while `able-db-sync` runs**
+(`sync-db-v2.ps1`, Scheduled Task at 07:00 and 16:30 local time). The task
+rebuilds every non-weather table inside one SQLite transaction, which holds an
+exclusive write lock for the duration — currently 30–60 min but variable;
+overruns past an hour have been observed. A `database is locked` error on the
+workstation replica is planned maintenance, not a hang or a bug; check the
+`.db-journal` mtime (advancing = writer still alive) and
+`C:\Code\able\logs\sync-db-v2.log` (a `Replacing local tables (transactional)`
+line with no later `Done.` means the lock is held right now) before escalating
+(ABL-612).
 
 ## Deployment
 
@@ -371,8 +386,10 @@ cd server && npx vitest run
   read "the client passes on 25" as clearance to run the whole repo on 25.
   Both Nodes are installed here: `C:\Program Files\nodejs` is v25.6.1 and the
   nvm4w default on `PATH` is v24.18.0.
-- **Server test files are not typechecked** — `server/tsconfig.json` excludes
-  `src/**/*.test.ts`, so a required-argument omission compiles clean (ABL-533).
+- **Server test files are excluded from the default typecheck** — `server/tsconfig.json` excludes
+  `src/**/*.test.ts`, so a required-argument omission compiles clean (ABL-533). Run
+  `npm run typecheck:test` (from `server/`) to typecheck them explicitly; it is **green as of
+  ABL-587**, so a red run is a real regression, not pre-existing noise.
 - **Before you mark an issue `done`:** `npm run predone` (from the repo root).
   Three gates: per-branch shipping gap (patch identity via `git cherry`, not
   ancestry), unpublished local `main`, and stranded work on any local branch.
@@ -464,6 +481,11 @@ Condensed diagnostics — full entries with the reasoning in
 
 - **"Cannot connect to database":** `ENERGY_DB_PATH` unset or pointing at a
   missing file.
+- **`database is locked` on the workstation replica:** `able-db-sync` is mid-run
+  (Scheduled Task at 07:00 / 16:30 local, 30–60 min variable window — see
+  Database Connection). Check the `.db-journal` mtime and
+  `C:\Code\able\logs\sync-db-v2.log`; wait for the lock to clear. Not a bug
+  (ABL-612).
 - **Forecast-accuracy tab shows a sentence instead of numbers / Load tab draws
   no forecast line (NL):** the divergent-basis rule working — see Data
   semantics. Not missing data; do not "fix" it.
