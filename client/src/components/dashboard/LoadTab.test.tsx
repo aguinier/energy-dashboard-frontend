@@ -161,14 +161,14 @@ vi.mock('@/components/charts/AblePriceHeatmap', () => ({
   AblePriceHeatmap: () => <div data-testid="heatmap" />,
 }));
 
-function renderLoadTab() {
+function renderLoadTab(props?: Parameters<typeof LoadTab>[0]) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return render(<LoadTab />, { wrapper });
+  return render(<LoadTab {...props} />, { wrapper });
 }
 
 /** The forecast values the tab handed to AbleLineChart (single-model path). */
@@ -249,6 +249,68 @@ describe('LoadTab forecast overlay', () => {
 
     expect(await forecastValuesOnChart()).toEqual([]);
     expect(screen.queryByText(/dashed =/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// variant="figure" — the country document's plot slot (Task 7a). One plot per
+// figure: no AbleCard header on the primary chart, and no second chart (the
+// hour×day heatmap). Both LoadTab render paths are covered — LoadDefaultView
+// (nothing checked in the picker) and LoadSelectionView (a model pinned) —
+// because the two are separate components with separate return statements,
+// and a fix proven on only one would not prove anything about the other.
+// ---------------------------------------------------------------------------
+describe('LoadTab — variant="figure"', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      selectedCountry: 'BE',
+      timePreset: '24h',
+      timeOffset: 0,
+      selectedModelsByType: {},
+      forecastHiddenByType: {},
+      showComparisonMode: false,
+      showTSOComparisonMode: false,
+    });
+  });
+
+  afterEach(() => cleanup());
+
+  it('LoadDefaultView: renders the chart with no AbleCard title and no heatmap', async () => {
+    renderLoadTab({ variant: 'figure' });
+
+    await screen.findByTestId('line-chart');
+    // The card title/subtitle chrome is gone...
+    expect(screen.queryByText('Electricity load')).toBeNull();
+    // ...but the "dashed = …" line it used to carry is still stated somewhere,
+    // just no longer inside a card header.
+    expect(await screen.findByText(/GW · Belgium · ENTSO-E/)).toBeTruthy();
+    // One plot per figure: the second chart is gone, not merely re-titled.
+    expect(screen.queryByText('Load by hour × day')).toBeNull();
+    expect(screen.queryByTestId('heatmap')).toBeNull();
+  });
+
+  it('LoadSelectionView: renders the chart with no AbleCard title and no heatmap', async () => {
+    // A checked model routes to LoadSelectionView — the tab's second render path.
+    useDashboardStore.setState({ selectedModelsByType: { load: ['xgboost'] } });
+
+    renderLoadTab({ variant: 'figure' });
+
+    await screen.findByTestId('line-chart');
+    expect(screen.queryByText('Electricity load')).toBeNull();
+    expect(await screen.findByText(/comparing 1 forecast model/)).toBeTruthy();
+    expect(screen.queryByText('Load by hour × day')).toBeNull();
+    expect(screen.queryByTestId('heatmap')).toBeNull();
+  });
+
+  it('default variant is unaffected: the tab still gets its card title and the heatmap', async () => {
+    // Regression guard for "byte-identical to today" — `variant` defaults to
+    // 'tab' so every existing caller (CountryDashboardView) is unchanged.
+    renderLoadTab();
+
+    await screen.findByTestId('line-chart');
+    expect(screen.queryByText('Electricity load')).not.toBeNull();
+    expect(screen.queryByText('Load by hour × day')).not.toBeNull();
+    expect(screen.queryByTestId('heatmap')).not.toBeNull();
   });
 });
 

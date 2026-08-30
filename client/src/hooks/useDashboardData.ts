@@ -309,6 +309,38 @@ export function useForecastComparisonSummary() {
   });
 }
 
+/**
+ * Forecast accuracy over a FIXED trailing window, independent of the page's
+ * time control.
+ *
+ * `useForecastComparisonSummary` above follows `timePreset`/`timeOffset`, which
+ * is right for the comparison view — you ask it about the window you are
+ * looking at. It is wrong for a figure badge: a badge reading "WAPE over 30
+ * days" while the page shows 24 hours is a false claim, and one computed over
+ * 24 hours is noise besides. The badge wants the track record.
+ */
+export function useTrailingAccuracySummary(days = 30) {
+  const selectedCountry = useDashboardStore((s) => s.selectedCountry);
+
+  // Floor to the UTC day. `new Date()` in the query key would mint a fresh key
+  // on every render and refetch forever against an API that serialises.
+  const today = new Date().toISOString().slice(0, 10);
+
+  return useQuery({
+    queryKey: ['forecast-comparison', 'trailing', selectedCountry, days, today],
+    queryFn: () => {
+      const end = new Date(`${today}T00:00:00Z`);
+      const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
+      return fetchForecastComparisonSummary({
+        countryCode: selectedCountry,
+        start: start.toISOString(),
+        end: end.toISOString(),
+      });
+    },
+    staleTime: REFRESH_INTERVALS.map,
+  });
+}
+
 // ============================================================================
 // Cross-Country Comparison Hooks
 // ============================================================================

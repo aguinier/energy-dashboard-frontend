@@ -27,6 +27,25 @@ type TodayWindow = { start: Date; end: Date } | undefined;
 
 const formatMwOrGw = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(2)} GW` : `${v.toFixed(0)} MW`);
 
+export interface LoadTabProps {
+  /**
+   * 'tab' (default) is the existing `CountryDashboardView` tab body: two
+   * `AbleCard`s, each with its own title ("Electricity load", "Load by hour
+   * × day"). 'figure' is the country document's plot slot
+   * (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+   * one plot per figure, so it renders only the primary "Electricity load"
+   * chart, with no `AbleCard` header of its own — the figure supplies the
+   * number, title and caption instead — and omits the hour×day heatmap
+   * entirely, since that is a second chart, not an annotation on the first.
+   *
+   * Every fetch, the model picker's effect on which forecast draws, gap
+   * notices and the withholding logic are identical in both variants; only
+   * the chrome around the primary chart changes. Default omitted so every
+   * existing caller is unaffected.
+   */
+  variant?: 'tab' | 'figure';
+}
+
 /**
  * Country load chart. Splits into two views exactly the way `NetPositionTab`
  * does (ABL-203) and for the same reason: "nothing checked" (the server's
@@ -35,7 +54,7 @@ const formatMwOrGw = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(2)} GW` :
  * shapes — one line vs. N named lines with a legend — that forcing them
  * through one render path was more conditionals than two components.
  */
-export function LoadTab() {
+export function LoadTab({ variant = 'tab' }: LoadTabProps = {}) {
   const chartData = useLoadChartData();
   const { data: countries } = useCountries();
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
@@ -60,6 +79,7 @@ export function LoadTab() {
         countryLabel={countryLabel}
         timePreset={timePreset}
         todayWindow={todayWindow}
+        variant={variant}
       />
     );
   }
@@ -74,6 +94,7 @@ export function LoadTab() {
       countryLabel={countryLabel}
       timePreset={timePreset}
       todayWindow={todayWindow}
+      variant={variant}
     />
   );
 }
@@ -97,6 +118,7 @@ function LoadDefaultView({
   countryLabel,
   timePreset,
   todayWindow,
+  variant,
 }: {
   loadData: LoadDataPoint[] | undefined;
   forecastData: ForecastDataPoint[] | undefined;
@@ -106,7 +128,9 @@ function LoadDefaultView({
   countryLabel: string;
   timePreset: string;
   todayWindow: TodayWindow;
+  variant: 'tab' | 'figure';
 }) {
+  const isFigure = variant === 'figure';
   const { selected, hidden, autoSelected } = useModelSelection('load');
   // A withheld series draws no line, so every claim made about one has to be
   // switched off with it (ABL-501) — the subtitle's "dashed = …", the
@@ -147,18 +171,13 @@ function LoadDefaultView({
     [loadData, forecastData, useMl],
   );
 
+  const meta = `GW · ${countryLabel} · ENTSO-E${
+    useMl ? ' · dashed = able-ml forecast' : useTso ? ' · dashed = ENTSO-E TSO forecast' : ''
+  }`;
+
   return (
     <div className="space-y-3.5">
-      <AbleCard
-        title="Electricity load"
-        subtitle={`GW · ${countryLabel} · ENTSO-E${
-          useMl
-            ? ' · dashed = able-ml forecast'
-            : useTso
-            ? ' · dashed = ENTSO-E TSO forecast'
-            : ''
-        }`}
-      >
+      <AbleCard title={isFigure ? undefined : 'Electricity load'} subtitle={isFigure ? undefined : meta}>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…
@@ -174,6 +193,11 @@ function LoadDefaultView({
               preset={timePreset}
               label="Electricity load"
             />
+            {/* In the figure composition the card carries no header, so the
+                "GW · country · dashed = …" line that would otherwise live in
+                the title's subtitle is stated here instead — without it, the
+                dashed forecast line on the figure would be unlabelled. */}
+            {isFigure && <p className="mt-2 text-micro text-ink-muted">{meta}</p>}
             {/* Same expression the chart was built from, so the note is on
                 screen exactly when the dashed ML line is (ABL-285). */}
             <ForecastVintageNote
@@ -193,12 +217,17 @@ function LoadDefaultView({
         )}
       </AbleCard>
 
-      <AbleCard
-        title="Load by hour × day"
-        subtitle={useMl ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
-      >
-        <AblePriceHeatmap cells={heatmapCells} unit="MW" />
-      </AbleCard>
+      {/* One plot per figure (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+          the hour×day heatmap is a second chart, not an annotation on the
+          line above, so the figure composition omits it entirely. */}
+      {!isFigure && (
+        <AbleCard
+          title="Load by hour × day"
+          subtitle={useMl ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
+        >
+          <AblePriceHeatmap cells={heatmapCells} unit="MW" />
+        </AbleCard>
+      )}
     </div>
   );
 }
@@ -216,6 +245,7 @@ function LoadSelectionView({
   countryLabel,
   timePreset,
   todayWindow,
+  variant,
 }: {
   entries: LoadModelQuery[];
   loadData: LoadDataPoint[] | undefined;
@@ -224,7 +254,9 @@ function LoadSelectionView({
   countryLabel: string;
   timePreset: string;
   todayWindow: TodayWindow;
+  variant: 'tab' | 'figure';
 }) {
+  const isFigure = variant === 'figure';
   const isLoading = isLoadingLoad || entries.some((e) => e.isLoading);
 
   const { series, nowIndex, forecastSeries } = useMemo(
@@ -285,13 +317,11 @@ function LoadSelectionView({
   );
 
   const hasBand = forecastSeries.length === 1 && series.some((p) => p.min != null && p.max != null);
+  const meta = `GW · ${countryLabel} · ENTSO-E · comparing ${entries.length} forecast model${entries.length === 1 ? '' : 's'}`;
 
   return (
     <div className="space-y-3.5">
-      <AbleCard
-        title="Electricity load"
-        subtitle={`GW · ${countryLabel} · ENTSO-E · comparing ${entries.length} forecast model${entries.length === 1 ? '' : 's'}`}
-      >
+      <AbleCard title={isFigure ? undefined : 'Electricity load'} subtitle={isFigure ? undefined : meta}>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…
@@ -312,6 +342,9 @@ function LoadSelectionView({
               label="Electricity load"
               forecastSeries={forecastSeries}
             />
+            {/* See LoadDefaultView's identical comment: no card header in the
+                figure composition means this line has nowhere else to live. */}
+            {isFigure && <p className="mt-2 text-micro text-ink-muted">{meta}</p>}
             {hasBand && (
               <p className="mt-2 text-micro text-ink-muted">shaded band = ENTSO-E week-ahead daily min/max</p>
             )}
@@ -333,12 +366,15 @@ function LoadSelectionView({
         <ForecastGapNotice gaps={gaps} forecastType="load" />
       </AbleCard>
 
-      <AbleCard
-        title="Load by hour × day"
-        subtitle={heatmapForecastEntry ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
-      >
-        <AblePriceHeatmap cells={heatmapCells} unit="MW" />
-      </AbleCard>
+      {/* One plot per figure — see LoadDefaultView's identical comment. */}
+      {!isFigure && (
+        <AbleCard
+          title="Load by hour × day"
+          subtitle={heatmapForecastEntry ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
+        >
+          <AblePriceHeatmap cells={heatmapCells} unit="MW" />
+        </AbleCard>
+      )}
     </div>
   );
 }

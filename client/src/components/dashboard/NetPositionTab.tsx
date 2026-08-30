@@ -67,7 +67,22 @@ function forecastFootnotes(
   return notes;
 }
 
-export function NetPositionTab() {
+export interface NetPositionTabProps {
+  /**
+   * 'tab' (default) is the existing `CountryDashboardView` tab body: the
+   * `AbleCard` carries its own title/subtitle. 'figure' is the country
+   * document's plot slot (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+   * one plot per figure, so the `AbleCard` gets no header of its own — the
+   * figure supplies the number, title and caption instead. See
+   * `LoadTab.tsx`'s identical prop for the full rationale. Default omitted so
+   * the existing caller (`CountryDashboardView`) is unaffected. Threaded
+   * through all three render paths — default, selection and Core — since the
+   * scope toggle and the model picker both stay live in the figure.
+   */
+  variant?: 'tab' | 'figure';
+}
+
+export function NetPositionTab({ variant = 'tab' }: NetPositionTabProps = {}) {
   const result = useNetPositionData();
   const { data: countries } = useCountries();
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
@@ -96,6 +111,7 @@ export function NetPositionTab() {
         countryLabel={countryLabel}
         timePreset={timePreset}
         scopeDisclosure={scopeDisclosure}
+        variant={variant}
       />
     );
   }
@@ -110,6 +126,7 @@ export function NetPositionTab() {
         countryLabel={countryLabel}
         timePreset={timePreset}
         scopeDisclosure={scopeDisclosure}
+        variant={variant}
       />
     );
   }
@@ -122,6 +139,7 @@ export function NetPositionTab() {
       countryLabel={countryLabel}
       timePreset={timePreset}
       scopeDisclosure={scopeDisclosure}
+      variant={variant}
     />
   );
 }
@@ -141,6 +159,7 @@ function NetPositionDefaultView({
   countryLabel,
   timePreset,
   scopeDisclosure,
+  variant,
 }: {
   data: NetPositionResponse | undefined;
   isLoading: boolean;
@@ -149,7 +168,9 @@ function NetPositionDefaultView({
   countryLabel: string;
   timePreset: string;
   scopeDisclosure: string;
+  variant: 'tab' | 'figure';
 }) {
+  const isFigure = variant === 'figure';
   const shown = useMemo(
     () => (forecastHidden && data ? { ...data, forecast: [] } : data),
     [data, forecastHidden],
@@ -231,9 +252,11 @@ function NetPositionDefaultView({
     );
   }
 
+  const meta = subtitleParts.join(' · ');
+
   return (
     <div className="space-y-3.5">
-      <AbleCard title="Net position" subtitle={subtitleParts.join(' · ')}>
+      <AbleCard title={isFigure ? undefined : 'Net position'} subtitle={isFigure ? undefined : meta}>
         <p className="mb-2.5 text-micro text-ink-muted">{scopeDisclosure}</p>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
@@ -302,6 +325,10 @@ function NetPositionDefaultView({
               preset={timePreset}
               label="Net position"
             />
+            {/* In the figure composition the card carries no header, so the
+                subtitle line that would otherwise live there is stated here
+                instead — see LoadTab.tsx's identical treatment. */}
+            {isFigure && <p className="mt-2 text-micro text-ink-muted">{meta}</p>}
             <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-micro text-ink-muted">
               {latest && (
                 <span className="font-mono-num">
@@ -390,11 +417,14 @@ function CoreNetPositionView({
   countryLabel,
   timePreset,
   scopeDisclosure,
+  variant,
 }: {
   countryLabel: string;
   timePreset: string;
   scopeDisclosure: string;
+  variant: 'tab' | 'figure';
 }) {
+  const isFigure = variant === 'figure';
   const { data, isLoading, isError } = useCoreNetPositionData();
 
   const { series, nowIndex, maxIntervalsPerHour } = useMemo(
@@ -424,9 +454,11 @@ function CoreNetPositionView({
     subtitleParts.push(`hourly mean of ${maxIntervalsPerHour} published intervals`);
   }
 
+  const meta = subtitleParts.join(' · ');
+
   return (
     <div className="space-y-3.5">
-      <AbleCard title="Net position" subtitle={subtitleParts.join(' · ')}>
+      <AbleCard title={isFigure ? undefined : 'Net position'} subtitle={isFigure ? undefined : meta}>
         <p className="mb-2.5 text-micro text-ink-muted">{scopeDisclosure}</p>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
@@ -473,6 +505,10 @@ function CoreNetPositionView({
               preset={timePreset}
               label="Core net position"
             />
+            {/* In the figure composition the card carries no header, so the
+                subtitle line that would otherwise live there is stated here
+                instead — see LoadTab.tsx's identical treatment. */}
+            {isFigure && <p className="mt-2 text-micro text-ink-muted">{meta}</p>}
             <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-micro text-ink-muted">
               {latest?.value != null && (
                 <span className="font-mono-num">
@@ -504,6 +540,7 @@ function NetPositionSelectionView({
   countryLabel,
   timePreset,
   scopeDisclosure,
+  variant,
 }: {
   entries: NetPositionModelQuery[];
   isLoading: boolean;
@@ -511,7 +548,9 @@ function NetPositionSelectionView({
   countryLabel: string;
   timePreset: string;
   scopeDisclosure: string;
+  variant: 'tab' | 'figure';
 }) {
+  const isFigure = variant === 'figure';
   const seriesInputs: NetPositionModelSeriesInput[] = useMemo(
     () => entries.map((e) => ({ id: e.id, label: e.label, color: e.color, response: e.data })),
     [entries],
@@ -571,9 +610,11 @@ function NetPositionSelectionView({
   const singleNoBand =
     forecastSeries.length === 1 && !hasSingleBand && series.some((p) => p.forecast != null);
 
+  const meta = subtitleParts.join(' · ');
+
   return (
     <div className="space-y-3.5">
-      <AbleCard title="Net position" subtitle={subtitleParts.join(' · ')}>
+      <AbleCard title={isFigure ? undefined : 'Net position'} subtitle={isFigure ? undefined : meta}>
         <p className="mb-2.5 text-micro text-ink-muted">{scopeDisclosure}</p>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
@@ -625,6 +666,10 @@ function NetPositionSelectionView({
               label="Net position"
               forecastSeries={forecastSeries}
             />
+            {/* In the figure composition the card carries no header, so the
+                subtitle line that would otherwise live there is stated here
+                instead — see LoadTab.tsx's identical treatment. */}
+            {isFigure && <p className="mt-2 text-micro text-ink-muted">{meta}</p>}
             <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-micro text-ink-muted">
               {latest && (
                 <span className="font-mono-num">

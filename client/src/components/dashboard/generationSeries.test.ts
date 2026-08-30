@@ -5,11 +5,13 @@ import {
   buildGenerationMixSeries,
   pointTotal,
   describeNegativeGroups,
+  describeGenerationGaps,
   GENERATION_GROUP_ORDER,
   GENERATION_GROUP_COLORS,
   GENERATION_GROUP_LABELS,
   STORAGE_GROUPS,
 } from './generationSeries';
+import type { GenerationMixPoint, GenerationGroupKey } from './generationSeries';
 
 /** A wire point with everything null unless named. */
 function point(timestamp: string, over: Partial<GenerationSeriesPoint> = {}): GenerationSeriesPoint {
@@ -249,5 +251,76 @@ describe('describeNegativeGroups', () => {
     expect(describeNegativeGroups(['fossil', 'hydroPumped'])).toContain(
       'Fossil and Pumped storage are negative',
     );
+  });
+});
+
+// Every group reports 1 MW unless a test overrides it — isolates the one
+// group under test from the "absent throughout" case the other groups would
+// otherwise also trigger.
+const BASELINE = Object.fromEntries(GENERATION_GROUP_ORDER.map((k) => [k, 1])) as Record<
+  GenerationGroupKey,
+  number
+>;
+
+/** A fully-reported past point, with the named overrides (`null` punches a hole). */
+function pastPoint(over: Partial<Record<GenerationGroupKey, number | null>> = {}): GenerationMixPoint {
+  return { ts: '2026-07-01T00:00:00Z', future: false, values: { ...BASELINE, ...over } };
+}
+
+/** A future point — null for every group, the way `buildGenerationMixSeries`'s grid-fill pads a Today window past "now". */
+function futurePoint(): GenerationMixPoint {
+  const values = Object.fromEntries(GENERATION_GROUP_ORDER.map((k) => [k, null])) as Record<
+    GenerationGroupKey,
+    number | null
+  >;
+  return { ts: '2026-07-01T00:00:00Z', future: true, values };
+}
+
+describe('describeGenerationGaps', () => {
+  it('says nothing for an empty window', () => {
+    expect(describeGenerationGaps([])).toBeNull();
+  });
+
+  it('says nothing when every group reports at every past point', () => {
+    expect(describeGenerationGaps([pastPoint(), pastPoint()])).toBeNull();
+  });
+
+  it('names a group absent for the whole window', () => {
+    // nuclear_mw NULL for all 24 hours, the exact case ABL's verified facts
+    // cite for 2026-08-28.
+    const points = [pastPoint({ nuclear: null }), pastPoint({ nuclear: null })];
+
+    expect(describeGenerationGaps(points)).toBe('Nuclear absent for all 2 plotted points.');
+  });
+
+  it('names a group with an interior hole, distinctly from full absence', () => {
+    const points = [pastPoint(), pastPoint({ solar: null }), pastPoint()];
+
+    expect(describeGenerationGaps(points)).toBe('Solar unpublished for 1 of 3 plotted points.');
+  });
+
+  it('combines several groups in one sentence, in stack order', () => {
+    const points = [pastPoint({ solar: null }), pastPoint({ nuclear: null })];
+
+    // Solar precedes Nuclear in GENERATION_GROUP_ORDER, and each is null at
+    // exactly one of the two points — a partial gap for both, not a full
+    // absence for either.
+    expect(describeGenerationGaps(points)).toBe(
+      'Solar unpublished for 1 of 2 plotted points; Nuclear unpublished for 1 of 2 plotted points.',
+    );
+  });
+
+  it('never counts an unelapsed future point as a gap', () => {
+    // A Today window pads every group with null past "now" (buildGenerationMixSeries's
+    // grid-fill) — that is not a data hole and must never read as one.
+    const points = [pastPoint(), pastPoint(), futurePoint(), futurePoint()];
+
+    expect(describeGenerationGaps(points)).toBeNull();
+  });
+
+  it('still reports a genuine past hole even with a future tail', () => {
+    const points = [pastPoint(), pastPoint({ solar: null }), futurePoint(), futurePoint()];
+
+    expect(describeGenerationGaps(points)).toBe('Solar unpublished for 1 of 2 plotted points.');
   });
 });

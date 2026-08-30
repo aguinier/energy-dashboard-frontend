@@ -235,6 +235,46 @@ export function pointTotal(
 }
 
 /**
+ * The caption under the chart naming real data holes — a group that reported
+ * nothing for part, or all, of the plotted window. Two different claims, kept
+ * separate in the wording:
+ *
+ * - **Absent for all N points** — the group never reported at all. Already
+ *   excluded from `groups`/the drawn stack (see `buildGenerationMixSeries`
+ *   above), so this is the only place that fact is stated at all.
+ * - **Unpublished for N of M points** — a hole inside an otherwise-reporting
+ *   group. `AbleStackedMix` draws this as a hatched gap rather than
+ *   interpolating through it (`lib/stackedMixGaps.ts`); this sentence is the
+ *   textual half of that same "NULL is never zero" rule.
+ *
+ * Restricted to non-future points for the same reason `computeGroupGaps`
+ * is: a Today window's unelapsed hours are null for every group by
+ * construction (nothing has happened yet), and that is not a data gap.
+ *
+ * Deliberately says "points", not "hours" — this reads whatever granularity
+ * the caller fetched (hourly for most presets, daily for `30d`), and a fixed
+ * unit would misstate the count for a caller on a different one.
+ */
+export function describeGenerationGaps(points: readonly GenerationMixPoint[]): string | null {
+  const past = points.filter((p) => !p.future);
+  if (past.length === 0) return null;
+
+  const parts: string[] = [];
+  for (const key of GENERATION_GROUP_ORDER) {
+    const nullCount = past.filter((p) => p.values[key] == null).length;
+    if (nullCount === 0) continue;
+    const label = GENERATION_GROUP_LABELS[key];
+    parts.push(
+      nullCount === past.length
+        ? `${label} absent for all ${past.length} plotted points`
+        : `${label} unpublished for ${nullCount} of ${past.length} plotted points`,
+    );
+  }
+  if (parts.length === 0) return null;
+  return `${parts.join('; ')}.`;
+}
+
+/**
  * The caption under the chart for whatever is drawn below the zero line, or
  * null when nothing is. Naming the groups matters: a band below the axis with
  * no explanation reads as an error rather than as consumption.

@@ -723,6 +723,18 @@ export interface AccuracyMetrics {
    */
   mae: number | null;
   mape: number | null; // Mean Absolute Percentage Error (%) — null when no point had a measurable (positive) actual
+  /**
+   * Weighted Absolute Percentage Error — `100 * sum|actual - forecast| / sum|actual|`.
+   * The ranking measure (ABL-388). Null on a divergent basis and when the
+   * window's actuals sum to zero.
+   *
+   * Optional, not just nullable: absent (not `null`) on responses from a
+   * server built before this field existed. The client can deploy ahead of
+   * the server in a staged rollout, so this must be treated as missing data,
+   * not assumed present — see `accuracyBadgeState`, whose guard is `== null`
+   * rather than `=== null` for exactly this field.
+   */
+  wape?: number | null;
   rmse: number | null;     // Root Mean Square Error
   /** Mean Error (positive = over-forecast); null on a divergent basis, where the mean difference is definitional, not bias. */
   bias: number | null;

@@ -94,9 +94,16 @@ export function useWindChartData(windType: WindType): WindChartData {
 
   const queries = useQueries({
     queries: [
-      // Query 0: actual wind data (always fetched).
+      // Query 0: actual wind data (always fetched). Keyed without `windType`
+      // deliberately: `/generation/wind` returns both `wind_onshore` and
+      // `wind_offshore` on every row regardless of which type is asked for
+      // (`fetchWindGenerationSeries` takes no such parameter), so an onshore
+      // and an offshore call for the same country/window are the same
+      // request. Including `windType` in this key used to make them cache
+      // separately, fetching the identical payload twice — most visibly once
+      // the country document mounted both wind figures on one page.
       {
-        queryKey: ['wind', windType, selectedCountry, timePreset, timeOffset, granularity],
+        queryKey: ['wind', selectedCountry, timePreset, timeOffset, granularity],
         queryFn: () =>
           fetchWindGenerationSeries({
             country: selectedCountry,

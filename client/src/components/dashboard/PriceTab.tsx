@@ -16,12 +16,25 @@ import type { PriceDataPoint, ForecastDataPoint } from '@/types';
 
 type TodayWindow = { start: Date; end: Date } | undefined;
 
+export interface PriceTabProps {
+  /**
+   * 'tab' (default) is the existing `CountryDashboardView` tab body: two
+   * `AbleCard`s, "Day-ahead spot price" and "Price by hour × day". 'figure' is
+   * the country document's plot slot (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+   * one plot per figure, so it renders only the primary chart, with no
+   * `AbleCard` header of its own, and omits the hour×day heatmap entirely.
+   * See `LoadTab.tsx`'s identical prop for the full rationale. Default
+   * omitted so every existing caller is unaffected.
+   */
+  variant?: 'tab' | 'figure';
+}
+
 /**
  * Day-ahead price chart. Same default/selection split as `LoadTab` (ABL-204)
  * — price never registers a TSO model, so the selection view here never
  * branches on source the way Load's does.
  */
-export function PriceTab() {
+export function PriceTab({ variant = 'tab' }: PriceTabProps = {}) {
   const chartData = usePriceChartData();
   const { data: countries } = useCountries();
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
@@ -46,6 +59,7 @@ export function PriceTab() {
         countryLabel={countryLabel}
         timePreset={timePreset}
         todayWindow={todayWindow}
+        variant={variant}
       />
     );
   }
@@ -58,6 +72,7 @@ export function PriceTab() {
       countryLabel={countryLabel}
       timePreset={timePreset}
       todayWindow={todayWindow}
+      variant={variant}
     />
   );
 }
@@ -70,6 +85,7 @@ function PriceDefaultView({
   countryLabel,
   timePreset,
   todayWindow,
+  variant,
 }: {
   priceData: PriceDataPoint[] | undefined;
   forecastData: ForecastDataPoint[] | undefined;
@@ -77,7 +93,9 @@ function PriceDefaultView({
   countryLabel: string;
   timePreset: string;
   todayWindow: TodayWindow;
+  variant: 'tab' | 'figure';
 }) {
+  const isFigure = variant === 'figure';
   const { series, nowIndex } = useMemo(
     () => adaptPriceSeries(priceData, forecastData, todayWindow),
     [priceData, forecastData, todayWindow],
@@ -98,14 +116,11 @@ function PriceDefaultView({
     [heatmapCells],
   );
 
+  const meta = `€/MWh · ${countryLabel} · EPEX${hasForecast ? ' · dashed = able-ml forecast' : ''}`;
+
   return (
     <div className="space-y-3.5">
-      <AbleCard
-        title="Day-ahead spot price"
-        subtitle={`€/MWh · ${countryLabel} · EPEX${
-          hasForecast ? ' · dashed = able-ml forecast' : ''
-        }`}
-      >
+      <AbleCard title={isFigure ? undefined : 'Day-ahead spot price'} subtitle={isFigure ? undefined : meta}>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…
@@ -122,6 +137,11 @@ function PriceDefaultView({
               preset={timePreset}
               label="Day-ahead price"
             />
+            {/* In the figure composition the card carries no header, so the
+                "€/MWh · country · EPEX · dashed = …" line that would otherwise
+                live in the title's subtitle is stated here instead — see
+                LoadTab.tsx's identical treatment. */}
+            {isFigure && <p className="mt-2 text-micro text-ink-muted">{meta}</p>}
             {/* Same expression the chart was built from, so the note is on
                 screen exactly when the dashed ML line is (ABL-285). */}
             <ForecastVintageNote points={forecastData} chartWindow={todayWindow} />
@@ -129,12 +149,17 @@ function PriceDefaultView({
         )}
       </AbleCard>
 
-      <AbleCard
-        title="Price by hour × day"
-        subtitle={hasFutureCells ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
-      >
-        <AblePriceHeatmap cells={heatmapCells} unit="€/MWh" />
-      </AbleCard>
+      {/* One plot per figure (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+          the hour×day heatmap is a second chart, not an annotation on the
+          line above, so the figure composition omits it entirely. */}
+      {!isFigure && (
+        <AbleCard
+          title="Price by hour × day"
+          subtitle={hasFutureCells ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
+        >
+          <AblePriceHeatmap cells={heatmapCells} unit="€/MWh" />
+        </AbleCard>
+      )}
     </div>
   );
 }
@@ -148,6 +173,7 @@ function PriceSelectionView({
   countryLabel,
   timePreset,
   todayWindow,
+  variant,
 }: {
   entries: PriceModelQuery[];
   priceData: PriceDataPoint[] | undefined;
@@ -156,7 +182,9 @@ function PriceSelectionView({
   countryLabel: string;
   timePreset: string;
   todayWindow: TodayWindow;
+  variant: 'tab' | 'figure';
 }) {
+  const isFigure = variant === 'figure';
   const isLoading = isLoadingPrice || entries.some((e) => e.isLoading);
 
   const { series, nowIndex, forecastSeries } = useMemo(
@@ -203,12 +231,11 @@ function PriceSelectionView({
     [heatmapCells],
   );
 
+  const meta = `€/MWh · ${countryLabel} · EPEX · comparing ${entries.length} forecast model${entries.length === 1 ? '' : 's'}`;
+
   return (
     <div className="space-y-3.5">
-      <AbleCard
-        title="Day-ahead spot price"
-        subtitle={`€/MWh · ${countryLabel} · EPEX · comparing ${entries.length} forecast model${entries.length === 1 ? '' : 's'}`}
-      >
+      <AbleCard title={isFigure ? undefined : 'Day-ahead spot price'} subtitle={isFigure ? undefined : meta}>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…
@@ -218,17 +245,23 @@ function PriceSelectionView({
             Could not load day-ahead price.
           </div>
         ) : (
-          <AbleLineChart
-            series={series}
-            nowIndex={nowIndex}
-            height={300}
-            formatAxis={(v) => v.toFixed(0)}
-            formatTooltip={(v) => `€${v.toFixed(1)}`}
-            unit="/MWh"
-            preset={timePreset}
-            label="Day-ahead price"
-            forecastSeries={forecastSeries}
-          />
+          <>
+            <AbleLineChart
+              series={series}
+              nowIndex={nowIndex}
+              height={300}
+              formatAxis={(v) => v.toFixed(0)}
+              formatTooltip={(v) => `€${v.toFixed(1)}`}
+              unit="/MWh"
+              preset={timePreset}
+              label="Day-ahead price"
+              forecastSeries={forecastSeries}
+            />
+            {/* See PriceDefaultView's identical comment: no card header in
+                the figure composition means this line has nowhere else to
+                live. */}
+            {isFigure && <p className="mt-2 text-micro text-ink-muted">{meta}</p>}
+          </>
         )}
 
         {gaps.length > 0 && (
@@ -240,12 +273,15 @@ function PriceSelectionView({
         <ForecastGapNotice gaps={gaps} forecastType="price" />
       </AbleCard>
 
-      <AbleCard
-        title="Price by hour × day"
-        subtitle={hasFutureCells ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
-      >
-        <AblePriceHeatmap cells={heatmapCells} unit="€/MWh" />
-      </AbleCard>
+      {/* One plot per figure — see PriceDefaultView's identical comment. */}
+      {!isFigure && (
+        <AbleCard
+          title="Price by hour × day"
+          subtitle={hasFutureCells ? 'darker = higher · past 4d + next 2d' : 'darker = higher · past 4d'}
+        >
+          <AblePriceHeatmap cells={heatmapCells} unit="€/MWh" />
+        </AbleCard>
+      )}
     </div>
   );
 }

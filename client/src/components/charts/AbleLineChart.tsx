@@ -149,11 +149,21 @@ function defaultAxisFmt(v: number): string {
   return v.toFixed(0);
 }
 
+/**
+ * This chart's coordinate system: viewBox width and the left/right insets
+ * that reserve room for the y-axis label gutter and a right margin. Anything
+ * drawn beneath this chart at the same rendered width — `AbleResidualStrip`,
+ * so a bar lands under the x-position of the interval it describes — must
+ * share these numbers rather than re-deriving its own. `padT`/`padB` stay
+ * local to this component: nothing external needs to align vertically.
+ */
+export const PLOT_MARGINS = { width: 680, padL: 44, padR: 16 } as const;
+
 export function AbleLineChart({
   series,
   nowIndex,
   height = 300,
-  width = 680,
+  width = PLOT_MARGINS.width,
   formatAxis = defaultAxisFmt,
   formatTooltip,
   unit = '',
@@ -166,8 +176,8 @@ export function AbleLineChart({
   const [hover, setHover] = useState<number | null>(null);
   const multi = (forecastSeries?.length ?? 0) > 0;
 
-  const padL = 44;
-  const padR = 16;
+  const padL = PLOT_MARGINS.padL;
+  const padR = PLOT_MARGINS.padR;
   const padT = 14;
   const padB = 26;
   const iw = width - padL - padR;

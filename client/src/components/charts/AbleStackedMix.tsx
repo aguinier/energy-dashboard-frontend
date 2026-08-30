@@ -1,6 +1,8 @@
-import { useState, useMemo } from 'react';
+import { useId, useState, useMemo } from 'react';
 import { chartTimeTicks, niceTicks, formatGwAxis } from '@/lib/chartTicks';
 import { divergingStack, stackExtent } from '@/lib/divergingStack';
+import { computeGroupGaps } from '@/lib/stackedMixGaps';
+import { NoDataHatchPattern, noDataHatchUrl } from '@/components/map/NoDataHatch';
 
 // Stacked smoothed area for the generation mix by source.
 //
@@ -17,9 +19,15 @@ import { divergingStack, stackExtent } from '@/lib/divergingStack';
 //    axis only reaches below zero when something really is negative.
 //  - **A member can be absent.** `values[key]` is `number | null`, and null is
 //    "not reported", never 0. The caller drops a key that is null throughout
-//    (`buildGenerationMixSeries`), so nothing here draws a fabricated band; a
-//    null at a single point is a zero-width band and reads `—` in the tooltip
-//    rather than a number.
+//    (`buildGenerationMixSeries`), so nothing here draws a fabricated band. A
+//    hole *inside* an otherwise-reporting group (`lib/stackedMixGaps.ts`) is
+//    NOT bridged with a drawn line either — `divergingStack`'s zero-width band
+//    at that index is used only to keep the baseline correct for the OTHER
+//    groups stacked around it, never to paint this group's own area across
+//    it. The area path breaks into one segment per run of reported points,
+//    and a hatched marker (`components/map/NoDataHatch.tsx`) covers the gap,
+//    so a missing hour reads as "not reported" rather than as a measured dip
+//    to zero. It still reads `—` in the tooltip.
 
 export interface AbleStackedMixPoint {
   ts: string;
@@ -78,6 +86,7 @@ export function AbleStackedMix({
   preset,
 }: Props) {
   const [hover, setHover] = useState<number | null>(null);
+  const hatchId = `stacked-mix-gap-${useId()}`;
 
   const padL = 44;
   const padR = 16;
@@ -90,6 +99,14 @@ export function AbleStackedMix({
     nowIndex != null
       ? Math.max(0, Math.min(series.length - 1, nowIndex))
       : Math.max(0, series.length - 1);
+
+  // Same formula the big memo below uses for its own (memoized) `xFor` — kept
+  // as a second, cheap copy here rather than hoisted out of that memo, so the
+  // memo's dependency list does not have to name a freshly-allocated function
+  // on every render.
+  const xForIndex = (i: number) => padL + (i / Math.max(1, series.length - 1)) * iw;
+
+  const gaps = useMemo(() => computeGroupGaps(series, keys), [series, keys]);
 
   const { areas, yMin, yMax, zeroY } = useMemo(() => {
     if (series.length === 0 || keys.length === 0) {
@@ -107,28 +124,56 @@ export function AbleStackedMix({
     const yFor = (v: number) => padT + ih - scale(v, yMin, yMax, 0, ih);
 
     // One diverging stack per point, then transposed into a band per key.
-    const tops: Record<string, Array<[number, number]>> = {};
-    const bottoms: Record<string, Array<[number, number]>> = {};
+    // `divergingStack` is called for every point regardless of whether `key`
+    // is reported there — a null member still needs its zero-width band to
+    // keep the OTHER members' baselines correct — but a point is only pushed
+    // into that key's own top/bottom run when it actually reported a value.
+    // Runs are kept separate (not one flat array per key) precisely so a run
+    // boundary — a reported point followed by an unreported one — breaks the
+    // path instead of the smoothing curve bridging straight across the hole.
+    const topRuns: Record<string, Array<Array<[number, number]>>> = {};
+    const bottomRuns: Record<string, Array<Array<[number, number]>>> = {};
+    const lastIndex: Record<string, number> = {};
     for (const k of keys) {
-      tops[k] = [];
-      bottoms[k] = [];
+      topRuns[k] = [];
+      bottomRuns[k] = [];
+      lastIndex[k] = -2; // never adjacent to index 0
     }
     series.forEach((d, i) => {
       for (const band of divergingStack(keys, d.values)) {
-        tops[band.key].push([xFor(i), yFor(band.y1)]);
-        bottoms[band.key].push([xFor(i), yFor(band.y0)]);
+        if (d.values[band.key] == null) continue;
+        const top: [number, number] = [xFor(i), yFor(band.y1)];
+        const bottom: [number, number] = [xFor(i), yFor(band.y0)];
+        if (lastIndex[band.key] === i - 1) {
+          topRuns[band.key][topRuns[band.key].length - 1].push(top);
+          bottomRuns[band.key][bottomRuns[band.key].length - 1].push(bottom);
+        } else {
+          topRuns[band.key].push([top]);
+          bottomRuns[band.key].push([bottom]);
+        }
+        lastIndex[band.key] = i;
       }
     });
 
-    const areas = keys.map((k) => ({
-      k,
-      path:
-        smoothPath(tops[k]) +
-        ' L ' +
-        [...bottoms[k]].reverse().map((p) => `${p[0]},${p[1]}`).join(' L ') +
-        ' Z',
-      color: colors[k],
-    }));
+    const areas = keys.flatMap((k) =>
+      topRuns[k]
+        .map((run, runIndex) => ({ run, bottomRun: bottomRuns[k][runIndex], runIndex }))
+        // A single reported point has no line to fill an area with — same
+        // "nothing to draw" rule `AbleLineChart`'s `drawPath` applies to a
+        // lone point, just without that chart's zero-length dot: a filled
+        // area needs at least two x-positions to have a width at all.
+        .filter(({ run }) => run.length >= 2)
+        .map(({ run, bottomRun, runIndex }) => ({
+          k,
+          runIndex,
+          path:
+            smoothPath(run) +
+            ' L ' +
+            [...bottomRun].reverse().map((p) => `${p[0]},${p[1]}`).join(' L ') +
+            ' Z',
+          color: colors[k],
+        })),
+    );
 
     return { areas, yMin, yMax, zeroY: yFor(0) };
   }, [series, keys, colors, padL, ih, iw, padT]);
@@ -172,15 +217,55 @@ export function AbleStackedMix({
         onMouseMove={handleMove}
         onMouseLeave={() => setHover(null)}
       >
+        <defs>
+          <NoDataHatchPattern id={hatchId} />
+        </defs>
+
         {areas.map((a, i) => (
           <path
-            key={`area-${a.k}`}
+            key={`area-${a.k}-${a.runIndex}`}
+            data-area-key={a.k}
             d={a.path}
             fill={a.color}
             fillOpacity={0.85}
             style={{ opacity: 0, animation: `chartFadeIn 0.6s ease-out ${i * 0.08}s forwards` }}
           />
         ))}
+
+        {/*
+          Interior data holes (`lib/stackedMixGaps.ts`) — a group that reports
+          nothing for part of an otherwise-reporting window. The area above
+          already breaks its path here rather than bridging it (no drawn
+          line), and this hatched marker names *where* along the baseline
+          that hole is, using the same "not on the scale" texture the map
+          choropleths use for the same reason (`NoDataHatch.tsx`). It cannot
+          mark the hole's true vertical extent — the missing group's own band
+          position depends on values it did not report — so it is drawn as a
+          thin strip at the baseline rather than guessed as a full band.
+        */}
+        {gaps.map((g) => {
+          const step = iw / Math.max(1, series.length - 1);
+          const x = xForIndex(g.startIndex) - step / 2;
+          const w = xForIndex(g.endIndex) - xForIndex(g.startIndex) + step;
+          const gapHours = g.endIndex - g.startIndex + 1;
+          return (
+            <rect
+              key={`gap-${g.key}-${g.startIndex}`}
+              data-gap-key={g.key}
+              data-gap-start-index={g.startIndex}
+              data-gap-end-index={g.endIndex}
+              x={x}
+              y={padT + ih - 5}
+              width={Math.max(w, 1)}
+              height={5}
+              fill={noDataHatchUrl(hatchId)}
+            >
+              <title>
+                {`${labels[g.key] ?? g.key}: not reported for ${gapHours} plotted point${gapHours === 1 ? '' : 's'}`}
+              </title>
+            </rect>
+          );
+        })}
 
         <line
           x1={nowX}

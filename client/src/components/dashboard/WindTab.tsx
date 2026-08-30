@@ -36,7 +36,22 @@ const WIND_COPY: Record<WindType, { title: string }> = {
  * for both wind types (unlike price, which has no tso model), so the default
  * view branches on source the way `LoadDefaultView` does.
  */
-export function WindTab({ windType }: { windType: WindType }) {
+export interface WindTabProps {
+  windType: WindType;
+  /**
+   * 'tab' (default) is the existing `CountryDashboardView` tab body: the
+   * `AbleCard` carries its own title/subtitle. 'figure' is the country
+   * document's plot slot (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+   * one plot per figure, so the `AbleCard` gets no header of its own — the
+   * figure supplies the number, title and caption instead. See
+   * `LoadTab.tsx`'s identical prop for the full rationale. Default omitted so
+   * every existing caller (`WindOnshoreTab`/`WindOffshoreTab`, unchanged) is
+   * unaffected.
+   */
+  variant?: 'tab' | 'figure';
+}
+
+export function WindTab({ windType, variant = 'tab' }: WindTabProps) {
   const chartData = useWindChartData(windType);
   const { data: countries } = useCountries();
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);
@@ -62,6 +77,7 @@ export function WindTab({ windType }: { windType: WindType }) {
         timePreset={timePreset}
         todayWindow={todayWindow}
         title={copy.title}
+        variant={variant}
       />
     );
   }
@@ -77,6 +93,7 @@ export function WindTab({ windType }: { windType: WindType }) {
       timePreset={timePreset}
       todayWindow={todayWindow}
       title={copy.title}
+      variant={variant}
     />
   );
 }
@@ -100,6 +117,7 @@ function WindDefaultView({
   timePreset,
   todayWindow,
   title,
+  variant,
 }: {
   windType: WindType;
   windData: WindGenerationSeriesPoint[] | undefined;
@@ -110,7 +128,9 @@ function WindDefaultView({
   timePreset: string;
   todayWindow: TodayWindow;
   title: string;
+  variant: 'tab' | 'figure';
 }) {
+  const isFigure = variant === 'figure';
   const { selected, hidden, autoSelected } = useModelSelection(windType);
   const useMl = !hidden && selected?.source === 'ml';
   const useTso = !hidden && selected?.source === 'tso';
@@ -130,14 +150,13 @@ function WindDefaultView({
     [windData, windType, forecastData, tsoForecastData, useMl, useTso, todayWindow],
   );
 
+  const meta = `GW · ${countryLabel} · ENTSO-E${
+    useMl ? ' · dashed = able-ml forecast' : useTso ? ' · dashed = ENTSO-E TSO forecast' : ''
+  }`;
+
   return (
     <div className="space-y-3.5">
-      <AbleCard
-        title={title}
-        subtitle={`GW · ${countryLabel} · ENTSO-E${
-          useMl ? ' · dashed = able-ml forecast' : useTso ? ' · dashed = ENTSO-E TSO forecast' : ''
-        }`}
-      >
+      <AbleCard title={isFigure ? undefined : title} subtitle={isFigure ? undefined : meta}>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…
@@ -153,6 +172,11 @@ function WindDefaultView({
               preset={timePreset}
               label={title}
             />
+            {/* In the figure composition the card carries no header, so the
+                "GW · country · ENTSO-E · dashed = …" line that would otherwise
+                live in the title's subtitle is stated here instead — see
+                LoadTab.tsx's identical treatment. */}
+            {isFigure && <p className="mt-2 text-micro text-ink-muted">{meta}</p>}
             {/* Same expression the chart was built from, so the note is on
                 screen exactly when the dashed ML line is (ABL-285). */}
             <ForecastVintageNote
@@ -178,6 +202,7 @@ function WindSelectionView({
   timePreset,
   todayWindow,
   title,
+  variant,
 }: {
   windType: WindType;
   entries: WindModelQuery[];
@@ -188,7 +213,9 @@ function WindSelectionView({
   timePreset: string;
   todayWindow: TodayWindow;
   title: string;
+  variant: 'tab' | 'figure';
 }) {
+  const isFigure = variant === 'figure';
   const isLoading = isLoadingWind || entries.some((e) => e.isLoading);
 
   const { series, nowIndex, forecastSeries } = useMemo(
@@ -219,12 +246,11 @@ function WindSelectionView({
     [entries, countryLabel],
   );
 
+  const meta = `GW · ${countryLabel} · ENTSO-E · comparing ${entries.length} forecast model${entries.length === 1 ? '' : 's'}`;
+
   return (
     <div className="space-y-3.5">
-      <AbleCard
-        title={title}
-        subtitle={`GW · ${countryLabel} · ENTSO-E · comparing ${entries.length} forecast model${entries.length === 1 ? '' : 's'}`}
-      >
+      <AbleCard title={isFigure ? undefined : title} subtitle={isFigure ? undefined : meta}>
         {isLoading ? (
           <div className="flex h-[300px] items-center justify-center text-meta text-ink-muted">
             Loading…
@@ -234,16 +260,21 @@ function WindSelectionView({
             Could not load {title.toLowerCase()}.
           </div>
         ) : (
-          <AbleLineChart
-            series={series}
-            nowIndex={nowIndex}
-            height={300}
-            formatAxis={formatGwAxis}
-            formatTooltip={formatMwOrGw}
-            preset={timePreset}
-            label={title}
-            forecastSeries={forecastSeries}
-          />
+          <>
+            <AbleLineChart
+              series={series}
+              nowIndex={nowIndex}
+              height={300}
+              formatAxis={formatGwAxis}
+              formatTooltip={formatMwOrGw}
+              preset={timePreset}
+              label={title}
+              forecastSeries={forecastSeries}
+            />
+            {/* See WindDefaultView's identical comment: no card header in the
+                figure composition means this line has nowhere else to live. */}
+            {isFigure && <p className="mt-2 text-micro text-ink-muted">{meta}</p>}
+          </>
         )}
 
         {gaps.length > 0 && (
