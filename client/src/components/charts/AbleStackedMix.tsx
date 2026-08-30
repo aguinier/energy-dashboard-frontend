@@ -264,13 +264,33 @@ export function AbleStackedMix({
   const nowX = padL + (NOW / Math.max(1, series.length - 1)) * iw;
   const xTicks = chartTimeTicks(series.map((d) => d.ts), preset, NOW);
 
+  const hoverIndexFromClientX = (clientX: number, rect: DOMRect) => {
+    const x = ((clientX - rect.left) / rect.width) * width;
+    const ratio = (x - padL) / iw;
+    return Math.max(0, Math.min(series.length - 1, Math.round(ratio * (series.length - 1))));
+  };
+
   const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
     if (series.length === 0) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * width;
-    const ratio = (x - padL) / iw;
-    const idx = Math.max(0, Math.min(series.length - 1, Math.round(ratio * (series.length - 1))));
-    setHover(idx);
+    setHover(hoverIndexFromClientX(e.clientX, e.currentTarget.getBoundingClientRect()));
+  };
+
+  /**
+   * Touch has no hover, and the tooltip this reaches is the fallback that
+   * makes a *suppressed* band label (see `bandLabels` above) still
+   * identifiable. In the country document's Generation figure
+   * (`GenerationTab`'s `variant="figure"`) there is deliberately no
+   * `SourceTable` beside the chart — it is its own chart/table, not an
+   * annotation on this one — so on a touch device that tooltip was the
+   * *only* remaining way to name a too-thin band, and a mouse-only handler
+   * made it unreachable there. `touchstart` only, not `touchmove`: tracking
+   * a drag would fight the page's own vertical scroll gesture in a
+   * scrolling document, and a single tap already surfaces every group's
+   * name, colour and value the way a hover does.
+   */
+  const handleTouchStart = (e: React.TouchEvent<SVGSVGElement>) => {
+    if (series.length === 0 || e.touches.length === 0) return;
+    setHover(hoverIndexFromClientX(e.touches[0].clientX, e.currentTarget.getBoundingClientRect()));
   };
 
   const h = hover != null ? series[hover] : null;
@@ -299,6 +319,7 @@ export function AbleStackedMix({
         className="block h-auto w-full"
         onMouseMove={handleMove}
         onMouseLeave={() => setHover(null)}
+        onTouchStart={handleTouchStart}
       >
         <defs>
           <NoDataHatchPattern id={hatchId} />
