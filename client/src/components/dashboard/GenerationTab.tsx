@@ -169,22 +169,15 @@ export function GenerationTab({ variant = 'tab' }: GenerationTabProps = {}) {
               <p className="mt-2 text-micro text-ink-muted">GW · stacked by source · ENTSO-E</p>
             )}
             {/*
-              The legend lists only the groups actually drawn. A country that
-              does not report nuclear gets no nuclear swatch, rather than a
-              swatch above an invisible band — which would read as "nuclear,
-              zero" instead of "we have not been told".
+              No legend row here — ABL colour-accessibility fix: this
+              palette's CVD-separation and contrast-vs-surface WARNs are only
+              legal with a secondary encoding, and a legend below the chart
+              was a weaker one than labelling each band where it is. Direct
+              labels now render inside `AbleStackedMix` itself, at the right
+              end of each band that is tall enough to hold one; a country
+              that does not report nuclear still gets no nuclear label,
+              exactly as it got no nuclear swatch here before.
             */}
-            <div className="mt-2.5 flex flex-wrap gap-4 font-mono-num text-micro text-ink-muted">
-              {groups.map((key) => (
-                <div key={key} className="flex items-center gap-1.5">
-                  <span
-                    className="h-0.5 w-3.5"
-                    style={{ background: GENERATION_GROUP_COLORS[key] }}
-                  />
-                  <span>{groupLabels[key]}</span>
-                </div>
-              ))}
-            </div>
             {negativeNote && (
               <p className="mt-2 border-t border-input pt-2 text-micro text-ink-muted">
                 {negativeNote}

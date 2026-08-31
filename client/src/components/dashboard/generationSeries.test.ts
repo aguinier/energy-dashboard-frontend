@@ -48,6 +48,29 @@ describe('group metadata', () => {
 
     expect(Math.max(...at) - Math.min(...at)).toBe(renewables.length - 1);
   });
+
+  // Pins the accessibility-fixed palette (see the long comment on
+  // GENERATION_GROUP_COLORS): a colour regression here is invisible to every
+  // other test in the suite, since nothing else checks *which* hex a group
+  // gets, only that it has one. Six values are the Okabe-Ito-derived
+  // categorical set, verified with the dataviz skill's validate_palette.js
+  // (`--mode light --pairs all`, ALL CHECKS PASS); waste/other/hydroPumped
+  // are deliberate neutrals/variants held out of that run, not oversights —
+  // changing any of the nine here should be a conscious re-validation, not
+  // an accidental diff.
+  it('pins the validated palette', () => {
+    expect(GENERATION_GROUP_COLORS).toEqual({
+      solar: '#E69F00',
+      wind: '#56B4E9',
+      hydro: '#0072B2',
+      biomass: '#009E73',
+      nuclear: '#CC79A7',
+      fossil: '#D55E00',
+      waste: '#89775C',
+      other: '#B7AFA0',
+      hydroPumped: '#6398C3',
+    });
+  });
 });
 
 describe('buildGenerationMixSeries', () => {
