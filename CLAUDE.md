@@ -488,7 +488,7 @@ Condensed diagnostics — full entries with the reasoning in
   Database Connection). Check the `.db-journal` mtime and
   `C:\Code\able\logs\sync-db-v2.log`; wait for the lock to clear. Not a bug
   (ABL-612).
-- **Forecast-accuracy tab shows a sentence instead of numbers / Load tab draws
+- **The load figure's accuracy badge reads "withheld" / the load figure draws
   no forecast line (NL):** the divergent-basis rule working — see Data
   semantics. Not missing data; do not "fix" it.
 - **A load/price forecast is blank:** read the card first (withheld?); then

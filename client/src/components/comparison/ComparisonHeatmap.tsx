@@ -115,7 +115,7 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
               key={country}
               role="button"
               tabIndex={0}
-              aria-label={`Open ${country} forecast quality detail`}
+              aria-label={`Open ${country} forecast page`}
               className="border-b last:border-0 hover:bg-muted/30 cursor-pointer transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
               onClick={() => goToCountry(country, clickForecastType)}
               onKeyDown={(event) => { if (activatesCountryDetail(event)) { event.preventDefault(); goToCountry(country, clickForecastType); } }}
