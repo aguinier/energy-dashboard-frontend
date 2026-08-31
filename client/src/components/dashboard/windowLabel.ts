@@ -56,10 +56,17 @@ export function getWindowLabel(timePreset: string): string {
 // the reader has to mentally offset is worse than an explicit date.
 //
 // Formatted in the *viewer's* timezone, matching the chart axes and tooltips
-// (`toLocaleTimeString`, lib/chartTicks.ts) and the "times in <zone>" caption
-// on the page (CountryDashboardView.tsx). Brussels would be the market's zone
-// but not the one the numbers beside it are drawn in, so a Brussels-formatted
-// caption over a locally-formatted axis would disagree with itself.
+// (`toLocaleTimeString`, lib/chartTicks.ts). Brussels would be the market's
+// zone but not the one the numbers beside it are drawn in, so a
+// Brussels-formatted caption over a locally-formatted axis would disagree
+// with itself.
+//
+// The tab view (`CountryDashboardView.tsx`, deleted in Task 9b) additionally
+// stated this in a standalone "times in <zone>" caption beside its control
+// bar; the country document that replaced it (`CountryDocumentView.tsx`)
+// carries no equivalent caption today. Noted here rather than silently
+// dropped, since it is the one piece of that page this module's own comment
+// used to point at.
 
 function localDay(d: Date): string {
   return d.toLocaleDateString([], { day: 'numeric', month: 'short' });

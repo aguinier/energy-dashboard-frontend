@@ -18,13 +18,16 @@ type TodayWindow = { start: Date; end: Date } | undefined;
 
 export interface PriceTabProps {
   /**
-   * 'tab' (default) is the existing `CountryDashboardView` tab body: two
-   * `AbleCard`s, "Day-ahead spot price" and "Price by hour × day". 'figure' is
-   * the country document's plot slot (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+   * 'tab' (default) was the tab view's body (`CountryDashboardView.tsx`,
+   * deleted in Task 9b): two `AbleCard`s, "Day-ahead spot price" and "Price by
+   * hour × day". 'figure' is the country document's plot slot
+   * (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
    * one plot per figure, so it renders only the primary chart, with no
-   * `AbleCard` header of its own, and omits the hour×day heatmap entirely.
-   * See `LoadTab.tsx`'s identical prop for the full rationale. Default
-   * omitted so every existing caller is unaffected.
+   * `AbleCard` header of its own, and omits the hour×day heatmap entirely —
+   * that heatmap has no home in the document at all, dropped along with the
+   * rest of the tab view. See `LoadTab.tsx`'s identical prop for the full
+   * rationale, including why 'tab' stays the default with no production
+   * caller left.
    */
   variant?: 'tab' | 'figure';
 }

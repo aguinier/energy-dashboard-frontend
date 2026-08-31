@@ -29,16 +29,18 @@ const GREEN_KEYS = new Set<SourceRow['key']>(['solar', 'wind', 'hydro', 'biomass
 
 export interface GenerationTabProps {
   /**
-   * 'tab' (default) is the existing `CountryDashboardView` tab body: the
-   * "Generation mix" `AbleCard` carries its own title/subtitle, and the
-   * "Window average" donut / "By source" table pair renders below it.
-   * 'figure' is the country document's plot slot
+   * 'tab' (default) was the tab view's body (`CountryDashboardView.tsx`,
+   * deleted in Task 9b): the "Generation mix" `AbleCard` carries its own
+   * title/subtitle, and the "Window average" donut / "By source" table pair
+   * renders below it. 'figure' is the country document's plot slot
    * (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
    * one plot per figure, so only the stacked-mix trend draws — no `AbleCard`
    * header, and the donut/table pair (a second and third chart, not an
    * annotation on the trend) is omitted entirely, the same way `LoadTab`
-   * drops its hour×day heatmap. Default omitted so the existing caller
-   * (`CountryDashboardView`) is unaffected.
+   * drops its hour×day heatmap — neither pair has a home in the document,
+   * dropped along with the rest of the tab view. Every production caller now
+   * passes `variant="figure"` explicitly; 'tab' stays the default only so
+   * this file's own pre-9b regression tests keep exercising it.
    */
   variant?: 'tab' | 'figure';
 }

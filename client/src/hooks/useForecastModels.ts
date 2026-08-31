@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchForecastModels, fetchRecommendedModel } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboardStore';
-import { TAB_FORECAST_TYPE } from '@/lib/constants';
 import type { ForecastModel, ForecastModelRegistry, RecommendedModel } from '@/types';
 
 /**
@@ -224,10 +223,4 @@ export function useMultiModelSelection(forecastType: string): ActiveModelsSelect
   const pinnedIds = useDashboardStore((s) => s.selectedModelsByType[forecastType]);
   const hidden = useDashboardStore((s) => s.forecastHiddenByType[forecastType] ?? false);
   return { ...resolveMultiSelection(registry, forecastType, pinnedIds, hidden), isLoading };
-}
-
-/** The forecast type the active country-view tab is about. */
-export function useActiveForecastType(): string {
-  const activeChartTab = useDashboardStore((s) => s.activeChartTab);
-  return TAB_FORECAST_TYPE[activeChartTab] ?? 'load';
 }

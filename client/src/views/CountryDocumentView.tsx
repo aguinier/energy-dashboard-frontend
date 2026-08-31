@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode, type RefObject } from 'react';
+import { useEffect, useMemo, type ReactNode, type RefObject } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useCountries } from '@/hooks/useCountries';
@@ -408,11 +408,11 @@ function WindFigureContent({
 function NetPositionFigureContent() {
   // Net position gets its own multi-select picker, not the generic
   // `ModelPicker` — see `NetPositionModelPicker`'s doc comment. The model
-  // picker renders only in the all-coupled scope, mirroring
-  // `CountryDashboardView`'s gating exactly (ABL-231): nothing forecasts the
-  // Core figure, so a picker beside it would be a control that provably
-  // cannot change the chart — the "renders and does nothing" state ABL-44
-  // already removed from the Generation figure.
+  // picker renders only in the all-coupled scope (ABL-231, originally
+  // mirrored from the now-deleted tab view's identical gating): nothing
+  // forecasts the Core figure, so a picker beside it would be a control that
+  // provably cannot change the chart — the "renders and does nothing" state
+  // ABL-44 already removed from the Generation figure.
   const netPositionScope = useDashboardStore((s) => s.netPositionScope);
 
   return (
@@ -445,6 +445,14 @@ function NetPositionFigureContent() {
  * docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md
  * for the design this implements.
  *
+ * The only country view (Task 9b): the tab view it once coexisted with
+ * behind `?document=1` (`CountryDashboardView.tsx`, Task 9a) is deleted, and
+ * `App.tsx` renders this unconditionally for `currentView === 'country'`. Four
+ * charts the tab view had are genuinely gone, not moved — one plot per figure
+ * left no slot for a second chart per topic: load's "by hour × day" heatmap,
+ * price's own, generation's "By source" table, and its "Window average"
+ * donut.
+ *
  * Performance (Task 8): a gate measurement against the tab view found figure
  * 1's paint regressing — six figures fetching eagerly fanned out ~19
  * concurrent requests into an API `App.tsx` documents as single-threaded and
@@ -459,6 +467,26 @@ export function CountryDocumentView() {
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
   const { data: countries } = useCountries();
+
+  // Scroll to the figure matching whatever forecast type the reader clicked
+  // to get here (`goToCountry`, store/dashboardStore.ts — set when arriving
+  // from the Forecast quality view's map, heatmap, leaderboard or ranking).
+  // `null` — no type was named, or it named one with no matching figure —
+  // leaves the page at its natural top, same as every other arrival here.
+  //
+  // Every figure's `id="figure-<anchorId>"` (`Figure.tsx`) exists as soon as
+  // this component mounts, lazily-mounted figures included: `LazyFigure`
+  // always renders the `<Figure>` wrapper immediately, only deferring its
+  // *content*, so there is a real DOM node to scroll to (and for
+  // `useLazyMount`'s `IntersectionObserver` to then pick up) regardless of
+  // scroll position at mount time.
+  const pendingScrollAnchor = useDashboardStore((s) => s.pendingScrollAnchor);
+  const clearPendingScrollAnchor = useDashboardStore((s) => s.clearPendingScrollAnchor);
+  useEffect(() => {
+    if (!pendingScrollAnchor) return;
+    document.getElementById(`figure-${pendingScrollAnchor}`)?.scrollIntoView();
+    clearPendingScrollAnchor();
+  }, [pendingScrollAnchor, clearPendingScrollAnchor]);
   // 30 days fixed — see useTrailingAccuracySummary. The badge's window label
   // below must match this number; they are one claim in two places. One
   // request, shared by every figure's badge, so it stays eager regardless of

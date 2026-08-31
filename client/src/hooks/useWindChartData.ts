@@ -65,9 +65,10 @@ export interface WindChartData {
  * Price's: `wind_onshore`/`wind_offshore` both register `TSO_D1`
  * (`forecastModels.ts`), so — like Load, unlike Price — a selection can mix
  * ml and tso sources. No multi-horizon or comparison-mode query: those back
- * the Load/Price accuracy panel (`ForecastTab`), which is out of this
- * issue's scope (ABL-235 only asks for actuals + a production/shadow
- * overlay, the net_position pattern).
+ * the Load/Price accuracy panel (the tab view's `ForecastTab`,
+ * deleted in Task 9b), which was out of this issue's scope when written
+ * (ABL-235 only asked for actuals + a production/shadow overlay, the
+ * net_position pattern) and has no analogue for wind today either.
  */
 export function useWindChartData(windType: WindType): WindChartData {
   const selectedCountry = useDashboardStore((s) => s.selectedCountry);

@@ -4,7 +4,7 @@ import type { TimePreset, TimeAnchor } from '@/types';
 // below — it pulls in no hooks and no React Query graph.
 import { isNetPositionScope } from '@/lib/netPositionScope';
 
-export const PERSIST_VERSION = 10;
+export const PERSIST_VERSION = 11;
 
 const VALID_VIEWS = new Set(['map', 'country', 'comparison']);
 
@@ -36,11 +36,6 @@ const ANCHOR_FOR_PRESET: Record<TimePreset, TimeAnchor> = {
 
 const VALID_TIME_PRESETS = new Set<string>(Object.keys(ANCHOR_FOR_PRESET));
 
-// Real tab values, read off the `TabsTrigger` elements in
-// CountryDashboardView.tsx — NOT their visible labels. `renewables` renders
-// as "Generation" and `analytics` renders as "Forecast accuracy".
-const VALID_CHART_TABS = new Set(['price', 'load', 'renewables', 'net-position', 'analytics']);
-
 /**
  * Bring persisted state forward. Without this a shape change left returning
  * users on state the code no longer understands — a stale `currentView` sent
@@ -58,10 +53,6 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
 
   if (typeof next.currentView !== 'string' || !VALID_VIEWS.has(next.currentView)) {
     next.currentView = 'map';
-  }
-
-  if (typeof next.activeChartTab !== 'string' || !VALID_CHART_TABS.has(next.activeChartTab)) {
-    next.activeChartTab = 'load';
   }
 
   // `layers` (a `{ tso, ml }` blob) predates the per-tab model picker. Every
@@ -214,6 +205,19 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
   // something.
   if (!isNetPositionScope(next.netPositionScope)) {
     next.netPositionScope = 'all_coupled';
+  }
+
+  // v11 (Task 9b) — the tab view (`CountryDashboardView.tsx`) is gone, and
+  // `activeChartTab` was its selection alone: which of six tabs was showing.
+  // The scrolling document that replaced it (`CountryDocumentView.tsx`) has no
+  // equivalent — every figure is on screen, or lazily mounted, at once, with
+  // no single "current" one — so there is nothing left to validate a stored
+  // value against. Drop the key outright, the same treatment `layers` /
+  // `timeRange` / `analyticsConfig` above got when their owning feature was
+  // removed, rather than leave it to keep re-appearing via the persist
+  // middleware's shallow merge of old state onto new.
+  if (fromVersion < 11) {
+    delete next.activeChartTab;
   }
 
   return next;

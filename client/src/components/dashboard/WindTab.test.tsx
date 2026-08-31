@@ -114,9 +114,11 @@ describe('WindTab — variant="figure"', () => {
   });
 
   it('default variant is unaffected: the tab still gets its card title', async () => {
-    // Regression guard for "byte-identical to today" — `variant` defaults to
-    // 'tab' so every existing caller (WindOnshoreTab/WindOffshoreTab via
-    // CountryDashboardView) is unchanged.
+    // Regression guard for the 'tab' shape itself — no production caller
+    // passes it any more since Task 9b deleted the tab view
+    // (CountryDashboardView.tsx, and its WindOnshoreTab/WindOffshoreTab
+    // wrappers along with it), but the prop's default value and behaviour
+    // are still part of WindTab's public contract.
     renderWindTab({ windType: 'wind_onshore' });
 
     await screen.findByTestId('line-chart');

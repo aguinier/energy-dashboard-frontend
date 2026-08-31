@@ -107,9 +107,11 @@ export interface LoadChartData {
    * Multi-model selection (ABL-204) — one entry per model explicitly checked
    * in `ModelPicker`, empty in "Default" mode. The fields above (`forecastData`,
    * `tsoForecastData`, `servedModelId`, …) describe the single unpinned or
-   * legacy single-pinned request and are unchanged by this — `ForecastTab`
-   * still reads them directly for its own single-line overlay, regardless of
-   * what is checked in the Load tab's picker.
+   * legacy single-pinned request and are unchanged by this — the tab view's
+   * `ForecastTab` (deleted, Task 9b) used to read them directly for its own
+   * single-line overlay, regardless of what was checked in the Load tab's
+   * picker; the country document's own load figure reads them the same way
+   * today (`CountryDocumentView.tsx`).
    */
   modelSelection: LoadModelQuery[];
 }

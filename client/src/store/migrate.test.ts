@@ -263,25 +263,30 @@ describe('migratePersisted', () => {
     });
   });
 
-  // activeChartTab validation — an invalid persisted value renders a
-  // completely blank tab panel (no chart, no message). Real values read off
-  // the TabsTrigger elements in CountryDashboardView.tsx: `renewables` and
-  // `analytics` do NOT match their visible labels ("Generation" and
-  // "Forecast accuracy").
-  it('drops a persisted activeChartTab that no longer exists', () => {
-    const out = migratePersisted({ activeChartTab: 'bogus-tab' }, 0);
-    expect(out.activeChartTab).toBe('load');
-  });
+  // v11 (Task 9b) — `activeChartTab` belonged to the deleted tab view
+  // (CountryDashboardView.tsx); the scrolling document that replaced it has
+  // no "current tab" concept, so the field is dropped outright rather than
+  // validated against a set of tab ids that no longer mean anything.
+  describe('drops activeChartTab entirely (v11)', () => {
+    it('removes a previously-valid persisted value', () => {
+      expect(migratePersisted({ activeChartTab: 'load' }, 10).activeChartTab).toBeUndefined();
+    });
 
-  it.each(['price', 'load', 'renewables', 'net-position', 'analytics'])(
-    'keeps a valid activeChartTab %s',
-    (tab) => {
-      expect(migratePersisted({ activeChartTab: tab }, 0).activeChartTab).toBe(tab);
-    },
-  );
+    it('removes a persisted value that was never valid', () => {
+      expect(migratePersisted({ activeChartTab: 'bogus-tab' }, 0).activeChartTab).toBeUndefined();
+    });
 
-  it('defaults activeChartTab when absent entirely', () => {
-    expect(migratePersisted({}, 0).activeChartTab).toBe('load');
+    it('is a no-op when activeChartTab is already absent', () => {
+      expect(migratePersisted({ timePreset: '7d' }, 0).activeChartTab).toBeUndefined();
+    });
+
+    it('does not re-run for a blob already at v11 or later', () => {
+      // Nothing to observe distinctly from the general "no-op at current
+      // version" test below beyond the key staying absent either way — this
+      // just pins that the clause is version-gated like its siblings, not
+      // unconditional.
+      expect(migratePersisted({ timePreset: '7d' }, PERSIST_VERSION).activeChartTab).toBeUndefined();
+    });
   });
 
   // migratePersisted runs against arbitrary old persisted blobs — every

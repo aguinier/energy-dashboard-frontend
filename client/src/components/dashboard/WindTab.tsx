@@ -39,14 +39,16 @@ const WIND_COPY: Record<WindType, { title: string }> = {
 export interface WindTabProps {
   windType: WindType;
   /**
-   * 'tab' (default) is the existing `CountryDashboardView` tab body: the
-   * `AbleCard` carries its own title/subtitle. 'figure' is the country
-   * document's plot slot (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
+   * 'tab' (default) was the tab view's body (`CountryDashboardView.tsx`,
+   * deleted in Task 9b): the `AbleCard` carries its own title/subtitle.
+   * 'figure' is the country document's plot slot
+   * (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
    * one plot per figure, so the `AbleCard` gets no header of its own — the
    * figure supplies the number, title and caption instead. See
-   * `LoadTab.tsx`'s identical prop for the full rationale. Default omitted so
-   * every existing caller (`WindOnshoreTab`/`WindOffshoreTab`, unchanged) is
-   * unaffected.
+   * `LoadTab.tsx`'s identical prop for the full rationale. Every production
+   * caller now passes `variant="figure"` explicitly; 'tab' stays the default
+   * only so `WindTab.test.tsx`'s pre-9b regression case keeps exercising it
+   * with no other call site to break.
    */
   variant?: 'tab' | 'figure';
 }
@@ -96,14 +98,6 @@ export function WindTab({ windType, variant = 'tab' }: WindTabProps) {
       variant={variant}
     />
   );
-}
-
-export function WindOnshoreTab() {
-  return <WindTab windType="wind_onshore" />;
-}
-
-export function WindOffshoreTab() {
-  return <WindTab windType="wind_offshore" />;
 }
 
 /** "Default" — nothing checked, so the server's candidate ladder serves. See LoadTab.tsx's `LoadDefaultView` for why a pin can no longer reach this view. */

@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { TimePreset, TimeAnchor, MetricType, TSOForecastType, AppView } from '@/types';
 import type { NetPositionScope } from '@/lib/netPositionScope';
-import { DEFAULT_COUNTRY, PRESET_SHIFT_HOURS } from '@/lib/constants';
+import { DEFAULT_COUNTRY, PRESET_SHIFT_HOURS, FORECAST_TYPE_FIGURE_ANCHOR } from '@/lib/constants';
 import { migratePersisted, PERSIST_VERSION } from './migrate';
 
 // Default ML forecast horizons (D+1 and D+2)
@@ -11,8 +11,23 @@ const DEFAULT_ML_HORIZONS = [1, 2];
 interface DashboardState {
   // App view navigation
   currentView: AppView;
-  goToCountry: (countryCode: string, tab?: string) => void;
+  /**
+   * `forecastType` is optional context, not a destination in itself — the
+   * country page (`CountryDocumentView.tsx`) has no tabs to select, only
+   * figures to scroll to. When it names a type with a matching figure
+   * (`FORECAST_TYPE_FIGURE_ANCHOR`), navigating in scrolls to that figure;
+   * otherwise (or when omitted) the reader lands at the page's natural top,
+   * same as clicking a country on the map always has.
+   */
+  goToCountry: (countryCode: string, forecastType?: string) => void;
   goToMap: () => void;
+
+  // Figure anchor id `goToCountry` resolved from its `forecastType` argument,
+  // for `CountryDocumentView` to scroll to on mount and then clear. Not
+  // persisted — it describes an in-flight navigation, not a preference, and a
+  // returning user reloading the page has no "just clicked" figure to land on.
+  pendingScrollAnchor: string | null;
+  clearPendingScrollAnchor: () => void;
 
   // Selected country
   selectedCountry: string;
@@ -51,10 +66,6 @@ interface DashboardState {
   setSidebarOpen: (open: boolean) => void;
   toggleSidebar: () => void;
 
-  // Active chart tab
-  activeChartTab: string;
-  setActiveChartTab: (tab: string) => void;
-
   // Forecast models PINNED per forecast type, as a list. Absent/empty = no
   // pin, which is what lets the server walk its candidate ladder (production
   // model first, then the other registered ml models) — the only state that
@@ -62,10 +73,10 @@ interface DashboardState {
   //
   // Every type still only ever gets ONE pin except net_position, whose picker
   // (ABL-203) is the one multi-select UI — `setSelectedModel`/
-  // `clearSelectedModel` below keep Load/Price/ForecastTab's single-select
-  // callers source-compatible by writing/clearing a one-element list;
-  // `toggleSelectedModel` is the multi-select primitive net position's picker
-  // uses instead.
+  // `clearSelectedModel` below keep a single-select caller source-compatible
+  // by writing/clearing a one-element list; `toggleSelectedModel` is the
+  // multi-select primitive every current picker (`ModelPicker`,
+  // `NetPositionModelPicker`) actually uses instead.
   //
   // Hidden lives in `forecastHiddenByType`, not here. The two used to share
   // one slot (`null` meant hidden), so hiding destroyed the pin and showing
@@ -143,12 +154,15 @@ export const useDashboardStore = create<DashboardState>()(
     (set) => ({
       // App view navigation
       currentView: 'map',
-      goToCountry: (countryCode, tab = 'load') => set({
+      goToCountry: (countryCode, forecastType) => set({
         currentView: 'country',
         selectedCountry: countryCode,
-        activeChartTab: tab,
+        pendingScrollAnchor: forecastType ? FORECAST_TYPE_FIGURE_ANCHOR[forecastType] ?? null : null,
       }),
       goToMap: () => set({ currentView: 'map' }),
+
+      pendingScrollAnchor: null,
+      clearPendingScrollAnchor: () => set({ pendingScrollAnchor: null }),
 
       // Selected country
       selectedCountry: DEFAULT_COUNTRY,
@@ -247,10 +261,6 @@ export const useDashboardStore = create<DashboardState>()(
       sidebarOpen: true,
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
       toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
-
-      // Active chart tab
-      activeChartTab: 'load',
-      setActiveChartTab: (tab) => set({ activeChartTab: tab }),
 
       selectedModelsByType: {},
       setSelectedModel: (forecastType, modelId) =>
@@ -374,7 +384,6 @@ export const useDashboardStore = create<DashboardState>()(
         timeAnchor: state.timeAnchor,
         mapMetric: state.mapMetric,
         netPositionScope: state.netPositionScope,
-        activeChartTab: state.activeChartTab,
         selectedModelsByType: state.selectedModelsByType,
         forecastHiddenByType: state.forecastHiddenByType,
         comparisonCountries: state.comparisonCountries,

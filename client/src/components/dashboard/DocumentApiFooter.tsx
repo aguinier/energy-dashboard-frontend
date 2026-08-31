@@ -3,16 +3,19 @@ import { useDashboardStore } from '@/store/dashboardStore';
 const REPO_URL = 'https://github.com/aguinier/energy-dashboard-frontend';
 
 /**
- * One line per figure, rather than `ApiCta`'s single line for "whatever tab
- * is active". `ApiCta` (unchanged, still `CountryDashboardView`'s footer)
- * maps `activeChartTab` to a resource — a concept this scrolling document has
- * none of, since all six figures are on screen (or lazily mounted) at once
- * with no single "current" one. The design spec's page-structure table calls
- * for exactly this: "footer — per-figure API endpoint"
+ * One line per figure, rather than a single line for "whatever tab is
+ * active". That was `ApiCta`'s job, mapping `activeChartTab` to a resource —
+ * a concept this scrolling document has none of, since all six figures are on
+ * screen (or lazily mounted) at once with no single "current" one. The design
+ * spec's page-structure table calls for exactly this: "footer — per-figure
+ * API endpoint"
  * (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md).
  *
- * A separate component rather than a mode added to `ApiCta` — Task 9a leaves
- * the tab view byte-identical, and `ApiCta` is still that view's live footer.
+ * Built as a new component in Task 9a rather than a mode added to `ApiCta`,
+ * specifically to leave the (then still-live) tab view's footer
+ * byte-identical while both views coexisted. Task 9b then deleted `ApiCta`
+ * along with the tab view it served — this is now the country page's only
+ * API footer.
  */
 const ENDPOINTS: ReadonlyArray<{ figureNumber: number; label: string; resource: string; usesPathParam?: boolean }> = [
   { figureNumber: 1, label: 'Load', resource: 'load' },
