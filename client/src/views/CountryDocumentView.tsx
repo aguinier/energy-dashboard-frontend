@@ -34,6 +34,24 @@ function tsOf(p: { timestamp?: string; date?: string }): string | null {
   return p.timestamp ?? p.date ?? null;
 }
 
+// Every chart axis and tooltip on this page formats with
+// `toLocaleTimeString([], …)` — i.e. the *viewer's* timezone, not the
+// market's and not the Brussels zone the `today`/`thisWeek` presets are
+// computed in (lib/timezone.ts). A page that is entirely time series with an
+// unlabelled hour axis is a real hazard for this audience: "peak at 18:00"
+// means different things in Lisbon and Helsinki. State the zone the numbers
+// are actually drawn in rather than asserting CET, which would be wrong for
+// most viewers — and DO NOT delete this without replacing it: it went missing
+// once already when this page was ported from the tab view (Task 9a/9b), and
+// nothing else on the page says which zone the axes are in.
+const LOCAL_ZONE_LABEL = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time';
+  } catch {
+    return 'local time';
+  }
+})();
+
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
@@ -565,10 +583,19 @@ export function CountryDocumentView() {
         <h1 className="m-0 mb-2 text-display font-medium">
           {country?.country_name ?? selectedCountry}
         </h1>
-        <p className="mb-6 max-w-[76ch] text-body text-ink-dim [text-wrap:pretty]">
-          Load, price, generation and cross-border position — each shown against
-          the forecast that was published before the fact.
-        </p>
+        {/* Provenance line + the zone disclosure, side by side (mirrors the
+            tab view's identical title-block pairing). Every figure below is a
+            time series, so this is the one place on the page to state which
+            zone their axes are drawn in — see LOCAL_ZONE_LABEL above. */}
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-x-4 gap-y-1.5">
+          <p className="max-w-[76ch] text-body text-ink-dim [text-wrap:pretty]">
+            Load, price, generation and cross-border position — each shown against
+            the forecast that was published before the fact.
+          </p>
+          <p className="font-mono-num text-micro text-ink-muted">
+            times in {LOCAL_ZONE_LABEL}
+          </p>
+        </div>
 
         {/* One global window control, above figure 1 (spec's "control bar" —
             docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md).
