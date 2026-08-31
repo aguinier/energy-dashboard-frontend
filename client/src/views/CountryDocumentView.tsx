@@ -7,6 +7,7 @@ import { useLoadChartData } from '@/hooks/useLoadChartData';
 import { usePriceChartData } from '@/hooks/usePriceChartData';
 import { useWindChartData, type WindType } from '@/hooks/useWindChartData';
 import { useLazyMount } from '@/hooks/useLazyMount';
+import { useDrawnForecastSummary } from '@/hooks/useForecastModels';
 import {
   fetchTSOLoadForecast,
   fetchForecastData,
@@ -16,6 +17,7 @@ import { REFRESH_INTERVALS } from '@/lib/constants';
 import { CountryBreadcrumb } from '@/components/dashboard/CountryBreadcrumb';
 import { Figure } from '@/components/dashboard/Figure';
 import { AccuracyBadge } from '@/components/dashboard/AccuracyBadge';
+import { TsoAccuracyFootnote } from '@/components/dashboard/TsoAccuracyFootnote';
 import type { AccuracyBadgeInput } from '@/components/dashboard/accuracyBadgeState';
 import { AbleResidualStrip, type ResidualStripDomain } from '@/components/charts/AbleResidualStrip';
 import { buildResidualSeries, type SeriesPoint } from '@/components/dashboard/residualSeries';
@@ -288,8 +290,9 @@ function PriceFigureContent({
   const priceChartData = usePriceChartData();
   // Fetched directly here for the same reason figure 1 fetches its own TSO
   // forecast: `priceChartData.forecastData`'s query is `enabled: showForecast`,
-  // gated on the (hidden, on this view) picker's resolved selection, and this
-  // residual needs the series regardless of that state.
+  // gated on this figure's own `ModelPicker` (Task 9a un-hid it — one per
+  // figure now, not one hidden global), and this residual needs the series
+  // regardless of that state.
   const { data: priceForecast } = useQuery({
     queryKey: ['forecast', 'doc', 'price', selectedCountry, timePreset, timeOffset],
     queryFn: () =>
@@ -398,6 +401,9 @@ function WindFigureContent({
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
+  // Same resolved selection this figure's chart labels its dashed line from
+  // (`WindTab`'s own `meta` string) — see `TsoAccuracyFootnote`.
+  const { includesMl } = useDrawnForecastSummary(windType);
 
   const chartData = useWindChartData(windType);
   const { data: windForecast } = useQuery({
@@ -430,14 +436,7 @@ function WindFigureContent({
   return (
     <Figure
       {...WIND_META[windType]}
-      footnote={
-        <>
-          <AccuracyBadge metrics={metrics} window="30 days" />
-          <span>
-            Forecast is the TSO&rsquo;s own day-ahead publication, not an able model.
-          </span>
-        </>
-      }
+      footnote={<TsoAccuracyFootnote metrics={metrics} window="30 days" includesMl={includesMl} />}
     >
       <div className="flex justify-end">
         <ModelPicker forecastType={windType} />
@@ -561,12 +560,20 @@ export function CountryDocumentView() {
 
   // --- Figure 1: load — the only figure mounted unconditionally ----------
   const chartData = useLoadChartData();
+  // Same resolved selection LoadTab's own chart labels its dashed line from
+  // (see `TsoAccuracyFootnote`). `LoadDefaultView`'s `useMl` additionally
+  // gates on `basisNote !== null` (NL's divergent-basis withholding), folded
+  // in here the same way — `includesMl` is already `false` in comparison
+  // mode (`useDrawnForecastSummary`'s own doc comment), so this note, which
+  // only applies to the single-selection path, cannot wrongly suppress it.
+  const loadForecastSummary = useDrawnForecastSummary('load');
+  const loadIncludesMl = loadForecastSummary.includesMl && chartData.forecastBasisNote === null;
 
   // The residual strip is specifically actual vs. the TSO *day-ahead* forecast
   // — the same series the badge above quotes WAPE for ("Forecast is the
   // TSO's own day-ahead publication" below). Fetched directly here rather than
-  // read off `chartData.tsoForecastData`, which only populates when the
-  // (hidden, on this view) model picker has a TSO horizon selected.
+  // read off `chartData.tsoForecastData`, which only populates when this
+  // figure's own `ModelPicker` has a TSO horizon selected.
   //
   // Keyed on `timePreset`/`timeOffset`, NOT on `start`/`end` themselves:
   // `getDateRangeForPreset` calls `new Date()` internally, so the Date objects
@@ -616,9 +623,18 @@ export function CountryDocumentView() {
             to the map and its one way to switch country without going
             through the map first. */}
         <CountryBreadcrumb />
-        <h1 className="m-0 mb-2 text-display font-medium">
-          {country?.country_name ?? selectedCountry}
-        </h1>
+        {/* The ISO code chip beside the name (spec's title-block row: "country
+            name, code, one-sentence framing, provenance") — present on the
+            deleted tab view, dropped in the Task 9a/9b port and missed until
+            final-review-9's finding 4. */}
+        <div className="mb-2 flex items-baseline gap-3">
+          <h1 className="m-0 text-display font-medium">
+            {country?.country_name ?? selectedCountry}
+          </h1>
+          <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono-num text-micro text-ink-muted">
+            {selectedCountry}
+          </span>
+        </div>
         {/* Provenance line + the zone disclosure, side by side (mirrors the
             tab view's identical title-block pairing). Every figure below is a
             time series, so this is the one place on the page to state which
@@ -645,14 +661,7 @@ export function CountryDocumentView() {
 
         <Figure
           {...LOAD_META}
-          footnote={
-            <>
-              <AccuracyBadge metrics={loadMetrics} window="30 days" />
-              <span>
-                Forecast is the TSO&rsquo;s own day-ahead publication, not an able model.
-              </span>
-            </>
-          }
+          footnote={<TsoAccuracyFootnote metrics={loadMetrics} window="30 days" includesMl={loadIncludesMl} />}
         >
           <div className="flex justify-end">
             <ModelPicker forecastType="load" />

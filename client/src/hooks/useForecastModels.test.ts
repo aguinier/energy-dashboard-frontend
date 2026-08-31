@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSelection, resolveMultiSelection } from './useForecastModels';
+import { resolveSelection, resolveMultiSelection, summarizeDrawnForecast } from './useForecastModels';
 import type { ForecastModelRegistry, RecommendedModel } from '@/types';
 
 const REGISTRY: ForecastModelRegistry = {
@@ -264,5 +264,67 @@ describe('resolveMultiSelection', () => {
     const r = resolveMultiSelection(REGISTRY, 'solar', ['catboost'], false);
     expect(r.models).toEqual([]);
     expect(r.selectedIds).toEqual([]);
+  });
+});
+
+// final-review-9, finding 1: a figure's footnote must never describe a
+// different forecast from the one the chart draws. `summarizeDrawnForecast`
+// is what a footnote reads instead of asserting its own claim — these tests
+// pin it against the exact resolutions `LoadTab`/`WindTab` build their own
+// "dashed = …" label from.
+describe('summarizeDrawnForecast', () => {
+  const noSelection = { selectedIds: [] as string[], models: REGISTRY.load.models };
+
+  it('is able-ml when the default resolution is an ml model', () => {
+    const r = resolveSelection(REGISTRY, 'load', 'catboost', false);
+    const s = summarizeDrawnForecast(r, noSelection);
+    expect(s).toEqual({ includesMl: true, includesTso: false, isComparisonMode: false });
+  });
+
+  it('is TSO when the default resolution is a tso model', () => {
+    const r = resolveSelection(REGISTRY, 'load', 'tso-d1', false);
+    const s = summarizeDrawnForecast(r, noSelection);
+    expect(s).toEqual({ includesMl: false, includesTso: true, isComparisonMode: false });
+  });
+
+  it('is neither while the overlay is hidden', () => {
+    const r = resolveSelection(REGISTRY, 'load', 'catboost', true);
+    const s = summarizeDrawnForecast(r, noSelection);
+    expect(s.includesMl).toBe(false);
+    expect(s.includesTso).toBe(false);
+    expect(s.isComparisonMode).toBe(false);
+  });
+
+  // Comparison mode's own chart label is source-neutral ("comparing N
+  // forecast models"), never `LoadDefaultView`'s single "dashed = able-ml
+  // forecast" claim — and a checked model can be checked-but-unavailable for
+  // this country (no rows) without this summary having the fetched data to
+  // know that. Naming a source here from the mere fact that a matching model
+  // is checked would be a NEW mismatch against a chart that asserts nothing
+  // source-specific, which is exactly the failure shape finding 1 is about —
+  // so both flags stay false regardless of what is checked.
+  it('names neither source in comparison mode, even with a tso model checked', () => {
+    const r = resolveSelection(REGISTRY, 'load', 'catboost', false); // irrelevant once comparing
+    const multi = resolveMultiSelection(REGISTRY, 'load', ['tso-d1'], false);
+    const s = summarizeDrawnForecast(r, multi);
+    expect(s).toEqual({ includesMl: false, includesTso: false, isComparisonMode: true });
+  });
+
+  it('names neither source in comparison mode, even when every checked model is able-ml', () => {
+    const r = resolveSelection(REGISTRY, 'load', undefined, false);
+    const multi = resolveMultiSelection(REGISTRY, 'load', ['catboost', 'xgboost'], false);
+    const s = summarizeDrawnForecast(r, multi);
+    expect(s).toEqual({ includesMl: false, includesTso: false, isComparisonMode: true });
+  });
+
+  // The exact defect this guards: checking a model unavailable for the
+  // selected country (real coverage gaps — CLAUDE.md's "catboost/xgboost
+  // country coverage barely overlaps") must not make the summary claim an
+  // able-ml line is drawn, since nothing is actually on the chart for it.
+  it('is unaffected by whether a checked model actually has rows for this country', () => {
+    const r = resolveSelection(REGISTRY, 'load', undefined, false);
+    const multi = resolveMultiSelection(REGISTRY, 'load', ['catboost'], false);
+    const s = summarizeDrawnForecast(r, multi);
+    expect(s.includesMl).toBe(false);
   });
 });
