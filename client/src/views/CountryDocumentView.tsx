@@ -23,6 +23,11 @@ import { PriceTab } from '@/components/dashboard/PriceTab';
 import { GenerationTab } from '@/components/dashboard/GenerationTab';
 import { WindTab } from '@/components/dashboard/WindTab';
 import { NetPositionTab } from '@/components/dashboard/NetPositionTab';
+import { TimePicker } from '@/components/dashboard/TimePicker';
+import { ModelPicker } from '@/components/dashboard/ModelPicker';
+import { NetPositionModelPicker } from '@/components/dashboard/NetPositionModelPicker';
+import { NetPositionScopeToggle } from '@/components/dashboard/NetPositionScopeToggle';
+import { DocumentApiFooter } from '@/components/dashboard/DocumentApiFooter';
 
 /** Pluck a usable timestamp string out of any record shape we deal with. */
 function tsOf(p: { timestamp?: string; date?: string }): string | null {
@@ -271,6 +276,12 @@ function PriceFigureContent({
         </>
       }
     >
+      {/* One picker per figure (Task 9a), each keyed to its own forecast type
+          — see `ModelPicker`'s doc comment for why it takes `forecastType` as
+          a prop rather than resolving it from a single global "active tab". */}
+      <div className="flex justify-end">
+        <ModelPicker forecastType="price" />
+      </div>
       <PriceTab variant="figure" />
       <AbleResidualStrip points={priceResiduals} unit="€/MWh" domain={domain} />
     </Figure>
@@ -381,6 +392,9 @@ function WindFigureContent({
         </>
       }
     >
+      <div className="flex justify-end">
+        <ModelPicker forecastType={windType} />
+      </div>
       <WindTab windType={windType} variant="figure" />
       <AbleResidualStrip points={residuals} unit="MW" domain={domain} />
     </Figure>
@@ -392,6 +406,15 @@ function WindFigureContent({
  * internally — wrapping it in `LazyFigure` still defers that fetch until the
  * figure is actually scrolled to. */
 function NetPositionFigureContent() {
+  // Net position gets its own multi-select picker, not the generic
+  // `ModelPicker` — see `NetPositionModelPicker`'s doc comment. The model
+  // picker renders only in the all-coupled scope, mirroring
+  // `CountryDashboardView`'s gating exactly (ABL-231): nothing forecasts the
+  // Core figure, so a picker beside it would be a control that provably
+  // cannot change the chart — the "renders and does nothing" state ABL-44
+  // already removed from the Generation figure.
+  const netPositionScope = useDashboardStore((s) => s.netPositionScope);
+
   return (
     <Figure
       {...NET_POSITION_META}
@@ -405,6 +428,10 @@ function NetPositionFigureContent() {
         </>
       }
     >
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <NetPositionScopeToggle />
+        {netPositionScope === 'all_coupled' && <NetPositionModelPicker />}
+      </div>
       <NetPositionTab variant="figure" />
     </Figure>
   );
@@ -515,6 +542,16 @@ export function CountryDocumentView() {
           the forecast that was published before the fact.
         </p>
 
+        {/* One global window control, above figure 1 (spec's "control bar" —
+            docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md).
+            Unlike the model pickers below, this is not per-figure: every
+            figure reads the same `timePreset`/`timeOffset` pair off the
+            store, so one control suffices and a copy per figure would just
+            be six controls that have to stay in sync with each other. */}
+        <div className="mb-5 flex flex-wrap items-center justify-end gap-3">
+          <TimePicker />
+        </div>
+
         <Figure
           number={1}
           anchorId="load"
@@ -531,6 +568,9 @@ export function CountryDocumentView() {
             </>
           }
         >
+          <div className="flex justify-end">
+            <ModelPicker forecastType="load" />
+          </div>
           <LoadTab variant="figure" />
           <AbleResidualStrip
             points={residuals}
@@ -576,6 +616,8 @@ export function CountryDocumentView() {
           skeletonHeight={NET_POSITION_SKELETON_HEIGHT}
           content={<NetPositionFigureContent />}
         />
+
+        <DocumentApiFooter />
       </div>
     </div>
   );

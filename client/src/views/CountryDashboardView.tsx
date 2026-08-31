@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useCountries } from '@/hooks/useCountries';
+import { useActiveForecastType } from '@/hooks/useForecastModels';
 import { CountryBreadcrumb } from '@/components/dashboard/CountryBreadcrumb';
 import { TimePicker } from '@/components/dashboard/TimePicker';
 import { ModelPicker } from '@/components/dashboard/ModelPicker';
@@ -72,6 +73,11 @@ export function CountryDashboardView() {
   const { selectedCountry, activeChartTab, setActiveChartTab, goToComparison } = useDashboardStore();
   const netPositionScope = useDashboardStore((s) => s.netPositionScope);
   const { data: countries } = useCountries();
+  // `ModelPicker` now takes its forecast type as a prop (Task 9a) rather than
+  // reading `useActiveForecastType()` internally — this view is the reason
+  // that hook still exists at all, and calling it here keeps this tab's
+  // behaviour byte-identical to before the change.
+  const activeForecastType = useActiveForecastType();
 
   const country = countries?.find((c) => c.country_code === selectedCountry);
 
@@ -126,7 +132,7 @@ export function CountryDashboardView() {
           </Tabs>
           <div className="flex-1" />
           <TimePicker />
-          {TABS_WITH_MODEL_PICKER.has(activeChartTab) && <ModelPicker />}
+          {TABS_WITH_MODEL_PICKER.has(activeChartTab) && <ModelPicker forecastType={activeForecastType} />}
           {/* Scope toggle after the time picker (ABL-231's placement). The
               model picker renders beside it only in the all-coupled view:
               nothing forecasts the Core figure, so in Core view a picker
