@@ -20,7 +20,12 @@ const REPO_URL = 'https://github.com/aguinier/energy-dashboard-frontend';
 const ENDPOINTS: ReadonlyArray<{ figureNumber: number; label: string; resource: string; usesPathParam?: boolean }> = [
   { figureNumber: 1, label: 'Load', resource: 'load' },
   { figureNumber: 2, label: 'Price', resource: 'prices' },
-  { figureNumber: 3, label: 'Generation', resource: 'renewables' },
+  // `/api/renewables` (the narrower renewables-only series) used to be listed
+  // here — wrong: the figure reads `fetchGenerationSeries` off
+  // `/generation/series` so it can draw nuclear and fossil bands alongside
+  // the renewable families too (ABL-44; see the figure's own caption).
+  // final-review-9, finding 2.
+  { figureNumber: 3, label: 'Generation', resource: 'generation/series' },
   { figureNumber: 4, label: 'Wind onshore', resource: 'generation/wind' },
   { figureNumber: 5, label: 'Wind offshore', resource: 'generation/wind' },
   // net-position takes the country code in the path, not as a query param —
