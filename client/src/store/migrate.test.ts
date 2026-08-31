@@ -263,25 +263,31 @@ describe('migratePersisted', () => {
     });
   });
 
-  // activeChartTab validation — an invalid persisted value renders a
-  // completely blank tab panel (no chart, no message). Real values read off
-  // the TabsTrigger elements in CountryDashboardView.tsx: `renewables` and
-  // `analytics` do NOT match their visible labels ("Generation" and
-  // "Forecast accuracy").
-  it('drops a persisted activeChartTab that no longer exists', () => {
-    const out = migratePersisted({ activeChartTab: 'bogus-tab' }, 0);
-    expect(out.activeChartTab).toBe('load');
-  });
+  // Task 9b (PERSIST_VERSION bumped to 11 for this) — `activeChartTab`
+  // belonged to the deleted tab view (CountryDashboardView.tsx); the
+  // scrolling document that replaced it has no "current tab" concept, so the
+  // field is dropped outright rather than validated against a set of tab ids
+  // that no longer mean anything.
+  //
+  // The clause in migrate.ts is deliberately NOT gated `if (fromVersion < 11)`
+  // — see its comment for why such a gate on the *current* PERSIST_VERSION is
+  // always true and untestable in isolation (the function's own top guard
+  // already excludes every `fromVersion` where it could be false). These
+  // tests exercise the reachable domain directly instead: every `fromVersion`
+  // that can actually reach this line (0 through 10, the boundary right below
+  // the current version) drops the key.
+  describe('drops activeChartTab entirely', () => {
+    it.each([0, 6, 9, 10])('removes a previously-valid persisted value from fromVersion %i', (fromVersion) => {
+      expect(migratePersisted({ activeChartTab: 'load' }, fromVersion).activeChartTab).toBeUndefined();
+    });
 
-  it.each(['price', 'load', 'renewables', 'net-position', 'analytics'])(
-    'keeps a valid activeChartTab %s',
-    (tab) => {
-      expect(migratePersisted({ activeChartTab: tab }, 0).activeChartTab).toBe(tab);
-    },
-  );
+    it('removes a persisted value that was never valid', () => {
+      expect(migratePersisted({ activeChartTab: 'bogus-tab' }, 0).activeChartTab).toBeUndefined();
+    });
 
-  it('defaults activeChartTab when absent entirely', () => {
-    expect(migratePersisted({}, 0).activeChartTab).toBe('load');
+    it('is a no-op when activeChartTab is already absent', () => {
+      expect(migratePersisted({ timePreset: '7d' }, 0).activeChartTab).toBeUndefined();
+    });
   });
 
   // migratePersisted runs against arbitrary old persisted blobs — every

@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode, type RefObject } from 'react';
+import { useEffect, useMemo, type ReactNode, type RefObject } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useDashboardStore } from '@/store/dashboardStore';
 import { useCountries } from '@/hooks/useCountries';
@@ -7,14 +7,17 @@ import { useLoadChartData } from '@/hooks/useLoadChartData';
 import { usePriceChartData } from '@/hooks/usePriceChartData';
 import { useWindChartData, type WindType } from '@/hooks/useWindChartData';
 import { useLazyMount } from '@/hooks/useLazyMount';
+import { useDrawnForecastSummary } from '@/hooks/useForecastModels';
 import {
   fetchTSOLoadForecast,
   fetchForecastData,
   fetchTSOGenerationForecast,
 } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
+import { CountryBreadcrumb } from '@/components/dashboard/CountryBreadcrumb';
 import { Figure } from '@/components/dashboard/Figure';
 import { AccuracyBadge } from '@/components/dashboard/AccuracyBadge';
+import { TsoAccuracyFootnote } from '@/components/dashboard/TsoAccuracyFootnote';
 import type { AccuracyBadgeInput } from '@/components/dashboard/accuracyBadgeState';
 import { AbleResidualStrip, type ResidualStripDomain } from '@/components/charts/AbleResidualStrip';
 import { buildResidualSeries, type SeriesPoint } from '@/components/dashboard/residualSeries';
@@ -23,11 +26,34 @@ import { PriceTab } from '@/components/dashboard/PriceTab';
 import { GenerationTab } from '@/components/dashboard/GenerationTab';
 import { WindTab } from '@/components/dashboard/WindTab';
 import { NetPositionTab } from '@/components/dashboard/NetPositionTab';
+import { TimePicker } from '@/components/dashboard/TimePicker';
+import { ModelPicker } from '@/components/dashboard/ModelPicker';
+import { NetPositionModelPicker } from '@/components/dashboard/NetPositionModelPicker';
+import { NetPositionScopeToggle } from '@/components/dashboard/NetPositionScopeToggle';
+import { DocumentApiFooter } from '@/components/dashboard/DocumentApiFooter';
 
 /** Pluck a usable timestamp string out of any record shape we deal with. */
 function tsOf(p: { timestamp?: string; date?: string }): string | null {
   return p.timestamp ?? p.date ?? null;
 }
+
+// Every chart axis and tooltip on this page formats with
+// `toLocaleTimeString([], …)` — i.e. the *viewer's* timezone, not the
+// market's and not the Brussels zone the `today`/`thisWeek` presets are
+// computed in (lib/timezone.ts). A page that is entirely time series with an
+// unlabelled hour axis is a real hazard for this audience: "peak at 18:00"
+// means different things in Lisbon and Helsinki. State the zone the numbers
+// are actually drawn in rather than asserting CET, which would be wrong for
+// most viewers — and DO NOT delete this without replacing it: it went missing
+// once already when this page was ported from the tab view (Task 9a/9b), and
+// nothing else on the page says which zone the axes are in.
+const LOCAL_ZONE_LABEL = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time';
+  } catch {
+    return 'local time';
+  }
+})();
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -88,6 +114,16 @@ interface FigureMeta {
   caption: string;
 }
 
+const LOAD_META: FigureMeta = {
+  number: 1,
+  anchorId: 'load',
+  title: 'Electricity demand against its day-ahead forecast',
+  caption:
+    'System load in quarter-hourly resolution, drawn against the day-ahead ' +
+    'forecast published the previous morning. The separation between the two ' +
+    'lines is the subject of this page.',
+};
+
 const PRICE_META: FigureMeta = {
   number: 2,
   anchorId: 'price',
@@ -130,6 +166,24 @@ const NET_POSITION_META: FigureMeta = {
   anchorId: 'net-position',
   title: 'Net cross-border position',
   caption: 'Net export (positive) or import (negative) position at the border, by hour.',
+};
+
+/**
+ * The real figure each forecast type renders as, keyed exactly like
+ * `FORECAST_TYPE_FIGURE_ANCHOR` (`lib/constants.ts`) so a test can assert the
+ * two agree — that map's values are a claim about *this* file's `anchorId`s,
+ * and nothing enforced they stay true on their own (`CountryDocumentView.test.ts`
+ * pins the coupling). `solar` maps to the generation figure, same as that map:
+ * there is no separate wind-style figure for it, only the coverage-gated badge
+ * on figure 3.
+ */
+export const FIGURE_META_BY_FORECAST_TYPE: Record<string, FigureMeta> = {
+  load: LOAD_META,
+  price: PRICE_META,
+  solar: GENERATION_META,
+  wind_onshore: WIND_META.wind_onshore,
+  wind_offshore: WIND_META.wind_offshore,
+  net_position: NET_POSITION_META,
 };
 
 /**
@@ -236,8 +290,9 @@ function PriceFigureContent({
   const priceChartData = usePriceChartData();
   // Fetched directly here for the same reason figure 1 fetches its own TSO
   // forecast: `priceChartData.forecastData`'s query is `enabled: showForecast`,
-  // gated on the (hidden, on this view) picker's resolved selection, and this
-  // residual needs the series regardless of that state.
+  // gated on this figure's own `ModelPicker` (Task 9a un-hid it — one per
+  // figure now, not one hidden global), and this residual needs the series
+  // regardless of that state.
   const { data: priceForecast } = useQuery({
     queryKey: ['forecast', 'doc', 'price', selectedCountry, timePreset, timeOffset],
     queryFn: () =>
@@ -271,6 +326,12 @@ function PriceFigureContent({
         </>
       }
     >
+      {/* One picker per figure (Task 9a), each keyed to its own forecast type
+          — see `ModelPicker`'s doc comment for why it takes `forecastType` as
+          a prop rather than resolving it from a single global "active tab". */}
+      <div className="flex justify-end">
+        <ModelPicker forecastType="price" />
+      </div>
       <PriceTab variant="figure" />
       <AbleResidualStrip points={priceResiduals} unit="€/MWh" domain={domain} />
     </Figure>
@@ -340,6 +401,9 @@ function WindFigureContent({
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
   const { start, end } = getDateRangeForPreset(timePreset, timeOffset);
+  // Same resolved selection this figure's chart labels its dashed line from
+  // (`WindTab`'s own `meta` string) — see `TsoAccuracyFootnote`.
+  const { includesMl } = useDrawnForecastSummary(windType);
 
   const chartData = useWindChartData(windType);
   const { data: windForecast } = useQuery({
@@ -372,15 +436,11 @@ function WindFigureContent({
   return (
     <Figure
       {...WIND_META[windType]}
-      footnote={
-        <>
-          <AccuracyBadge metrics={metrics} window="30 days" />
-          <span>
-            Forecast is the TSO&rsquo;s own day-ahead publication, not an able model.
-          </span>
-        </>
-      }
+      footnote={<TsoAccuracyFootnote metrics={metrics} window="30 days" includesMl={includesMl} />}
     >
+      <div className="flex justify-end">
+        <ModelPicker forecastType={windType} />
+      </div>
       <WindTab windType={windType} variant="figure" />
       <AbleResidualStrip points={residuals} unit="MW" domain={domain} />
     </Figure>
@@ -392,6 +452,15 @@ function WindFigureContent({
  * internally — wrapping it in `LazyFigure` still defers that fetch until the
  * figure is actually scrolled to. */
 function NetPositionFigureContent() {
+  // Net position gets its own multi-select picker, not the generic
+  // `ModelPicker` — see `NetPositionModelPicker`'s doc comment. The model
+  // picker renders only in the all-coupled scope (ABL-231, originally
+  // mirrored from the now-deleted tab view's identical gating): nothing
+  // forecasts the Core figure, so a picker beside it would be a control that
+  // provably cannot change the chart — the "renders and does nothing" state
+  // ABL-44 already removed from the Generation figure.
+  const netPositionScope = useDashboardStore((s) => s.netPositionScope);
+
   return (
     <Figure
       {...NET_POSITION_META}
@@ -405,6 +474,10 @@ function NetPositionFigureContent() {
         </>
       }
     >
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <NetPositionScopeToggle />
+        {netPositionScope === 'all_coupled' && <NetPositionModelPicker />}
+      </div>
       <NetPositionTab variant="figure" />
     </Figure>
   );
@@ -417,6 +490,14 @@ function NetPositionFigureContent() {
  * wind, net position (Task 7b). See
  * docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md
  * for the design this implements.
+ *
+ * The only country view (Task 9b): the tab view it once coexisted with
+ * behind `?document=1` (`CountryDashboardView.tsx`, Task 9a) is deleted, and
+ * `App.tsx` renders this unconditionally for `currentView === 'country'`. Four
+ * charts the tab view had are genuinely gone, not moved — one plot per figure
+ * left no slot for a second chart per topic: load's "by hour × day" heatmap,
+ * price's own, generation's "By source" table, and its "Window average"
+ * donut.
  *
  * Performance (Task 8): a gate measurement against the tab view found figure
  * 1's paint regressing — six figures fetching eagerly fanned out ~19
@@ -432,6 +513,26 @@ export function CountryDocumentView() {
   const timePreset = useDashboardStore((s) => s.timePreset);
   const timeOffset = useDashboardStore((s) => s.timeOffset);
   const { data: countries } = useCountries();
+
+  // Scroll to the figure matching whatever forecast type the reader clicked
+  // to get here (`goToCountry`, store/dashboardStore.ts — set when arriving
+  // from the Forecast quality view's map, heatmap, leaderboard or ranking).
+  // `null` — no type was named, or it named one with no matching figure —
+  // leaves the page at its natural top, same as every other arrival here.
+  //
+  // Every figure's `id="figure-<anchorId>"` (`Figure.tsx`) exists as soon as
+  // this component mounts, lazily-mounted figures included: `LazyFigure`
+  // always renders the `<Figure>` wrapper immediately, only deferring its
+  // *content*, so there is a real DOM node to scroll to (and for
+  // `useLazyMount`'s `IntersectionObserver` to then pick up) regardless of
+  // scroll position at mount time.
+  const pendingScrollAnchor = useDashboardStore((s) => s.pendingScrollAnchor);
+  const clearPendingScrollAnchor = useDashboardStore((s) => s.clearPendingScrollAnchor);
+  useEffect(() => {
+    if (!pendingScrollAnchor) return;
+    document.getElementById(`figure-${pendingScrollAnchor}`)?.scrollIntoView();
+    clearPendingScrollAnchor();
+  }, [pendingScrollAnchor, clearPendingScrollAnchor]);
   // 30 days fixed — see useTrailingAccuracySummary. The badge's window label
   // below must match this number; they are one claim in two places. One
   // request, shared by every figure's badge, so it stays eager regardless of
@@ -459,12 +560,20 @@ export function CountryDocumentView() {
 
   // --- Figure 1: load — the only figure mounted unconditionally ----------
   const chartData = useLoadChartData();
+  // Same resolved selection LoadTab's own chart labels its dashed line from
+  // (see `TsoAccuracyFootnote`). `LoadDefaultView`'s `useMl` additionally
+  // gates on `basisNote !== null` (NL's divergent-basis withholding), folded
+  // in here the same way — `includesMl` is already `false` in comparison
+  // mode (`useDrawnForecastSummary`'s own doc comment), so this note, which
+  // only applies to the single-selection path, cannot wrongly suppress it.
+  const loadForecastSummary = useDrawnForecastSummary('load');
+  const loadIncludesMl = loadForecastSummary.includesMl && chartData.forecastBasisNote === null;
 
   // The residual strip is specifically actual vs. the TSO *day-ahead* forecast
   // — the same series the badge above quotes WAPE for ("Forecast is the
   // TSO's own day-ahead publication" below). Fetched directly here rather than
-  // read off `chartData.tsoForecastData`, which only populates when the
-  // (hidden, on this view) model picker has a TSO horizon selected.
+  // read off `chartData.tsoForecastData`, which only populates when this
+  // figure's own `ModelPicker` has a TSO horizon selected.
   //
   // Keyed on `timePreset`/`timeOffset`, NOT on `start`/`end` themselves:
   // `getDateRangeForPreset` calls `new Date()` internally, so the Date objects
@@ -507,30 +616,56 @@ export function CountryDocumentView() {
   return (
     <div className="flex-1 overflow-auto bg-background">
       <div className="mx-auto max-w-[1200px] px-5 pb-14 pt-6 md:px-8">
-        <h1 className="m-0 mb-2 text-display font-medium">
-          {country?.country_name ?? selectedCountry}
-        </h1>
-        <p className="mb-6 max-w-[76ch] text-body text-ink-dim [text-wrap:pretty]">
-          Load, price, generation and cross-border position — each shown against
-          the forecast that was published before the fact.
-        </p>
+        {/* Its own row above the title block, per the design spec's page
+            structure table ("breadcrumb  Map / Belgium" precedes "title
+            block"). `CountryBreadcrumb` was the tab view's only caller and
+            died with it (Task 9b) — restored here as the page's one way back
+            to the map and its one way to switch country without going
+            through the map first. */}
+        <CountryBreadcrumb />
+        {/* The ISO code chip beside the name (spec's title-block row: "country
+            name, code, one-sentence framing, provenance") — present on the
+            deleted tab view, dropped in the Task 9a/9b port and missed until
+            final-review-9's finding 4. */}
+        <div className="mb-2 flex items-baseline gap-3">
+          <h1 className="m-0 text-display font-medium">
+            {country?.country_name ?? selectedCountry}
+          </h1>
+          <span className="rounded-sm border border-border px-1.5 py-0.5 font-mono-num text-micro text-ink-muted">
+            {selectedCountry}
+          </span>
+        </div>
+        {/* Provenance line + the zone disclosure, side by side (mirrors the
+            tab view's identical title-block pairing). Every figure below is a
+            time series, so this is the one place on the page to state which
+            zone their axes are drawn in — see LOCAL_ZONE_LABEL above. */}
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-x-4 gap-y-1.5">
+          <p className="max-w-[76ch] text-body text-ink-dim [text-wrap:pretty]">
+            Load, price, generation and cross-border position — each shown against
+            the forecast that was published before the fact.
+          </p>
+          <p className="font-mono-num text-micro text-ink-muted">
+            times in {LOCAL_ZONE_LABEL}
+          </p>
+        </div>
+
+        {/* One global window control, above figure 1 (spec's "control bar" —
+            docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md).
+            Unlike the model pickers below, this is not per-figure: every
+            figure reads the same `timePreset`/`timeOffset` pair off the
+            store, so one control suffices and a copy per figure would just
+            be six controls that have to stay in sync with each other. */}
+        <div className="mb-5 flex flex-wrap items-center justify-end gap-3">
+          <TimePicker />
+        </div>
 
         <Figure
-          number={1}
-          anchorId="load"
-          title="Electricity demand against its day-ahead forecast"
-          caption="System load in quarter-hourly resolution, drawn against the day-ahead
-                   forecast published the previous morning. The separation between the two
-                   lines is the subject of this page."
-          footnote={
-            <>
-              <AccuracyBadge metrics={loadMetrics} window="30 days" />
-              <span>
-                Forecast is the TSO&rsquo;s own day-ahead publication, not an able model.
-              </span>
-            </>
-          }
+          {...LOAD_META}
+          footnote={<TsoAccuracyFootnote metrics={loadMetrics} window="30 days" includesMl={loadIncludesMl} />}
         >
+          <div className="flex justify-end">
+            <ModelPicker forecastType="load" />
+          </div>
           <LoadTab variant="figure" />
           <AbleResidualStrip
             points={residuals}
@@ -576,6 +711,8 @@ export function CountryDocumentView() {
           skeletonHeight={NET_POSITION_SKELETON_HEIGHT}
           content={<NetPositionFigureContent />}
         />
+
+        <DocumentApiFooter />
       </div>
     </div>
   );

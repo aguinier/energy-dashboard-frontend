@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchForecastModels, fetchRecommendedModel } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboardStore';
-import { TAB_FORECAST_TYPE } from '@/lib/constants';
 import type { ForecastModel, ForecastModelRegistry, RecommendedModel } from '@/types';
 
 /**
@@ -226,8 +225,65 @@ export function useMultiModelSelection(forecastType: string): ActiveModelsSelect
   return { ...resolveMultiSelection(registry, forecastType, pinnedIds, hidden), isLoading };
 }
 
-/** The forecast type the active country-view tab is about. */
-export function useActiveForecastType(): string {
-  const activeChartTab = useDashboardStore((s) => s.activeChartTab);
-  return TAB_FORECAST_TYPE[activeChartTab] ?? 'load';
+export interface DrawnForecastSummary {
+  /** An able-ml sourced line is on the chart via the single default/pinned
+   * resolution — `false` in the comparison picker's multi-select mode, even
+   * if an able-ml model happens to be checked there (see `isComparisonMode`
+   * below for why). */
+  includesMl: boolean;
+  /** Same, for a TSO-sourced line. */
+  includesTso: boolean;
+  /**
+   * One or more models explicitly checked — `LoadSelectionView`/
+   * `WindSelectionView` are what's rendering, not the default view. Its own
+   * chart label there is source-neutral ("comparing N forecast models"), not
+   * `LoadDefaultView`'s single "dashed = able-ml forecast" claim — and a
+   * checked model can be checked-but-unavailable for this country (no rows,
+   * shown hatched with "Remove from comparison") without this summary having
+   * the fetched data to know that. Naming a specific source here would be a
+   * NEW mismatch against a chart that makes no such claim, not a fix of the
+   * one finding 1 is about — so comparison mode reports neither source, and
+   * a caller can check this flag to skip a default-view-only fold-in (e.g.
+   * load's divergent-basis withholding note, which only `LoadDefaultView`
+   * gates on).
+   */
+  isComparisonMode: boolean;
+}
+
+/**
+ * Pure core of `useDrawnForecastSummary`, split out the same way
+ * `resolveSelection` is split from `useModelSelection` — so the branching
+ * (comparison mode vs. default, hidden vs. resolved) is unit-testable
+ * without a store or a query client.
+ */
+export function summarizeDrawnForecast(
+  resolved: Pick<ActiveModelSelection, 'selected' | 'hidden'>,
+  multi: Pick<ActiveModelsSelection, 'selectedIds'>
+): DrawnForecastSummary {
+  if (multi.selectedIds.length > 0) {
+    return { includesMl: false, includesTso: false, isComparisonMode: true };
+  }
+  if (resolved.hidden) return { includesMl: false, includesTso: false, isComparisonMode: false };
+  return {
+    includesMl: resolved.selected?.source === 'ml',
+    includesTso: resolved.selected?.source === 'tso',
+    isComparisonMode: false,
+  };
+}
+
+/**
+ * What is actually drawn for a forecast type right now, across BOTH of
+ * `ModelPicker`'s modes — the single default/pinned resolution
+ * (`useModelSelection`) and the multi-select comparison
+ * (`useMultiModelSelection`). Built from the exact same two hooks
+ * `LoadTab`/`WindTab` use to build their own "dashed = …" chart label
+ * (`meta` in `LoadDefaultView`/`WindDefaultView`), so a footnote that reads
+ * off this cannot describe a different forecast from the one the chart draws
+ * — see `TsoAccuracyFootnote` and final-review-9, finding 1 (a figure's
+ * footnote asserting "not an able model" while an able-ml line was resolved).
+ */
+export function useDrawnForecastSummary(forecastType: string): DrawnForecastSummary {
+  const { selected, hidden } = useModelSelection(forecastType);
+  const { selectedIds } = useMultiModelSelection(forecastType);
+  return summarizeDrawnForecast({ selected, hidden }, { selectedIds });
 }

@@ -76,6 +76,14 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
     );
   }
 
+  // A whole row navigates on click, not a single cell — in the "all types"
+  // view a row can carry several forecast-type columns at once, so there is
+  // no one type "the row" was clicked for. A single selected type is passed
+  // through so `goToCountry` can scroll the country document straight to that
+  // figure; `undefined` in "all" mode leaves it to land at the page's natural
+  // top rather than guessing which of several columns the reader meant.
+  const clickForecastType = comparisonForecastType !== 'all' ? comparisonForecastType : undefined;
+
   return (
     <div className="space-y-2">
     <div className="overflow-x-auto rounded-lg border bg-card">
@@ -107,10 +115,10 @@ export function ComparisonHeatmap({ data }: ComparisonHeatmapProps) {
               key={country}
               role="button"
               tabIndex={0}
-              aria-label={`Open ${country} forecast quality detail`}
+              aria-label={`Open ${country} forecast page`}
               className="border-b last:border-0 hover:bg-muted/30 cursor-pointer transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
-              onClick={() => goToCountry(country, 'analytics')}
-              onKeyDown={(event) => { if (activatesCountryDetail(event)) { event.preventDefault(); goToCountry(country, 'analytics'); } }}
+              onClick={() => goToCountry(country, clickForecastType)}
+              onKeyDown={(event) => { if (activatesCountryDetail(event)) { event.preventDefault(); goToCountry(country, clickForecastType); } }}
             >
               <td className="sticky left-0 z-10 bg-card px-4 py-2 font-mono text-xs font-medium">
                 {country}

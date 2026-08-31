@@ -172,7 +172,10 @@ export function ComparisonLeaderboard({ data }: ComparisonLeaderboardProps) {
                 <tr
                   key={row.country}
                   className="border-b last:border-0 hover:bg-muted/30 cursor-pointer transition-colors"
-                  onClick={() => goToCountry(row.country, 'analytics')}
+                  // `comparisonForecastType` is guaranteed a real single type
+                  // here, not 'all' — the early return above (`comparisonForecastType
+                  // === 'all'`) means this row is never reached otherwise.
+                  onClick={() => goToCountry(row.country, comparisonForecastType)}
                 >
                   <td className="px-4 py-3 text-center text-xs text-muted-foreground font-mono">
                     {idx + 1}

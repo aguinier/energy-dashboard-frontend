@@ -96,15 +96,17 @@ Runs client and server together. The server needs `server/.env` with
 energy-dashboard-frontend/
 ├── client/src/
 │   ├── views/                    # MapView (Europe choropleth landing),
-│   │                             #   CountryDashboardView (per-country tabs),
-│   │                             #   ComparisonView (forecast-quality portfolio)
+│   │                             #   CountryDocumentView (per-country scrolling
+│   │                             #   document), ComparisonView (forecast-quality
+│   │                             #   portfolio)
 │   ├── components/
 │   │   ├── charts/               # Able* Recharts primitives (line+overlay, stacked mix,
 │   │   │                         #   donut, heatmap, accuracy bars, sparkline), ChartWrapper
-│   │   ├── dashboard/            # Price/Load/Generation/NetPosition/Forecast/Wind tabs,
-│   │   │                         #   ModelPicker, TimePicker, ForecastGapNotice,
-│   │   │                         #   ForecastVintageNote, ModelComparisonPanel,
-│   │   │                         #   generationSeries.ts + pure helpers (each has .test.ts)
+│   │   ├── dashboard/            # Price/Load/Generation/NetPosition/Wind bodies (each
+│   │   │                         #   rendered as a country-document figure), ModelPicker,
+│   │   │                         #   TimePicker, ForecastGapNotice, ForecastVintageNote,
+│   │   │                         #   DocumentApiFooter, Figure, generationSeries.ts +
+│   │   │                         #   pure helpers (each has .test.ts)
 │   │   ├── comparison/           # ComparisonView helpers: accuracyScale, leaderboardRows, mapFill
 │   │   ├── map/                  # EuropeMap, MapMetricSelector, NoDataHatch
 │   │   ├── layout/               # AbleHeader, freshnessPill
@@ -486,7 +488,7 @@ Condensed diagnostics — full entries with the reasoning in
   Database Connection). Check the `.db-journal` mtime and
   `C:\Code\able\logs\sync-db-v2.log`; wait for the lock to clear. Not a bug
   (ABL-612).
-- **Forecast-accuracy tab shows a sentence instead of numbers / Load tab draws
+- **The load figure's accuracy badge reads "withheld" / the load figure draws
   no forecast line (NL):** the divergent-basis rule working — see Data
   semantics. Not missing data; do not "fix" it.
 - **A load/price forecast is blank:** read the card first (withheld?); then
@@ -496,10 +498,11 @@ Condensed diagnostics — full entries with the reasoning in
   Confirm the model is registered.
 - **TSO forecasts not showing:** `load` has D+1 and D+7; `solar`/`wind_*` D+1
   only; `price`/`net_position` and others none — check `forecastModels.ts`
-  before assuming a bug. `ModelPicker` does not render on Generation,
-  Forecast-accuracy or Net position tabs (`TABS_WITH_MODEL_PICKER`,
-  `CountryDashboardView.tsx:69`, applied at `:129`); Net position has its own
-  multi-select picker.
+  before assuming a bug. `ModelPicker` renders only on the load/price/wind
+  onshore/wind offshore figures (`CountryDocumentView.tsx:333`, `:442`,
+  `:667`) — never beside the generation figure (`:375`, actuals only) or the
+  net position figure, which has its own multi-select `NetPositionModelPicker`
+  instead (`:479`).
 - **D+7 band not showing:** the band draws only when D+7 is the *sole* checked
   model; needs daily `forecast_min_mw`/`forecast_max_mw` rows.
 - **Header pill "stale"/"tomorrow missing":** the signal working — read

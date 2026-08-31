@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardStore } from '@/store/dashboardStore';
-import { useMultiModelSelection, useActiveForecastType, useRecommendedModel } from '@/hooks/useForecastModels';
+import { useMultiModelSelection, useRecommendedModel } from '@/hooks/useForecastModels';
 import { forecastLineToken } from './forecastLineTokens';
 import { describeAutoSelectionHint } from './autoSelection';
 import { cn } from '@/lib/utils';
@@ -50,9 +50,20 @@ import { cn } from '@/lib/utils';
  * for a follow-up. The chart's legend and the per-model footnote below the
  * chart already say it once the user closes the dropdown and looks at the
  * chart, which is what the acceptance criteria for this change requires.
+ *
+ * `forecastType` is a prop, not read internally off a global "active tab"
+ * (Task 9a of the country-document redesign, which introduced this prop;
+ * Task 9b then deleted the tab view and its `useActiveForecastType()` hook
+ * entirely — nothing in this codebase maps a single global tab to a type any
+ * more). The reason this stays a prop rather than reverting to an internal
+ * read is unchanged: the country document (`CountryDocumentView.tsx`) mounts
+ * several of these at once (figure 1's load picker, figure 2's price picker,
+ * ...) with no single active figure, so a picker that resolved its own type
+ * from a global would have every instance on the page collapse onto the same
+ * type. Each `<ModelPicker>` call site passes its own figure's type
+ * explicitly instead.
  */
-export function ModelPicker() {
-  const forecastType = useActiveForecastType();
+export function ModelPicker({ forecastType }: { forecastType: string }) {
   const { models, selectedIds, hidden, isLoading } = useMultiModelSelection(forecastType);
   // The measured best forecast for this (country, type) pair — what "Default"
   // actually resolves to since ABL-469. Undefined until it lands, and on an

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { asUtc, hourBucket } from './CountryDocumentView';
+import { asUtc, hourBucket, FIGURE_META_BY_FORECAST_TYPE } from './CountryDocumentView';
+import { FORECAST_TYPE_FIGURE_ANCHOR } from '@/lib/constants';
 
 /**
  * `asUtc`/`hourBucket` encode a measured timezone hazard: `energy_load
@@ -58,5 +59,35 @@ describe('hourBucket', () => {
   // forms, writer- and era-dependent.
   it('buckets the space-separated form the same as the T-separated one', () => {
     expect(hourBucket('2026-08-28 12:00:00')).toBe('2026-08-28T12:00:00.000Z');
+  });
+});
+
+/**
+ * `FORECAST_TYPE_FIGURE_ANCHOR` (lib/constants.ts) is a claim about what
+ * anchor id each forecast type's figure actually renders in *this* file —
+ * read by `goToCountry` (store/dashboardStore.ts) to resolve which figure to
+ * scroll to. Nothing ties the two together at the type level: a renamed
+ * `anchorId` on any `*_META` constant above would silently break
+ * scroll-to-figure for that type (`getElementById` finds nothing,
+ * `scrollIntoView` quietly no-ops) while every existing test — including the
+ * store-level ones asserting `goToCountry`'s own resolution — kept passing,
+ * because they only check the map against itself.
+ *
+ * This is the one test that would actually catch that: it reads the map's
+ * declared anchor for each type against the real `anchorId` the matching
+ * `*_META` constant carries.
+ */
+describe('FORECAST_TYPE_FIGURE_ANCHOR matches the real figure anchors', () => {
+  it.each(Object.entries(FORECAST_TYPE_FIGURE_ANCHOR))(
+    '%s is declared as figure anchor %s, and that figure really uses it',
+    (forecastType, declaredAnchor) => {
+      expect(FIGURE_META_BY_FORECAST_TYPE[forecastType]?.anchorId).toBe(declaredAnchor);
+    },
+  );
+
+  it('covers every forecast type the anchor map declares — no silently-missing figure', () => {
+    for (const forecastType of Object.keys(FORECAST_TYPE_FIGURE_ANCHOR)) {
+      expect(FIGURE_META_BY_FORECAST_TYPE).toHaveProperty(forecastType);
+    }
   });
 });

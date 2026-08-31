@@ -59,8 +59,10 @@ export const ComparisonMap = memo(function ComparisonMap({ data }: ComparisonMap
   }, []);
 
   const handleClick = useCallback((code: string) => {
-    if (data[code]) goToCountry(code, 'analytics');
-  }, [data, goToCountry]);
+    // `mapForecastType` is also what the pin's own colour was drawn from
+    // (below), so it's the type the reader actually saw when they clicked.
+    if (data[code]) goToCountry(code, mapForecastType);
+  }, [data, goToCountry, mapForecastType]);
 
   // The scale is this forecast type's own observed spread across countries —
   // the same relative basis the heatmap and leaderboard use. The legend below

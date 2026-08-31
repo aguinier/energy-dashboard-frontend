@@ -29,19 +29,24 @@ const formatMwOrGw = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(2)} GW` :
 
 export interface LoadTabProps {
   /**
-   * 'tab' (default) is the existing `CountryDashboardView` tab body: two
-   * `AbleCard`s, each with its own title ("Electricity load", "Load by hour
-   * × day"). 'figure' is the country document's plot slot
+   * 'tab' (default) was the tab view's body (`CountryDashboardView.tsx`,
+   * deleted in Task 9b): two `AbleCard`s, each with its own title
+   * ("Electricity load", "Load by hour × day"). 'figure' is the country
+   * document's plot slot
    * (docs/superpowers/specs/2026-08-29-country-page-scrolling-document-design.md):
    * one plot per figure, so it renders only the primary "Electricity load"
    * chart, with no `AbleCard` header of its own — the figure supplies the
    * number, title and caption instead — and omits the hour×day heatmap
    * entirely, since that is a second chart, not an annotation on the first.
+   * That heatmap has no home in the document at all — Task 9b's switchover
+   * dropped it along with the rest of the tab view, not carried elsewhere.
    *
    * Every fetch, the model picker's effect on which forecast draws, gap
    * notices and the withholding logic are identical in both variants; only
-   * the chrome around the primary chart changes. Default omitted so every
-   * existing caller is unaffected.
+   * the chrome around the primary chart changes. Every production caller now
+   * passes `variant="figure"` explicitly; 'tab' stays the default only so
+   * this file's own pre-9b regression tests keep exercising it with no other
+   * call site to break.
    */
   variant?: 'tab' | 'figure';
 }

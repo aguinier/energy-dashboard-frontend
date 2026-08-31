@@ -1,7 +1,75 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useDashboardStore } from './dashboardStore';
 import { PERSIST_VERSION } from './migrate';
-import { PRESET_SHIFT_HOURS } from '@/lib/constants';
+import { PRESET_SHIFT_HOURS, FORECAST_TYPE_FIGURE_ANCHOR } from '@/lib/constants';
+
+// Task 9b: the tab view is gone, so `goToCountry`'s second argument no longer
+// selects a tab — it names the forecast type the reader clicked, and
+// `goToCountry` resolves that to a figure anchor id for `CountryDocumentView`
+// to scroll to and then clear (`pendingScrollAnchor`). These pin `goToCountry`
+// itself correctly reads `FORECAST_TYPE_FIGURE_ANCHOR` and writes what it
+// finds there — NOT that the map's values are the real anchors
+// `CountryDocumentView` renders (that coupling — the one an anchor rename
+// could silently break — is pinned separately in
+// `views/CountryDocumentView.test.ts`). The render-time scroll effect itself
+// was verified live — see task report.
+describe('goToCountry', () => {
+  beforeEach(() => {
+    useDashboardStore.setState({
+      currentView: 'map',
+      selectedCountry: 'DE',
+      pendingScrollAnchor: null,
+    });
+  });
+
+  it('switches to the country view and selects the country', () => {
+    useDashboardStore.getState().goToCountry('FR');
+    const s = useDashboardStore.getState();
+    expect(s.currentView).toBe('country');
+    expect(s.selectedCountry).toBe('FR');
+  });
+
+  it('resolves a forecast type with a matching figure to that figure\'s anchor', () => {
+    useDashboardStore.getState().goToCountry('FR', 'wind_onshore');
+    expect(useDashboardStore.getState().pendingScrollAnchor).toBe('wind-onshore');
+  });
+
+  it.each(Object.entries(FORECAST_TYPE_FIGURE_ANCHOR))(
+    'maps forecast type %s to anchor %s',
+    (forecastType, anchor) => {
+      useDashboardStore.getState().goToCountry('FR', forecastType);
+      expect(useDashboardStore.getState().pendingScrollAnchor).toBe(anchor);
+    },
+  );
+
+  it('leaves no pending anchor when no forecast type is given (map click)', () => {
+    useDashboardStore.getState().goToCountry('FR');
+    expect(useDashboardStore.getState().pendingScrollAnchor).toBeNull();
+  });
+
+  it('leaves no pending anchor for a forecast type with no matching figure', () => {
+    // e.g. 'renewable'/'hydro_total'/'biomass' — measured in the cross-country
+    // portfolio, but the document renders no figure for them.
+    useDashboardStore.getState().goToCountry('FR', 'hydro_total');
+    expect(useDashboardStore.getState().pendingScrollAnchor).toBeNull();
+  });
+
+  it('overwrites a stale pending anchor from a previous navigation', () => {
+    useDashboardStore.getState().goToCountry('FR', 'price');
+    expect(useDashboardStore.getState().pendingScrollAnchor).toBe('price');
+
+    useDashboardStore.getState().goToCountry('BE', 'net_position');
+    expect(useDashboardStore.getState().pendingScrollAnchor).toBe('net-position');
+  });
+});
+
+describe('clearPendingScrollAnchor', () => {
+  it('resets the pending anchor to null', () => {
+    useDashboardStore.setState({ pendingScrollAnchor: 'load' });
+    useDashboardStore.getState().clearPendingScrollAnchor();
+    expect(useDashboardStore.getState().pendingScrollAnchor).toBeNull();
+  });
+});
 
 // setServedModel is written from a useEffect in useLoadChartData/usePriceChartData
 // on every render where servedModelId is computed, not just when it changes.
@@ -194,6 +262,12 @@ describe('persisted blob', () => {
     // restore a stale answer as though it had just been fetched.
     expect(state).not.toHaveProperty('servedModelByType');
     expect(state).not.toHaveProperty('timeOffset');
+
+    // `pendingScrollAnchor` describes an in-flight navigation, not a
+    // preference — a returning user reloading the page has no "just clicked"
+    // figure to land on, so persisting it would scroll them to wherever a
+    // long-gone click happened to point.
+    expect(state).not.toHaveProperty('pendingScrollAnchor');
 
     // Actions are not state; zustand would happily serialise them to null.
     expect(state).not.toHaveProperty('setTimePreset');

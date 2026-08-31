@@ -56,40 +56,27 @@ export const REFRESH_INTERVALS = {
 } as const;
 
 /**
- * Primary forecast type per country-view tab. The model picker renders the
- * registry entry for whichever tab is active, so the models offered always
- * match the data on screen.
+ * Figure anchor id (`Figure.tsx`'s `anchorId`, rendered as `id="figure-<id>"`
+ * in `CountryDocumentView.tsx`) that carries a given forecast type's measured
+ * accuracy. Read by `goToCountry` (`store/dashboardStore.ts`) to resolve
+ * "scroll to the figure for the forecast type just clicked" when a reader
+ * lands on the country page from the Forecast quality view
+ * (`ComparisonHeatmap.tsx`, `ComparisonLeaderboard.tsx`, `ComparisonMap.tsx`,
+ * `CountryRanking.tsx`) — Task 9b, replacing the tab view's `activeChartTab`
+ * that this document has no equivalent of (every figure is on screen, or
+ * lazily mounted, at once; there is no single "current" one).
  *
- * Keys are tab *ids*, read off the `TabsTrigger` elements in
- * `CountryDashboardView.tsx:106-110` — they do not match the visible labels.
- * `renewables` renders as "Generation" and `analytics` renders as "Forecast
- * accuracy". Both ids are live: `analytics` outlived the analytics dashboard
- * that `ebdb5ab` removed, because the accuracy tab reuses the id.
- *
- * `analytics` is read: `ForecastTab` calls `useActiveForecastType()` to pick
- * which type's registered models the "Compare forecast models" panel compares
- * (`ForecastTab.tsx`, `ModelComparisonPanel.tsx`). It is not read by
- * `ModelPicker`, which `TABS_WITH_MODEL_PICKER` (`CountryDashboardView.tsx:56`)
- * still keeps off that tab.
- *
- * `renewables` remains unread for the same reason — the Generation tab renders
- * actuals only and gets no picker. Keep it anyway: adding a forecast overlay
- * there puts it back in that set, and a missing key falls through to
- * `?? 'load'` (`useForecastModels.ts:74`) — the Generation tab would then offer
- * load models for solar data, which is the wrong-number-under-a-plausible-label
- * failure this dashboard exists to avoid.
- *
- * `wind-onshore`/`wind-offshore` (ABL-235) are two top-level tabs rather than
- * subtabs of `renewables`, specifically so this same generic keying serves
- * them with zero new plumbing — each is read by `ModelPicker` exactly like
- * `price`/`load`.
+ * A forecast type absent here (`renewable`, `hydro_total`, `biomass` — the
+ * cross-country portfolio measures more types than this document renders
+ * figures for) has no matching figure. `goToCountry` leaves `pendingScrollAnchor`
+ * unset in that case, and lands the reader at the page's natural top rather
+ * than scrolling to nothing.
  */
-export const TAB_FORECAST_TYPE: Record<string, string> = {
-  price: 'price',
+export const FORECAST_TYPE_FIGURE_ANCHOR: Record<string, string> = {
   load: 'load',
-  renewables: 'solar',
-  'wind-onshore': 'wind_onshore',
-  'wind-offshore': 'wind_offshore',
-  'net-position': 'net_position',
-  analytics: 'load',
+  price: 'price',
+  solar: 'generation',
+  wind_onshore: 'wind-onshore',
+  wind_offshore: 'wind-offshore',
+  net_position: 'net-position',
 };

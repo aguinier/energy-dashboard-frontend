@@ -128,8 +128,10 @@ describe('NetPositionTab — variant="figure"', () => {
   });
 
   it('default variant is unaffected: all three paths still get their card title', async () => {
-    // Regression guard for "byte-identical to today" — `variant` defaults to
-    // 'tab' so the existing caller (CountryDashboardView) is unchanged.
+    // Regression guard for the 'tab' shape itself — no production caller
+    // passes it any more since Task 9b deleted the tab view
+    // (CountryDashboardView.tsx), but the prop's default value and
+    // behaviour are still part of NetPositionTab's public contract.
     const { unmount } = renderNetPositionTab();
     await screen.findByTestId('line-chart');
     expect(screen.queryByText('Net position')).not.toBeNull();

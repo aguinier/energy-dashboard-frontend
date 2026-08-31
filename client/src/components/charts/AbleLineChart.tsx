@@ -21,8 +21,8 @@ export interface AbleSeriesPoint {
    * Named forecast series, keyed by an id from the chart's `forecastSeries`
    * prop — net position's multi-model picker (ABL-203), which can put several
    * forecast lines on one chart at once. Every other caller (Load, Price,
-   * ForecastTab's overlay) leaves this undefined and the chart draws the
-   * single `forecast` field above exactly as it always has.
+   * Wind) leaves this undefined and the chart draws the single `forecast`
+   * field above exactly as it always has.
    */
   forecasts?: Record<string, number | null>;
   /** Optional min/max band, used for ENTSO-E week-ahead daily bands. */
@@ -80,7 +80,10 @@ export interface AbleLineChartProps {
   /**
    * When true, drops the now marker: the future shading, the "now" rule and
    * pill, and the trailing-gap label. For a chart that is entirely historical
-   * (ForecastTab's forecast-vs-actual overlay) those marks describe nothing.
+   * (no window ever extends past "now") those marks describe nothing. No
+   * current caller sets this — the tab view's ForecastTab (deleted, Task 9b)
+   * was the one entirely-historical chart — but the prop stays part of this
+   * component's tested contract (`AbleLineChart.test.tsx`).
    *
    * It does NOT decide where the forecast line starts — both series always draw
    * wherever they hold a value. It used to do both, which is how the Load,

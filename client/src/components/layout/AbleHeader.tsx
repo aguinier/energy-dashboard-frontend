@@ -15,8 +15,9 @@ import { LastRefreshedPanel } from './LastRefreshedPanel';
 // (one destination, two controls, styled as if they were different things),
 // and "API" opened the raw /api/health JSON — a liveness probe, not a
 // destination for an analyst. Both are gone; the button is the single door to
-// the docs, and the real per-tab endpoint is still surfaced by ApiCta at the
-// foot of the country page, where it has context.
+// the docs, and the real per-figure endpoints are still surfaced by
+// `DocumentApiFooter` at the foot of the country page, where they have
+// context.
 
 const REPO_URL = 'https://github.com/aguinier/energy-dashboard-frontend';
 

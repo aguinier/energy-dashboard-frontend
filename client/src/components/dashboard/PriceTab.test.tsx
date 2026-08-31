@@ -114,8 +114,10 @@ describe('PriceTab — variant="figure"', () => {
   });
 
   it('default variant is unaffected: the tab still gets its card title and the heatmap', async () => {
-    // Regression guard for "byte-identical to today" — `variant` defaults to
-    // 'tab' so every existing caller (CountryDashboardView) is unchanged.
+    // Regression guard for the 'tab' shape itself — no production caller
+    // passes it any more since Task 9b deleted the tab view
+    // (CountryDashboardView.tsx), but the prop's default value and
+    // behaviour are still part of PriceTab's public contract.
     renderPriceTab();
 
     await screen.findByTestId('line-chart');
