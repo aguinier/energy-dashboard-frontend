@@ -63,10 +63,10 @@ export function getWindowLabel(timePreset: string): string {
 //
 // The tab view (`CountryDashboardView.tsx`, deleted in Task 9b) additionally
 // stated this in a standalone "times in <zone>" caption beside its control
-// bar; the country document that replaced it (`CountryDocumentView.tsx`)
-// carries no equivalent caption today. Noted here rather than silently
-// dropped, since it is the one piece of that page this module's own comment
-// used to point at.
+// bar. That caption briefly went missing from the country document that
+// replaced it (`CountryDocumentView.tsx`) — an omission from the Task 9a/9b
+// port, not a decision — and was restored in its title block
+// (`LOCAL_ZONE_LABEL`, same file) once review caught it.
 
 function localDay(d: Date): string {
   return d.toLocaleDateString([], { day: 'numeric', month: 'short' });

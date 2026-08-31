@@ -263,13 +263,22 @@ describe('migratePersisted', () => {
     });
   });
 
-  // v11 (Task 9b) — `activeChartTab` belonged to the deleted tab view
-  // (CountryDashboardView.tsx); the scrolling document that replaced it has
-  // no "current tab" concept, so the field is dropped outright rather than
-  // validated against a set of tab ids that no longer mean anything.
-  describe('drops activeChartTab entirely (v11)', () => {
-    it('removes a previously-valid persisted value', () => {
-      expect(migratePersisted({ activeChartTab: 'load' }, 10).activeChartTab).toBeUndefined();
+  // Task 9b (PERSIST_VERSION bumped to 11 for this) — `activeChartTab`
+  // belonged to the deleted tab view (CountryDashboardView.tsx); the
+  // scrolling document that replaced it has no "current tab" concept, so the
+  // field is dropped outright rather than validated against a set of tab ids
+  // that no longer mean anything.
+  //
+  // The clause in migrate.ts is deliberately NOT gated `if (fromVersion < 11)`
+  // — see its comment for why such a gate on the *current* PERSIST_VERSION is
+  // always true and untestable in isolation (the function's own top guard
+  // already excludes every `fromVersion` where it could be false). These
+  // tests exercise the reachable domain directly instead: every `fromVersion`
+  // that can actually reach this line (0 through 10, the boundary right below
+  // the current version) drops the key.
+  describe('drops activeChartTab entirely', () => {
+    it.each([0, 6, 9, 10])('removes a previously-valid persisted value from fromVersion %i', (fromVersion) => {
+      expect(migratePersisted({ activeChartTab: 'load' }, fromVersion).activeChartTab).toBeUndefined();
     });
 
     it('removes a persisted value that was never valid', () => {
@@ -278,14 +287,6 @@ describe('migratePersisted', () => {
 
     it('is a no-op when activeChartTab is already absent', () => {
       expect(migratePersisted({ timePreset: '7d' }, 0).activeChartTab).toBeUndefined();
-    });
-
-    it('does not re-run for a blob already at v11 or later', () => {
-      // Nothing to observe distinctly from the general "no-op at current
-      // version" test below beyond the key staying absent either way — this
-      // just pins that the clause is version-gated like its siblings, not
-      // unconditional.
-      expect(migratePersisted({ timePreset: '7d' }, PERSIST_VERSION).activeChartTab).toBeUndefined();
     });
   });
 

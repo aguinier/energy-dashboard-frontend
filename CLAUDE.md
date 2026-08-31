@@ -499,10 +499,10 @@ Condensed diagnostics — full entries with the reasoning in
 - **TSO forecasts not showing:** `load` has D+1 and D+7; `solar`/`wind_*` D+1
   only; `price`/`net_position` and others none — check `forecastModels.ts`
   before assuming a bug. `ModelPicker` renders only on the load/price/wind
-  onshore/wind offshore figures (`CountryDocumentView.tsx:283`, `:396`,
-  `:600`) — never beside the generation figure (`:325`, actuals only) or the
+  onshore/wind offshore figures (`CountryDocumentView.tsx:330`, `:443`,
+  `:658`) — never beside the generation figure (`:372`, actuals only) or the
   net position figure, which has its own multi-select `NetPositionModelPicker`
-  instead (`:433`).
+  instead (`:480`).
 - **D+7 band not showing:** the band draws only when D+7 is the *sole* checked
   model; needs daily `forecast_min_mw`/`forecast_max_mw` rows.
 - **Header pill "stale"/"tomorrow missing":** the signal working — read

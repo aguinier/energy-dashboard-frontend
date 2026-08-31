@@ -207,18 +207,26 @@ export function migratePersisted(state: Record<string, unknown>, fromVersion: nu
     next.netPositionScope = 'all_coupled';
   }
 
-  // v11 (Task 9b) — the tab view (`CountryDashboardView.tsx`) is gone, and
-  // `activeChartTab` was its selection alone: which of six tabs was showing.
-  // The scrolling document that replaced it (`CountryDocumentView.tsx`) has no
-  // equivalent — every figure is on screen, or lazily mounted, at once, with
-  // no single "current" one — so there is nothing left to validate a stored
-  // value against. Drop the key outright, the same treatment `layers` /
-  // `timeRange` / `analyticsConfig` above got when their owning feature was
-  // removed, rather than leave it to keep re-appearing via the persist
-  // middleware's shallow merge of old state onto new.
-  if (fromVersion < 11) {
-    delete next.activeChartTab;
-  }
+  // Task 9b (PERSIST_VERSION bumped to 11 to reach it at all — see below) —
+  // the tab view (`CountryDashboardView.tsx`) is gone, and `activeChartTab`
+  // was its selection alone: which of six tabs was showing. The scrolling
+  // document that replaced it (`CountryDocumentView.tsx`) has no equivalent —
+  // every figure is on screen, or lazily mounted, at once, with no single
+  // "current" one — so there is nothing left to validate a stored value
+  // against. Drop the key outright, the same treatment `layers` / `timeRange`
+  // / `analyticsConfig` above got when their owning feature was removed.
+  //
+  // Deliberately NOT gated `if (fromVersion < 11)` the way v7/v8/v9 above
+  // are gated on their own version: this function already returns before
+  // this line whenever `fromVersion >= PERSIST_VERSION` (the top guard), and
+  // PERSIST_VERSION *is* 11 — so a `< 11` check on a line that can only ever
+  // be reached with `fromVersion < 11` is always true, asserts nothing, and
+  // there is no test that could tell it apart from no check at all. The bump
+  // to 11 is still real and necessary: it is what makes the persist
+  // middleware invoke `migrate()` at all for anyone whose stored blob still
+  // says version 10, which is the only thing that gets this deletion to run
+  // for them even once.
+  delete next.activeChartTab;
 
   return next;
 }

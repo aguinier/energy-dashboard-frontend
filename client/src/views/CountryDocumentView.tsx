@@ -13,6 +13,7 @@ import {
   fetchTSOGenerationForecast,
 } from '@/services/api';
 import { REFRESH_INTERVALS } from '@/lib/constants';
+import { CountryBreadcrumb } from '@/components/dashboard/CountryBreadcrumb';
 import { Figure } from '@/components/dashboard/Figure';
 import { AccuracyBadge } from '@/components/dashboard/AccuracyBadge';
 import type { AccuracyBadgeInput } from '@/components/dashboard/accuracyBadgeState';
@@ -111,6 +112,16 @@ interface FigureMeta {
   caption: string;
 }
 
+const LOAD_META: FigureMeta = {
+  number: 1,
+  anchorId: 'load',
+  title: 'Electricity demand against its day-ahead forecast',
+  caption:
+    'System load in quarter-hourly resolution, drawn against the day-ahead ' +
+    'forecast published the previous morning. The separation between the two ' +
+    'lines is the subject of this page.',
+};
+
 const PRICE_META: FigureMeta = {
   number: 2,
   anchorId: 'price',
@@ -153,6 +164,24 @@ const NET_POSITION_META: FigureMeta = {
   anchorId: 'net-position',
   title: 'Net cross-border position',
   caption: 'Net export (positive) or import (negative) position at the border, by hour.',
+};
+
+/**
+ * The real figure each forecast type renders as, keyed exactly like
+ * `FORECAST_TYPE_FIGURE_ANCHOR` (`lib/constants.ts`) so a test can assert the
+ * two agree — that map's values are a claim about *this* file's `anchorId`s,
+ * and nothing enforced they stay true on their own (`CountryDocumentView.test.ts`
+ * pins the coupling). `solar` maps to the generation figure, same as that map:
+ * there is no separate wind-style figure for it, only the coverage-gated badge
+ * on figure 3.
+ */
+export const FIGURE_META_BY_FORECAST_TYPE: Record<string, FigureMeta> = {
+  load: LOAD_META,
+  price: PRICE_META,
+  solar: GENERATION_META,
+  wind_onshore: WIND_META.wind_onshore,
+  wind_offshore: WIND_META.wind_offshore,
+  net_position: NET_POSITION_META,
 };
 
 /**
@@ -580,6 +609,13 @@ export function CountryDocumentView() {
   return (
     <div className="flex-1 overflow-auto bg-background">
       <div className="mx-auto max-w-[1200px] px-5 pb-14 pt-6 md:px-8">
+        {/* Its own row above the title block, per the design spec's page
+            structure table ("breadcrumb  Map / Belgium" precedes "title
+            block"). `CountryBreadcrumb` was the tab view's only caller and
+            died with it (Task 9b) — restored here as the page's one way back
+            to the map and its one way to switch country without going
+            through the map first. */}
+        <CountryBreadcrumb />
         <h1 className="m-0 mb-2 text-display font-medium">
           {country?.country_name ?? selectedCountry}
         </h1>
@@ -608,12 +644,7 @@ export function CountryDocumentView() {
         </div>
 
         <Figure
-          number={1}
-          anchorId="load"
-          title="Electricity demand against its day-ahead forecast"
-          caption="System load in quarter-hourly resolution, drawn against the day-ahead
-                   forecast published the previous morning. The separation between the two
-                   lines is the subject of this page."
+          {...LOAD_META}
           footnote={
             <>
               <AccuracyBadge metrics={loadMetrics} window="30 days" />

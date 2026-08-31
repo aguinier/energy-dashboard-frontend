@@ -6,9 +6,13 @@ import { PRESET_SHIFT_HOURS, FORECAST_TYPE_FIGURE_ANCHOR } from '@/lib/constants
 // Task 9b: the tab view is gone, so `goToCountry`'s second argument no longer
 // selects a tab — it names the forecast type the reader clicked, and
 // `goToCountry` resolves that to a figure anchor id for `CountryDocumentView`
-// to scroll to and then clear (`pendingScrollAnchor`). These pin the
-// resolution logic directly against the store, independent of the render-time
-// scroll effect (which is verified live — see task report).
+// to scroll to and then clear (`pendingScrollAnchor`). These pin `goToCountry`
+// itself correctly reads `FORECAST_TYPE_FIGURE_ANCHOR` and writes what it
+// finds there — NOT that the map's values are the real anchors
+// `CountryDocumentView` renders (that coupling — the one an anchor rename
+// could silently break — is pinned separately in
+// `views/CountryDocumentView.test.ts`). The render-time scroll effect itself
+// was verified live — see task report.
 describe('goToCountry', () => {
   beforeEach(() => {
     useDashboardStore.setState({
