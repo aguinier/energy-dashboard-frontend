@@ -4,6 +4,12 @@ import { timestampRange, rangeClause, rangeArgs, timestampFormOnClause } from '.
 import { loadActualGuard } from './loadQuality.js';
 import { actualsSourceFor, type ActualsSource } from './actualsSource.js';
 import { wape } from './wape.js';
+import {
+  applyLoadForecastBasis,
+  DIVERGENT_BASIS_FORECAST_TYPE,
+  type LoadForecastBasisVerdict,
+  type MeasuresClassified,
+} from './loadForecastBasis.js';
 
 /**
  * ML Forecast Accuracy Service
@@ -49,6 +55,25 @@ export interface MLForecastAccuracyMetrics {
   /** Count of points with a positive actual — may be lower than dataPoints; mape covers only these. */
   mapeSamples: number;
 }
+
+/**
+ * The measures above plus the divergent-basis verdict, which
+ * `getMLForecastAccuracyMetrics` attaches for the one forecast type the rule is
+ * established for.
+ *
+ * Both fields are optional because the verdict is **type-gated**: on `load` the
+ * pair is always present (`comparable` there means "no finding", never
+ * "verified fine" — see `classifyLoadForecastBasis`), and on the five other
+ * types this service serves it is absent entirely, because nothing has been
+ * measured about those pairs and claiming a verdict for them would be its own
+ * false statement. Absent therefore reads as "not classified", not as "clean".
+ *
+ * It is deliberately NOT on `MLForecastAccuracyMetrics` itself: that shape is
+ * what `calculateMetrics` returns, and keeping it purely the measures is what
+ * lets `_mlAccuracyMeasuresClassified` below guard it.
+ */
+export type MLAccuracyMetricsWithBasis =
+  MLForecastAccuracyMetrics & Partial<LoadForecastBasisVerdict>;
 
 /**
  * Why an accuracy window produced the metrics it did.
@@ -308,7 +333,37 @@ export function getMLForecastAccuracy(
 }
 
 /**
- * Get aggregate ML forecast accuracy metrics
+ * Aggregate ML forecast accuracy for a country/type/horizon window.
+ *
+ * ## The divergent-basis rule is applied **here**, and that is the point
+ *
+ * ABL-628. The TSO twin of this function has wrapped its `calculateMetrics` in
+ * `applyLoadForecastBasis` since ABL-277 (`getLoadForecastAccuracyMetrics`,
+ * `tsoForecastService.ts:474`); this one did not, so one
+ * `/api/forecast-comparison/NL/summary` response withheld the TSO MAPE for NL
+ * load and published an ML MAPE of 25.6% in the block beside it — the two
+ * halves of the same page disagreeing about whether the number exists.
+ *
+ * The rule is a property of what ENTSO-E nets out of the country's **realized**
+ * series, so it binds every forecast of that series whoever produced it, and
+ * ABL-501 measured that ours carries more of the gap than the TSO's does
+ * (NL catboost +173.7% midday bias against the TSO's +123.2%, both vanishing in
+ * winter, DE and BE flat as controls). Suppressing the ML side is that same
+ * finding applied, not a new claim.
+ *
+ * Four call sites reach this function — `/forecast-comparison/:cc`, `/summary`
+ * and `/best` via `getMLForecastMetricsByHorizon`, both rolling-accuracy series,
+ * and the `metrics` block of `/ml-accuracy`. Wrapping here covers all four; a
+ * fix at any one of them would have left the others publishing the number.
+ *
+ * ## Gated on the forecast type, never unconditional
+ *
+ * Unlike the TSO service — whose load and generation metrics are separate
+ * functions — this one is shared across `load`, `price`, `solar`,
+ * `wind_onshore` and `wind_offshore`. `DIVERGENT_LOAD_BASIS` is a *load*
+ * finding, so an ungated wrapper would blank NL's price and generation numbers
+ * too: a second false claim pointing the other way, asserting a gap nobody
+ * measured. Same gate, same reason, as `crossCountryMetricsService.ts:240`.
  */
 export function getMLForecastAccuracyMetrics(
   countryCode: string,
@@ -317,10 +372,27 @@ export function getMLForecastAccuracyMetrics(
   end: string,
   horizon?: 1 | 2,
   modelName?: string
-): MLForecastAccuracyMetrics {
+): MLAccuracyMetricsWithBasis {
   const data = getMLForecastAccuracy(countryCode, forecastType, start, end, horizon, 'hourly', modelName);
-  return calculateMetrics(data);
+  const metrics = calculateMetrics(data);
+  return forecastType === DIVERGENT_BASIS_FORECAST_TYPE
+    ? applyLoadForecastBasis(countryCode, metrics)
+    : metrics;
 }
+
+/**
+ * Compile-time: every error measure `calculateMetrics` publishes is one
+ * `loadForecastBasis` blanks, or one it deliberately keeps. Add a sixth and the
+ * build fails here, naming the field, rather than the measure reaching NL
+ * unsuppressed through the wrapper above — the ABL-493 idiom, mirroring
+ * `_loadAccuracyMeasuresClassified` (`tsoForecastService.ts:484`) and
+ * `_countryMetricsMeasuresClassified` (`crossCountryMetricsService.ts:64`).
+ *
+ * It reads `ReturnType<typeof calculateMetrics>` rather than
+ * `MLAccuracyMetricsWithBasis` deliberately: the measures are what must be
+ * classified, and the verdict pair is not a measure.
+ */
+const _mlAccuracyMeasuresClassified: MeasuresClassified<ReturnType<typeof calculateMetrics>> = true;
 
 /**
  * Does this model have any forecast row for this country/type/window at all?
@@ -415,7 +487,13 @@ export function calculateMetrics(data: MLForecastAccuracyDataPoint[]): MLForecas
 }
 
 /**
- * Get metrics for both D+1 and D+2 horizons
+ * Get metrics for both D+1 and D+2 horizons.
+ *
+ * The `dataPoints > 0` gate below is what keeps a withheld horizon *present*
+ * rather than absent: a divergent-basis window still pairs its rows, so NL load
+ * comes back as a block of null measures carrying `basis: 'divergent_basis'`,
+ * which a reader can tell apart from the empty block a country with no rows
+ * gets. Withholding and absence are different answers.
  */
 export function getMLForecastMetricsByHorizon(
   countryCode: string,
@@ -423,7 +501,7 @@ export function getMLForecastMetricsByHorizon(
   start: string,
   end: string,
   modelName?: string
-): { d1?: MLForecastAccuracyMetrics; d2?: MLForecastAccuracyMetrics } {
+): { d1?: MLAccuracyMetricsWithBasis; d2?: MLAccuracyMetricsWithBasis } {
   const d1 = getMLForecastAccuracyMetrics(countryCode, forecastType, start, end, 1, modelName);
   const d2 = getMLForecastAccuracyMetrics(countryCode, forecastType, start, end, 2, modelName);
 
