@@ -488,6 +488,17 @@ Condensed diagnostics — full entries with the reasoning in
   Database Connection). Check the `.db-journal` mtime and
   `C:\Code\able\logs\sync-db-v2.log`; wait for the lock to clear. Not a bug
   (ABL-612).
+- **`gh auth status` says "not logged into any GitHub hosts", `gh pr
+  list`/`gh pr merge` unavailable:** the credential is not gone —
+  `cmdkey /list | findstr github` still shows it. Agent-spawned shells (bash
+  and PowerShell alike) launch with `APPDATA`/`LOCALAPPDATA` unset, so `gh`
+  can't find `%APPDATA%\GitHub CLI\hosts.yml` to know which host to check.
+  `git` is unaffected (`credential.helper=manager` is a separate store).
+  Fixed via `setx GH_CONFIG_DIR` (ABL-631) for PowerShell, which only reaches
+  a **freshly spawned** agent shell — plus a `~/bin/gh` bash shim that closes
+  the gap immediately, restart or not. Re-diagnose and re-verify:
+  `docs/claude/25-common-issues.md`. Do not restore the ABL-512
+  `settings.json` token workaround.
 - **The load figure's accuracy badge reads "withheld" / the load figure draws
   no forecast line (NL):** the divergent-basis rule working — see Data
   semantics. Not missing data; do not "fix" it.
