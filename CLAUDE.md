@@ -291,7 +291,22 @@ are written from **one** A75 fetch — never add a second request to fill one.
 (`services/freshness.ts`); `stale` load/generation means >18h; `ended` means
 >30 days and self-clears; both are derived, never hard-coded country lists. The
 ingest cron runs at `30 0,6,13,18` UTC and refetches a rolling 7-day window, so
-interior holes self-heal while inside it. Judge freshness by `MAX(timestamp_utc)`
+interior holes self-heal while inside it — **but only holes it is still reaching.**
+
+**Age is not the whole verdict (ABL-632).** `MAX(timestamp_utc)` alone cannot
+see a pipeline that limps: one surviving row per pass keeps a stream `live`
+while the window behind it empties, which is how a four-day prod degradation
+(2026-08-30..09-02, DE `load` at 41/81/53 of 96 rows a day) reported `live`
+throughout. Every stream is therefore also scored on **coverage** — observed vs
+expected rows over the 2 complete UTC days before its newest day, at the
+resolution its own best day in a 14-day baseline demonstrates
+(`services/freshnessCoverage.ts`). It is published as `coverage` on
+`/api/data-freshness/:cc`, it downgrades `live` to `stale` below a per-stream
+ratio (0.75 measured, 0.90 day-ahead — ABL-494's per-stream precedent), and it
+never touches `ended` or `none`. `coverage: null` means not measurable, never
+zero. Do not add a second staleness threshold anywhere else; extend that file.
+
+Judge freshness by `MAX(timestamp_utc)`
 **on prod**, never by `data_ingestion_log` (INSERT OR REPLACE rowcounts make a
 healthy rewrite indistinguishable from a stall). Read-only remit: a frozen
 `MAX(timestamp_utc)` has three inseparable causes (between passes / ingest
@@ -440,7 +455,16 @@ type TimePreset = '24h' | '7d' | '30d' | 'today' | 'thisWeek'
 // Per stream (ABL-60). `ageHours` is signed and server-computed; negative is
 // normal for a day-ahead stream.
 type FreshnessStatus = 'live' | 'stale' | 'ended' | 'none';
-interface FreshnessStream { latest: string | null; ageHours: number | null; status: FreshnessStatus; }
+// `coverage` is ABL-632 and additive: absent on an old server, `null` when not
+// measurable. `status` reflects age AND coverage; see freshnessCoverage.ts.
+interface FreshnessCoverage {
+  windowStart: string; windowEnd: string; expectedDailyRows: number;
+  observed: number; expected: number; ratio: number;
+}
+interface FreshnessStream {
+  latest: string | null; ageHours: number | null; status: FreshnessStatus;
+  coverage?: FreshnessCoverage | null;
+}
 interface DataFreshness {
   load: FreshnessStream; price: FreshnessStream; generation: FreshnessStream;
   tsoLoadForecast: FreshnessStream; tsoGenerationForecast: FreshnessStream;
@@ -505,8 +529,11 @@ Condensed diagnostics — full entries with the reasoning in
   instead (`:479`).
 - **D+7 band not showing:** the band draws only when D+7 is the *sole* checked
   model; needs daily `forecast_min_mw`/`forecast_max_mw` rows.
-- **Header pill "stale"/"tomorrow missing":** the signal working — read
-  `/api/data-freshness/:cc`, then settle on prod (see Data semantics).
+- **Header pill "stale"/"tomorrow missing"/"gaps in recent data":** the signal
+  working — read `/api/data-freshness/:cc`, then settle on prod (see Data
+  semantics). The third wording is coverage, not age (ABL-632): the stream *is*
+  updating and its recent window is short of rows, so `coverage.observed` /
+  `coverage.expected` is the number to act on, not `ageHours`.
 - **Time navigation:** ranges come from `getDateRangeForPreset()`
   (`useDashboardData.ts:47`); a "stale" chart is often a shifted window
   (`timeOffset` is in ~10 query keys). Changed persisted shape → bump
