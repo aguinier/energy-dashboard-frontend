@@ -739,6 +739,21 @@ export interface AccuracyMetrics {
   /** Mean Error (positive = over-forecast); null on a divergent basis, where the mean difference is definitional, not bias. */
   bias: number | null;
   dataPoints: number;
+  /**
+   * Whether this provider's forecast and the actuals measure the same quantity
+   * (ABL-277). Present on **load** blocks only — on both the `tso` and `ml`
+   * sides since ABL-628 — and absent on every other forecast type, where no
+   * such pair has been classified. Absent therefore means "not classified",
+   * never "verified fine"; and on a load block predating ABL-628 it means the
+   * server is an older build.
+   *
+   * Read it before the numbers: `mae: null` beside `dataPoints: 721` is a
+   * withholding when this says `divergent_basis`, and an unmeasurable window
+   * otherwise. The two must not render the same way.
+   */
+  basis?: LoadForecastBasis;
+  /** Non-null exactly when `basis` is `divergent_basis`: the sentence to print instead of numbers. */
+  basisNote?: string | null;
 }
 
 /**
@@ -802,6 +817,22 @@ export interface MLForecastAccuracyMetrics {
   dataPoints: number;
   /** Count of points MAPE was computed over; <= dataPoints. */
   mapeSamples: number;
+  /**
+   * The divergent-basis verdict on *our own* model's forecast, which this
+   * response carries since ABL-628 exactly as its TSO twin
+   * (`TSOForecastAccuracyMetrics`) has since ABL-277.
+   *
+   * `?forecastType=load` only — the finding is about what ENTSO-E nets out of a
+   * country's realized *load*, so `solar`, `price` and the wind types come back
+   * with no verdict at all rather than a stamped `'comparable'`. Absent on
+   * responses predating ABL-628.
+   *
+   * `modelComparison.ts` already branches on it: a `divergent_basis` row shows
+   * the sentence, not a line of em-dashes beside a healthy sample count.
+   */
+  basis?: LoadForecastBasis;
+  /** Non-null exactly when `basis` is `divergent_basis`: why there are no numbers. */
+  basisNote?: string | null;
 }
 
 /**

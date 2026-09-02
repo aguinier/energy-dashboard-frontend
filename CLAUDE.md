@@ -263,7 +263,7 @@ a normalizer (three private copies once drifted apart and made endpoints
 disagree), and never put `REPLACE()`/`date()`/`strftime()` on the column alone
 in a filter or join — it forfeits the index (a 51-second scar lives in
 `docs/claude/25-common-issues.md`). Joins to actuals are separator-agnostic via
-`resolvedActualJoin()` (`mlForecastService.ts:128`) and `metricSelect()`
+`resolvedActualJoin()` (`mlForecastService.ts:153`) and `metricSelect()`
 (`crossCountryMetricsService.ts:121`). A series short by exactly one day at the
 window's end is this bug.
 
@@ -279,8 +279,13 @@ behind-the-meter solar, actuals net) gets every error measure **and** the
 forecast line itself withheld — the difference is definitional, not forecast
 error. The rule lives in `services/loadForecastBasis.ts` and every surface
 must route through it (country tab, portfolio, `/api/forecasts` — which
-reports `meta.withheldPoints`). Do not "fix" with a threshold; do not add
-countries without probing raw ENTSO-E A65 documents first.
+reports `meta.withheldPoints` — and `/api/forecast-comparison`, both providers).
+**It binds our ml forecast as well as the TSO's**: the finding is a property of
+the country's realized series, so apply it at the metrics choke point, gated on
+`DIVERGENT_BASIS_FORECAST_TYPE` wherever the caller serves more than one type,
+and never re-coerce a withheld measure with `?? 0` downstream. Do not "fix"
+with a threshold; do not add countries without probing raw ENTSO-E A65
+documents first.
 
 **Generation tables.** `energy_generation` (21 `*_mw` columns, full A75
 document) is the table for anything new. `energy_renewable` is **frozen**;

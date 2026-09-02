@@ -378,8 +378,84 @@ describe('divergent forecast basis (ABL-277)', () => {
     },
   });
 
+  // What /forecast-comparison/NL/ml-accuracy?forecastType=load returns since
+  // ABL-628: the same verdict on our OWN model, since the finding is about
+  // what ENTSO-E nets out of NL's realized load and does not care who forecast
+  // it. Shaped as `fetchMLForecastAccuracy` resolves it (api.ts:469) —
+  // `coverage` beside `metrics`, which the TSO route does not carry.
+  const NL_ML = measurementFromQuery({
+    isError: false,
+    data: {
+      coverage: 'served',
+      metrics: {
+        mae: null, mape: null, rmse: null, dataPoints: 168, mapeSamples: 168,
+        basis: 'divergent_basis', basisNote: NL_BASIS_NOTE,
+      },
+    },
+  });
+
   it('carries the server verdict through the measurement mapping', () => {
     expect(NL_TSO).toMatchObject({ status: 'ok', basis: 'divergent_basis', basisNote: NL_BASIS_NOTE });
+  });
+
+  it('carries it from the ml route too, which also sends a coverage class', () => {
+    expect(NL_ML).toMatchObject({
+      status: 'ok', coverage: 'served', basis: 'divergent_basis', basisNote: NL_BASIS_NOTE,
+    });
+  });
+
+  // The reported symptom of ABL-627, as this panel rendered it: tso-d1 said
+  // "Not measurable — …" while catboost printed a real MAPE one row below it,
+  // same country, same window, same forecast type. Both rows must now withhold.
+  it('withholds our own model\'s row as well as the TSO\'s (ABL-628)', () => {
+    const rows = buildModelComparisonRows(
+      LOAD_MODELS, { 'tso-d1': NL_TSO, catboost: NL_ML }, { mlHorizon: 1, countryCode: 'NL' },
+    );
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+
+    expect(byId.catboost.state).toBe('divergent_basis');
+    expect(byId.catboost.metrics).toBeNull();
+    expect(byId.catboost.note).toBe(NL_BASIS_NOTE);
+    // The ml row is the D+1 one, not the TSO row wearing its label.
+    expect(byId.catboost.horizon).toBe('D+1');
+    // Neither provider is measurable, so nothing is left to rank or compare.
+    expect(byId['tso-d1'].state).toBe('divergent_basis');
+    expect(summariseComparison(rows).measuredCount).toBe(0);
+  });
+
+  // `coverage: 'served'` with 168 paired points is precisely the shape that
+  // reaches the `measured` branch on every other forecast type. The verdict,
+  // not the sample count, is what withholds this row.
+  it('is not mistaken for an empty ml window — the points paired, the claim did not', () => {
+    const rows = buildModelComparisonRows(
+      LOAD_MODELS, { catboost: NL_ML, xgboost: NO_COVERAGE }, { mlHorizon: 1, countryCode: 'NL' },
+    );
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expect(byId.catboost.state).toBe('divergent_basis');
+    expect(byId.xgboost.state).toBe('no_model_coverage');
+    expect(byId.catboost.note).not.toEqual(byId.xgboost.note);
+  });
+
+  // The type gate, on the client side of the wire: `/ml-accuracy` sends no
+  // `basis` key at all for NL price (the finding is about load), so the row
+  // must stay measured. Over-suppressing here would blank the country
+  // document's figure-2 accuracy badge, which reads the ml side of `/summary`
+  // for price (CountryDocumentView.tsx:548) and has no TSO fallback —
+  // ENTSO-E publishes no day-ahead price forecast.
+  it('leaves NL price measured — no verdict on the wire means the question does not arise', () => {
+    const rows = buildModelComparisonRows(
+      [CATBOOST],
+      {
+        catboost: measurementFromQuery({
+          isError: false,
+          data: { coverage: 'served', metrics: metrics({ mape: 7.93 }) },
+        }),
+      },
+      { mlHorizon: 1, countryCode: 'NL' },
+    );
+    expect(rows[0].state).toBe('measured');
+    expect(rows[0].metrics?.mape).toBe(7.93);
+    expect(rows[0].note).toBeNull();
   });
 
   it('does not render as a measured row, despite 168 paired points', () => {

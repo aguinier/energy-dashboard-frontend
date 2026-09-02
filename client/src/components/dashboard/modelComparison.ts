@@ -50,7 +50,12 @@ export type ModelMeasurement =
       coverage?: MLAccuracyCoverage;
       /**
        * The server's verdict on whether this model's forecast and the actuals
-       * measure the same quantity (ABL-277). TSO load only; absent elsewhere.
+       * measure the same quantity (ABL-277). Carried by BOTH providers on
+       * `load` — by the TSO accuracy route since ABL-277 and by `/ml-accuracy`
+       * since ABL-628, because the finding is a property of the country's
+       * realized series and so binds our own model exactly as it binds the
+       * TSO's. Absent on every other forecast type: no verdict here means
+       * "the question does not arise", never "comparable".
        */
       basis?: LoadForecastBasis;
       basisNote?: string | null;
