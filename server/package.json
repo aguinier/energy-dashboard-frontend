@@ -16,6 +16,7 @@
     "modelversions": "tsx --env-file-if-exists=.env.public src/v1/modelVersions/modelVersionsCli.ts",
     "test": "vitest run",
     "openapi:generate": "tsx src/v1/openapi/generate.ts",
+    "docs:preview": "tsx src/v1/docs/docsPreview.ts",
     "check:unmerged": "tsx src/release/checkUnmergedWork.ts",
     "typecheck:test": "tsc -p tsconfig.test.json"
   },
