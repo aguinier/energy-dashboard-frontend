@@ -2117,10 +2117,21 @@ false claim as the reverse.
 
 Scope: the six streams the dashboard draws. `crossborder_flows` and the two
 weather pipelines are logged but unrendered, and weather is keyed by bidding
-zone (`DK1`/`DK2`) where every ENTSO-E pipeline uses plain `DK`. A `failed`
-status is producible by the writer
-(`../energy-data-gathering/src/db.py:1192`) but has never occurred — 114,982
-`completed`, 1 `running` — and is counted as neither a check nor a write.
+zone (`DK1`/`DK2`) where every ENTSO-E pipeline uses plain `DK`.
+
+`status` is **not** read at all (ABL-637). It used to filter `= 'completed'`,
+which was inert while the writer set `"failed" if error_message else
+"completed"` and no caller passed a message — measured 2026-08-12, 114,982
+`completed` and 1 `running`. ABL-633 makes the column derive from the counts
+(`completed` / `partial_failure` / `failed`), and under the old filter an
+erroring stream would have gone **green**: the newest surviving pass is by
+construction the last one that stored rows, so both stamps collapse onto it and
+the verdict is `flowing` with no attention flag. Replaying ABL-633's rule over
+the replica's history put 114 of 216 country × stream pairs in that state
+through the ABL-630 degradation, `lastChecked` understated by up to 72.6 h. The
+check test is now `end_time IS NOT NULL` — every pass that finished, whatever it
+called itself — and delivery is still decided by the row counts alone. `running`
+is still excluded, by having no `end_time`.
 **The ops warn/error thresholds live in exactly one module:
 `server/src/lib/opsStatusThresholds.ts` (ABL-292).** They started out in
 `client/src/lib/opsStatusThresholds.ts`, which meant the only thing in the

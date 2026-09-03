@@ -137,11 +137,16 @@ export interface MemoryEnergySource extends EnergyDataSource {
   /**
    * One ingest pass.
    *
-   * `status` defaults to `'completed'` because **every** row in the real table
-   * is `'completed'` — 114,982 of 114,983, with no failure value in the
-   * vocabulary at all. `recordsFailed` is the parameter that actually matters,
-   * and defaulting the useless field while requiring nothing of it is how this
-   * fixture keeps a test from accidentally asserting against the wrong column.
+   * `status` defaults to `'completed'` because that is what every row already in
+   * the real table says — 114,982 of 114,983, measured 2026-08-12, written back
+   * when the column was `"failed" if error_message else "completed"` and no
+   * caller passed a message. ABL-633 makes new rows derive it from the counts,
+   * but the historical ones are never relabelled, so `'completed'` stays the
+   * right default for a fixture standing in for the table as it is.
+   * `recordsFailed` is the parameter that actually matters here — `freshnessMap`
+   * reads it and not `status` — and defaulting the field while requiring nothing
+   * of it is how this fixture keeps a test from asserting against the wrong
+   * column.
    */
   ingestPass(row: {
     pipelineType: string;
