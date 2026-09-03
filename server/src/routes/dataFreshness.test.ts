@@ -17,7 +17,20 @@ beforeEach(() => clearResponseCache());
 
 const get = (cc: string) => api.get(`data-freshness/${cc}`);
 
-type Stream = { latest: string | null; ageHours: number | null; status: string };
+type Coverage = {
+  windowStart: string;
+  windowEnd: string;
+  expectedDailyRows: number;
+  observed: number;
+  expected: number;
+  ratio: number;
+};
+type Stream = {
+  latest: string | null;
+  ageHours: number | null;
+  status: string;
+  coverage: Coverage | null;
+};
 type Freshness = {
   load: Stream;
   price: Stream;
@@ -87,6 +100,42 @@ beforeAll(() => {
   // The shared fixture dates are old too, but age-sensitive states must be
   // created on purpose so this test does not change verdict as the clock moves.
   generation.run('LU', hoursAgo(31 * 24), 200);
+
+  // ABL-632. CZ and ES are the two halves of the coverage rule: both have a row
+  // from within the last hour, so the age rule calls both live, and only one of
+  // them is actually holding the data it claims to.
+  //
+  // Built from whole UTC days rather than "hours ago" because the window ends
+  // the day *before* the newest day with rows, and from the current UTC hour on
+  // the newest day so `MAX` is always ~an hour old — the verdicts here must not
+  // depend on what time the suite runs.
+  const utcDay = (offsetDays: number) =>
+    new Date(Date.now() + offsetDays * 24 * HOUR_MS).toISOString().slice(0, 10);
+  const hourRow = (day: string, hour: number) => `${day} ${String(hour).padStart(2, '0')}:00:00`;
+
+  const fillDay = (cc: string, offsetDays: number, hours: number) => {
+    for (let hour = 0; hour < hours; hour += 1) {
+      load.run(cc, hourRow(utcDay(offsetDays), hour), 4_000 + hour);
+    }
+  };
+
+  // Four complete hourly days establish 24 as what a complete day looks like.
+  for (const cc of ['CZ', 'ES']) {
+    fillDay(cc, -4, 24);
+    fillDay(cc, -3, 24);
+    // Today, up to the current hour: the newest row, and the partial day the
+    // window deliberately excludes.
+    fillDay(cc, 0, new Date().getUTCHours() + 1);
+  }
+
+  // ES stays complete through the window. This is the negative control.
+  fillDay('ES', -2, 24);
+  fillDay('ES', -1, 24);
+
+  // CZ is the 2026-08-30..09-01 shape in miniature: rows still arriving, most
+  // of the window missing. 22 of 48 — the fleet ran 0.50-0.74 in the real one.
+  fillDay('CZ', -2, 10);
+  fillDay('CZ', -1, 12);
 });
 
 describe('GET /api/data-freshness/:cc — the pipeline states its own health', () => {
@@ -152,8 +201,12 @@ describe('GET /api/data-freshness/:cc — the pipeline states its own health', (
     const { body } = await get('AT');
     const data = body.data as Freshness;
 
-    expect(data.generation).toEqual({ latest: null, ageHours: null, status: 'none' });
-    expect(data.price).toEqual({ latest: null, ageHours: null, status: 'none' });
+    // `coverage: null` and not `{ ratio: 0 }` — ABL-632. A stream we have never
+    // held has no coverage to report, and a zero there would read as a
+    // measurement of total failure.
+    const nothingHeld = { latest: null, ageHours: null, status: 'none', coverage: null };
+    expect(data.generation).toEqual(nothingHeld);
+    expect(data.price).toEqual(nothingHeld);
   });
 
   it('judges a day-ahead price on coverage, not on age', async () => {
@@ -173,6 +226,52 @@ describe('GET /api/data-freshness/:cc — the pipeline states its own health', (
     // neither, so the verdict does not depend on when the suite runs.
     const { body } = await get('PT');
     expect((body.data as Freshness).price.status).toBe('stale');
+  });
+
+  /**
+   * ABL-632. Prod ingest shed most of its rows from 2026-08-30 to 2026-09-02
+   * and `GET /api/data-freshness/DE` reported `load: live` for all four days,
+   * because a single surviving row per pass keeps `MAX(timestamp_utc)` recent.
+   * These two cases are that defect and its negative control, end to end
+   * through the real route.
+   */
+  it('calls a recent-but-holey stream stale, and shows the arithmetic', async () => {
+    const { body } = await get('CZ');
+    const load = (body.data as Freshness).load;
+
+    // The age rule on its own says live: the newest row is under an hour old.
+    expect(load.ageHours).toBeLessThan(1.1);
+    expect(load.status).toBe('stale');
+
+    // `ratio` is the 4dp quotient of the two integers beside it, on purpose:
+    // the status is derived from the published number, so the two can never
+    // disagree on screen.
+    expect(load.coverage).toMatchObject({
+      expectedDailyRows: 24,
+      observed: 22,
+      expected: 48,
+      ratio: 0.4583,
+    });
+  });
+
+  it('leaves a genuinely complete window live — the negative control', async () => {
+    const { body } = await get('ES');
+    const load = (body.data as Freshness).load;
+
+    expect(load.ageHours).toBeLessThan(1.1);
+    expect(load.status).toBe('live');
+    expect(load.coverage).toMatchObject({ observed: 48, expected: 48, ratio: 1 });
+  });
+
+  it('publishes coverage as null, never 0, when it cannot be measured', async () => {
+    // DE holds one row per stream, which is not a resolution anything can be
+    // scored against. `ratio: 0` there would be a fabricated verdict of total
+    // failure on a stream this same response calls live.
+    const { body } = await get('DE');
+    const data = body.data as Freshness;
+
+    expect(data.load.coverage).toBeNull();
+    expect(data.load.status).toBe('live');
   });
 
   it('returns every stream, so a caller cannot silently miss one', async () => {

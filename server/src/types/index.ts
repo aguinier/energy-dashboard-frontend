@@ -401,10 +401,31 @@ export type FreshnessStatus =
   | 'ended'
   | 'none';
 
+/**
+ * How full the trailing window is, beside how new its newest row is. ABL-632.
+ * Optional and nullable: `null` means the stored data cannot support the
+ * measurement, which is a different statement from a coverage of zero. See
+ * `services/freshnessCoverage.ts` for the derivation and the thresholds.
+ */
+export interface FreshnessCoverage {
+  windowStart: string;
+  windowEnd: string;
+  expectedDailyRows: number;
+  observed: number;
+  expected: number;
+  ratio: number;
+}
+
 export interface FreshnessStream {
   latest: string | null;
   ageHours: number | null;
   status: FreshnessStatus;
+  /**
+   * ABL-632. `status` is derived from `latest` **and** this: a stream whose
+   * newest row is recent but whose window is full of holes is `stale`. Optional
+   * so every existing construction of this type stays valid.
+   */
+  coverage?: FreshnessCoverage | null;
 }
 
 // Ingest passes — when did we last go and look, and did anything arrive?

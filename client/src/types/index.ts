@@ -387,6 +387,39 @@ export interface FreshnessStream {
    */
   ageHours: number | null;
   status: FreshnessStatus;
+  /**
+   * ABL-632. How full the trailing window is, beside how new its newest row is.
+   *
+   * `status` alone rode on `MAX(timestamp_utc)`, so a stream that kept limping —
+   * one surviving row per pass — stayed `live` while everything behind it
+   * rotted. Prod shed most of its rows for four days in 2026-08-30..09-02 and
+   * this endpoint said `live` throughout.
+   *
+   * **Optional and nullable, and both cases mean "no measurement", not zero.**
+   * Absent: an older server that predates the field. `null`: the stored data
+   * cannot support one (no rows, or no recognisable native resolution in the
+   * baseline). A real `{ observed: 0 }` is a genuine measurement of an empty
+   * window and is published as such.
+   *
+   * A `live` stream may carry a low ratio — the number is the evidence, the
+   * status is the judgement. Server-side derivation and per-stream thresholds:
+   * `server/src/services/freshnessCoverage.ts`.
+   */
+  coverage?: FreshnessCoverage | null;
+}
+
+export interface FreshnessCoverage {
+  /** First UTC day counted, inclusive (`YYYY-MM-DD`). */
+  windowStart: string;
+  /** Last UTC day counted, inclusive (`YYYY-MM-DD`). */
+  windowEnd: string;
+  /** Rows a complete UTC day holds at this stream's native resolution. */
+  expectedDailyRows: number;
+  observed: number;
+  /** Never zero — the field is `null` rather than carrying a zero denominator. */
+  expected: number;
+  /** `observed / expected` to 4dp. May exceed 1; is never `NaN` or `Infinity`. */
+  ratio: number;
 }
 
 export interface DataFreshness {
