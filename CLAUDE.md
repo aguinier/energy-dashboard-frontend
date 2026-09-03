@@ -493,6 +493,13 @@ Condensed diagnostics — full entries with the reasoning in
   Database Connection). Check the `.db-journal` mtime and
   `C:\Code\able\logs\sync-db-v2.log`; wait for the lock to clear. Not a bug
   (ABL-612).
+- **`attempt to write a readonly database` in the CAT container:** the *same*
+  event, seen from inside the bind mount, and **nothing wrote** — the container
+  cannot see the host writer's lock, so SQLite reads the journal as hot and
+  tries to roll it back on the readonly handle (`SQLITE_READONLY_ROLLBACK`;
+  measured both codes at one instant, ABL-657). Do not hunt for the write:
+  check `sync-db-v2.log` for an open transactional window. It throws on the
+  first read, not on connection open, so the handle recovers by itself.
 - **The load figure's accuracy badge reads "withheld" / the load figure draws
   no forecast line (NL):** the divergent-basis rule working — see Data
   semantics. Not missing data; do not "fix" it.
