@@ -73,10 +73,27 @@ Runs client and server together. The server needs `server/.env` with
   `node_modules/.bin` is missing, use the entry points directly:
   `node ../node_modules/vitest/vitest.mjs run`,
   `node ../node_modules/typescript/bin/tsc --noEmit` (from `server/` or `client/`).
-- **Junction trap:** many worktrees reach the primary `node_modules` through an
-  NTFS junction, and `git worktree remove --force` (or any recursive delete)
-  walks *through* junctions and deletes the shared target. Drop the junction
-  first: `cmd /c rmdir "<worktree>\node_modules"`, then remove the worktree.
+- **Junction trap — now mechanically guarded (ABL-640).** Worktrees reach the
+  primary tree through **three** NTFS junctions: `node_modules`,
+  `client/node_modules` and `server/node_modules` (`better-sqlite3` is
+  unhoisted). `git worktree remove --force` walks *through* a junction and
+  deletes the target's contents — printing nothing and exiting 0 — and it is
+  the **only** recursive delete that does: `Remove-Item -Recurse`, `fs.rmSync`,
+  `rm -rf` and `rmdir /s /q` each drop the link and leave the target intact
+  (measured; the matrix is in `docs/claude/03-quick-start.md`). So:
+  - **Remove a worktree with `npm run worktree:remove -- <path>`**, which drops
+    all three junctions and only then calls git. Never aim the raw command at a
+    path that still holds one.
+  - A deny-DELETE ACE on the shared tree is the control that does not depend on
+    remembering the above (`npm run guard:node-modules status|apply|release`,
+    `PROTECTED_PATHS` in `scripts/worktreeGuard.mjs`). With it on, the raw
+    command **aborts with the tree intact**; reads, overwrites and the additive
+    donor repair still work, so it costs nothing you are allowed to do here.
+    Its one visible cost: a raw `--force` removal now fails and leaves the
+    worktree behind — deliberate, and far cheaper than a silent fleet outage.
+  - `npm run check:modules` (also `predev`) names the damage in seconds if it
+    ever recurs; `npm run repro:junction-delete` re-verifies the guard, which
+    rests on measured git behaviour rather than a documented guarantee.
 - Tree-completeness check (prints `missing packages: 0` on a healthy tree, no
   install needed):
 
