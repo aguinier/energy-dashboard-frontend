@@ -171,3 +171,21 @@ export function findMissingPackages(lockPackages, exists, host = {}) {
   }
   return missing;
 }
+
+/**
+ * Classify a completeness check's result for the human-facing message
+ * (ABL-667). A missing `node_modules` directory is a never-linked worktree --
+ * the normal state of a fresh execution worktree, which has not been pointed
+ * at the shared tree yet -- and must read as a link/donor-copy task, not as
+ * the ABL-460/517/636 junction-delete symptom, which only afflicts a tree
+ * that was linked and then lost packages out from under it.
+ *
+ * @param {number} missingCount
+ * @param {boolean} nodeModulesExists whether `<repoRoot>/node_modules` exists at all
+ * @returns {'complete'|'never-linked'|'incomplete'}
+ */
+export function classifyMissingPackagesVerdict(missingCount, nodeModulesExists) {
+  if (missingCount === 0) return 'complete';
+  if (!nodeModulesExists) return 'never-linked';
+  return 'incomplete';
+}

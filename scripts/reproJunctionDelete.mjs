@@ -14,7 +14,7 @@
 //
 // SAFETY: everything happens under os.tmpdir(). The script refuses to run if
 // its scratch root resolves anywhere near the real checkouts.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -39,7 +39,7 @@ function countFiles(dir) {
   let n = 0;
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
-    if (e.isDirectory() && !statSync(p).isSymbolicLink()) n += countFiles(p);
+    if (e.isDirectory() && !e.isSymbolicLink()) n += countFiles(p);
     else n += 1;
   }
   return n;
