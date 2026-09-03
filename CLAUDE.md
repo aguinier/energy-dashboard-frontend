@@ -308,7 +308,10 @@ the pass walks 39 countries in one sequential alphabetical loop over 17-55 min,
 so a country's refresh instant is its alphabetical position, not the cron minute
 — AL finishes first, RS last. Before concluding a country was missed, check
 `GET /api/data-freshness/:cc/ingest` → `lastChecked` per stream (built by
-ABL-295): if it pre-dates the cron minute, the pass has not got there yet. A
+ABL-295): if it pre-dates the cron minute, the pass has not got there yet. That
+endpoint dates a check from any pass that **finished**, whatever
+`data_ingestion_log.status` says, because an erroring pass still went and looked
+(ABL-637); only delivery is judged on the row counts. A
 falling `Retrieved N` across passes is a window artifact, not row loss — the
 7-day window shrinks as old hours age out. Derive staleness from the pass
 **end** time, never the cron start.

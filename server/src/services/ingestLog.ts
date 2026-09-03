@@ -151,19 +151,64 @@ export const INGEST_PIPELINE_TYPES: readonly string[] = [
 ];
 
 /**
- * The status a pass row must carry to count as a check.
+ * WHICH PASSES COUNT AS A CHECK — AND WHY `status` NO LONGER DECIDES (ABL-637)
  *
- * The sibling writer sets `"failed" if error_message else "completed"`
- * (`../energy-data-gathering/src/db.py:1192`), so `failed` is producible even
- * though **no row has ever carried it** — measured 2026-08-12, all 114,983 rows
- * are `completed` bar the single in-flight `running` one. A failed pass is
- * deliberately neither a check nor a delivery here: counting it would let a
- * stream that has been erroring four times a day report itself as freshly
- * checked, which errs in the one direction this module must not err in.
+ * This module used to filter `status = 'completed'`, deliberately: "a failed
+ * pass is neither a check nor a delivery; counting it would let a stream that
+ * has been erroring four times a day report itself as freshly checked". That
+ * reasoning was never exercised, because the sibling writer set
+ * `"failed" if error_message else "completed"` and no caller passed an error
+ * message — measured 2026-09-03 on the replica, 143,330 of 143,336 rows are
+ * `completed`, one is `failed`, five are in-flight `running`.
+ *
+ * ABL-633 (`resolve_ingestion_status`, `../energy-data-gathering/src/db.py`)
+ * derives the column from the counts instead — `completed`, `partial_failure`
+ * (something failed, something was stored) or `failed` (something failed,
+ * nothing was stored) — so a failure value becomes producible *and* common. It
+ * is merged to that repo's `origin/main` and not yet on prod ingest.
+ *
+ * Re-examined against that, the old filter is wrong, and the rule is now
+ * **every pass that reached a terminal state is a check, whatever its status**.
+ * A pass that ran and errored did go and look; `lastChecked` answers "when did
+ * we last go and look", and nothing else. Health is carried by
+ * `lastStoredRows` and the delivery verdict, which are computed from the row
+ * counts and never from `status`.
+ *
+ * Excluding failed passes does not make a failing stream look failing — it
+ * makes it look **fixed**. The newest surviving pass is by construction the last
+ * one that stored rows, so `lastStoredRows === lastChecked` and
+ * `classifyDelivery` returns `flowing` with `attention: false`.
+ *
+ * Measured by replaying ABL-633's rule over the replica's own history
+ * (2026-09-03, 216 country x stream pairs), as of 02:00 UTC each day of the
+ * ABL-630 degradation:
+ *
+ * | as of      | pairs whose `lastChecked` would be understated | worst understatement | `flowing` verdicts on a stream where every pass failed |
+ * |------------|-----------------------------------------------|----------------------|--------------------------------------------------------|
+ * | 2026-08-31 | 140 of 216                                    | 24.0 h               | 114                                                    |
+ * | 2026-09-01 | 140 of 216                                    | 48.7 h               | 114                                                    |
+ * | 2026-09-02 | 140 of 216                                    | 72.6 h               | 114                                                    |
+ *
+ * That is the incident this endpoint's whole chain descends from, rendered as a
+ * green light and a check time three days too old. Keeping the filter would
+ * have introduced it silently on the day ABL-633 deployed.
+ *
+ * `partial_failure` was a plain latent defect on top: such a pass **did** store
+ * rows, so excluding it under-reported `lastStoredRows` outright. Unreachable
+ * today — every fetcher's error path returns `(0, 0, 1)`, and 0 of the 3,723
+ * replica passes carrying `records_failed > 0` also stored a row — but
+ * reachable by contract.
+ *
+ * `running` stays excluded and needs no status test to do it: `end_time` is
+ * NULL until `log_ingestion_complete` sets it and a terminal status in the same
+ * UPDATE. A pass that has not finished has not checked anything yet. Testing
+ * for the presence of `end_time` rather than for a list of status literals is
+ * also what stops this bug recurring — a status value added upstream tomorrow
+ * counts as the check it is instead of silently vanishing from the read.
+ *
+ * Whether an erroring stream should be *alerted* on is ABL-632's question. This
+ * module only has to describe the passes truthfully.
  */
-const COMPLETED = 'completed';
-
-export { COMPLETED as INGEST_COMPLETED_STATUS };
 
 /**
  * Did this pass write any rows?
@@ -174,7 +219,9 @@ export { COMPLETED as INGEST_COMPLETED_STATUS };
  *
  * `records_failed` is deliberately not consulted: a pass that stored 24 rows
  * and failed 2 still wrote to the table, and a pass that failed everything
- * already has `inserted + updated = 0`.
+ * already has `inserted + updated = 0`. That is the same predicate ABL-633's
+ * `resolve_ingestion_status` splits `partial_failure` from `failed` on, so this
+ * rule and the status column now agree by construction rather than by luck.
  */
 export function passStoredRows(pass: {
   records_inserted: number | null;
@@ -245,16 +292,17 @@ export function mergePipelinePasses(passes: readonly PipelinePass[]): StreamRefr
 /**
  * The four states, which are four different claims and must not be collapsed.
  *
- * - `flowing` — the most recent completed pass brought rows. The only state in
+ * - `flowing` — the most recent finished pass brought rows. The only state in
  *   which "last refreshed" and "last checked" are the same instant.
  * - `checked_no_data` — we have run since the last delivery and got nothing.
  *   Legitimate (a day-ahead auction publishes once, later passes re-read the
- *   same rows and change none) *and* the shape of a real outage. This endpoint
- *   reports both timestamps and does not adjudicate between them.
+ *   same rows and change none), the shape of a real outage, *and* — after
+ *   ABL-633 — the shape of a stream whose every pass errors. This endpoint
+ *   reports both timestamps and does not adjudicate between the three.
  * - `never_delivered` — passes are recorded and not one has ever brought a row.
  *   GB and UA load, and 14 of 36 zones' net position. Emphatically not the same
  *   as `checked_no_data`: there is no "last refreshed" to show at all.
- * - `not_logged` — no completed pass is recorded. This says nothing about
+ * - `not_logged` — no finished pass is recorded. This says nothing about
  *   whether the stream ran; it says the log cannot answer. The log starts
  *   2025-12-23, so it is silent about everything before that, which is why the
  *   response carries `logStartsAt` beside the streams.

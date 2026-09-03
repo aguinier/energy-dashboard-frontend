@@ -683,7 +683,9 @@ function seed(db: DatabaseType): void {
  * inventing new ones, each landing on the country whose shape it already stands
  * for:
  *
- * - `DE` — `flowing` everywhere. The ordinary case.
+ * - `DE` — `flowing` on every stream whose newest pass is a plain `completed`
+ *   delivery. The ordinary case; `netPosition` is the one asserted on, because
+ *   `load` and `generation` carry the ABL-637 status rows described below.
  * - `GR` — `checked_no_data`: still checked four times a day, last actually
  *   delivered before the window. That is GR's whole identity in this fixture,
  *   and its real shape — measured 2026-08-12, GR's `net_position` was checked
@@ -753,13 +755,21 @@ function seedIngestionLog(db: DatabaseType): void {
   empty('net_position', 'AT', 1, 32);
   empty('net_position', 'AT', 2, 32);
 
-  // A `failed` pass and an in-flight `running` one, both of which must be
-  // excluded from "last checked". `failed` is producible by the sibling writer
-  // (`status = "failed" if error_message else "completed"`,
-  // `../energy-data-gathering/src/db.py:1192`) though no production row has ever
-  // carried it; `running` has exactly one live row. Dated AFTER every DE pass
-  // above, so a service that counted either would visibly move DE's answer.
+  // ABL-633's status vocabulary — `completed` / `partial_failure` / `failed`,
+  // plus `running` at start — and the three rows ABL-637 turns on. All dated
+  // AFTER every DE pass above, so each visibly moves DE's answer.
+  //
+  // `failed` on load: the pass ran and stored nothing. It IS a check — the
+  // stream was looked at — and it is NOT a delivery, so DE load must read
+  // `checked_no_data` with the check dated here and the refresh dated a day
+  // earlier. Dropping it would freeze both stamps on day 2 and report `flowing`
+  // on a stream whose newest pass errored.
   pass.run('load', 'DE', logAt(3, 30), logAt(3, 30), 'failed', 0, 0, 12, 'HTTP 503');
+  // `partial_failure` on renewable: 18 rows stored, 6 failed. Both a check and a
+  // delivery — the rows are in the table whatever the pass called itself.
+  pass.run('renewable', 'DE', logAt(3, 32), logAt(3, 32), 'partial_failure', 18, 0, 6, 'HTTP 503 on 6 of 24');
+  // `running`: no `end_time`, so not a check. A pass that has not finished has
+  // not looked at anything yet, and this is the only exclusion left.
   pass.run('price', 'DE', logAt(3, 31), null, 'running', 0, 0, 0, null);
 }
 
