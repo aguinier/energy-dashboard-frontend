@@ -10,6 +10,7 @@ import {
   resolvePrincipal,
   icaclsSucceeded,
   findMissingPackages,
+  classifyMissingPackagesVerdict,
 } from './worktreeGuard.mjs';
 
 const stat = (isLink: boolean, isDir: boolean) => ({
@@ -182,5 +183,27 @@ describe('findMissingPackages', () => {
     const missing = findMissingPackages(lock, exists, { platform: 'linux', arch: 'x64' });
     expect(missing).toContain('node_modules/linux-only');
     expect(missing).not.toContain('node_modules/win-only');
+  });
+});
+
+describe('classifyMissingPackagesVerdict', () => {
+  it('is complete when nothing is missing', () => {
+    expect(classifyMissingPackagesVerdict(0, true)).toBe('complete');
+  });
+
+  it('is complete when nothing is missing even without a node_modules dir', () => {
+    expect(classifyMissingPackagesVerdict(0, false)).toBe('complete');
+  });
+
+  // ABL-667: a fresh execution worktree has never been linked to the shared
+  // tree, so its node_modules directory does not exist at all. That must not
+  // read as the ABL-460/517/636 junction-delete symptom, which only afflicts
+  // a tree that was linked and then lost packages.
+  it('is never-linked when node_modules is entirely absent', () => {
+    expect(classifyMissingPackagesVerdict(603, false)).toBe('never-linked');
+  });
+
+  it('is incomplete when node_modules exists but is short packages', () => {
+    expect(classifyMissingPackagesVerdict(107, true)).toBe('incomplete');
   });
 });

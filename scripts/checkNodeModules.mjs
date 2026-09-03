@@ -10,7 +10,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findMissingPackages } from './worktreeGuard.mjs';
+import { findMissingPackages, classifyMissingPackagesVerdict } from './worktreeGuard.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const lockPath = join(repoRoot, 'package-lock.json');
@@ -29,7 +29,19 @@ const missing = findMissingPackages(
 
 console.log(`missing packages: ${missing.length}`);
 
-if (missing.length === 0) process.exit(0);
+const verdict = classifyMissingPackagesVerdict(missing.length, existsSync(join(repoRoot, 'node_modules')));
+
+if (verdict === 'complete') process.exit(0);
+
+if (verdict === 'never-linked') {
+  console.error('');
+  console.error(`${repoRoot}\\node_modules does not exist -- this worktree has never been`);
+  console.error('linked to the shared tree. That is the normal state of a fresh execution');
+  console.error('worktree, not damage.');
+  console.error('');
+  console.error('Link it (or use the additive donor copy) per docs/claude/03-quick-start.md.');
+  process.exit(1);
+}
 
 console.error('');
 console.error(`node_modules is INCOMPLETE: ${missing.length} package(s) the lockfile requires are absent.`);
