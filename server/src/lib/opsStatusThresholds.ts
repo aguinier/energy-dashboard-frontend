@@ -1,5 +1,5 @@
 import type { DiskUsage } from '../services/hostMetrics.js';
-import type { FreshnessStatus } from '../types/index.js';
+import type { FreshnessRollup } from '../services/freshnessRollup.js';
 import type { SideStatus } from '../services/peerOpsStatus.js';
 
 /**
@@ -167,10 +167,27 @@ export function diskErrorPercentForVolume(totalBytes: number): number {
  * read `'unknown'` here rather than `'ok'` (a country we've never held data
  * for is not evidence the environment is healthy) or `'warn'` (it is not an
  * alarm either).
+ *
+ * A rollup marked `unmeasured` (ABL-657) is none of those four: the database
+ * could not be read at all. It is `'error'` — every data endpoint on this
+ * environment is failing at that moment, which is the definition of an outage
+ * — *unless* `blackoutActive`, where it is `'warn'` for exactly the reason an
+ * unreachable side is softened in `deriveEnvironmentState`: the twice-daily
+ * replica write lock is a scheduled, known state (`syncBlackoutWindow.ts`).
+ *
+ * Not `'unknown'`, which would be the tempting reading of "we did not measure
+ * it". `'unknown'` is *held* by the alert engine's unknown rule
+ * (`opsAlertEngine.ts`), so a genuinely unreadable database outside the sync
+ * window would then reach nobody at all — trading a noisy false alarm for a
+ * silent real one.
  */
-export function deriveFreshnessState(status: FreshnessStatus): ThresholdState {
-  if (status === 'stale') return 'warn';
-  if (status === 'live') return 'ok';
+export function deriveFreshnessState(
+  freshness: FreshnessRollup,
+  blackoutActive: boolean,
+): ThresholdState {
+  if (freshness.unmeasured !== undefined) return blackoutActive ? 'warn' : 'error';
+  if (freshness.status === 'stale') return 'warn';
+  if (freshness.status === 'live') return 'ok';
   return 'unknown';
 }
 
@@ -193,7 +210,7 @@ export function deriveEnvironmentState(side: SideStatus, blackoutActive: boolean
   if (!side.reachable) return blackoutActive ? 'warn' : 'error';
   return worstOf([
     deriveDiskState(side.status.host.disk),
-    deriveFreshnessState(side.status.freshness.status),
+    deriveFreshnessState(side.status.freshness, blackoutActive),
   ]);
 }
 
@@ -236,11 +253,17 @@ export interface OpsSideDerived {
  * measure it at all, and an alert rule keyed on `disk === 'error'` must not
  * fire on a peer that merely timed out. The environment verdict is where
  * "unreachable" is expressed, and it is the field a reachability alert reads.
+ *
+ * A *reachable* side whose freshness rollup came back unmeasured is a
+ * different case and reports it as one (ABL-657): the side answered, so its
+ * disk reading is real, and only `freshness` degrades.
  */
 export function deriveSideState(side: SideStatus, blackoutActive: boolean): OpsSideDerived {
   return {
     environment: deriveEnvironmentState(side, blackoutActive),
     disk: side.reachable ? deriveDiskState(side.status.host.disk) : 'unknown',
-    freshness: side.reachable ? deriveFreshnessState(side.status.freshness.status) : 'unknown',
+    freshness: side.reachable
+      ? deriveFreshnessState(side.status.freshness, blackoutActive)
+      : 'unknown',
   };
 }

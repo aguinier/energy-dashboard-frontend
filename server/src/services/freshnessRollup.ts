@@ -36,6 +36,39 @@ export interface FreshnessRollup {
   counts: Record<FreshnessStatus, number>;
   /** Country codes with at least one `stale` stream, sorted — the actionable list. */
   staleCountries: string[];
+  /**
+   * Why this is **not a measurement** (ABL-657). Absent on every real rollup;
+   * present only when the database could not be read at all.
+   *
+   * It is a separate field rather than a fifth `FreshnessStatus` because
+   * `FreshnessStatus` is a verdict about a *stream* — `none` means "we hold no
+   * rows for it", which is a thing we measured. "The read threw" is not a
+   * verdict about any stream, and giving it one would be exactly the
+   * confidently-wrong number this codebase keeps having: a locked replica must
+   * never render as `live`, and must not render as `none` either.
+   *
+   * When set, `status`/`counts`/`staleCountries`/`*Checked` are the empty
+   * shape and must not be read as findings — every consumer checks this first.
+   */
+  unmeasured?: string;
+}
+
+/**
+ * The rollup for "we could not read the database", carrying the reason.
+ *
+ * `countriesChecked: 0` and `streamsChecked: 0` are the honest counts — we
+ * checked nothing — and are what makes the payload legible even to a reader
+ * that predates `unmeasured`.
+ */
+export function unmeasuredFreshnessRollup(reason: string): FreshnessRollup {
+  return {
+    status: 'none',
+    countriesChecked: 0,
+    streamsChecked: 0,
+    counts: { live: 0, stale: 0, ended: 0, none: 0 },
+    staleCountries: [],
+    unmeasured: reason,
+  };
 }
 
 /**

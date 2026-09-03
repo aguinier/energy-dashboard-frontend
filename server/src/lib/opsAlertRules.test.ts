@@ -4,6 +4,7 @@ import type { CombinedOpsStatus } from '../services/combinedOpsStatusService.js'
 import type { SideStatus } from './../services/peerOpsStatus.js';
 import type { OpsStatus } from '../services/opsStatusService.js';
 import { deriveSideState, deriveCommitDriftState } from './opsStatusThresholds.js';
+import { unmeasuredFreshnessRollup } from '../services/freshnessRollup.js';
 
 function opsStatus(overrides: {
   usedBytes?: number;
@@ -201,6 +202,45 @@ describe('observeCombinedStatus — freshness', () => {
       'local:freshness',
     );
     expect(freshness.state).toBe('unknown');
+  });
+
+  /**
+   * ABL-657. This alert used to be unreachable-only during the DB sync: the
+   * endpoint 500'd, so the *reachability* KPI carried the whole story and
+   * freshness read `unknown`. Now the side answers and this is where the
+   * failure lands, so the evidence string has to say what actually happened.
+   */
+  it('names the database failure when the side answered but could not read it', () => {
+    const locked = opsStatus();
+    locked.freshness = unmeasuredFreshnessRollup('attempt to write a readonly database');
+
+    const freshness = byKey(
+      observeCombinedStatus(combined(reachable(locked), reachable(opsStatus()))),
+      'local:freshness',
+    );
+
+    expect(freshness.state).toBe('error');
+    expect(freshness.detail).toBe(
+      'not measured — database read failed (attempt to write a readonly database)',
+    );
+    // Never "fleet freshness is none" — that would describe the data rather
+    // than our failure to look at it.
+    expect(freshness.detail).not.toContain('fleet freshness');
+  });
+
+  it('is held, not fired, inside the blackout window — and says warn rather than error', () => {
+    const locked = opsStatus();
+    locked.freshness = unmeasuredFreshnessRollup('attempt to write a readonly database');
+
+    const freshness = byKey(
+      observeCombinedStatus(combined(reachable(locked), reachable(opsStatus()), { blackoutActive: true })),
+      'local:freshness',
+    );
+
+    expect(freshness.state).toBe('warn');
+    // `blackoutSensitive` is what makes the engine hold it; the softened state
+    // is what the badge renders. Both are needed, so both are pinned.
+    expect(freshness.blackoutSensitive).toBe(true);
   });
 });
 

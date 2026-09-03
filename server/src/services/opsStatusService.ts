@@ -2,7 +2,11 @@ import path from 'node:path';
 import { getHealthProvenance, type HealthProvenance } from '../lib/healthProvenance.js';
 import { getAllCountries } from './countryService.js';
 import { getDataFreshness } from './dataFreshnessService.js';
-import { computeFreshnessRollup, type FreshnessRollup } from './freshnessRollup.js';
+import {
+  computeFreshnessRollup,
+  unmeasuredFreshnessRollup,
+  type FreshnessRollup,
+} from './freshnessRollup.js';
 import {
   getDiskUsage,
   getCpuLoad,
@@ -69,18 +73,42 @@ function getProcessMetrics(): ProcessMetrics {
  * `GET /api/data-freshness/:cc` already serves (`dataFreshnessService.ts`)
  * rather than re-implementing the staleness rules.
  *
- * This is the one piece of this endpoint that touches the database, and is
- * therefore the one expected to fail during the twice-daily DB sync's
- * write-lock blackout (WORKFLOWS.md, "Acceptance blackout during Stage 2",
- * ABL-220 — ~07:00 and ~16:30 local, 4-14+ min). A 500 for the whole request
- * in that window is the documented, expected behaviour, not a defect here.
+ * This is the one piece of this endpoint that touches the database — and it no
+ * longer takes the whole endpoint down with it (ABL-657). A failed read comes
+ * back as `unmeasuredFreshnessRollup(reason)`: one section that says why it is
+ * blank, in an endpoint where `disk`, `cpuLoad` and `network` already answer an
+ * honest `null` when this host cannot measure them.
+ *
+ * WHY THIS USED TO THROW, AND WHY THAT WAS THE BUG
+ *
+ * `/api/ops/status` is what the peer poll (`peerOpsStatus.ts`) and the alert
+ * engine's local read both call, and `reachable` is decided by whether that
+ * call answers. So while the twice-daily replica sync held its write lock, one
+ * unreadable KPI made a *live, answering* process report as an unreachable
+ * environment, and the reachability alert flapped `ok -> error -> ok` twice a
+ * day (ABL-634: 172 errors in six days). Reachability now measures
+ * reachability; a database it cannot read is reported as the freshness verdict
+ * it actually is (`lib/opsStatusThresholds.ts` — `error`, softened to `warn`
+ * inside the known sync window, never `ok`).
+ *
+ * Deliberately catches everything, not a matched SQLite code. Under an
+ * exclusive host-side writer the container's readonly handle raises
+ * `SQLITE_READONLY_ROLLBACK` ("attempt to write a readonly database" — the
+ * bind mount hides the writer's lock, so SQLite reads the journal as hot and
+ * tries to roll it back), a workstation raises `SQLITE_BUSY`, and neither is a
+ * list worth keeping current: the honest answer for any failure here is the
+ * same, and the message is carried through verbatim.
  */
-function getFleetFreshness(now: Date) {
-  const byCountry: Record<string, ReturnType<typeof getDataFreshness>> = {};
-  for (const { country_code } of getAllCountries()) {
-    byCountry[country_code] = getDataFreshness(country_code, now);
+function getFleetFreshness(now: Date): FreshnessRollup {
+  try {
+    const byCountry: Record<string, ReturnType<typeof getDataFreshness>> = {};
+    for (const { country_code } of getAllCountries()) {
+      byCountry[country_code] = getDataFreshness(country_code, now);
+    }
+    return computeFreshnessRollup(byCountry);
+  } catch (err) {
+    return unmeasuredFreshnessRollup(err instanceof Error ? err.message : String(err));
   }
-  return computeFreshnessRollup(byCountry);
 }
 
 /**
@@ -107,6 +135,12 @@ function getFleetFreshness(now: Date) {
  * started, split so the constant health/peer polling does not read as visits.
  * It carries its own `countingSince` — a restart zeroes it, and the payload
  * has to say so rather than let a reader assume an all-time count.
+ *
+ * **Does not throw** (ABL-657). Every section is a best-effort reading or an
+ * explicit "not measured", including `freshness` — see `getFleetFreshness`.
+ * `combinedOpsStatusService.ts` still wraps the call, because a `catch` that
+ * exists to make a promise about the future is not a promise this function can
+ * make alone.
  */
 export function getOpsStatus(now: Date = new Date()): OpsStatus {
   const provenance = getHealthProvenance();

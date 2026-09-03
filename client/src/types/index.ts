@@ -513,6 +513,17 @@ export interface FreshnessRollup {
   streamsChecked: number;
   counts: Record<FreshnessStatus, number>;
   staleCountries: string[];
+  /**
+   * Why the rollup is **not a measurement** (ABL-657) — the database read
+   * failed, typically the twice-daily replica write lock. Absent on every real
+   * rollup, and absent entirely from a peer on a build that predates it.
+   *
+   * When present the other fields are the empty shape, so anything that renders
+   * or ranks them has to check this first: a locked replica reported as
+   * `status: 'none'` would read "no data held", which is a statement about the
+   * data rather than about our failure to look at it.
+   */
+  unmeasured?: string;
 }
 
 /**

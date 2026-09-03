@@ -4,9 +4,16 @@ import type { OpsStatus } from './opsStatusService.js';
  * Reachable-or-not shape for one environment's status, for the acceptance/prod
  * comparison page (ABL-238). `combinedOpsStatusService.ts` uses this same shape
  * for the *local* side too (wrapping `getOpsStatus()` in a try/catch) so both
- * sides degrade identically: a slow/locked DB (the ABL-220 sync blackout) or a
- * genuinely down peer both come back `reachable: false` with a message, never
- * a thrown error that would 500 the whole combined payload over one side.
+ * sides degrade identically: a genuinely down peer comes back `reachable:
+ * false` with a message, never a thrown error that would 500 the whole
+ * combined payload over one side.
+ *
+ * **A locked database is no longer one of those cases** (ABL-657). It used to
+ * be — `/api/ops/status` 500'd for the duration of the ABL-220 sync window and
+ * both sides read it as unreachable — which meant this flag answered "did the
+ * environment respond?" with "could it read its database?". Those are different
+ * questions and the second one has its own KPI. A side that answers is
+ * `reachable: true` even when its freshness rollup comes back `unmeasured`.
  */
 export type SideStatus =
   | { reachable: true; latencyMs: number; status: OpsStatus }
