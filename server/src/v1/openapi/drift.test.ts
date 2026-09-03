@@ -361,6 +361,70 @@ describe('ABL-349 — the document must not publish a subscriber-facing document
   });
 });
 
+describe('ABL-522 Constraint 2 — the document cites no clause a reader cannot open', () => {
+  // The block above stops this document *linking* the subscriber terms. Prose
+  // citing "§7.3" does the same job by another route: it tells a reader an
+  // obligation is imposed on them by a clause and, while ABL-349 holds
+  // publication, gives them no way to read that clause. The clause numbers
+  // still live in `spec.ts`'s comments, which ship to nobody.
+  //
+  // This is the one place the shipped contract and the unpublished terms touch,
+  // so it is checked against the built document rather than left to review.
+
+  const everyString = (): Array<{ path: string; value: string }> => {
+    const found: Array<{ path: string; value: string }> = [];
+    const walk = (node: unknown, path: string): void => {
+      if (typeof node === 'string') {
+        found.push({ path, value: node });
+        return;
+      }
+      if (Array.isArray(node)) {
+        node.forEach((item, index) => walk(item, `${path}[${index}]`));
+        return;
+      }
+      if (node !== null && typeof node === 'object') {
+        for (const [key, value] of Object.entries(node)) walk(value, `${path}.${key}`);
+      }
+    };
+    walk(DOCUMENT, '$');
+    return found;
+  };
+
+  it('carries no clause citation anywhere', () => {
+    // "§7.3", and the spelled-out forms it turns into when someone removes the
+    // symbol and thinks the rule is satisfied.
+    const citation = /§|\b(?:tos|terms of service|clause|section)\s+\d+(?:\.\d+)*/i;
+    const offenders = everyString().filter(({ value }) => citation.test(value));
+
+    expect(
+      offenders.map(({ path, value }) => `${path}: ${value}`),
+      'a clause number in a published description points a reader at a document they cannot open'
+    ).toEqual([]);
+  });
+
+  it('does not name the subscriber terms', () => {
+    const named = /terms of service|terms and conditions|subscriber terms/i;
+    const offenders = everyString().filter(({ value }) => named.test(value));
+
+    expect(offenders.map(({ path, value }) => `${path}: ${value}`)).toEqual([]);
+  });
+
+  it('still states the attribution obligation in its own words', () => {
+    // The point of the rule above is not silence. Deleting the explanation also
+    // satisfies it, and leaves an integrator worse off than the citation did —
+    // so the obligation has to survive as prose a reader can act on without
+    // holding the contract. These three strings are that prose.
+    const source = DOCUMENT.components.schemas.SeriesSource;
+    const properties = source.properties as Record<string, { description?: string }>;
+
+    expect(source.description).toContain('rendered programmatically rather than remembered');
+    expect(properties.attribution_required.description).toContain(
+      'This is the field to branch on'
+    );
+    expect(properties.attribution.description).toContain('discharges the obligation');
+  });
+});
+
 describe('every route is documented, and every documented route exists', () => {
   it('the Express route table and the OpenAPI paths are the same set', () => {
     const mounted = [
