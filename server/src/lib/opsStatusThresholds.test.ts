@@ -12,6 +12,10 @@ import {
 } from './opsStatusThresholds.js';
 import type { OpsStatus } from '../services/opsStatusService.js';
 import type { SideStatus } from '../services/peerOpsStatus.js';
+import {
+  unmeasuredFreshnessRollup,
+  type FreshnessRollup,
+} from '../services/freshnessRollup.js';
 
 /**
  * Pure — `opsStatusThresholds.ts` imports only *types* from
@@ -21,6 +25,11 @@ import type { SideStatus } from '../services/peerOpsStatus.js';
  * "NODE_MODULE_VERSION mismatch"). Ported from the client's
  * `lib/opsStatusThresholds.test.ts`, which ABL-292 deleted along with the
  * client copy of the derivation.
+ *
+ * `unmeasuredFreshnessRollup` is imported as a *value* and does not break that
+ * (ABL-657): `freshnessRollup.ts` has no runtime imports at all — both of its
+ * imports are `import type` and erase — so it is a pure function module, not a
+ * door into `config/database.js`.
  */
 
 const disk = (usedBytes: number, totalBytes: number) => ({ totalBytes, freeBytes: totalBytes - usedBytes, usedBytes });
@@ -253,21 +262,60 @@ describe('diskErrorPercentForVolume', () => {
   });
 });
 
+const rollup = (status: FreshnessRollup['status']): FreshnessRollup => ({
+  status,
+  countriesChecked: 7,
+  streamsChecked: 35,
+  counts: { live: 0, stale: 0, ended: 0, none: 0 },
+  staleCountries: [],
+});
+
 describe('deriveFreshnessState', () => {
   it('maps stale to warn — the one actionable verdict', () => {
-    expect(deriveFreshnessState('stale')).toBe('warn');
+    expect(deriveFreshnessState(rollup('stale'), false)).toBe('warn');
   });
 
   it('maps live to ok', () => {
-    expect(deriveFreshnessState('live')).toBe('ok');
+    expect(deriveFreshnessState(rollup('live'), false)).toBe('ok');
   });
 
   it('maps ended to unknown, not ok — a terminal non-alarm is not evidence of health', () => {
-    expect(deriveFreshnessState('ended')).toBe('unknown');
+    expect(deriveFreshnessState(rollup('ended'), false)).toBe('unknown');
   });
 
   it('maps none to unknown', () => {
-    expect(deriveFreshnessState('none')).toBe('unknown');
+    expect(deriveFreshnessState(rollup('none'), false)).toBe('unknown');
+  });
+
+  it('a blackout does not soften a *measured* verdict — a stale fleet at 07:05 is still stale', () => {
+    expect(deriveFreshnessState(rollup('stale'), true)).toBe('warn');
+    expect(deriveFreshnessState(rollup('live'), true)).toBe('ok');
+  });
+
+  /**
+   * ABL-657. The rollup that could not be measured is the case that used to
+   * arrive as an unreachable side; it now arrives here, and must not read as
+   * any of the four verdicts above.
+   */
+  it('is error when the rollup is unmeasured outside the sync window', () => {
+    expect(deriveFreshnessState(unmeasuredFreshnessRollup('database is locked'), false)).toBe('error');
+  });
+
+  it('is warn, not error, when the rollup is unmeasured inside the sync window', () => {
+    expect(deriveFreshnessState(unmeasuredFreshnessRollup('database is locked'), true)).toBe('warn');
+  });
+
+  it('is never unknown for an unmeasured rollup — the alert engine holds unknown, and a dead DB must reach someone', () => {
+    for (const blackout of [false, true]) {
+      expect(deriveFreshnessState(unmeasuredFreshnessRollup('boom'), blackout)).not.toBe('unknown');
+    }
+  });
+
+  it('reads `unmeasured` and not `status`: the same empty `none` shape derives differently once it carries a reason', () => {
+    const empty = unmeasuredFreshnessRollup('attempt to write a readonly database');
+    expect(empty.status).toBe('none');
+    expect(deriveFreshnessState({ ...empty, unmeasured: undefined }, false)).toBe('unknown');
+    expect(deriveFreshnessState(empty, false)).toBe('error');
   });
 });
 
@@ -320,9 +368,25 @@ describe('deriveEnvironmentState', () => {
     expect(deriveEnvironmentState(side, false)).toBe('unknown');
   });
 
-  it('a blackout never softens a *reachable* side — the downgrade only covers unreachability', () => {
+  it('a blackout never softens a *measured* KPI — a full disk at 07:05 is still a full disk', () => {
     const side = reachable({ host: { platform: 'linux', disk: disk(95, 100), cpuLoad: null } });
     expect(deriveEnvironmentState(side, true)).toBe('error');
+  });
+
+  /**
+   * ABL-657's badge case, end to end through the roll-up. Before the fix the
+   * sync lock made the side *unreachable*, which the first two cases above
+   * cover; now the side answers and only its freshness rollup is unmeasured,
+   * so the softening has to reach it there or the badge flaps red anyway.
+   */
+  it('is error when reachable but the freshness rollup could not be measured', () => {
+    const side = reachable({ freshness: unmeasuredFreshnessRollup('attempt to write a readonly database') });
+    expect(deriveEnvironmentState(side, false)).toBe('error');
+  });
+
+  it('is warn when that same unmeasured rollup lands inside the sync blackout window', () => {
+    const side = reachable({ freshness: unmeasuredFreshnessRollup('attempt to write a readonly database') });
+    expect(deriveEnvironmentState(side, true)).toBe('warn');
   });
 });
 
@@ -355,5 +419,21 @@ describe('deriveSideState', () => {
     });
 
     expect(deriveSideState(side, false)).toEqual({ environment: 'warn', disk: 'ok', freshness: 'warn' });
+  });
+
+  /**
+   * ABL-657: an unreadable database must not cost us the disk reading. The
+   * side answered — its host metrics are as measured as they ever were — so
+   * only `freshness` degrades, unlike the unreachable case two tests up where
+   * every KPI is honestly `unknown`.
+   */
+  it('degrades only freshness when the side answers but its database read failed', () => {
+    const side = reachable({
+      host: { platform: 'linux', disk: disk(10, 100), cpuLoad: null },
+      freshness: unmeasuredFreshnessRollup('attempt to write a readonly database'),
+    });
+
+    expect(deriveSideState(side, false)).toEqual({ environment: 'error', disk: 'ok', freshness: 'error' });
+    expect(deriveSideState(side, true)).toEqual({ environment: 'warn', disk: 'ok', freshness: 'warn' });
   });
 });

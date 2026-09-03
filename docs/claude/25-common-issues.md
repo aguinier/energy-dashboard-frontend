@@ -206,3 +206,58 @@ sentence instead of numbers:**
   documented in `WORKFLOWS.md`; use its separate `PORT=3002` procedure for a
   working-tree server. After editing this file, `cd server && npx vitest run`
   checks its `file:line` citations via `docs/claudeMdCitations.test.ts`.
+
+## `attempt to write a readonly database` inside the CAT container (ABL-657)
+
+**Symptom.** The acceptance container logs `Error: attempt to write a readonly
+database` in bursts — 172 of them between 2026-08-28 and 2026-09-03 — and the
+ops-status environment badge flaps `ok -> error -> ok` twice a day. ABL-634
+aligned every breach against `C:\Code\able\logs\sync-db-v2.log` and found all
+of them strictly inside a `Replacing local tables (transactional)` → `Done.`
+window, with the one RECOVERED landing 3m01s *after* the `Done.`
+
+**It is not a write.** There is no application write on that request path.
+`config/database.ts` opens the handle `{ readonly: true }`, so a write is not
+merely absent, it is impossible; `routes/opsStatus.test.ts` already pinned that
+`/api/ops/status` performs none. The error is SQLite's pager, and the reason
+the two environments disagree about it is lock visibility across the bind
+mount.
+
+**Measured 2026-09-03**, one scratch database in a Docker Desktop bind mount,
+one Windows-host writer holding an exclusive transaction, two readonly readers
+at the same instant:
+
+| reader | `err.code` | `err.message` |
+|---|---|---|
+| Windows host (`node`, better-sqlite3) | `SQLITE_BUSY` | `database is locked` |
+| Linux container over the bind mount | `SQLITE_READONLY_ROLLBACK` | `attempt to write a readonly database` |
+
+The container cannot see the host writer's `RESERVED` lock through the mount,
+so `hasHotJournal()` finds a journal file with no lock holder, concludes the
+journal is *hot*, and tries to roll it back — a write, on a readonly handle.
+Split further: `new Database(path, { readonly: true })` **succeeds**; the throw
+comes on the first read, when the shared lock is taken. So the long-lived
+handle survives the window and recovers on its own; nothing needs reopening.
+
+**Practical consequence.** `SQLITE_BUSY` and `SQLITE_READONLY_ROLLBACK` are the
+same event seen from two sides. Never treat "attempt to write a readonly
+database" in a container log as evidence that something wrote, and never go
+looking for the write — grep `sync-db-v2.log` for an open transactional window
+first.
+
+**Why the badge flapped rather than reading `warn`.** Two independent defects,
+both fixed here:
+
+1. `/api/ops/status` threw when its freshness rollup could not read the
+   database, and `reachable` is decided by whether that endpoint answers — so a
+   live, serving process reported as an unreachable *environment*. The rollup
+   now degrades to `unmeasured` with the reason (`freshnessRollup.ts`) and the
+   endpoint answers 200.
+2. `checkSyncBlackoutWindow` read `now.getHours()` — *this process's* clock —
+   against a schedule written in the workstation's wall clock. `docker/Dockerfile`
+   sets no `TZ` and `node:20-slim` is `Etc/UTC`, so 16:38 local read as 14:38
+   and **neither window ever matched inside the container**. The hold that
+   existed to soften exactly this was dead code on the only deployment it was
+   written for. It is now evaluated in `SYNC_HOST_TIME_ZONE` via `Intl`,
+   verified by running the built `dist` inside a `node:20-slim` container at the
+   six real breach instants.

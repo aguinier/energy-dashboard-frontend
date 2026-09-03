@@ -5,10 +5,9 @@ import { useOpsStatus } from '@/hooks/useOpsStatus';
 import { useOpsStatusHistory } from '@/hooks/useOpsStatusHistory';
 import { buildNetworkRows } from '@/lib/networkRows';
 import { buildTrafficBlock } from '@/lib/opsTrafficRows';
+import { describeFreshnessRollup, shouldShowBlackoutBanner } from '@/lib/opsStatusLabels';
 import { formatBytes, formatTimeAgo } from '@/lib/formatters';
 import type {
-  CombinedOpsStatus,
-  FreshnessRollup,
   OpsSideDerived,
   OpsSideStatus,
   ThresholdState,
@@ -93,18 +92,14 @@ export default function OpsStatusView() {
   );
 }
 
-function shouldShowBlackoutBanner(data: CombinedOpsStatus): boolean {
-  return data.syncBlackout.active && (!data.local.reachable || !data.peer.reachable);
-}
-
 function BlackoutBanner({ label }: { label: string | null }) {
   return (
     <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-3 text-body text-ink-dim">
       <Clock className="h-4 w-4 shrink-0" aria-hidden="true" />
       <span>
-        A side below is unreachable during the {label} — a known DB write-lock window (ABL-220), not
-        necessarily an outage. See <code className="font-mono-num">WORKFLOWS.md</code>, "Acceptance
-        blackout during Stage 2".
+        A side below cannot read its database during the {label} — a known DB write-lock window
+        (ABL-220), not necessarily an outage. See <code className="font-mono-num">WORKFLOWS.md</code>,
+        "Acceptance blackout during Stage 2".
       </span>
     </div>
   );
@@ -349,13 +344,6 @@ function StateBadge({ state, label }: { state: ThresholdState; label: string }) 
       {label}
     </span>
   );
-}
-
-function describeFreshnessRollup(freshness: FreshnessRollup): string {
-  if (freshness.status === 'stale') return `stale (${freshness.counts.stale}/${freshness.streamsChecked} streams)`;
-  if (freshness.status === 'live') return 'live';
-  if (freshness.status === 'ended') return 'ended (not an alarm)';
-  return 'no data held';
 }
 
 function formatUptime(seconds: number): string {
