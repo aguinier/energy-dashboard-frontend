@@ -503,6 +503,11 @@ duplicated at `tsoForecastService.ts:27`). Check which side you are on.
 Condensed diagnostics — full entries with the reasoning in
 `docs/claude/25-common-issues.md`.
 
+- **`git worktree remove` fails `error: failed to delete …: Invalid argument`:**
+  the ABL-640 guard working. That worktree still holds a `node_modules`
+  junction, and the shared tree refuses the delete rather than being eaten
+  through it. Remove it with `npm run worktree:remove -- <path>`. Do not
+  release the guard to get past it.
 - **"Cannot connect to database":** `ENERGY_DB_PATH` unset or pointing at a
   missing file.
 - **`database is locked` on the workstation replica:** `able-db-sync` is mid-run
