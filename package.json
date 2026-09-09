@@ -8,11 +8,16 @@
     "client"
   ],
   "scripts": {
+    "predev": "node scripts/checkNodeModules.mjs",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",
     "build": "npm run build -w client && npm run build -w server",
     "start": "npm run start -w server",
+    "check:modules": "node scripts/checkNodeModules.mjs",
+    "worktree:remove": "node scripts/removeWorktree.mjs",
+    "guard:node-modules": "node scripts/protectSharedNodeModules.mjs",
+    "repro:junction-delete": "node scripts/reproJunctionDelete.mjs",
     "predone": "npm run check:unmerged -w server"
   },
   "devDependencies": {

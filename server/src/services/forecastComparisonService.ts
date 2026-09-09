@@ -1,7 +1,7 @@
 import { ForecastType } from '../types/index.js';
 import * as tsoForecastService from './tsoForecastService.js';
 import * as mlForecastService from './mlForecastService.js';
-import type { LoadForecastBasis } from './loadForecastBasis.js';
+import type { LoadForecastBasis, MeasuresClassified } from './loadForecastBasis.js';
 
 /**
  * Forecast Comparison Service
@@ -49,7 +49,34 @@ export interface AccuracyMetrics {
    */
   bias: number | null;
   dataPoints: number;
+  /**
+   * Whether this provider's forecast and the actuals it was scored against
+   * measure the same quantity (ABL-277).
+   *
+   * Present on **load** blocks only, on both providers, and absent on every
+   * other forecast type — the registry records a load finding, so a verdict
+   * stamped on NL's price or solar block would assert a classification nobody
+   * made. `'comparable'` is the registry reporting no finding, never "examined
+   * and cleared".
+   *
+   * It exists because blanking alone is ambiguous: `mae: null` with
+   * `dataPoints: 4` is indistinguishable from a metric that happened not to
+   * compute unless something says the rows were withheld (ABL-628). The client
+   * already knows what to do with it — `modelComparison.ts` renders a
+   * `divergent_basis` row from exactly these two fields.
+   */
+  basis?: LoadForecastBasis;
+  /** Non-null exactly when `basis` is `divergent_basis`: the sentence to print instead of numbers. */
+  basisNote?: string | null;
 }
+
+/**
+ * Compile-time: every error measure this served shape publishes is one
+ * `loadForecastBasis` blanks, or one it deliberately keeps — the ABL-493 idiom,
+ * here because this is the shape a sixth measure would actually reach NL
+ * through. See `_loadAccuracyMeasuresClassified` (`tsoForecastService.ts:484`).
+ */
+const _accuracyMetricsMeasuresClassified: MeasuresClassified<AccuracyMetrics> = true;
 
 export interface ProviderMetrics {
   dayAhead?: AccuracyMetrics;  // TSO day-ahead
@@ -258,6 +285,7 @@ function addBiasToTSOMetrics(
     mae: number | null; mape: number | null; wape: number | null; rmse: number | null;
     dataPoints: number;
     basis?: LoadForecastBasis;
+    basisNote?: string | null;
   },
   countryCode: string,
   start: string,
@@ -268,8 +296,17 @@ function addBiasToTSOMetrics(
   // which is the *most* misleading of the four here: for NL it is a clean
   // +2,435 MW that reads as a systematic over-forecast the TSO could correct,
   // when it is the behind-the-meter solar the two series disagree about.
+  //
+  // The verdict travels with the blanks (ABL-628). Dropping it, as this branch
+  // used to, published four nulls beside a healthy `dataPoints` and left the
+  // reader no way to tell a withholding from a metric that failed to compute.
   if (metrics.basis === 'divergent_basis') {
-    return { mae: null, mape: null, wape: null, rmse: null, bias: null, dataPoints: metrics.dataPoints };
+    return {
+      mae: null, mape: null, wape: null, rmse: null, bias: null,
+      dataPoints: metrics.dataPoints,
+      basis: metrics.basis,
+      basisNote: metrics.basisNote ?? null,
+    };
   }
 
   // Get accuracy data to calculate bias
@@ -297,6 +334,9 @@ function addBiasToTSOMetrics(
     rmse: metrics.rmse ?? 0,
     bias: Math.round(bias * 100) / 100,
     dataPoints: metrics.dataPoints,
+    // 'comparable' on the way past, so a load block always names its verdict
+    // and a consumer is never left to guess whether the build predates the rule.
+    ...(metrics.basis ? { basis: metrics.basis, basisNote: metrics.basisNote ?? null } : {}),
   };
 }
 
@@ -340,18 +380,29 @@ function addBiasToGenerationMetrics(
 }
 
 /**
- * Add bias to ML metrics (already has bias from mlForecastService)
+ * Reshape ML metrics onto the served envelope (they already carry bias).
+ *
+ * **Nothing is coerced here.** This function used to read
+ * `mae: metrics.mae ?? 0` — with `rmse` and `bias` the same — on the reasoning
+ * that those are null only when `dataPoints === 0`, which both callers exclude.
+ * That reasoning stopped being true the moment the ml side started routing
+ * through the divergent-basis rule (ABL-628): a withheld window pairs its rows,
+ * so `dataPoints` is 4 or 721 while every measure is null on purpose, and each
+ * `?? 0` would have turned a deliberate blank into a **flawless 0 MW forecast**
+ * for the Netherlands — a worse published number than the 25.6% MAPE this issue
+ * was filed to remove. It is the ABL-277 trap, one endpoint over.
  */
-function addBiasToMetrics(metrics: mlForecastService.MLForecastAccuracyMetrics): AccuracyMetrics {
+function addBiasToMetrics(metrics: mlForecastService.MLAccuracyMetricsWithBasis): AccuracyMetrics {
   return {
-    // mae/rmse/bias are only null when dataPoints === 0; both callers of this
-    // function already checked dataPoints > 0 before calling it.
-    mae: metrics.mae ?? 0,
+    mae: metrics.mae,
     mape: metrics.mape,
     wape: metrics.wape,
-    rmse: metrics.rmse ?? 0,
-    bias: metrics.bias ?? 0,
+    rmse: metrics.rmse,
+    bias: metrics.bias,
     dataPoints: metrics.dataPoints,
+    // Present on load only — the ml service gates the verdict on forecast type,
+    // so NL's price and solar blocks stay unstamped as well as unblanked.
+    ...(metrics.basis ? { basis: metrics.basis, basisNote: metrics.basisNote ?? null } : {}),
   };
 }
 
@@ -362,15 +413,23 @@ function addBiasToMetrics(metrics: mlForecastService.MLForecastAccuracyMetrics):
 export interface RollingAccuracyDataPoint {
   date: string;  // YYYY-MM-DD format
   /**
-   * `mae` is nullable on the TSO side since ABL-277: a country whose realized
-   * load and TSO forecast measure different quantities has its error measures
-   * suppressed while still pairing points, so `dataPoints > 0` no longer
-   * implies a publishable MAE. It must stay null — the `?? 0` that used to sit
-   * here would have rendered the Netherlands as a flawless 0 MW.
+   * `mae` is nullable on **every** series here since ABL-277: a country whose
+   * realized load and the forecast measure different quantities has its error
+   * measures suppressed while still pairing points, so `dataPoints > 0` no
+   * longer implies a publishable MAE. It must stay null — the `?? 0` that used
+   * to sit here would have rendered the Netherlands as a flawless 0 MW.
+   *
+   * The two ml series carried that `?? 0` for a year longer than the TSO one,
+   * because until ABL-628 the ml side never withheld and the coercion was
+   * unreachable. Routing the ml metrics through the basis rule made it live —
+   * and strictly worse than the defect it was fixing, since an NL load chart
+   * would have drawn a flat zero line for `ml_d1` where it previously drew an
+   * honestly-labelled-wrong 25.6%. The type is the guard: widening it is what
+   * made the compiler point at both call sites.
    */
   tso?: { mape: number | null; mae: number | null };
-  ml_d1?: { mape: number | null; mae: number };
-  ml_d2?: { mape: number | null; mae: number };
+  ml_d1?: { mape: number | null; mae: number | null };
+  ml_d2?: { mape: number | null; mae: number | null };
 }
 
 export interface RollingAccuracyResponse {
@@ -457,8 +516,9 @@ export function getRollingAccuracy(
         upperCode, forecastType, windowStartISO, windowEndISO, 1, mlModelName
       );
       if (mlD1.dataPoints > 0) {
-        // mae is only null when dataPoints === 0, excluded by the guard above.
-        dataPoint.ml_d1 = { mape: mlD1.mape, mae: mlD1.mae ?? 0 };
+        // Passed through, never coerced — same rule as the TSO branch above,
+        // and live on the ml side since ABL-628.
+        dataPoint.ml_d1 = { mape: mlD1.mape, mae: mlD1.mae };
       }
     } catch {
       // ML D+1 not available
@@ -470,8 +530,8 @@ export function getRollingAccuracy(
         upperCode, forecastType, windowStartISO, windowEndISO, 2, mlModelName
       );
       if (mlD2.dataPoints > 0) {
-        // mae is only null when dataPoints === 0, excluded by the guard above.
-        dataPoint.ml_d2 = { mape: mlD2.mape, mae: mlD2.mae ?? 0 };
+        // Passed through, never coerced — see ml_d1 above.
+        dataPoint.ml_d2 = { mape: mlD2.mape, mae: mlD2.mae };
       }
     } catch {
       // ML D+2 not available

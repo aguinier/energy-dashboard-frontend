@@ -220,3 +220,79 @@ next command to touch it — does not occur, because npm falls back to reading t
 real tree from disk: verified 2026-08-20, `npm install --dry-run` reports
 `up to date` with the file absent. The next legitimate install writes it. Do not
 hand-author one.
+
+## The junction delete, measured — and the control (ABL-640, 2026-09-03)
+
+The rule above ("drop the junction first") was written in two places and lost
+**four** times: ABL-460, ABL-517, ABL-636 and one prior, each 107 packages,
+each a fleet-wide outage across the 17 junctioned worktrees. Documentation was
+never going to be the control. What follows is what was measured instead.
+
+**Only `git worktree remove --force` walks a junction.** Same harness for each
+row: a throwaway git repo, a real linked worktree, `node_modules` junctioned to
+a throwaway target holding 4 files, delete aimed at the worktree.
+
+| deleter | target after | link removed |
+|---|---|---|
+| `git worktree remove --force` | **4 -> 0 (destroyed)** | yes |
+| `Remove-Item -Recurse -Force` (PS 5.1) | 4 -> 4 intact | yes |
+| `fs.rmSync(recursive:true)` (Node 24) | 4 -> 4 intact | yes |
+| `rm -rf` (Git Bash) | 4 -> 4 intact | yes |
+| `rmdir /s /q` (cmd) | 4 -> 4 intact | yes |
+
+So CLAUDE.md's former "(or any recursive delete)" was wrong, and wrong in the
+expensive direction: it spread suspicion over four innocent commands and left
+the guilty one looking like one of a crowd. The destructive call is a single
+command, and **it reports nothing** — git prints no output and exits 0 while
+emptying the target. Plain `git worktree remove` without `--force` refuses
+first ("contains modified or untracked files"), because the junction is itself
+an untracked entry; `--force` is what converts that refusal into the delete.
+
+**Three junctions per worktree, not one** — `node_modules`,
+`client/node_modules`, `server/node_modules`. The old one-line `rmdir` recipe
+dropped one of three.
+
+**Option (1) from the issue — a directory symlink instead of a junction — is
+not available on this workstation.** Both `mklink /D` and
+`New-Item -ItemType SymbolicLink` fail with *"Administrator privilege required"*:
+agent processes are unelevated and Developer Mode
+(`AllowDevelopmentWithoutDevLicense`) is not set. Creating a *junction* needs no
+privilege, which is exactly why every worktree uses one. Whether git would step
+over a symlink was never reached — the link cannot be created at all. Enabling
+Developer Mode machine-wide would be the prerequisite, and that is a Board call,
+not a repo change.
+
+**The control that was shipped: a deny-DELETE ACE on the shared tree.**
+`icacls <tree> /deny "<user>:(OI)(CI)(DE,DC)"`. Under it, `git worktree remove
+--force` fails its first unlink and **aborts the whole removal**, so the tree is
+left byte-for-byte intact rather than partially eaten — which also means the
+guard does not need to be placed cleverly, only present. Both rights are
+needed: Windows permits a delete when the object grants `DELETE` *or* its parent
+grants `FILE_DELETE_CHILD`. `(OI)(CI)` makes the ACE inheritable, so packages
+added later by an additive repair are covered without re-running it.
+
+Measured side effects, all of which must hold for the guard to be affordable:
+
+| operation | under the guard |
+|---|---|
+| read a package (Node resolution) | works |
+| add a new file (additive donor repair) | works |
+| overwrite an existing file | works |
+| delete a file inside the tree | **refused** |
+| `client`/`server` suites, `tsc -b --force` | unchanged and green |
+
+Placement matters for one reason only: vitest keeps its dep-optimizer cache in
+`server/node_modules/.vite` and must stay free to evict it, so the guard sits on
+`server/node_modules/better-sqlite3` (the unhoisted native module) rather than on
+that directory. `client/node_modules` is unguarded because it holds no package
+the lockfile requires — it is empty. The root `node_modules` is guarded whole.
+
+**What the guard costs:** a raw `git worktree remove --force` against a
+junctioned worktree now fails and leaves the worktree directory behind. That is
+the intended trade — a leftover directory is cheap, visible and recoverable
+(`npm run worktree:remove -- <path>` still removes it cleanly with the guard on);
+a destroyed shared tree is expensive, silent, and has cost four outages.
+
+Re-verify after a git upgrade with `npm run repro:junction-delete`: the control
+rests on a measured behaviour of git's recursive removal, not on a documented
+guarantee, so it can regress under us without warning.
