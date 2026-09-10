@@ -183,8 +183,18 @@ export interface DashboardOverview {
 export interface MapDataPoint {
   country_code: string;
   country_name: string;
-  value: number;
+  /**
+   * The window average, or `null` when the server withheld it because it would
+   * not describe the window (ABL-719). Hatch it — never render it as 0.
+   */
+  value: number | null;
+  /** Newest row inside the window, ISO-8601 UTC. */
   timestamp?: string;
+  /**
+   * Why `value` is null. `'ended'` means the country's series stopped before
+   * this window did, and `timestamp` is when it last published.
+   */
+  coverage?: 'ended';
 }
 
 // App view navigation

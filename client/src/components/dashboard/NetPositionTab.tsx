@@ -10,6 +10,7 @@ import type { NetPositionModelSeriesInput } from '@/lib/chartAdapters';
 import { summarizeVintages, capVintages } from '@/lib/netPositionProvenance';
 import { useMultiModelSelection } from '@/hooks/useForecastModels';
 import { describeForecastGap } from '@/lib/forecastGap';
+import { endedSeriesNotice } from '@/lib/endedSeriesNotice';
 import { describeDegenerateActual, describeDegenerateForecast } from './degenerateForecastNote';
 import type { NetPositionResponse } from '@/types';
 import { netPositionTabDisclosure } from '@/lib/netPositionScope';
@@ -386,15 +387,7 @@ function NetPositionDefaultView({
         {/* Only as a footnote under a chart that still has points; the empty
             state above already says it when there is nothing to draw. */}
         {isStale && lastSeen && !hasNothing && (
-          <p className="mt-2 text-micro text-ink-muted">
-            No data published since{' '}
-            {lastSeen.toLocaleDateString([], {
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-            })}
-            . The series has stopped upstream, not here.
-          </p>
+          <p className="mt-2 text-micro text-ink-muted">{endedSeriesNotice(lastSeen)}</p>
         )}
 
         {zoneNote && <p className="mt-2 text-micro text-ink-muted">{zoneNote}</p>}
@@ -704,11 +697,7 @@ function NetPositionSelectionView({
         ))}
 
         {isStale && lastSeen && !hasNothing && (
-          <p className="mt-2 text-micro text-ink-muted">
-            No data published since{' '}
-            {lastSeen.toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' })}. The
-            series has stopped upstream, not here.
-          </p>
+          <p className="mt-2 text-micro text-ink-muted">{endedSeriesNotice(lastSeen)}</p>
         )}
 
         {zoneNote && <p className="mt-2 text-micro text-ink-muted">{zoneNote}</p>}

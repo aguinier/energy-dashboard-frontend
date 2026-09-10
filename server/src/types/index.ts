@@ -206,8 +206,18 @@ export interface DashboardOverview {
 export interface MapDataPoint {
   country_code: string;
   country_name: string;
-  value: number;
+  /**
+   * The window average, or `null` when it would not describe the window —
+   * see `services/mapCoverage.ts`. Never 0 for a country we cannot measure.
+   */
+  value: number | null;
+  /** Newest row inside the window, ISO-8601 UTC. */
   timestamp?: string;
+  /**
+   * Why `value` is null. Present only on a withheld row: `'ended'` means the
+   * country's series stopped before this window did.
+   */
+  coverage?: 'ended';
 }
 
 // Forecast types (ML forecasts)
