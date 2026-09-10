@@ -710,6 +710,8 @@ export interface OpsStatusHistory {
   headroom: { local: DiskHeadroom; peer: DiskHeadroom };
   storage: {
     captureEnabled: boolean;
+    /** Why capture is off: `'env'` is OPS_SNAPSHOT_ENABLED, `'undesignated'` is a non-collector (ABL-736). */
+    captureDisabledReason: 'env' | 'undesignated' | null;
     intervalMinutes: number;
     retentionDays: number;
     storedSnapshots: number;
