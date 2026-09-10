@@ -404,18 +404,20 @@ export function getCoreNetPositionSeries(
  *
  * Resolution sets how finely a window is covered, not how long a silence is
  * tolerated; what sizes the cutoff is publication cadence. Measured live
- * against JAO 2026-09-10 10:34 UTC (`netPos`, all 12 Core hubs): intervals are
- * uniformly 15 minutes apart, every hub carries a value on every interval, and
- * all 12 stop at the same instant — 2026-09-10T21:45Z, the end of the current
- * local day. So Core publishes once a day, for a whole future day, in lockstep
- * across every zone. That is the same "at least daily" property the 48h
- * reading rests on, so it stays 48h, unchanged and undoubled: two publication
- * days of silence means stopped, not late.
+ * against JAO twice, 2026-09-10 10:34 and 10:53 UTC (`netPos`, the 12 Core
+ * hubs we store of the payload's 23): the only distinct interval gap is 15
+ * minutes, every hub carries a value on every interval, and all 12 stop at the
+ * same instant — 2026-09-10T21:45Z, the end of the current local day. So Core
+ * publishes once a day, for a whole future day, in lockstep across every zone.
+ * That is the same "at least daily" property the 48h reading rests on, so it
+ * stays 48h, unchanged and undoubled: two publication days of silence means
+ * stopped, not late.
  *
  * One Core-specific consequence to know before reading a hatch here. This is a
  * day-ahead result: the stream's frontier runs *ahead* of the wall clock
- * (+11.2h at the measurement above, up to ~+35h just after a publication
- * lands), so when the capture stalls, the stored data still covers hours that
+ * (+11.2h and +10.9h at the two measurements above, decaying as the clock
+ * advances on a fixed frontier, up to ~+35h just after a publication lands),
+ * so when the capture stalls, the stored data still covers hours that
  * have not happened yet. The rule is measured from the newest stored interval,
  * not from the moment the capture died, so those hours are spent before the
  * 48h starts running and a stall takes roughly 57-83h of real silence to
@@ -423,6 +425,20 @@ export function getCoreNetPositionSeries(
  * `net_position` on the all-coupled view; shortening the Core cutoff to
  * compensate would invent a second number with no measurement behind it, and
  * let two views of one choropleth hatch the same zone on different days.
+ *
+ * THIS FIX IS PREVENTIVE, UNLIKE ABL-719'S
+ *
+ * ABL-719 withheld zones that were live on prod the day it shipped (IE, PT).
+ * This one withholds nothing there, because prod captures no Core data at all:
+ * every Core zone answers `coverage: 'not_captured'` with `last_seen: null`
+ * over a 90-day window, and `/core-net-position/map` returns `[]` — the
+ * `core_net_position` table does not exist in that deployment, so the guard
+ * above returns before the query (measured on prod 2026-09-10 10:52 UTC, with
+ * ES answering `out_of_core` as the control that proves the endpoint is live).
+ * The capture needs `JAO_CORE_NET_POSITION_ENABLED` and `HELIO_WRITE_TOKEN`,
+ * neither of which is set there (`coreNetPositionScheduler.ts:65`). So this
+ * lands before the data does, which is the cheap order to do it in: the defect
+ * would otherwise appear the first day the capture runs and stalls.
  */
 export function getCoreNetPositionMap(
   start: string,
