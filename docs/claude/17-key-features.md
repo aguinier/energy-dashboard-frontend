@@ -1843,8 +1843,13 @@ alarm no ingest fix could clear is furniture.
   ~46h in the *future*, so the age rule would read it as impossibly fresh
   forever and never notice a missing tomorrow — which is exactly how ABL-51 got
   found by a board member instead of by us. The rule: before that stream's
-  `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` the newest row must reach today's Brussels
-  market day; after it, tomorrow's.
+  `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` the newest row must reach today's market
+  day; after it, tomorrow's. The day required is named by the **UTC** calendar
+  date and its *start* is Brussels midnight of that date (`marketDayStartUtc`).
+  Both halves matter and they are different questions: taking the deadline from
+  the UTC clock but the day from the Brussels calendar made the rule ask for
+  D+2 between Brussels midnight and UTC midnight — 33 of 39 countries `stale`
+  for two hours every night, on all three streams at once (ABL-697).
 
   **The deadline is per stream, because the three streams are three different
   ENTSO-E documents** (ABL-494, `services/freshness.ts:168`). They do not
@@ -1866,7 +1871,9 @@ alarm no ingest fix could clear is furniture.
   held tomorrow at 15:17 and 16:32 UTC on 2026-08-20).
 
   **A pass takes 17-55 minutes, not the ~11 this file and the docstring used to
-  claim.** That figure was inferred from one pass's per-country fetch stamps and
+  claim.** *(Superseded 2026-09-10 by ABL-712, below: both the 55m figure and the
+  method that produced it were wrong, and the A69 hour is now 21.)* That figure
+  was inferred from one pass's per-country fetch stamps and
   was wrong by up to 5x. Measured on prod from `cron_update.log` over 08-18..20:
   16m55s, 23m00s, 29m46s, 29m19s, 20m40s, 18m55s, 23m43s and **55m10s**.
   Countries are fetched in one sequential alphabetical loop, so an overrun bites
@@ -1897,6 +1904,72 @@ alarm no ingest fix could clear is furniture.
   survive inside the window: a stream that fails to reach even today is still
   `stale` at any hour, and from 20:00 UTC a genuinely missing tomorrow is caught
   for the rest of the day — ABL-51's protection, intact.
+
+  **ABL-712 (2026-09-10): the pass got ~4x slower, the measurement method was
+  unsound, and the A69 hour moved 20 → 21.**
+
+  The method first. Pairing each `Countries to process: 39` with the *next*
+  `Total countries processed: 36` assumes passes are serial. They are not: an
+  overrunning pass does not delay the next cron minute, so two or three run
+  concurrently and interleave in one log. On 2026-09-09 three were in flight and
+  the 00:30 pass did not finish until 09:38. Re-measure by attributing each
+  per-country fetch to a pass through the strictly alphabetical order a pass
+  visits countries in; that reproduces ABL-494's 55m10s for the 08-20 13:30 pass,
+  so the two agree where they overlap and the disagreement elsewhere is the
+  method, not the data.
+
+  The instant the 18:30 pass reaches its **last** country (UA — not RS; IS, MT and
+  TR are configured without A69 and skipped, which is why a pass reports 36 of 39):
+
+  | evenings     | n  | min      | median   | p90      | max      |
+  |--------------|----|----------|----------|----------|----------|
+  | 08-01..08-28 | 27 | 18:37:41 | 18:49:24 | 19:13:52 | 19:50:20 |
+  | 08-29..09-09 |  9 | 18:55:08 | 19:49:19 | 21:58:57 | 22:36:38 |
+
+  Cause is upstream, not ours: ENTSO-E 503/504/527/599 responses went from 2-6 a
+  day through 08-28 to 500-2000 a day after, and the retries are the duration. On
+  08-31, 09-01 and 09-07 *every* A69 fetch of the 18:30 pass errored and nothing
+  was stored at all — real misses, correctly `stale` at any cutoff hour, which no
+  deadline can or should paper over. Filed separately as an ingest-health matter;
+  the frontend's only job here is not to blame the ingest for being mid-pass.
+
+  Cost of each candidate hour, in country-hours of *avoidable* false `stale` over
+  the 39 measured evenings — avoidable meaning the fetch succeeded, so a later
+  cutoff would have covered it:
+
+  | cutoff | avoidable false-stale country-hours | evenings hit | evening warning |
+  |--------|-------------------------------------|--------------|-----------------|
+  | 19     | 162.9                               | 13 of 36     | 5h              |
+  | 20     | 45.4                                | 3 of 36      | 4h              |
+  | **21** | **14.9**                            | **2 of 36**  | **3h**          |
+  | 22     | 1.9                                 | 1 of 36      | 2h              |
+
+  20 was right on the August distribution and is not any more — it misses 3 of the
+  last 9 evenings, and all 45.4 of its country-hours are passes that were merely
+  slow (82-92% of A69 fetches succeeded), not broken. 21 covers every evening on
+  record bar the two worst storms, 09-08 (21:58:57) and 09-09 (22:36:38). 22 and
+  23 are refused: they buy 13 and 15 further country-hours by sizing the badge to
+  an incident, and on an evening like 09-09 a country that genuinely has no
+  tomorrow ought to say so.
+
+  **The argument that made 21 affordable, and the claim it corrects.** Both
+  ABL-494's docstring and ABL-712's own issue text said every hour added is an
+  hour of ABL-51 detection surrendered. That reads the rule as if the requirement
+  expired at UTC midnight. It does not: at 00:00 the day that was never published
+  stops being "tomorrow" and becomes "today", which the rule requires at *every*
+  hour, so an absent day keeps reading `stale` overnight and onward until data
+  arrives. A deadline hour therefore buys **earlier warning during the evening
+  before the market day opens**, not detection, and it is paid for in false
+  `stale` on every country the pass has not yet reached. Both halves of that trade
+  are now pinned by tests in `freshness.test.ts`.
+
+  **The structural fix this does not attempt.** A deadline hour is a proxy for
+  "has the 18:30 pass reached this country yet", and since ABL-295 we can ask that
+  question directly — `data_ingestion_log` carries a per-country, per-stream
+  `lastChecked`. Feeding that into `classifyDayAheadStream` would remove the
+  duration guess entirely and let the deadline sit at upstream's own 16:00/17:00
+  UTC obligation. That changes the function's signature and its caller, so it is a
+  separate issue, not a drive-by.
 
   The bound is the **start** of the required Brussels day, not its end, and that
   is what makes one Brussels-framed test correct for every bidding zone from WET
@@ -2117,10 +2190,21 @@ false claim as the reverse.
 
 Scope: the six streams the dashboard draws. `crossborder_flows` and the two
 weather pipelines are logged but unrendered, and weather is keyed by bidding
-zone (`DK1`/`DK2`) where every ENTSO-E pipeline uses plain `DK`. A `failed`
-status is producible by the writer
-(`../energy-data-gathering/src/db.py:1192`) but has never occurred — 114,982
-`completed`, 1 `running` — and is counted as neither a check nor a write.
+zone (`DK1`/`DK2`) where every ENTSO-E pipeline uses plain `DK`.
+
+`status` is **not** read at all (ABL-637). It used to filter `= 'completed'`,
+which was inert while the writer set `"failed" if error_message else
+"completed"` and no caller passed a message — measured 2026-08-12, 114,982
+`completed` and 1 `running`. ABL-633 makes the column derive from the counts
+(`completed` / `partial_failure` / `failed`), and under the old filter an
+erroring stream would have gone **green**: the newest surviving pass is by
+construction the last one that stored rows, so both stamps collapse onto it and
+the verdict is `flowing` with no attention flag. Replaying ABL-633's rule over
+the replica's history put 114 of 216 country × stream pairs in that state
+through the ABL-630 degradation, `lastChecked` understated by up to 72.6 h. The
+check test is now `end_time IS NOT NULL` — every pass that finished, whatever it
+called itself — and delivery is still decided by the row counts alone. `running`
+is still excluded, by having no `end_time`.
 **The ops warn/error thresholds live in exactly one module:
 `server/src/lib/opsStatusThresholds.ts` (ABL-292).** They started out in
 `client/src/lib/opsStatusThresholds.ts`, which meant the only thing in the

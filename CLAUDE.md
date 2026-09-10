@@ -250,6 +250,14 @@ Invariants:
   because ToS §9.3 makes publish latency contractual —
   `npm run changelog -- entries:publish …` from `server/`. The full §9.3
   serving sequence: `docs/claude/16-serving-a-changed-model-artifact….md`.
+- **The docs site (`server/src/v1/docs/`) is built and not published (ABL-522).**
+  `npm run docs:preview -w server` renders it from `docs/api/v1/openapi.json` on
+  loopback; the bind address is a constant, not configuration. `publicApp.ts`
+  **must not import it** while ABL-349 is open — `docsNotPublished.test.ts` pins
+  that. It has no stylesheet, script, font or third-party asset, because
+  `default-src 'none'` is what makes "no analytics" a deployment property.
+  `buildDocsSite` refuses a document that cites a clause, names the terms or
+  carries a URL off this origin; `/changelog` is linked, never forked.
 - **Breach detection reads `/v1`'s tables from the *private* process.** ABL-530
   records auth failures into the key-store file; the ABL-578 watcher
   (`startBreachWatchScheduler`, `server/src/services/breachWatchScheduler.ts:477`)
@@ -322,11 +330,19 @@ error / upstream stopped) — the honest verdict is "frozen, cause not yet
 determined; upstream probe required". Grep `docs/claude/20-data-the-database-does-not-have.md`
 for the frozen timestamp first — known upstream cutoffs are on file there.
 **A read taken minutes after the cron minute is not a post-pass read** (ABL-554):
-the pass walks 39 countries in one sequential alphabetical loop over 17-55 min,
-so a country's refresh instant is its alphabetical position, not the cron minute
-— AL finishes first, RS last. Before concluding a country was missed, check
+the pass walks 39 countries in one sequential alphabetical loop — 17-55 min when
+ABL-494 measured it, 1-4 h since late August 2026 as upstream errors and their
+retries piled up (ABL-712) — so a country's refresh instant is its alphabetical
+position, not the cron minute: AL first, **UA** last. **An overrunning pass does
+not delay the next cron minute; two or three run concurrently and interleave in
+one log**, so pairing a `Countries to process` with the next `Total countries
+processed` mis-measures — attribute by alphabetical order instead. Before
+concluding a country was missed, check
 `GET /api/data-freshness/:cc/ingest` → `lastChecked` per stream (built by
-ABL-295): if it pre-dates the cron minute, the pass has not got there yet. A
+ABL-295): if it pre-dates the cron minute, the pass has not got there yet. That
+endpoint dates a check from any pass that **finished**, whatever
+`data_ingestion_log.status` says, because an erroring pass still went and looked
+(ABL-637); only delivery is judged on the row counts. A
 falling `Retrieved N` across passes is a window artifact, not row loss — the
 7-day window shrinks as old hours age out. Derive staleness from the pass
 **end** time, never the cron start.

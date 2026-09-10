@@ -301,10 +301,11 @@ describe('freshness on every response (Board, 2026-08-12)', () => {
   });
 
   it('reports source_checked_at from a pass that failed nothing, not from status', async () => {
-    // `data_ingestion_log.status` is `'completed'` on 114,982 of 114,983 rows —
-    // there is no failure value in the vocabulary. DE's 11:30 load pass is
-    // seeded as `completed` with `records_failed = 3`, the shape of the
-    // 2026-08-06 outage. The honest answer is the 06:30 pass.
+    // `data_ingestion_log.status` was `'completed'` on 114,982 of 114,983 rows;
+    // ABL-633 has since made it derive from the counts, but every row written
+    // before that deploy keeps its old label. DE's 11:30 load pass is seeded as
+    // `completed` with `records_failed = 3` — the shape of the 2026-08-06
+    // outage, and of every pre-ABL-633 row. The honest answer is the 06:30 pass.
     const { body } = await get(`/v1/observations/load?${DE_DAY}`);
     expect(body.meta.freshness.source_checked_at).toBe('2026-08-12T06:41:00Z');
   });
