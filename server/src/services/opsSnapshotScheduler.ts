@@ -3,6 +3,7 @@ import { toOpsSnapshot, type OpsSnapshot } from './opsSnapshot.js';
 import {
   appendSnapshot,
   resolveSnapshotConfig,
+  DESIGNATION_VARS,
   type AppendSnapshotResult,
   type OpsSnapshotConfig,
 } from './opsSnapshotStore.js';
@@ -22,11 +23,14 @@ import {
  * `appendFileSync` of a few hundred bytes. Moving that to a worker would buy
  * nothing and would need a second peer-fetch path to maintain.
  *
- * WHY IT IS ON BY DEFAULT
+ * WHY IT IS ON BY DEFAULT — FOR A DEPLOYED ENVIRONMENT ONLY
  *
  * See `resolveSnapshotConfig` in `opsSnapshotStore.ts`: this writes only its
  * own file, never the shared database, so it does not carry the "flipping
- * ingest on is its own coordinated decision" constraint the other two do.
+ * ingest on is its own coordinated decision" constraint the other two do. It
+ * needs no flag on prod or CAT. It does need one on a dev checkout, which has
+ * no environment identity to attribute a row to and, on this workstation,
+ * shares one default file with every other worktree (ABL-736).
  *
  * A failed capture — locked DB during the ABL-220 sync blackout, unreachable
  * peer, unwritable path — is logged and dropped. It is never retried into a
@@ -45,17 +49,36 @@ export interface CaptureResult {
   error: string | null;
 }
 
-/** Pure: the decision plus a reason, for one startup log line. */
+/**
+ * Pure: the decision plus a reason, for one startup log line.
+ *
+ * The two off-reasons are distinct on purpose. "Switched off" is somebody's
+ * choice; "not a designated collector" is the ABL-736 default on a dev checkout,
+ * and it is the only notice that process gets — so it names the file it declined
+ * to write and both ways to opt in, rather than reading as a fault.
+ */
 export function describeSnapshotSchedulerStart(config: OpsSnapshotConfig): {
   enabled: boolean;
   reason: string;
 } {
   if (!config.enabled) {
+    if (config.disabledReason === 'undesignated') {
+      return {
+        enabled: false,
+        reason:
+          `not a designated collector (no ${DESIGNATION_VARS.join(', ')}), ` +
+          `so not appending to ${config.path}. Set OPS_SNAPSHOT_PATH to capture to your own file, ` +
+          'or OPS_SNAPSHOT_ENABLED=true to capture to that one.',
+      };
+    }
     return { enabled: false, reason: 'OPS_SNAPSHOT_ENABLED is off; no snapshots will be captured' };
   }
+  const because = config.designation.length
+    ? `designated by ${config.designation.join(', ')}`
+    : 'OPS_SNAPSHOT_ENABLED is on';
   return {
     enabled: true,
-    reason: `capturing every ${config.intervalMinutes}m to ${config.path}, keeping ${config.retentionDays}d`,
+    reason: `capturing every ${config.intervalMinutes}m to ${config.path}, keeping ${config.retentionDays}d (${because})`,
   };
 }
 

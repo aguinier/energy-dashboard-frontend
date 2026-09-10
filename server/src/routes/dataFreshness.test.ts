@@ -67,6 +67,14 @@ const endOfTomorrowBrussels = spaceForm(
   new Date(brusselsDayStartUtc(new Date(), 2).getTime() - HOUR_MS),
 );
 
+/**
+ * IE's dead day-ahead row (ABL-663), pinned once rather than recomputed.
+ * `hoursAgo` reads the clock on every call and `spaceForm` truncates to the
+ * second, so seeding and asserting with two separate calls would disagree
+ * whenever the run straddled a second boundary.
+ */
+const ieDeadDayAhead = hoursAgo(8 * 24);
+
 beforeAll(() => {
   const load = fixtureDb.prepare(
     'INSERT INTO energy_load (country_code, timestamp_utc, load_mw) VALUES (?, ?, ?)'
@@ -136,6 +144,18 @@ beforeAll(() => {
   // of the window missing. 22 of 48 — the fleet ran 0.50-0.74 in the real one.
   fillDay('CZ', -2, 10);
   fillDay('CZ', -1, 12);
+
+  // IE is ABL-663's shape: `energy_load_forecast` carries two documents under
+  // one country code, and only the day-ahead half went dark. The week-ahead row
+  // is dated in the future — as a D+7 publication always is — so an unfiltered
+  // MAX over this table answers from it and never sees the outage.
+  const loadForecast = fixtureDb.prepare(
+    `INSERT INTO energy_load_forecast
+       (country_code, target_timestamp_utc, forecast_value_mw, forecast_type)
+     VALUES (?, ?, ?, ?)`
+  );
+  loadForecast.run('IE', ieDeadDayAhead, 3_400, 'day_ahead');
+  loadForecast.run('IE', endOfTomorrowBrussels, 3_600, 'week_ahead');
 });
 
 describe('GET /api/data-freshness/:cc — the pipeline states its own health', () => {
@@ -274,6 +294,29 @@ describe('GET /api/data-freshness/:cc — the pipeline states its own health', (
     expect(data.load.status).toBe('live');
   });
 
+  it('does not let a live week-ahead forecast hide a dead day-ahead one', async () => {
+    // ABL-663. `energy_load_forecast` holds A65/A01 (day-ahead) and A65/A31
+    // (week-ahead) under one country code, and `tsoLoadForecast` is judged by
+    // `classifyDayAheadStream` — a day-ahead publication deadline. Week-ahead
+    // targets always sit further out, so an unfiltered MAX can only ever be
+    // answered by the week-ahead half: it cannot report the day-ahead half
+    // late, only hide it.
+    //
+    // On prod that hid a real outage for eight days. IE's day-ahead load
+    // forecast stopped upstream at 2026-09-01 22:30 and this endpoint kept
+    // reporting `live`, because the 00:30 pass went on re-storing week-ahead
+    // rows dated a week out (measured read-only 2026-09-10: day_ahead MAX
+    // 2026-09-01 22:30, week_ahead MAX 2026-09-09 23:00).
+    const { body } = await get('IE');
+    const stream = (body.data as Freshness).tsoLoadForecast;
+
+    expect(stream.status).toBe('stale');
+    // The sharp assertion: *which row answered*. The future-dated week-ahead
+    // row is present in the fixture and must not be the one reported.
+    expect(stream.latest).toBe(ieDeadDayAhead);
+    expect(stream.latest).not.toBe(endOfTomorrowBrussels);
+  });
+
   it('returns every stream, so a caller cannot silently miss one', async () => {
     const { body } = await get('DE');
     expect(Object.keys(body.data as Freshness).sort()).toEqual([
@@ -322,9 +365,9 @@ describe('GET /api/data-freshness/:cc/ingest — when did we last refresh it', (
     const { status, data } = await getIngest('DE');
     expect(status).toBe(200);
 
-    expect(data.load.delivery).toBe('flowing');
-    expect(data.load.lastStoredRows).toBe(data.load.lastChecked);
-    expect(data.load.lastChecked).toBe('2026-07-02T00:30:15.882895+00:00');
+    expect(data.netPosition.delivery).toBe('flowing');
+    expect(data.netPosition.lastStoredRows).toBe(data.netPosition.lastChecked);
+    expect(data.netPosition.lastChecked).toBe('2026-07-02T00:35:15.882895+00:00');
   });
 
   it('keeps "checked" and "brought data" apart when the last passes brought nothing', async () => {
@@ -378,15 +421,45 @@ describe('GET /api/data-freshness/:cc/ingest — when did we last refresh it', (
     expect(data.tsoLoadForecast.delivery).toBe('flowing');
   });
 
-  it('ignores failed and running passes when dating the last check', async () => {
-    // Both are dated after every completed DE pass. Counting a failed pass
-    // would let a stream erroring four times a day report itself freshly
-    // checked; counting an in-flight one would report a check that has not
-    // finished.
+  it('dates the last check from a failed pass — it ran, it just brought nothing', async () => {
+    // ABL-637. DE load's newest pass is `failed` (0 stored, 12 failed), dated a
+    // day after the last delivery. Excluding it — which is what this service did
+    // until ABL-633 made the status producible — freezes BOTH stamps on the last
+    // good pass, so `lastStoredRows === lastChecked` and the stream reads
+    // `flowing` with no attention flag while every pass is erroring. Replaying
+    // ABL-633's rule over the replica's own history put 114 of 216 country x
+    // stream pairs in exactly that state through the ABL-630 degradation, with
+    // `lastChecked` understated by up to 72.6 hours.
     const { data } = await getIngest('DE');
 
-    expect(data.load.lastChecked).toBe('2026-07-02T00:30:15.882895+00:00');
+    expect(data.load.lastChecked).toBe('2026-07-03T00:30:15.882895+00:00');
+    expect(data.load.lastStoredRows).toBe('2026-07-02T00:30:15.882895+00:00');
+    expect(data.load.delivery).toBe('checked_no_data');
+  });
+
+  it('counts a partial_failure pass as a delivery — its rows are in the table', async () => {
+    // The latent half of ABL-637. DE's newest `renewable` pass stored 18 rows and
+    // failed 6, so `partial_failure`. It delivered; withholding it would report a
+    // refresh that demonstrably happened as not having happened. Unreachable
+    // today (every fetcher's error path returns `(0, 0, 1)`), reachable by
+    // contract — `resolve_ingestion_status` splits partial from failed on exactly
+    // the `inserted + updated > 0` test this service already applies.
+    const { data } = await getIngest('DE');
+
+    expect(data.generation.delivery).toBe('flowing');
+    expect(data.generation.lastChecked).toBe('2026-07-03T00:32:15.882895+00:00');
+    expect(data.generation.lastStoredRows).toBe('2026-07-03T00:32:15.882895+00:00');
+  });
+
+  it('still ignores a running pass, which has not checked anything yet', async () => {
+    // The one exclusion left, and it needs no status test: `end_time` is NULL
+    // until `log_ingestion_complete` writes it alongside a terminal status. DE's
+    // in-flight `price` pass is dated after every finished one, so a service that
+    // counted it would visibly move the answer.
+    const { data } = await getIngest('DE');
+
     expect(data.price.lastChecked).toBe('2026-07-02T00:31:15.882895+00:00');
+    expect(data.price.delivery).toBe('flowing');
   });
 
   it('names the pipelines behind every stream, so the answer is auditable', async () => {

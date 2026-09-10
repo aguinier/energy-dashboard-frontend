@@ -183,8 +183,18 @@ export interface DashboardOverview {
 export interface MapDataPoint {
   country_code: string;
   country_name: string;
-  value: number;
+  /**
+   * The window average, or `null` when the server withheld it because it would
+   * not describe the window (ABL-719). Hatch it — never render it as 0.
+   */
+  value: number | null;
+  /** Newest row inside the window, ISO-8601 UTC. */
   timestamp?: string;
+  /**
+   * Why `value` is null. `'ended'` means the country's series stopped before
+   * this window did, and `timestamp` is when it last published.
+   */
+  coverage?: 'ended';
 }
 
 // App view navigation
@@ -546,6 +556,17 @@ export interface FreshnessRollup {
   streamsChecked: number;
   counts: Record<FreshnessStatus, number>;
   staleCountries: string[];
+  /**
+   * Why the rollup is **not a measurement** (ABL-657) — the database read
+   * failed, typically the twice-daily replica write lock. Absent on every real
+   * rollup, and absent entirely from a peer on a build that predates it.
+   *
+   * When present the other fields are the empty shape, so anything that renders
+   * or ranks them has to check this first: a locked replica reported as
+   * `status: 'none'` would read "no data held", which is a statement about the
+   * data rather than about our failure to look at it.
+   */
+  unmeasured?: string;
 }
 
 /**
@@ -722,6 +743,8 @@ export interface OpsStatusHistory {
   headroom: { local: DiskHeadroom; peer: DiskHeadroom };
   storage: {
     captureEnabled: boolean;
+    /** Why capture is off: `'env'` is OPS_SNAPSHOT_ENABLED, `'undesignated'` is a non-collector (ABL-736). */
+    captureDisabledReason: 'env' | 'undesignated' | null;
     intervalMinutes: number;
     retentionDays: number;
     storedSnapshots: number;
@@ -772,6 +795,21 @@ export interface AccuracyMetrics {
   /** Mean Error (positive = over-forecast); null on a divergent basis, where the mean difference is definitional, not bias. */
   bias: number | null;
   dataPoints: number;
+  /**
+   * Whether this provider's forecast and the actuals measure the same quantity
+   * (ABL-277). Present on **load** blocks only — on both the `tso` and `ml`
+   * sides since ABL-628 — and absent on every other forecast type, where no
+   * such pair has been classified. Absent therefore means "not classified",
+   * never "verified fine"; and on a load block predating ABL-628 it means the
+   * server is an older build.
+   *
+   * Read it before the numbers: `mae: null` beside `dataPoints: 721` is a
+   * withholding when this says `divergent_basis`, and an unmeasurable window
+   * otherwise. The two must not render the same way.
+   */
+  basis?: LoadForecastBasis;
+  /** Non-null exactly when `basis` is `divergent_basis`: the sentence to print instead of numbers. */
+  basisNote?: string | null;
 }
 
 /**
@@ -835,6 +873,22 @@ export interface MLForecastAccuracyMetrics {
   dataPoints: number;
   /** Count of points MAPE was computed over; <= dataPoints. */
   mapeSamples: number;
+  /**
+   * The divergent-basis verdict on *our own* model's forecast, which this
+   * response carries since ABL-628 exactly as its TSO twin
+   * (`TSOForecastAccuracyMetrics`) has since ABL-277.
+   *
+   * `?forecastType=load` only — the finding is about what ENTSO-E nets out of a
+   * country's realized *load*, so `solar`, `price` and the wind types come back
+   * with no verdict at all rather than a stamped `'comparable'`. Absent on
+   * responses predating ABL-628.
+   *
+   * `modelComparison.ts` already branches on it: a `divergent_basis` row shows
+   * the sentence, not a line of em-dashes beside a healthy sample count.
+   */
+  basis?: LoadForecastBasis;
+  /** Non-null exactly when `basis` is `divergent_basis`: why there are no numbers. */
+  basisNote?: string | null;
 }
 
 /**

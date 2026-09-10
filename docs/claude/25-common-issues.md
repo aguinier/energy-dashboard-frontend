@@ -206,3 +206,182 @@ sentence instead of numbers:**
   documented in `WORKFLOWS.md`; use its separate `PORT=3002` procedure for a
   working-tree server. After editing this file, `cd server && npx vitest run`
   checks its `file:line` citations via `docs/claudeMdCitations.test.ts`.
+
+## `attempt to write a readonly database` inside the CAT container (ABL-657)
+
+**Symptom.** The acceptance container logs `Error: attempt to write a readonly
+database` in bursts — 172 of them between 2026-08-28 and 2026-09-03 — and the
+ops-status environment badge flaps `ok -> error -> ok` twice a day. ABL-634
+aligned every breach against `C:\Code\able\logs\sync-db-v2.log` and found all
+of them strictly inside a `Replacing local tables (transactional)` → `Done.`
+window, with the one RECOVERED landing 3m01s *after* the `Done.`
+
+**It is not a write.** There is no application write on that request path.
+`config/database.ts` opens the handle `{ readonly: true }`, so a write is not
+merely absent, it is impossible; `routes/opsStatus.test.ts` already pinned that
+`/api/ops/status` performs none. The error is SQLite's pager, and the reason
+the two environments disagree about it is lock visibility across the bind
+mount.
+
+**Measured 2026-09-03**, one scratch database in a Docker Desktop bind mount,
+one Windows-host writer holding an exclusive transaction, two readonly readers
+at the same instant:
+
+| reader | `err.code` | `err.message` |
+|---|---|---|
+| Windows host (`node`, better-sqlite3) | `SQLITE_BUSY` | `database is locked` |
+| Linux container over the bind mount | `SQLITE_READONLY_ROLLBACK` | `attempt to write a readonly database` |
+
+The container cannot see the host writer's `RESERVED` lock through the mount,
+so `hasHotJournal()` finds a journal file with no lock holder, concludes the
+journal is *hot*, and tries to roll it back — a write, on a readonly handle.
+Split further: `new Database(path, { readonly: true })` **succeeds**; the throw
+comes on the first read, when the shared lock is taken. So the long-lived
+handle survives the window and recovers on its own; nothing needs reopening.
+
+**Practical consequence.** `SQLITE_BUSY` and `SQLITE_READONLY_ROLLBACK` are the
+same event seen from two sides. Never treat "attempt to write a readonly
+database" in a container log as evidence that something wrote, and never go
+looking for the write — grep `sync-db-v2.log` for an open transactional window
+first.
+
+**Why the badge flapped rather than reading `warn`.** Two independent defects,
+both fixed here:
+
+1. `/api/ops/status` threw when its freshness rollup could not read the
+   database, and `reachable` is decided by whether that endpoint answers — so a
+   live, serving process reported as an unreachable *environment*. The rollup
+   now degrades to `unmeasured` with the reason (`freshnessRollup.ts`) and the
+   endpoint answers 200.
+2. `checkSyncBlackoutWindow` read `now.getHours()` — *this process's* clock —
+   against a schedule written in the workstation's wall clock. `docker/Dockerfile`
+   sets no `TZ` and `node:20-slim` is `Etc/UTC`, so 16:38 local read as 14:38
+   and **neither window ever matched inside the container**. The hold that
+   existed to soften exactly this was dead code on the only deployment it was
+   written for. It is now evaluated in `SYNC_HOST_TIME_ZONE` via `Intl`,
+   verified by running the built `dist` inside a `node:20-slim` container at the
+   six real breach instants.
+
+## The Europe choropleth hatches a country at 7d/30d that is coloured at 24h (ABL-719)
+
+Not a regression and not a fetch failure: that country's series stopped
+publishing *before* the window ended, and `/api/dashboard/map` now withholds the
+average rather than painting the fragment that exists. Hover it — the card says
+`No data published since <date>. The series has stopped upstream, not here.`,
+the same sentence the country document's net position figure uses
+(`client/src/lib/endedSeriesNotice.ts`, one definition for both surfaces).
+
+**What it looked like before.** Measured on prod 2026-09-10, with IE dark since
+2026-08-30 22:30 UTC and PT's net position dark since 2026-09-04 21:00 UTC:
+
+```
+metric=load          30d : IE = 3849 MW     ts 2026-08-30 22:30   (dark 10 days)
+metric=renewable_pct 30d : IE = 32.45%      ts 2026-08-30 22:30
+metric=net_position   7d : PT = -2702 MW    ts 2026-09-04 21:00   (dark 6 days)
+metric=net_position  30d : PT = -2255 MW    <- same dead series, wider denominator
+```
+
+PT's two values are the proof. An average that moves when you widen a window it
+does not reach is not a window average, and both were painted on the same colour
+scale as their fully-covered neighbours. At the default 24h window both
+countries fell out of the window naturally and hatched, which is why it survived
+so long: the defect only showed at a window setting nobody's smoke test used.
+
+**Why 48h.** Measured in one pass on prod the same day, hours between each
+country's newest in-window row and the fleet frontier, 30d window: `load` IE
+247.8 / MK 105.2, then a 92h gap down to LV 13.2; `renewable_pct` IE 246.5, then
+a 214h gap down to AL 32.0; `net_position` PT 130.0, then 130h down to 0.0 for
+every other zone; `price` nothing later than 0.2h across 30 countries. Every
+metric is bimodal, and **any cutoff between 33h and 105h selects the identical
+set on all four** — {IE, MK, PT}, exactly the streams that had stopped. 48h sits
+inside that band and also reads as "silent for two full publication days", which
+does not depend on the gap holding. It is not
+`freshness.MEASURED_STALE_AFTER_HOURS` (18h): that answers "is this stream
+current", and at 18h the 30d load map would withhold LV, BG, ME, DK, CH and CZ,
+whose averages are complete to within a few hours and are real information.
+
+**Where the rule lives.** `server/src/services/mapCoverage.ts`, applied by all
+four `getMap*Data` in `dashboardService.ts`. Two things it must keep doing:
+judge against the **window's end** and never `now` (a `timeOffset`-shifted
+historical window would otherwise hatch every country), and run **before** the
+DE→LU net-position aliasing, since DE_LU is one bidding zone and LU inherits
+DE's verdict including a withheld one.
+
+**Verified on prod 2026-09-10 10:24 UTC** by fetching `/api/dashboard/map`'s
+rows from prod (still the old code, but the rows carry their own
+`MAX(timestamp_utc)`) and applying the rule offline — which is what the fixed
+server would have served. It withholds `load` 30d IE (252h behind, the 3849 MW
+of this issue), `renewable_pct` 30d IE (252h), `net_position` 7d **and** 30d PT
+(133h, the -2702/-2255 pair), and nothing on `price` at any window. Everything
+else stays ranked, including AL at 37h on `renewable_pct` and MK at 13h on
+`load` — MK had recovered by then, so its 105.2h in the original measurement was
+a stall that has since cleared, not a permanent member of the withheld set.
+
+**One caveat, and it will get mis-triaged if it is not written down.** The
+cutoff is measured against the *window's end*, but the original threshold survey
+measured each country against the *fleet frontier*. Those coincide on prod,
+where the frontier trails `now` by only 0.2–4.2h. They do not coincide on a
+source that lags as a whole: on the CAT replica the same morning, the
+`renewable_pct` frontier sat 18.6h behind `now`, so AL read 61h from the window
+end instead of prod's 37h and was withheld there while prod kept it. That is the
+rule being conservative on stale input rather than a bug — AL's average really
+was missing its last 61 hours on that copy — but a country hatched on CAT and
+coloured on prod is the replica lag, not a divergence between the two
+deployments. Settle it on prod, per the read-only remit.
+
+## `SyntaxError: Invalid or unexpected token` collecting a `scripts/*.test.ts` (ABL-726)
+
+`cd server && npx vitest run` reported `Test Files 1 failed | 134 passed` with
+every test green, and the one failing file produced no results at all:
+
+```
+FAIL  ../scripts/testFloor.test.ts [ ../scripts/testFloor.test.ts ]
+SyntaxError: Invalid or unexpected token
+```
+
+No file, no line, no stack, and no frame naming the offending character. It
+reproduced on a clean tree on the Windows workstation and was **green on
+`ubuntu-latest`** — `testFloor.test.ts (19 tests) 8ms` in the same job that
+counted `135 files / 2813 tests`. So CI was never skipping it silently, and the
+ABL-647 gate was never weakened. What it cost was the local pre-merge check:
+`server/vitest.config.ts:11` pulls `../scripts/**/*.test.ts` into the server
+suite, and a collection-time failure yields no results, so nobody could read
+that suite green-or-red at a glance.
+
+**Root cause, and it is not in the test file.** `scripts/testFloor.mjs` — which
+the test imports — starts with `#!/usr/bin/env node`. Vite strips the hashbang
+line with `/^#!.*\n/`. In JavaScript `.` excludes `\r` as well as `\n`, so on a
+CRLF file `.*` halts before the CR and the pattern never matches: the `#!` line
+survives into the wrapped module body and V8 rejects the `#`. The error is
+attributed to the entry test file, which is why the shebang is not where anyone
+looks.
+
+Both halves are necessary, and the isolating control was already in the same
+directory: `scripts/worktreeGuard.mjs` is CRLF too and its test collects fine —
+it has no shebang. Rewriting the em dashes in `testFloor.test.ts` to ASCII
+changed nothing; converting `testFloor.mjs` to LF turned `1 failed / no tests`
+into `1 passed / 19 tests` with nothing else touched.
+
+**Why it is platform-split.** `core.autocrlf` is `true` on these checkouts.
+`.gitattributes` pinned `*.ts`/`*.tsx` to `eol=lf` but said nothing about
+`*.mjs`, so the blob is LF (verified with `git cat-file blob`) and the Windows
+working copy is CRLF. A Linux runner has no such conversion.
+
+**The trap in the fix.** Adding `*.mjs text eol=lf` fixes every checkout made
+after it lands and **no existing one**: the blobs were already LF, so the
+attribute commit touches no file, so a `git pull` never rewrites a working tree
+that already holds CRLF copies. `git status` stays clean the whole time, because
+the clean filter normalises CRLF back to LF before comparing — a tree can be
+broken, up to date and clean simultaneously, detectable only by reading the
+bytes. `git checkout-index -f` does **not** rewrite them either (measured; the
+stat cache calls them current). What works is deleting and restoring:
+
+```bash
+rm scripts/*.mjs client/*.config.js client/scripts/*.mjs && git checkout -- scripts client
+```
+
+That is why the fix is two parts: the `.gitattributes` pin for new checkouts,
+and `scripts/lineEndings.test.ts`, which reads the bytes of every tracked
+`.mjs`/`.cjs`/`.js` outside `node_modules` and fails with the file name and the
+command above. Before it, the failure named nothing; after it, an unrefreshed
+worktree explains itself.

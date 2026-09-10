@@ -42,9 +42,10 @@ const DAY_MS = 86_400_000;
  * Forward two days because three of the five streams are day-ahead publications
  * whose newest rows are legitimately dated into the future — a lookahead of 0
  * would hand `computeCoverage` a window ending yesterday for `price` and score
- * the wrong days. Two days is deliberately short of D+7: it excludes
- * `energy_load_forecast`'s week-ahead rows, which are one row per day and would
- * otherwise anchor the window seven days past the day-ahead data it counts.
+ * the wrong days. Two days is deliberately short of D+7, so a week-ahead row
+ * cannot anchor a window seven days past the day-ahead data it counts. The
+ * `forecast_type` filter below is the primary guard against that; this bound
+ * also holds it for any future table that mixes horizons without a filter.
  */
 const COVERAGE_LOOKBACK_DAYS = COVERAGE_BASELINE_DAYS + COVERAGE_WINDOW_DAYS + 1;
 const COVERAGE_LOOKAHEAD_DAYS = 2;
@@ -119,8 +120,30 @@ export function getDataFreshness(countryCode: string, now: Date = new Date()): D
     countryCode,
   );
 
+  // `forecast_type = 'day_ahead'`, because the verdict below is
+  // `classifyDayAheadStream(…, 'tsoLoadForecast')` — a *day-ahead publication
+  // deadline*. `energy_load_forecast` holds two documents under one country
+  // (A65/A01 day-ahead and A65/A31 week-ahead, `fetch_load_forecast.py:43-47`),
+  // and week-ahead targets always sit further out, so an unfiltered MAX can
+  // only ever be answered by the week-ahead half. It cannot report the
+  // day-ahead half late; it can only hide it.
+  //
+  // It did. ABL-663: IE's day-ahead load forecast stopped upstream at
+  // `2026-09-01 22:30` and this endpoint went on reporting `tsoLoadForecast:
+  // live` for eight days, because the 00:30 pass kept re-storing week-ahead
+  // rows dated a week out. Measured read-only on prod 2026-09-10 07:xx UTC:
+  //
+  //   IE day_ahead : 10,546 rows, MAX target 2026-09-01 22:30
+  //   IE week_ahead:    227 rows, MAX target 2026-09-09 23:00  <- what MAX returned
+  //
+  // Filtering cannot strand a country that only publishes week-ahead, because
+  // no such country exists: measured across all 34 countries in
+  // `energy_load_forecast` on the same read, every one has day-ahead rows
+  // (BA/MD/MK/SI have day-ahead and *no* week-ahead; none is the reverse). On
+  // that same read this changes exactly one verdict — IE's, to the true one.
   const tsoLoadForecast = newest(
-    `SELECT MAX(target_timestamp_utc) as latest FROM energy_load_forecast WHERE country_code = ?`,
+    `SELECT MAX(target_timestamp_utc) as latest FROM energy_load_forecast
+      WHERE country_code = ? AND forecast_type = 'day_ahead'`,
     countryCode,
   );
 
@@ -136,13 +159,14 @@ export function getDataFreshness(countryCode: string, now: Date = new Date()): D
   // is; `applyCoverage` publishes that measurement beside the verdict and
   // downgrades only a `live` stream, never `ended` or `none`.
   //
-  // Every count is scoped exactly as its `MAX` above — the same
-  // `measuredLoadClause()` on load — with one deliberate exception:
-  // `tsoLoadForecast` counts `day_ahead` rows only. `energy_load_forecast` also
-  // holds week-ahead rows at one per day, and pooling two resolutions into one
-  // total would put a wrong denominator under a published ratio. `latest` there
-  // still spans both types, as it always has; the two fields answer different
-  // questions and each is internally consistent.
+  // Every count is scoped exactly as the `MAX` it sits beside: the same
+  // `measuredLoadClause()` on load, and the same `forecast_type = 'day_ahead'`
+  // on `tsoLoadForecast`. Matching them is not cosmetic on either read, and the
+  // forecast one has its own reason to hold here — `energy_load_forecast` stores
+  // week-ahead rows at one per day against day-ahead's 24-96, so pooling the two
+  // would put a resolution nothing publishes under a ratio we display. Keep them
+  // matched: a coverage ratio scoped differently from the `latest` printed next
+  // to it is two answers to one question.
   return {
     load: applyCoverage(
       classifyMeasuredStream(load, now),

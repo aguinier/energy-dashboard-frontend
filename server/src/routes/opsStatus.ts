@@ -22,10 +22,16 @@ const router = Router();
  * checks (see `../../../../WORKFLOWS.md`, "Proving the container answered")
  * and is unchanged here.
  *
- * Unlike `/health`, this route touches the database (the freshness rollup),
- * so it is expected to fail during the twice-daily DB sync's write-lock
- * blackout (`../../../../WORKFLOWS.md`, "Acceptance blackout during Stage 2",
- * ABL-220 — ~07:00 and ~16:30 local) — a known window, not a defect.
+ * **This route answers 200 whether or not the database is readable** (ABL-657).
+ * It used to 500 for the duration of the twice-daily DB-sync write lock
+ * (`../../../../WORKFLOWS.md`, "Acceptance blackout during Stage 2", ABL-220 —
+ * ~07:00 and ~16:30 workstation-local), which was documented right here as a
+ * known window rather than a defect. It was a defect: this is the endpoint the
+ * peer poll and the alert engine decide `reachable` from, so one unreadable KPI
+ * made a live, serving process report as a down environment and flapped the
+ * badge twice a day. The freshness rollup now degrades to `unmeasured` with its
+ * reason, like every other unmeasurable field in this payload — see
+ * `services/opsStatusService.ts`.
  */
 router.get('/status', (_req, res) => {
   res.json({ success: true, data: getOpsStatus() });

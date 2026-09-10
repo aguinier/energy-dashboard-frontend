@@ -122,7 +122,11 @@ function severityFor(kind: AlertKind, state: RecordedState): AlertNotification['
  *  2. **The blackout rule (ABL-220).** Inside the twice-daily DB write-lock
  *     window, the database-backed KPIs — reachability and freshness — are
  *     expected to fail, and that window is documented as a known state, not an
- *     outage (`syncBlackoutWindow.ts`, `WORKFLOWS.md`). Those observations are
+ *     outage (`syncBlackoutWindow.ts`, `WORKFLOWS.md`). Since ABL-657 the lock
+ *     lands on *freshness* rather than on reachability — the endpoint answers,
+ *     it just cannot read — but both stay `blackoutSensitive`: whether a future
+ *     failure surfaces as one or the other is not something this rule should
+ *     have an opinion about. Those observations are
  *     held exactly like `unknown` ones: no breach *and* no recovery, since a
  *     "recovered" notice derived from a blackout reading is as wrong as an
  *     outage one. Disk and commit drift do not reach the database and are not

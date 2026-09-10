@@ -31,8 +31,14 @@ export interface OpsStatusHistory {
     peer: DiskHeadroom;
   };
   storage: {
-    /** False when `OPS_SNAPSHOT_ENABLED` is off — no new snapshots are being taken. */
+    /** False when capture is off for this process — no new snapshots are being taken. */
     captureEnabled: boolean;
+    /**
+     * Why capture is off, so the caption can name the right cause: `'env'` is
+     * `OPS_SNAPSHOT_ENABLED`, `'undesignated'` is a process that named no
+     * environment (ABL-736). `null` when capture is on.
+     */
+    captureDisabledReason: 'env' | 'undesignated' | null;
     intervalMinutes: number;
     retentionDays: number;
     /** Snapshots held on disk, before the window filter. */
@@ -155,6 +161,7 @@ export function getOpsStatusHistory(
     },
     storage: {
       captureEnabled: config.enabled,
+      captureDisabledReason: config.disabledReason,
       intervalMinutes: config.intervalMinutes,
       retentionDays: config.retentionDays,
       storedSnapshots: snapshots.length,

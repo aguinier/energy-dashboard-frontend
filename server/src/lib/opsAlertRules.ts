@@ -102,7 +102,11 @@ function describeDisk(side: SideStatus, state: ThresholdState): string {
 
 function describeFreshness(side: SideStatus): string {
   if (!side.reachable) return `not measured — side unreachable (${side.error})`;
-  const { status, staleCountries } = side.status.freshness;
+  const { status, staleCountries, unmeasured } = side.status.freshness;
+  // ABL-657: the side answered but its database read failed. Naming the reason
+  // is the whole point — "fleet freshness is none" would read as a verdict
+  // about the data rather than as a failure to look at it.
+  if (unmeasured !== undefined) return `not measured — database read failed (${unmeasured})`;
   const countries = staleCountries.length > 0 ? ` (${staleCountries.join(', ')})` : '';
   return `fleet freshness is ${status}${countries}`;
 }
@@ -169,9 +173,11 @@ export function observeCombinedStatus(status: CombinedOpsStatus): AlertObservati
       state: derived.local.disk,
       detail: describeDisk(local, derived.local.disk),
       // Disk is read off the filesystem (`getDiskUsage`), not the database, so
-      // the write-lock window cannot invent a disk breach. A blackout does make
-      // the side unreachable, which already renders disk `'unknown'` upstream
-      // (`deriveSideState`) — held by the unknown rule, not by the blackout rule.
+      // the write-lock window cannot invent a disk breach. Since ABL-657 a
+      // locked database does not even cost us the reading: the side answers,
+      // and only its freshness rollup degrades. (A side that is genuinely
+      // unreachable still renders disk `'unknown'` upstream in
+      // `deriveSideState` — held by the unknown rule, not by this flag.)
       blackoutSensitive: false,
     },
     {
