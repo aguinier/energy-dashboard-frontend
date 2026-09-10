@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { diskPercent, toOpsSnapshot } from './opsSnapshot.js';
+import { unmeasuredFreshnessRollup } from './freshnessRollup.js';
 import type { CombinedOpsStatus } from './combinedOpsStatusService.js';
 import type { OpsStatus } from './opsStatusService.js';
 
@@ -104,6 +105,28 @@ describe('toOpsSnapshot', () => {
 
     expect(snapshot.local.staleCountryCount).toBe(0);
     expect(snapshot.local.freshnessStatus).toBe('live');
+  });
+
+  /**
+   * ABL-657. The side answers now even when its database read fails, so the
+   * snapshot store is the first place the empty rollup could be mistaken for a
+   * reading — and it is the one that keeps a 14-day history someone later draws
+   * a trend from. `'none'` with `staleCountryCount: 0` would plot as a clean
+   * fleet at precisely the instants nothing could be read at all.
+   */
+  it('stores an unmeasured freshness rollup as null, never as its empty shape', () => {
+    const locked = status({
+      freshness: unmeasuredFreshnessRollup('attempt to write a readonly database'),
+    });
+    const snapshot = toOpsSnapshot(combined({ local: { reachable: true, latencyMs: 3, status: locked } }));
+
+    expect(snapshot.local.freshnessStatus).toBeNull();
+    expect(snapshot.local.staleCountryCount).toBeNull();
+    // The side answered, so everything it did measure is still recorded — this
+    // is not the unreachable case.
+    expect(snapshot.local.reachable).toBe(true);
+    expect(snapshot.local.rssBytes).toBe(150);
+    expect(snapshot.local.diskUsedBytes).toBe(800);
   });
 });
 

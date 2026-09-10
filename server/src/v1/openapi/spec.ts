@@ -53,6 +53,27 @@ import type { FreshnessStatus } from '../../types/index.js';
  * is load-bearing by deleting the field from a real response and watching
  * validation fail.
  *
+ * ## Clause numbers belong in these comments and never in a `description`
+ *
+ * ABL-522 Constraint 2. Comments in this file are read by whoever maintains it
+ * and are welcome to cite the clause that governs a decision — that is the
+ * whole reason the section above names §7.3. A `description` string is a
+ * different audience: it ships in `docs/api/v1/openapi.json` and is rendered to
+ * whoever eventually reads the published contract, who does not hold the Terms
+ * and — while ABL-349 is open — cannot obtain them. A citation there tells that
+ * reader an obligation is imposed on them by §7.1 and gives them no way to read
+ * §7.1, which is the same failure {@link GATED_INFO_FIELDS} exists to prevent,
+ * arriving through prose instead of through a field.
+ *
+ * So every obligation the document places on an integrator is **stated here in
+ * full, in the document's own words**, and a clause number is never the thing
+ * carrying the meaning. This is not silence about the contract: the rule is
+ * enforced alongside a test asserting the attribution obligation is still
+ * legible without it, because a rule that can be satisfied by deleting the
+ * explanation is worse than the citation was.
+ *
+ * `drift.test.ts` enforces both halves against the built document.
+ *
  * ## Three `info` fields are deliberately absent (ABL-349)
  *
  * `info.termsOfService`, `info.license` and `info.contact` are **not set**, and
@@ -188,10 +209,10 @@ const SERIES_SOURCE_SCHEMA: Schema = {
   title: 'SeriesSource',
   description:
     'Where this series came from and under what licence you may redistribute it. ' +
-    'Required on every series and every catalogue entry: Terms of Service §7.3 promises ' +
-    'that attribution can be rendered programmatically rather than remembered, and §8.1 ' +
-    'is why it is per series rather than per response — one response can mix provenance, ' +
-    'and a generation response carries 21 series at once.',
+    'Required on every series and every catalogue entry, so that attribution can be ' +
+    'rendered programmatically rather than remembered; carried per series rather than ' +
+    'per response because one response can mix provenance, and a generation response ' +
+    'carries 21 series at once.',
   properties: {
     id: {
       type: 'string',
@@ -226,7 +247,7 @@ const SERIES_SOURCE_SCHEMA: Schema = {
       description:
         'Whether you must attribute when you republish this series. **This is the field to ' +
         'branch on.** It is deliberately not derivable from `licence` without hardcoding a ' +
-        'licence table, which is exactly the remembering §7.3 exists to remove. It is ' +
+        'licence table, which is exactly the remembering this field exists to remove. It is ' +
         'present and `false` on our own series too, so that "no attribution needed" and ' +
         '"we forgot the field" are not the same shape.',
     },
@@ -234,8 +255,8 @@ const SERIES_SOURCE_SCHEMA: Schema = {
       type: ['string', 'null'],
       description:
         'The exact line to render, or `null` when none is required. Rendering this string ' +
-        'verbatim discharges the obligation; it is taken word for word from Terms of ' +
-        'Service §7.1 so that what we ask you to render and what we hand you cannot drift.',
+        'verbatim discharges the obligation: the wording you are asked to render and the ' +
+        'wording we hand you here are one and the same string, so the two cannot drift.',
     },
   },
   required: ['id', 'name', 'licence', 'licence_url', 'attribution_required', 'attribution'],
@@ -566,7 +587,7 @@ function seriesMeta(description: string): Schema {
 }
 
 const SERIES_META_DESCRIPTION =
-  'One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and ' +
+  'One entry per numeric field on a data row, carrying its unit and its source and ' +
   'licence. Required on every response that carries data.';
 
 function observationsResponse(stream: string, rowRef: string, seriesNote: string): Schema {
@@ -1128,7 +1149,7 @@ const OBSERVATION_STREAM_NOTES: Record<string, { summary: string; row: string; s
   generation: {
     summary: 'Actual generation by production type',
     row: 'GenerationRow',
-    series: `Up to ${PRODUCTION_TYPES.length} entries, one per production type returned — the case ToS §8.1 exists for.`,
+    series: `Up to ${PRODUCTION_TYPES.length} entries, one per production type returned — the response that carries the most series at once, each with its own source and licence.`,
   },
 };
 
