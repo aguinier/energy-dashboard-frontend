@@ -39,3 +39,7 @@ nul
 
 # Playwright MCP browser session dumps (console logs, page captures)
 .playwright-mcp/
+
+# vitest JSON reports (scripts/testFloor.mjs input, ABL-647)
+/vitest-server.json
+/vitest-client.json
