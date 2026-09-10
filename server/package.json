@@ -18,6 +18,7 @@
     "openapi:generate": "tsx src/v1/openapi/generate.ts",
     "docs:preview": "tsx src/v1/docs/docsPreview.ts",
     "check:unmerged": "tsx src/release/checkUnmergedWork.ts",
+    "claudemd:size": "tsx src/docs/claudeMdSize.ts",
     "typecheck:test": "tsc -p tsconfig.test.json"
   },
   "dependencies": {

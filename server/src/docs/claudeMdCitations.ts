@@ -590,6 +590,33 @@ function formatOverage(size: DocSize, budget: DocSize): string {
 }
 
 /**
+ * What is left before the budget bites — reported on a **passing** run.
+ *
+ * `checkSizeBudget` is silent until the line is crossed, which is how ABL-740
+ * happened: `main` sat 44 B under the byte budget for weeks and nobody knew
+ * until an unrelated, textually clean branch turned the merged tree red and
+ * had to be held out of a release train. A ceiling you only hear about by
+ * hitting it schedules that surprise for whoever edits next, and the cost lands
+ * on them rather than on whoever spent the space.
+ *
+ * So this reports both dimensions every run, and names the *binding* one — the
+ * dimension that runs out first is the only number an author can act on, and
+ * for this document it has always been bytes, never lines.
+ */
+export function describeSizeHeadroom(text: string, budget: DocSize = CLAUDE_MD_BUDGET): string {
+  const size = measureDocSize(text);
+  const lines = budget.lines - size.lines;
+  const bytes = budget.bytes - size.bytes;
+  const binding = bytes / budget.bytes <= lines / budget.lines ? 'bytes' : 'lines';
+  const bytesText = Math.abs(bytes) < KB ? `${bytes} B` : formatKb(bytes);
+  return (
+    `${size.lines.toLocaleString('en-US')} lines / ${formatKb(size.bytes)} — ` +
+    `headroom ${lines.toLocaleString('en-US')} lines / ${bytesText}, ` +
+    `${binding} binding.`
+  );
+}
+
+/**
  * The budget assertion's message, or `null` when the document fits.
  *
  * The message is as much the deliverable as the assertion. Whoever trips this is

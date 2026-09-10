@@ -14,7 +14,10 @@ the whole fleet. It once grew to 6,700 lines and killed runs outright.
   the suite when this file crosses either limit, and again if this sentence and
   `CLAUDE_MD_BUDGET` stop agreeing. Bytes are counted LF-normalised, as git
   stores the file, so the verdict is the same on every platform. Raising the
-  budget to fit an edit is not the remedy — moving the material is.
+  budget to fit an edit is not the remedy — moving the material is. Check the
+  headroom *before* writing with `npm run claudemd:size -w server`; the suite
+  only speaks once you are already over, and 44 B of headroom on `main` is what
+  held a finished branch out of a release train (ABL-740).
 - **Durable rules only.** Commands, maps, invariants, gotchas — each stated
   once, tersely. Incident narratives, dated measurements, per-issue forensics
   and evidence trails go in the matching `docs/claude/` topic file; append
@@ -76,21 +79,18 @@ Runs client and server together. The server needs `server/.env` with
 - **Junction trap — now mechanically guarded (ABL-640).** Worktrees reach the
   primary tree through **three** NTFS junctions: `node_modules`,
   `client/node_modules` and `server/node_modules` (`better-sqlite3` is
-  unhoisted). `git worktree remove --force` walks *through* a junction and
-  deletes the target's contents — printing nothing and exiting 0 — and it is
-  the **only** recursive delete that does: `Remove-Item -Recurse`, `fs.rmSync`,
-  `rm -rf` and `rmdir /s /q` each drop the link and leave the target intact
-  (measured; the matrix is in `docs/claude/03-quick-start.md`). So:
+  unhoisted). `git worktree remove --force` is the **only** recursive delete
+  that walks *through* a junction and deletes the target's contents — printing
+  nothing and exiting 0 (measured matrix: `docs/claude/03-quick-start.md`). So:
   - **Remove a worktree with `npm run worktree:remove -- <path>`**, which drops
     all three junctions and only then calls git. Never aim the raw command at a
     path that still holds one.
   - A deny-DELETE ACE on the shared tree is the control that does not depend on
     remembering the above (`npm run guard:node-modules status|apply|release`,
     `PROTECTED_PATHS` in `scripts/worktreeGuard.mjs`). With it on, the raw
-    command **aborts with the tree intact**; reads, overwrites and the additive
-    donor repair still work, so it costs nothing you are allowed to do here.
-    Its one visible cost: a raw `--force` removal now fails and leaves the
-    worktree behind — deliberate, and far cheaper than a silent fleet outage.
+    command **aborts with the tree intact**, at the deliberate cost of leaving
+    the worktree behind; reads, overwrites and the additive donor repair still
+    work, so it costs nothing you are allowed to do here.
   - `npm run check:modules` (also `predev`) names the damage in seconds if it
     ever recurs; `npm run repro:junction-delete` re-verifies the guard, which
     rests on measured git behaviour rather than a documented guarantee.
@@ -182,15 +182,10 @@ Anything about prod health or freshness must be settled against prod directly
 place to measure *shapes* (row counts, distributions), never currency.
 
 **The replica is locked to all readers twice a day while `able-db-sync` runs**
-(`sync-db-v2.ps1`, Scheduled Task at 07:00 and 16:30 local time). The task
-rebuilds every non-weather table inside one SQLite transaction, which holds an
-exclusive write lock for the duration — currently 30–60 min but variable;
-overruns past an hour have been observed. A `database is locked` error on the
-workstation replica is planned maintenance, not a hang or a bug; check the
-`.db-journal` mtime (advancing = writer still alive) and
-`C:\Code\able\logs\sync-db-v2.log` (a `Replacing local tables (transactional)`
-line with no later `Done.` means the lock is held right now) before escalating
-(ABL-612).
+(`sync-db-v2.ps1`, Scheduled Task at 07:00 and 16:30 local), for a variable
+30–60+ min while it rebuilds every non-weather table inside one SQLite
+transaction. A `database is locked` there is planned maintenance, not a hang or
+a bug — diagnose it from Common Issues below (ABL-612).
 
 ## Deployment
 
@@ -215,11 +210,13 @@ or an issue marked done — inspect the running container and the served bundle.
 `server/src/v1/` is a **separate Express application** (`createPublicApp`,
 `server/src/v1/publicApp.ts:204`, run from `publicIndex.ts`) — not
 `createApp()` with routes hidden. It binds loopback by default and **is not
-deployed or exposed**; changing the bind address is a Board-level decision.
-Full design, key store, metering, quotas, refusal log, billing, OpenAPI drift
-check, changelog and model-version gate: `docs/claude/07…16-*.md`.
+deployed or exposed**; changing the bind address is a Board-level decision, and
+launch is gated by ABL-349 — no subscriber terms published, no external key
+issued until it closes. Full design, key store, metering, quotas, refusal log,
+billing, OpenAPI drift check, changelog, model-version gate, docs-site
+construction and breach-watch signal grading: `docs/claude/07…16-*.md`.
 
-Invariants:
+Invariants — what an edit elsewhere in `server/src/` can break by accident:
 
 - The public app **does not import** `routes/index.js`, has no static mount /
   SPA fallback (`publicNotFoundHandler`, `server/src/v1/publicErrors.ts:98` is
@@ -244,38 +241,26 @@ Invariants:
   low is absorbed; slightly high is a refund and lost trust.
 - Plan limits (`server/src/v1/quota/`) answer breaches with 429 only, per
   account not per key; numbers are source code in `planLimits.ts`, not config.
-- A retrained artifact behind a served (zone, type, model) pair is a
-  **material change**: it is not served until acknowledged
-  (`server/src/v1/modelVersions/`), and the changelog is a table (not files)
-  because ToS §9.3 makes publish latency contractual —
-  `npm run changelog -- entries:publish …` from `server/`. The full §9.3
-  serving sequence: `docs/claude/16-serving-a-changed-model-artifact….md`.
+- A retrained artifact behind a served (zone, type, model) pair is a **material
+  change**: not served until acknowledged (`server/src/v1/modelVersions/`), and
+  published to the changelog table, because ToS §9.3 makes publish latency
+  contractual. Do not improvise that sequence — follow
+  `docs/claude/16-serving-a-changed-model-artifact….md`.
 - **The docs site (`server/src/v1/docs/`) is built and not published (ABL-522).**
-  `npm run docs:preview -w server` renders it from `docs/api/v1/openapi.json` on
-  loopback; the bind address is a constant, not configuration. `publicApp.ts`
-  **must not import it** while ABL-349 is open — `docsNotPublished.test.ts` pins
-  that. It has no stylesheet, script, font or third-party asset, because
-  `default-src 'none'` is what makes "no analytics" a deployment property.
-  `buildDocsSite` refuses a document that cites a clause, names the terms or
-  carries a URL off this origin; `/changelog` is linked, never forked.
-- **Breach detection reads `/v1`'s tables from the *private* process.** ABL-530
-  records auth failures into the key-store file; the ABL-578 watcher
-  (`startBreachWatchScheduler`, `server/src/services/breachWatchScheduler.ts:477`)
-  runs in `index.ts` beside the ops schedulers, opens that file **readonly**
+  `publicApp.ts` **must not import it** while ABL-349 is open —
+  `docsNotPublished.test.ts` pins that. Preview it on loopback with
+  `npm run docs:preview -w server`.
+- **Breach detection reads `/v1`'s tables from the *private* process.** The
+  ABL-578 watcher (`startBreachWatchScheduler`,
+  `server/src/services/breachWatchScheduler.ts:477`) runs in `index.ts` beside
+  the ops schedulers, opens the ABL-530 key-store file **readonly**
   (`openAuthFailureReader`, `server/src/services/breachWatch/authFailureReader.ts:92`),
-  and on a trip opens a `priority: high` `INCIDENT:` issue for the CEO — the
-  channel ABL-524 §6 fixed by Board decision. It lives there, not in the public
-  process, so the Paperclip credential stays out of the process ABL-291 may
-  expose — enforced by `FORBIDDEN_PUBLIC_ENV` above, not convention (ABL-591).
-  That makes it a **third** documented reader of `api_keys.db`, which
-  whoever builds Tier 2 (S1) must add to the baseline. Signals S4 and S2 fire on
-  ABL-524 verdicts with no threshold; S3's cutoff
-  (`PROVISIONAL_MIN_PREFIXES_PER_ORIGIN`,
-  `server/src/services/breachWatch/signals.ts:155`) is **provisional** and says so
-  in every incident it raises. S5 is deliberately not wired — it is ungraded by
-  design.
-- Launch is gated by ABL-349: no subscriber terms published, no external key
-  issued until it closes.
+  and on a trip opens a `priority: high` `INCIDENT:` issue for the CEO. It lives
+  there, not in the public process, so the Paperclip credential stays out of the
+  process ABL-291 may expose — enforced by `FORBIDDEN_PUBLIC_ENV` above, not
+  convention (ABL-591). It is a **third** reader of `api_keys.db`. S3's cutoff
+  is **provisional** and says so in every incident it raises; S5 is deliberately
+  not wired.
 
 ## Data semantics — rules that bite
 
@@ -408,25 +393,17 @@ cd server && npx vitest run
   message. Four server tests self-skip in CI (sibling checkout, local replica,
   win32 paths) — that is the `maxSkipped` allowance, and a fifth skip fails the
   build.
-- **A green client suite is a claim about your Node major unless the run says
-  otherwise.** `dashboardStore` is a persisted zustand store; its middleware
-  resolves the bare global `localStorage` once, at import, and calls
-  `storage.setItem` on every `setState`. That global is broken in a *different*
-  way on each Node: absent on 24 and earlier (zustand catches the
-  ReferenceError and persist silently no-ops, so the suite is green but nothing
-  about persistence is exercised), and present-without-`setItem` on 25, which
-  threw `TypeError: storage.setItem is not a function` — 20 failures on the
-  same commit that was green on 24 (ABL-320). **`@vitest-environment jsdom`
-  does not fix this**: vitest aliases `window` to `globalThis`, Node's global
-  wins over jsdom's, and all 20 failures survive `environment: 'jsdom'`
-  (measured on 25.6.1 + jsdom 30). What fixes it is
-  `client/vite.config.ts:88`, whose `setupFiles` installs a real Storage
-  (`installMemoryStorage`, `client/src/test/memoryStorage.ts:105`) before any
-  test module is imported. Do not replace it with an environment switch, and
-  do not add a per-file `localStorage` shim — one existed in
-  `LoadTab.test.tsx` and hid the problem for every other file. On Node 25 the
-  run also prints a `--localstorage-file was provided without a valid path`
-  warning per worker; that is Node's, not ours, and is not a failure.
+- **The client suite tests persistence only because it installs a real
+  `localStorage`.** `dashboardStore`'s zustand middleware resolves the bare
+  global once, at import; that global is absent on Node 24 (persist silently
+  no-ops — green, but nothing persisted is exercised) and truthy-without-
+  `setItem` on Node 25 (20 failures on a commit green on 24, ABL-320). What
+  fixes both is `client/vite.config.ts:88`, whose `setupFiles` installs a real
+  Storage (`installMemoryStorage`, `client/src/test/memoryStorage.ts:105`)
+  before any test module is imported. Do not swap it for
+  `environment: 'jsdom'` (measured, does not fix it) and do not add a per-file
+  shim — one in `LoadTab.test.tsx` hid this for every other file. Evidence:
+  `docs/claude/21-testing.md`.
 - **The client suite is Node-agnostic; the server suite is not — use Node 24
   for both.** `server/node_modules/better-sqlite3` is compiled for Node 24
   (ABI 137), so `cd server && npx vitest run` under Node 25 halts on the
@@ -536,10 +513,21 @@ Condensed diagnostics — full entries with the reasoning in
 - **"Cannot connect to database":** `ENERGY_DB_PATH` unset or pointing at a
   missing file.
 - **`database is locked` on the workstation replica:** `able-db-sync` is mid-run
-  (Scheduled Task at 07:00 / 16:30 local, 30–60 min variable window — see
-  Database Connection). Check the `.db-journal` mtime and
-  `C:\Code\able\logs\sync-db-v2.log`; wait for the lock to clear. Not a bug
-  (ABL-612).
+  (see Database Connection). The lock is held right now if
+  `C:\Code\able\logs\sync-db-v2.log` has a `Replacing local tables
+  (transactional)` line with no later `Done.`, or the `.db-journal` mtime is
+  advancing. Wait for it to clear. Not a bug (ABL-612).
+- **`gh auth status` says "not logged into any GitHub hosts", `gh pr
+  list`/`gh pr merge` unavailable:** the credential is not gone —
+  `cmdkey /list | findstr github` still shows it. Agent-spawned shells (bash
+  and PowerShell alike) launch with `APPDATA`/`LOCALAPPDATA` unset, so `gh`
+  can't find `%APPDATA%\GitHub CLI\hosts.yml` to know which host to check.
+  `git` is unaffected (`credential.helper=manager` is a separate store).
+  Fixed via `setx GH_CONFIG_DIR` (ABL-631) for PowerShell, which only reaches
+  a **freshly spawned** agent shell — plus a `~/bin/gh` bash shim that closes
+  the gap immediately, restart or not. Re-diagnose and re-verify:
+  `docs/claude/25-common-issues.md`. Do not restore the ABL-512
+  `settings.json` token workaround.
 - **`attempt to write a readonly database` in the CAT container:** the *same*
   event, seen from inside the bind mount, and **nothing wrote** — the container
   cannot see the host writer's lock, so SQLite reads the journal as hot and
