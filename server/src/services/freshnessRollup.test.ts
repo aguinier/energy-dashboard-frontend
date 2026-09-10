@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeFreshnessRollup } from './freshnessRollup.js';
+import { computeFreshnessRollup, unmeasuredFreshnessRollup } from './freshnessRollup.js';
 import type { DataFreshness } from './dataFreshnessService.js';
 import type { FreshnessStatus } from '../types/index.js';
 
@@ -86,5 +86,41 @@ describe('computeFreshnessRollup', () => {
     expect(rollup.counts.stale).toBe(2);
     expect(rollup.counts.live).toBe(3);
     expect(rollup.staleCountries).toEqual(['BE']);
+  });
+
+  it('never marks a computed rollup as unmeasured, not even the empty fleet', () => {
+    // The empty fleet and the unreadable database produce the same numbers and
+    // must stay distinguishable: one is "we looked and there is nothing", the
+    // other is "we could not look" (ABL-657).
+    expect(computeFreshnessRollup({}).unmeasured).toBeUndefined();
+    expect(computeFreshnessRollup({ DE: freshness('live') }).unmeasured).toBeUndefined();
+  });
+});
+
+describe('unmeasuredFreshnessRollup', () => {
+  it('carries the reason and reports honest zero counts', () => {
+    const rollup = unmeasuredFreshnessRollup('attempt to write a readonly database');
+
+    expect(rollup.unmeasured).toBe('attempt to write a readonly database');
+    expect(rollup.countriesChecked).toBe(0);
+    expect(rollup.streamsChecked).toBe(0);
+    expect(rollup.counts).toEqual({ live: 0, stale: 0, ended: 0, none: 0 });
+    expect(rollup.staleCountries).toEqual([]);
+  });
+
+  it('is byte-identical to the empty fleet apart from the reason — `unmeasured` is the only discriminator', () => {
+    // Pinned because every consumer keys on `unmeasured` and not on the numbers:
+    // if a future edit made this shape differ some other way, a consumer could
+    // start reading the difference instead and silently diverge from the rest.
+    const empty = computeFreshnessRollup({});
+    const failed = unmeasuredFreshnessRollup('database is locked');
+
+    expect({ ...failed, unmeasured: undefined }).toEqual({ ...empty, unmeasured: undefined });
+  });
+
+  it('does not claim a freshness verdict — `status` is the empty shape, not a finding', () => {
+    // `none` here is furniture: `FreshnessStatus` has no member for "not
+    // measured", which is exactly why the reason is a separate field.
+    expect(unmeasuredFreshnessRollup('boom').status).toBe('none');
   });
 });
