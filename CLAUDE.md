@@ -506,10 +506,10 @@ type ForecastModelRegistry = Record<string, ForecastTypeConfig>;
 ```
 
 **TSO forecast types: client and server declarations are NOT mirror images.**
-The client's `TSOLoadForecastDataPoint` (`client/src/types/index.ts:281`) adds
+The client's `TSOLoadForecastDataPoint` (`client/src/types/index.ts:291`) adds
 `forecast_min_mw`/`forecast_max_mw` (week-ahead only, `tsoForecastService.ts:71-72`,
 NULL on day-ahead) that the server's (`server/src/types/index.ts:170`) lacks;
-`TSOGenerationForecastDataPoint` is server-only (`server/src/types/index.ts:245`,
+`TSOGenerationForecastDataPoint` is server-only (`server/src/types/index.ts:255`,
 duplicated at `tsoForecastService.ts:27`). Check which side you are on.
 
 ## Debugging Tips

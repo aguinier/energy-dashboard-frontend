@@ -261,3 +261,48 @@ both fixed here:
    written for. It is now evaluated in `SYNC_HOST_TIME_ZONE` via `Intl`,
    verified by running the built `dist` inside a `node:20-slim` container at the
    six real breach instants.
+
+## The Europe choropleth hatches a country at 7d/30d that is coloured at 24h (ABL-719)
+
+Not a regression and not a fetch failure: that country's series stopped
+publishing *before* the window ended, and `/api/dashboard/map` now withholds the
+average rather than painting the fragment that exists. Hover it — the card says
+`No data published since <date>. The series has stopped upstream, not here.`,
+the same sentence the country document's net position figure uses
+(`client/src/lib/endedSeriesNotice.ts`, one definition for both surfaces).
+
+**What it looked like before.** Measured on prod 2026-09-10, with IE dark since
+2026-08-30 22:30 UTC and PT's net position dark since 2026-09-04 21:00 UTC:
+
+```
+metric=load          30d : IE = 3849 MW     ts 2026-08-30 22:30   (dark 10 days)
+metric=renewable_pct 30d : IE = 32.45%      ts 2026-08-30 22:30
+metric=net_position   7d : PT = -2702 MW    ts 2026-09-04 21:00   (dark 6 days)
+metric=net_position  30d : PT = -2255 MW    <- same dead series, wider denominator
+```
+
+PT's two values are the proof. An average that moves when you widen a window it
+does not reach is not a window average, and both were painted on the same colour
+scale as their fully-covered neighbours. At the default 24h window both
+countries fell out of the window naturally and hatched, which is why it survived
+so long: the defect only showed at a window setting nobody's smoke test used.
+
+**Why 48h.** Measured in one pass on prod the same day, hours between each
+country's newest in-window row and the fleet frontier, 30d window: `load` IE
+247.8 / MK 105.2, then a 92h gap down to LV 13.2; `renewable_pct` IE 246.5, then
+a 214h gap down to AL 32.0; `net_position` PT 130.0, then 130h down to 0.0 for
+every other zone; `price` nothing later than 0.2h across 30 countries. Every
+metric is bimodal, and **any cutoff between 33h and 105h selects the identical
+set on all four** — {IE, MK, PT}, exactly the streams that had stopped. 48h sits
+inside that band and also reads as "silent for two full publication days", which
+does not depend on the gap holding. It is not
+`freshness.MEASURED_STALE_AFTER_HOURS` (18h): that answers "is this stream
+current", and at 18h the 30d load map would withhold LV, BG, ME, DK, CH and CZ,
+whose averages are complete to within a few hours and are real information.
+
+**Where the rule lives.** `server/src/services/mapCoverage.ts`, applied by all
+four `getMap*Data` in `dashboardService.ts`. Two things it must keep doing:
+judge against the **window's end** and never `now` (a `timeOffset`-shifted
+historical window would otherwise hatch every country), and run **before** the
+DE→LU net-position aliasing, since DE_LU is one bidding zone and LU inherits
+DE's verdict including a withheld one.

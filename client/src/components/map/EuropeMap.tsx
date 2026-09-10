@@ -13,10 +13,11 @@ import {
 } from '@/lib/netPositionScope';
 import { useCoreNetPositionMap } from '@/hooks/useCoreNetPositionData';
 import { isCoreNetPositionView, netPositionMapCellState } from './netPositionMapScope';
+import { indexMapRows, type RankedPoint } from './mapRows';
 import { divergingT, symmetricBound } from '@/lib/divergingScale';
 import { lerpHex, SCALE_CLEAN, SCALE_DIRTY, SCALE_MEDIUM } from '@/lib/dataScale';
 import { cn } from '@/lib/utils';
-import type { MetricType, MapDataPoint } from '@/types';
+import type { MetricType } from '@/types';
 import { selectMapGeometry, hoverCardClearsSelector, countryAriaLabel } from './mapGeometry';
 import { NoDataHatchPattern, NoDataSwatch, noDataHatchUrl } from './NoDataHatch';
 import type { GeoFeature } from './mapGeometry';
@@ -126,15 +127,21 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
   const { data: mapData, isLoading } = coreView ? core : allCoupled;
   const prefetchCountry = usePrefetchCountry();
 
-  const [hoveredCountry, setHoveredCountry] = useState<MapDataPoint | null>(null);
-  // A country the Core view cannot colour because no Core net position exists
-  // for it. Kept separate from `hoveredCountry` rather than folded in as a
-  // point with a null value: everything downstream of `hoveredCountry` reads
-  // `.value` as a number, and a nullable value there is how a "not
-  // applicable" country ends up rendering a confident 0 MW.
-  const [hoveredOutOfScope, setHoveredOutOfScope] = useState<{
+  const [hoveredCountry, setHoveredCountry] = useState<RankedPoint | null>(null);
+  // A hatched country we can explain — either it has no Core net position at
+  // all (not one of the 12 Core CCR zones), or its series stopped before this
+  // window did and the server withheld the average (ABL-719). One state for
+  // both because they render the same card: a sentence where a number would
+  // otherwise go.
+  //
+  // Kept separate from `hoveredCountry` rather than folded in as a point with a
+  // null value: everything downstream of `hoveredCountry` reads `.value` as a
+  // number, and a nullable value there is how a country we cannot measure ends
+  // up rendering a confident 0 MW.
+  const [hoveredNotice, setHoveredNotice] = useState<{
     code: string;
     name: string;
+    notice: string;
   } | null>(null);
   // Unique per mounted instance — the map can render both docked (ChartWrapper)
   // and full-screen at once, and a hardcoded pattern id would collide.
@@ -146,37 +153,30 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
     else setSelectedCountry(countryCode);
   }, [onCountryClick, setSelectedCountry, prefetchCountry]);
 
-  const handleMouseEnter = useCallback((d: MapDataPoint | null) => {
+  const handleMouseEnter = useCallback((d: RankedPoint | null) => {
     if (d) {
-      setHoveredOutOfScope(null);
+      setHoveredNotice(null);
       setHoveredCountry(d);
       prefetchCountry(d.country_code);
     }
   }, [prefetchCountry]);
 
-  // No prefetch here on purpose — this country has nothing to open in the
-  // Core view, and warming its country page would be work for a click that
-  // is not offered.
-  const handleOutOfScopeEnter = useCallback((code: string, name: string) => {
+  // No prefetch here on purpose — this country has nothing to open on this
+  // map, and warming its country page would be work for a click that is not
+  // offered.
+  const handleNoticeEnter = useCallback((code: string, name: string, notice: string) => {
     setHoveredCountry(null);
-    setHoveredOutOfScope({ code, name });
+    setHoveredNotice({ code, name, notice });
   }, []);
 
   const handleMouseLeave = useCallback(() => {
     setHoveredCountry(null);
-    setHoveredOutOfScope(null);
+    setHoveredNotice(null);
   }, []);
 
-  const { min, max, dataMap } = useMemo(() => {
-    if (!mapData || mapData.length === 0) {
-      return { min: 0, max: 100, dataMap: new Map<string, MapDataPoint>() };
-    }
-    const usable = mapData.filter((d) => d.value != null && Number.isFinite(d.value));
-    const values = usable.map((d) => d.value);
-    const dataMap = new Map(usable.map((d) => [d.country_code, d]));
-    if (values.length === 0) return { min: 0, max: 100, dataMap };
-    return { min: Math.min(...values), max: Math.max(...values), dataMap };
-  }, [mapData]);
+  // `ranked` is the map's colour domain; `endedNotices` is every hatched
+  // country whose blank we can account for. See mapRows.ts.
+  const { min, max, ranked, endedNotices } = useMemo(() => indexMapRows(mapData), [mapData]);
 
   const metricInfo = MAP_METRICS.find((m) => m.value === mapMetric);
 
@@ -249,7 +249,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
           {({ geographies }) =>
             geographies.map((geo: GeoFeature) => {
               const code = getCountryCode(geo);
-              const d = code ? dataMap.get(code) : null;
+              const d = code ? ranked.get(code) : null;
               const has = !!d;
               const cellState = netPositionMapCellState({
                 metric: mapMetric,
@@ -258,16 +258,22 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                 hasValue: has,
               });
               const outOfScope = cellState === 'out_of_core';
+              // Out-of-scope wins when both could apply: "this quantity does
+              // not exist for this country" is the stronger statement, and a
+              // stopped ENTSO-E series says nothing about a JAO Core figure.
+              const notice = outOfScope
+                ? NON_CORE_MAP_NOTICE
+                : (code ? endedNotices.get(code) : undefined) ?? null;
               const isSelected = code === selectedCountry;
               const isHover =
-                hoveredCountry?.country_code === code || hoveredOutOfScope?.code === code;
+                hoveredCountry?.country_code === code || hoveredNotice?.code === code;
               const countryName: string = geo.properties.NAME ?? code ?? 'Unknown';
-              // An out-of-scope country is not "no data" to a screen reader
-              // either — it gets the same sentence a sighted reader gets on
-              // hover, rather than falling through to countryAriaLabel's
-              // no-data wording.
-              const ariaLabel = outOfScope
-                ? `${countryName}: ${NON_CORE_MAP_NOTICE}`
+              // A country we can account for is not "no data" to a screen
+              // reader either — it gets the same sentence a sighted reader gets
+              // on hover, rather than falling through to countryAriaLabel's
+              // bare no-data wording.
+              const ariaLabel = notice
+                ? `${countryName}: ${notice}`
                 : countryAriaLabel(
                     countryName,
                     has,
@@ -292,7 +298,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                   style={{
                     default: {
                       outline: 'none',
-                      opacity: (hoveredCountry || hoveredOutOfScope) && !isHover ? 0.55 : 1,
+                      opacity: (hoveredCountry || hoveredNotice) && !isHover ? 0.55 : 1,
                       transition: 'fill-opacity 0.15s, stroke-width 0.15s',
                     },
                     hover: { outline: 'none', cursor: has ? 'pointer' : 'default' },
@@ -311,8 +317,8 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                   // reader why a country they can see is not coloured, and a
                   // keyboard user has no other way to reach it. It stays
                   // `role="img"`, not `button` — nothing happens on Enter.
-                  tabIndex={has || outOfScope ? 0 : -1}
-                  role={has ? 'button' : outOfScope ? 'img' : undefined}
+                  tabIndex={has || notice ? 0 : -1}
+                  role={has ? 'button' : notice ? 'img' : undefined}
                   aria-label={ariaLabel}
                   onClick={() => { if (code && has) handleCountryClick(code); }}
                   onKeyDown={(e) => {
@@ -323,7 +329,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                     }
                   }}
                   onMouseEnter={() => {
-                    if (outOfScope && code) handleOutOfScopeEnter(code, countryName);
+                    if (notice && code) handleNoticeEnter(code, countryName, notice);
                     else handleMouseEnter(d ?? null);
                   }}
                   onMouseLeave={handleMouseLeave}
@@ -333,7 +339,7 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
                   // substitute for scanning the map instead of a second,
                   // unlabeled mode.
                   onFocus={() => {
-                    if (outOfScope && code) handleOutOfScopeEnter(code, countryName);
+                    if (notice && code) handleNoticeEnter(code, countryName, notice);
                     else handleMouseEnter(d ?? null);
                   }}
                   onBlur={handleMouseLeave}
@@ -380,11 +386,12 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         </div>
       )}
 
-      {/* Out-of-scope hover card. Same position and shell as the value card
-          above, deliberately without a number slot: this country has no Core
-          net position at all, and an empty or dashed metric line where a
-          figure normally sits reads as a value we failed to fetch. */}
-      {hoveredOutOfScope && (
+      {/* Explained-blank hover card — a country with no Core net position at
+          all, or one whose series stopped before this window did. Same position
+          and shell as the value card above, deliberately without a number slot:
+          an empty or dashed metric line where a figure normally sits reads as a
+          value we failed to fetch. */}
+      {hoveredNotice && (
         <div
           className={cn(
             'pointer-events-none absolute min-w-[260px] max-w-[280px] rounded-[10px] border border-border bg-card px-4 py-3.5 shadow-[0_4px_20px_rgba(0,0,0,0.06)]',
@@ -393,18 +400,18 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
         >
           <div className="mb-2 flex items-baseline gap-2">
             <span className="font-mono-num text-micro text-ink-muted">
-              {hoveredOutOfScope.code}
+              {hoveredNotice.code}
             </span>
             <span className="text-title font-medium text-foreground">
-              {hoveredOutOfScope.name}
+              {hoveredNotice.name}
             </span>
           </div>
-          <p className="text-meta text-ink-dim">{NON_CORE_MAP_NOTICE}</p>
+          <p className="text-meta text-ink-dim">{hoveredNotice.notice}</p>
         </div>
       )}
 
       {/* Empty state — the API returned no countries for this metric */}
-      {!isLoading && dataMap.size === 0 && (
+      {!isLoading && ranked.size === 0 && (
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-[320px] rounded-[10px] border border-border bg-card px-5 py-4 text-center shadow-[0_4px_20px_rgba(0,0,0,0.06)]">
           <div className="text-body font-medium text-foreground">
             {coreView

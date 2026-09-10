@@ -15,6 +15,7 @@ import {
   TOTAL_POSITIVE_MW_SUM,
 } from './generationService.js';
 import { measuredLoadClause } from './loadQuality.js';
+import { applyWindowCoverage } from './mapCoverage.js';
 import { RENEWABLE_COMPONENTS, nullAwareSumSql, WINDOW_AVERAGE } from './renewableTotal.js';
 
 function getTimeRangeDates(timeRange: TimeRange): { start: string; end: string } {
@@ -151,6 +152,15 @@ export function getDashboardOverview(
   };
 }
 
+/**
+ * One row per country for the choropleth: the metric averaged over the window.
+ *
+ * Every branch below ends in `applyWindowCoverage` (ABL-719), which withholds
+ * the number for a country whose series stopped before the window did. Without
+ * it the average silently becomes "the average of the fragment that exists" and
+ * is painted on the same scale as its fully-covered neighbours — see that
+ * module for the prod measurement and the cutoff.
+ */
 export function getMapData(
   metric: MetricType = 'load',
   timeRange: TimeRange = '24h',
@@ -187,7 +197,7 @@ function getMapLoadData(range: TimestampRange): MapDataPoint[] {
     GROUP BY l.country_code, c.country_name
     ORDER BY c.country_name
   `);
-  return stmt.all(...rangeArgs(range)) as MapDataPoint[];
+  return applyWindowCoverage(stmt.all(...rangeArgs(range)) as MapDataPoint[], range);
 }
 
 /**
@@ -217,7 +227,13 @@ function getMapNetPositionData(range: TimestampRange): MapDataPoint[] {
     GROUP BY n.country_code, c.country_name
     ORDER BY c.country_name
   `);
-  const rows = stmt.all(...rangeArgs(range)) as MapDataPoint[];
+  // Coverage first, aliasing second. DE_LU is one bidding zone, so whatever
+  // verdict DE gets is LU's verdict too — including a withheld one. Running the
+  // aliasing first would copy a fragment average onto LU and then withhold only
+  // DE, painting half a dead zone; dropping DE's row instead would leave LU
+  // holding its own ~180 artifact rows, which is the number this function
+  // exists to overwrite.
+  const rows = applyWindowCoverage(stmt.all(...rangeArgs(range)) as MapDataPoint[], range);
 
   const de = rows.find((r) => r.country_code === 'DE');
   if (!de) return rows;
@@ -226,6 +242,7 @@ function getMapNetPositionData(range: TimestampRange): MapDataPoint[] {
   if (existingLu) {
     existingLu.value = de.value;
     existingLu.timestamp = de.timestamp;
+    existingLu.coverage = de.coverage;
     return rows;
   }
 
@@ -249,7 +266,7 @@ function getMapPriceData(range: TimestampRange): MapDataPoint[] {
     GROUP BY p.country_code, c.country_name
     ORDER BY c.country_name
   `);
-  return stmt.all(...rangeArgs(range)) as MapDataPoint[];
+  return applyWindowCoverage(stmt.all(...rangeArgs(range)) as MapDataPoint[], range);
 }
 
 /**
@@ -287,7 +304,7 @@ function getMapRenewableData(range: TimestampRange): MapDataPoint[] {
     HAVING value IS NOT NULL
     ORDER BY c.country_name
   `);
-  return stmt.all(...rangeArgs(range)) as MapDataPoint[];
+  return applyWindowCoverage(stmt.all(...rangeArgs(range)) as MapDataPoint[], range);
 }
 
 /**
