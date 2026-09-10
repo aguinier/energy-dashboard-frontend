@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
+import { MAP_WINDOW_COVERAGE_HOURS } from './mapCoverage.js';
 
 // The module under test imports the shared connection, which opens a real
 // SQLite file at import time. Every test here always passes its own handle,
@@ -409,5 +410,67 @@ describe('getCoreNetPositionMap', () => {
     const db = new Database(':memory:');
     db.exec(`CREATE TABLE countries (country_code TEXT PRIMARY KEY, country_name TEXT NOT NULL)`);
     expect(getCoreNetPositionMap(START, END, db)).toEqual([]);
+  });
+
+  it('stamps the covered rows as ISO-8601 UTC and leaves them unflagged', () => {
+    const rows = getCoreNetPositionMap(START, END, mapDb());
+    const fr = rows.find((r) => r.country_code === 'FR');
+    expect(fr?.timestamp).toBe('2026-08-09T08:45:00Z');
+    expect(fr?.coverage).toBeUndefined();
+  });
+
+  describe('window coverage (ABL-727)', () => {
+    // The JAO capture is ours and can stall. A window that runs six days past
+    // the last captured quarter is the PT case from ABL-719 in Core clothing:
+    // the fragment average is real arithmetic over rows that genuinely are
+    // inside the window, and it is not what the legend claims.
+    const WIDE_END = '2026-08-15T00:00:00Z';
+
+    it('withholds a zone whose capture stopped mid-window instead of averaging the fragment', () => {
+      const rows = getCoreNetPositionMap(START, WIDE_END, mapDb());
+      const fr = rows.find((r) => r.country_code === 'FR');
+      expect(fr?.value).toBeNull();
+      expect(fr?.value).not.toBe(0);
+      expect(fr?.coverage).toBe('ended');
+      // Kept, not dropped: the row is what lets the hover card date the stall.
+      expect(fr?.timestamp).toBe('2026-08-09T08:45:00Z');
+    });
+
+    it('hands LU the same withheld verdict as DE rather than half a dead zone', () => {
+      const rows = getCoreNetPositionMap(START, WIDE_END, mapDb());
+      const de = rows.find((r) => r.country_code === 'DE');
+      const lu = rows.find((r) => r.country_code === 'LU');
+      expect(de?.value).toBeNull();
+      expect(lu?.value).toBeNull();
+      expect(lu?.coverage).toBe('ended');
+      // Aliasing before the coverage check would have left LU holding 9424.
+      expect(lu?.timestamp).toBe(de?.timestamp);
+    });
+
+    it('keeps a zone that is still publishing while its neighbours have stopped', () => {
+      const db = mapDb();
+      storeCoreNetPositionRows(db, [
+        { countryCode: 'NL', timestampUtc: '2026-08-14 22:00:00', netPositionMw: 1500 },
+        { countryCode: 'NL', timestampUtc: '2026-08-14 22:15:00', netPositionMw: 1700 },
+      ]);
+      const rows = getCoreNetPositionMap(START, WIDE_END, db);
+      const nl = rows.find((r) => r.country_code === 'NL');
+      expect(nl?.value).toBe(1600);
+      expect(nl?.coverage).toBeUndefined();
+      expect(rows.find((r) => r.country_code === 'FR')?.value).toBeNull();
+    });
+
+    it('uses the all-coupled view\'s cutoff, not a Core-specific one', () => {
+      // 15-minute resolution does not buy a different number: what sizes the
+      // cutoff is publication cadence, and JAO publishes daily in lockstep
+      // across all 12 hubs (measured live 2026-09-10). The last quarter is
+      // 2026-08-09 08:45, so these two window ends straddle 48h from it.
+      const justInside = getCoreNetPositionMap(START, '2026-08-11T08:00:00Z', mapDb());
+      expect(justInside.find((r) => r.country_code === 'FR')?.value).toBe(-369);
+
+      const justPast = getCoreNetPositionMap(START, '2026-08-11T10:00:00Z', mapDb());
+      expect(justPast.find((r) => r.country_code === 'FR')?.value).toBeNull();
+      expect(MAP_WINDOW_COVERAGE_HOURS).toBe(48);
+    });
   });
 });

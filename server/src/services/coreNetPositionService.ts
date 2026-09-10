@@ -1,6 +1,8 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import defaultDb from '../config/database.js';
-import { normalizeTimestamp } from '../utils/timestamp.js';
+import type { MapDataPoint } from '../types/index.js';
+import { normalizeTimestamp, timestampRange } from '../utils/timestamp.js';
+import { applyWindowCoverage } from './mapCoverage.js';
 import { resolveBiddingZone } from './netPositionService.js';
 
 /**
@@ -369,19 +371,19 @@ export function getCoreNetPositionSeries(
   };
 }
 
-export interface CoreNetPositionMapPoint {
-  country_code: string;
-  country_name: string;
-  value: number;
-  timestamp: string;
-}
-
 /**
- * Window-average Core net position per zone, shaped like `/dashboard/map`'s
+ * Window-average Core net position per zone, as `/dashboard/map`'s own
  * `MapDataPoint` so the choropleth can colour it with the metric's existing
  * diverging scale.
  *
- * Two properties carried over from `dashboardService.getMapNetPositionData`,
+ * It is that exact type rather than a Core-shaped near-copy on purpose
+ * (ABL-727). `EuropeMap` swaps this payload in for `/dashboard/map`'s on the
+ * `coreView` toggle and runs both through one `indexMapRows`, so a field the
+ * two payloads spell differently is a field the same component would explain
+ * two ways. The near-copy this replaces had a non-nullable `value` and no
+ * `coverage`, which is exactly how it missed the ABL-719 fix.
+ *
+ * Three properties carried over from `dashboardService.getMapNetPositionData`,
  * for the same reasons stated there:
  *
  * - Averaged over the window, so it reads as "net exporter over this period"
@@ -393,13 +395,48 @@ export interface CoreNetPositionMapPoint {
  * - LU is emitted with DE's value rather than left out. DE_LU is one bidding
  *   zone and Luxembourg is inside Core; a hole there would read as "outside
  *   the Core region", which is the one claim this view must get right.
+ * - `applyWindowCoverage` withholds a zone whose newest row does not reach the
+ *   window's end, rather than painting the average of the fragment that
+ *   exists. The JAO capture is *ours* and can stall silently, which ENTSO-E at
+ *   least cannot do quietly on our behalf.
+ *
+ * THE SAME 48h CUTOFF, AND WHY 15-MINUTE RESOLUTION DOES NOT ARGUE FOR ANOTHER
+ *
+ * Resolution sets how finely a window is covered, not how long a silence is
+ * tolerated; what sizes the cutoff is publication cadence. Measured live
+ * against JAO 2026-09-10 10:34 UTC (`netPos`, all 12 Core hubs): intervals are
+ * uniformly 15 minutes apart, every hub carries a value on every interval, and
+ * all 12 stop at the same instant — 2026-09-10T21:45Z, the end of the current
+ * local day. So Core publishes once a day, for a whole future day, in lockstep
+ * across every zone. That is the same "at least daily" property the 48h
+ * reading rests on, so it stays 48h, unchanged and undoubled: two publication
+ * days of silence means stopped, not late.
+ *
+ * One Core-specific consequence to know before reading a hatch here. This is a
+ * day-ahead result: the stream's frontier runs *ahead* of the wall clock
+ * (+11.2h at the measurement above, up to ~+35h just after a publication
+ * lands), so when the capture stalls, the stored data still covers hours that
+ * have not happened yet. The rule is measured from the newest stored interval,
+ * not from the moment the capture died, so those hours are spent before the
+ * 48h starts running and a stall takes roughly 57-83h of real silence to
+ * withhold. That is a property of every day-ahead source and already holds for
+ * `net_position` on the all-coupled view; shortening the Core cutoff to
+ * compensate would invent a second number with no measurement behind it, and
+ * let two views of one choropleth hatch the same zone on different days.
  */
 export function getCoreNetPositionMap(
   start: string,
   end: string,
   db: DatabaseType = defaultDb
-): CoreNetPositionMapPoint[] {
+): MapDataPoint[] {
   if (!hasCoreTable(db)) return [];
+
+  // Taken for its `end` — the instant coverage is judged against — and for
+  // bounds identical to the `normalizeTimestamp` pair this replaces. The
+  // predicate stays a plain `BETWEEN` on the bare column rather than
+  // `rangeClause`/`rangeArgs`: this table is single-separator by construction,
+  // see the module doc above.
+  const range = timestampRange(start, end);
 
   const rows = db
     .prepare(
@@ -414,14 +451,20 @@ export function getCoreNetPositionMap(
        GROUP BY n.country_code, c.country_name
        ORDER BY c.country_name`
     )
-    .all(normalizeTimestamp(start), normalizeTimestamp(end)) as CoreNetPositionMapPoint[];
+    .all(range.start, range.end) as MapDataPoint[];
 
-  const de = rows.find((r) => r.country_code === 'DE');
-  if (!de) return rows;
+  // Coverage first, aliasing second — the same ordering `getMapNetPositionData`
+  // documents. DE_LU is one bidding zone, so LU inherits DE's verdict including
+  // a withheld one; aliasing first would copy a fragment average onto LU and
+  // then withhold only DE, painting half a dead zone.
+  const covered = applyWindowCoverage(rows, range);
+
+  const de = covered.find((r) => r.country_code === 'DE');
+  if (!de) return covered;
 
   const lu = db
     .prepare(`SELECT country_name FROM countries WHERE country_code = 'LU'`)
     .get() as { country_name: string } | undefined;
-  if (lu) rows.push({ ...de, country_code: 'LU', country_name: lu.country_name });
-  return rows;
+  if (lu) covered.push({ ...de, country_code: 'LU', country_name: lu.country_name });
+  return covered;
 }
