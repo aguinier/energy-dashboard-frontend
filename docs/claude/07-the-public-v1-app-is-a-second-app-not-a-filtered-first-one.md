@@ -99,3 +99,31 @@ The public process binds `127.0.0.1` by default and **is not deployed or
 exposed**; `PUBLIC_BIND_HOST` exists so the bind address is configuration
 rather than a code change, but choosing anything other than loopback is a
 network-exposure decision that needs its own Board-approved issue.
+
+## Breach-watch signal grading (ABL-578, moved from `CLAUDE.md` 2026-09-10)
+
+ABL-530 records `/v1` auth failures into the key-store file; the ABL-578
+watcher (`startBreachWatchScheduler`,
+`server/src/services/breachWatchScheduler.ts`) reads them from the **private**
+process and, on a trip, opens a `priority: high` `INCIDENT:` issue for the CEO
+— the channel ABL-524 §6 fixed by Board decision. The durable half of that
+(where it runs, why it runs there, and that it is a third reader of
+`api_keys.db`) is in the repo-root `CLAUDE.md`. What follows is the grading.
+
+- **S2 and S4 fire on ABL-524 verdicts with no threshold of their own.** They
+  inherit a decision that was already made and graded elsewhere, so there is no
+  number here to tune or to distrust.
+- **S3's cutoff is provisional and says so out loud.**
+  `PROVISIONAL_MIN_PREFIXES_PER_ORIGIN`
+  (`server/src/services/breachWatch/signals.ts`) was chosen without a
+  distribution to fit it to, because `/v1` has no external traffic yet
+  (ABL-349). Every incident S3 raises carries that caveat in its own text, so a
+  reader never has to come here to learn that the number is a guess. Re-fit it
+  against real traffic before treating it as a measured threshold.
+- **S5 is deliberately not wired.** It is ungraded by design, not an oversight
+  and not a TODO. Wiring it needs a grading decision first.
+
+**For whoever builds Tier 2 (S1):** the watcher is the **third** documented
+reader of `api_keys.db`, after the public app and the key-issuance tooling. A
+Tier 2 baseline that counts readers must include it, or the watcher's own
+readonly opens will read as the anomaly it is looking for.
