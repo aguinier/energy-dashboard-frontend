@@ -1843,8 +1843,13 @@ alarm no ingest fix could clear is furniture.
   ~46h in the *future*, so the age rule would read it as impossibly fresh
   forever and never notice a missing tomorrow — which is exactly how ABL-51 got
   found by a board member instead of by us. The rule: before that stream's
-  `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` the newest row must reach today's Brussels
-  market day; after it, tomorrow's.
+  `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` the newest row must reach today's market
+  day; after it, tomorrow's. The day required is named by the **UTC** calendar
+  date and its *start* is Brussels midnight of that date (`marketDayStartUtc`).
+  Both halves matter and they are different questions: taking the deadline from
+  the UTC clock but the day from the Brussels calendar made the rule ask for
+  D+2 between Brussels midnight and UTC midnight — 33 of 39 countries `stale`
+  for two hours every night, on all three streams at once (ABL-697).
 
   **The deadline is per stream, because the three streams are three different
   ENTSO-E documents** (ABL-494, `services/freshness.ts:168`). They do not

@@ -227,6 +227,41 @@ export function brusselsDayStartUtc(now: Date, dayOffset: number): Date {
   return offsetThere === offset ? firstGuess : new Date(midnightWall - offsetThere);
 }
 
+/**
+ * The UTC instant at which the market day **named by a UTC calendar date**
+ * begins in Brussels.
+ *
+ * This is the sibling of `brusselsDayStartUtc` and the difference between them
+ * is ABL-697. Both answer "when does a Brussels day start"; they disagree about
+ * *which* day, and only during the hours when the two calendars disagree —
+ * 22:00-24:00 UTC under CEST, 23:00-24:00 under CET.
+ *
+ * `brusselsDayStartUtc(now, 1)` means "the day after the Brussels day `now`
+ * falls in". `marketDayStartUtc(now, 1)` means "the day after the UTC date
+ * `now` falls in". At 22:30 UTC on the 9th those are the 11th and the 10th.
+ *
+ * `classifyDayAheadStream` needs the second, because its deadline is a **UTC
+ * hour** (`DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR`) and an hour-of-day only names a
+ * day together with the calendar it is counted in. Mixing the two made the rule
+ * demand D+2 for two hours every night — see that constant for the measurement.
+ *
+ * The offset is read twice for the same reason `brusselsDayStartUtc` reads it
+ * twice: the Brussels offset at 00:00 UTC is not necessarily the offset at the
+ * Brussels midnight up to two hours earlier.
+ */
+export function marketDayStartUtc(now: Date, dayOffset: number): Date {
+  const midnightWall = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + dayOffset,
+  );
+
+  const guessOffset = offsetMs(new Date(midnightWall));
+  const firstGuess = new Date(midnightWall - guessOffset);
+  const offsetThere = offsetMs(firstGuess);
+  return offsetThere === guessOffset ? firstGuess : new Date(midnightWall - offsetThere);
+}
+
 /** Brussels' UTC offset at a given instant, in milliseconds. */
 function offsetMs(at: Date): number {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -286,6 +321,14 @@ export function classifyMeasuredStream(latest: string | null, now: Date): Freshn
  * `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` we require only that it reaches today;
  * after, that it reaches tomorrow.
  *
+ * **"Today" is the UTC calendar date, not the Brussels one** (`marketDayStartUtc`,
+ * ABL-697). The deadline above is a UTC hour, and an hour-of-day names a day
+ * only together with the calendar it is counted in; taking the hour from UTC
+ * and the day from Brussels made the rule demand D+2 — a market day nobody has
+ * ever published — from Brussels midnight until UTC midnight. Measured on prod
+ * and CAT alike, that was 33 of 39 countries reading `stale` for two hours
+ * every night, on all three day-ahead streams at once.
+ *
  * `stream` is required rather than defaulted, and that is the ABL-494 fix: the
  * three documents publish hours apart, so a stream that silently inherited
  * another's deadline would read `stale` every afternoon between the two — which
@@ -309,7 +352,7 @@ export function classifyDayAheadStream(
   if (!at) return { latest: null, ageHours: null, status: 'none' };
 
   const requiredDay = now.getUTCHours() >= DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR[stream] ? 1 : 0;
-  const mustReach = brusselsDayStartUtc(now, requiredDay);
+  const mustReach = marketDayStartUtc(now, requiredDay);
   const ageHours = (now.getTime() - at.getTime()) / MS_PER_HOUR;
 
   return {

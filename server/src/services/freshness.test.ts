@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseStoredTimestamp,
   brusselsDayStartUtc,
+  marketDayStartUtc,
   classifyMeasuredStream,
   classifyDayAheadStream,
   MEASURED_STALE_AFTER_HOURS,
@@ -79,6 +80,69 @@ describe('brusselsDayStartUtc — calendar days, not 24-hour steps', () => {
   it('handles winter, when Brussels is UTC+1', () => {
     const now = new Date('2026-01-15T09:00:00Z');
     expect(brusselsDayStartUtc(now, 0).toISOString()).toBe('2026-01-14T23:00:00.000Z');
+  });
+});
+
+/**
+ * ABL-697. The two helpers agree for 22 or 23 hours a day and disagree for the
+ * rest, which is precisely why the wrong one went unnoticed for a month: it is
+ * only wrong between Brussels midnight and UTC midnight.
+ */
+describe('marketDayStartUtc — the day is named by the UTC date', () => {
+  it('agrees with brusselsDayStartUtc while both calendars name the same date', () => {
+    const midday = new Date('2026-08-07T07:10:00Z');
+    for (const offset of [0, 1, 2]) {
+      expect(marketDayStartUtc(midday, offset).toISOString()).toBe(
+        brusselsDayStartUtc(midday, offset).toISOString(),
+      );
+    }
+  });
+
+  it('diverges by exactly one day between Brussels midnight and UTC midnight', () => {
+    // 22:30 UTC in CEST: Brussels already says the 10th, UTC still says the 9th.
+    const afterBrusselsMidnight = new Date('2026-09-09T22:30:00Z');
+
+    expect(marketDayStartUtc(afterBrusselsMidnight, 1).toISOString()).toBe(
+      '2026-09-09T22:00:00.000Z',
+    );
+    expect(brusselsDayStartUtc(afterBrusselsMidnight, 1).toISOString()).toBe(
+      '2026-09-10T22:00:00.000Z',
+    );
+  });
+
+  it('opens the same divergence an hour later in winter, when Brussels is UTC+1', () => {
+    // CET: the gap is 23:00-24:00 UTC, one hour wide instead of two.
+    const inTheGap = new Date('2026-01-15T23:30:00Z');
+    expect(marketDayStartUtc(inTheGap, 1).toISOString()).toBe('2026-01-15T23:00:00.000Z');
+    expect(brusselsDayStartUtc(inTheGap, 1).toISOString()).toBe('2026-01-16T23:00:00.000Z');
+
+    // ...and is closed at 22:30 UTC, where CEST's would already be open.
+    const beforeTheGap = new Date('2026-01-15T22:30:00Z');
+    expect(marketDayStartUtc(beforeTheGap, 1).toISOString()).toBe(
+      brusselsDayStartUtc(beforeTheGap, 1).toISOString(),
+    );
+  });
+
+  it('still lands on real Brussels midnights across both DST boundaries', () => {
+    // The day named is the UTC date; its *start* is still calendar arithmetic,
+    // so the 23h and 25h days must survive the change of anchor.
+    const spring = new Date('2026-03-29T12:00:00Z');
+    expect(marketDayStartUtc(spring, 0).toISOString()).toBe('2026-03-28T23:00:00.000Z');
+    expect(marketDayStartUtc(spring, 1).toISOString()).toBe('2026-03-29T22:00:00.000Z');
+
+    const autumn = new Date('2026-10-25T12:00:00Z');
+    expect(marketDayStartUtc(autumn, 0).toISOString()).toBe('2026-10-24T22:00:00.000Z');
+    expect(marketDayStartUtc(autumn, 1).toISOString()).toBe('2026-10-25T23:00:00.000Z');
+  });
+
+  it('resolves the clocks-back midnight from inside the gap it creates', () => {
+    // 2026-10-24 22:30 UTC is already the 25th in Brussels (CEST), and the 25th
+    // is the 25-hour day. Anchoring on the UTC date must still return the
+    // *start* of the 25th, not of the 26th.
+    const inTheGapBeforeFallBack = new Date('2026-10-24T22:30:00Z');
+    expect(marketDayStartUtc(inTheGapBeforeFallBack, 1).toISOString()).toBe(
+      '2026-10-24T22:00:00.000Z',
+    );
   });
 });
 
@@ -307,6 +371,78 @@ describe('classifyDayAheadStream — the deadline is per document class', () => 
   it('pins the A44/A65 deadline at 14, where its own derivation put it', () => {
     expect(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.price).toBe(14);
     expect(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoLoadForecast).toBe(14);
+  });
+
+  it('does not flip a complete fleet stale at Brussels midnight', () => {
+    // ABL-697, the regression case. 22:00 UTC is Brussels midnight under CEST,
+    // and the ops snapshots step from 5-6 stale countries to 33 across exactly
+    // that minute on 09-04, 09-05 and 09-06, clearing at exactly 00:00 UTC —
+    // no ingest pass runs at either boundary. The rule took its deadline hour
+    // from UTC and its day from Brussels, so for those two hours it asked for
+    // D+2: a market day that has never been published by anybody.
+    const brusselsMidnight = new Date('2026-09-09T22:00:00Z');
+    const justBeforeUtcMidnight = new Date('2026-09-09T23:59:00Z');
+
+    // What a healthy fleet holds after the 18:30 pass: tomorrow's Brussels day,
+    // complete to its last quarter-hour. Measured on prod 2026-09-10 06:23 UTC.
+    const throughTomorrow = '2026-09-10 21:45:00';
+
+    for (const at of [brusselsMidnight, justBeforeUtcMidnight]) {
+      for (const stream of ['price', 'tsoLoadForecast', 'tsoGenerationForecast'] as const) {
+        expect(classifyDayAheadStream(throughTomorrow, at, stream).status).toBe('live');
+      }
+    }
+  });
+
+  it('keeps the same verdict either side of Brussels midnight, for every stream', () => {
+    // The property the ops snapshot series needs: nothing about a stream's
+    // health changes at 22:00 UTC, so `staleCountryCount` must not step there.
+    const before = new Date('2026-09-09T21:45:00Z');
+    const after = new Date('2026-09-09T22:15:00Z');
+
+    for (const latest of ['2026-09-10 21:45:00', '2026-09-09 21:45:00', '2026-09-07 21:45:00']) {
+      for (const stream of ['price', 'tsoLoadForecast', 'tsoGenerationForecast'] as const) {
+        expect(classifyDayAheadStream(latest, after, stream).status).toBe(
+          classifyDayAheadStream(latest, before, stream).status,
+        );
+      }
+    }
+  });
+
+  it('still catches a genuinely missing tomorrow inside that window', () => {
+    // The positive control. Same two instants, a stream that reaches only the
+    // Brussels day that just ended: every deadline has passed, the 18:30 pass is
+    // long over, and this is the ABL-51 miss. It must still read stale — the fix
+    // moves which day is required, not whether one is.
+    const onlyTheDayThatJustEnded = '2026-09-09 21:45:00';
+
+    for (const at of [new Date('2026-09-09T22:00:00Z'), new Date('2026-09-09T23:59:00Z')]) {
+      for (const stream of ['price', 'tsoLoadForecast', 'tsoGenerationForecast'] as const) {
+        expect(classifyDayAheadStream(onlyTheDayThatJustEnded, at, stream).status).toBe('stale');
+      }
+    }
+  });
+
+  it('opens no gap at UTC midnight either, where the old rule silently healed', () => {
+    // The old rule cleared at 00:00 UTC because the UTC date caught up with the
+    // Brussels one — a false all-clear that happened to be right. After the fix
+    // the same stream reads the same way at 23:59 and at 00:01, and a real miss
+    // survives the rollover instead of being forgiven by it.
+    const justBefore = new Date('2026-09-09T23:59:00Z');
+    const justAfter = new Date('2026-09-10T00:01:00Z');
+
+    expect(classifyDayAheadStream('2026-09-10 21:45:00', justAfter, 'price').status).toBe('live');
+    expect(classifyDayAheadStream('2026-09-09 21:45:00', justAfter, 'price').status).toBe('stale');
+    expect(classifyDayAheadStream('2026-09-09 21:45:00', justBefore, 'price').status).toBe('stale');
+  });
+
+  it('closes the window an hour later in winter, without a DST-conditional rule', () => {
+    // Under CET the disagreement is 23:00-24:00 UTC. One anchor covers both,
+    // which is why the fix is a change of calendar and not a second constant.
+    const winterGap = new Date('2026-01-15T23:30:00Z');
+
+    expect(classifyDayAheadStream('2026-01-16 22:45:00', winterGap, 'price').status).toBe('live');
+    expect(classifyDayAheadStream('2026-01-15 22:45:00', winterGap, 'price').status).toBe('stale');
   });
 
   it('sizes the A69 deadline past the slowest measured 18:30 pass, CET included', () => {
