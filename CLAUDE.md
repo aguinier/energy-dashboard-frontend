@@ -322,51 +322,38 @@ are written from **one** A75 fetch — never add a second request to fill one.
 (`services/freshness.ts`); `stale` load/generation means >18h; `ended` means
 >30 days and self-clears; both are derived, never hard-coded country lists. The
 ingest cron runs at `30 0,6,13,18` UTC and refetches a rolling 7-day window, so
-interior holes self-heal while inside it — **but only holes it is still reaching.**
+interior holes self-heal while inside it — but only holes it is still reaching.
+**Age alone cannot see a pipeline that limps** (ABL-632): one surviving row per
+pass keeps a stream `live` while the window behind it empties, so `status` also
+reflects **coverage** — observed vs expected rows over a trailing window, at the
+resolution the stream's own recent best day demonstrates. Published as `coverage`;
+downgrades `live` only; `null` means not measurable, never zero. Both ratios live
+in `freshnessCoverage.ts` — add no second staleness cutoff, extend that file.
 
-**Age is not the whole verdict (ABL-632).** `MAX(timestamp_utc)` alone cannot
-see a pipeline that limps: one surviving row per pass keeps a stream `live`
-while the window behind it empties, which is how a four-day prod degradation
-(2026-08-30..09-02, DE `load` at 41/81/53 of 96 rows a day) reported `live`
-throughout. Every stream is therefore also scored on **coverage** — observed vs
-expected rows over the 2 complete UTC days before its newest day, at the
-resolution its own best day in a 14-day baseline demonstrates
-(`services/freshnessCoverage.ts`). It is published as `coverage` on
-`/api/data-freshness/:cc`, it downgrades `live` to `stale` below a per-stream
-ratio (0.75 measured, 0.90 day-ahead — ABL-494's per-stream precedent), and it
-never touches `ended` or `none`. `coverage: null` means not measurable, never
-zero. Do not add a second staleness threshold anywhere else; extend that file.
+Judge freshness by `MAX(timestamp_utc)` **on prod**, never by
+`data_ingestion_log` (INSERT OR REPLACE rowcounts make a healthy rewrite
+indistinguishable from a stall). Read-only remit: a frozen `MAX` has three
+inseparable causes (between passes / ingest error / upstream stopped) — the
+honest verdict is "frozen, cause not yet determined; upstream probe required".
+Grep the known-gaps registry cited at the end of this section for the frozen
+timestamp first — known upstream cutoffs are on file there.
+**A read minutes after the cron minute is not a post-pass read** (ABL-554): the
+pass walks 39 countries in one sequential alphabetical loop taking hours, so a
+country's refresh instant is its position — AL first, **UA** last — and an
+overrun does not delay the next cron minute, so two or three passes interleave in
+one log and pairing a start line with the next end line mis-measures. Attribute
+alphabetically; durations rot, so re-measure (method and figures:
+`docs/claude/17-key-features.md` §7). Before concluding a country was missed,
+check `GET /api/data-freshness/:cc/ingest` → `lastChecked` (ABL-295): it dates any
+pass that **finished**, whatever `data_ingestion_log.status` says (ABL-637), and
+only delivery reads the row counts. A falling `Retrieved N` is the 7-day window
+ageing out, not row loss. Derive staleness from the pass **end** time.
 
-Judge freshness by `MAX(timestamp_utc)`
-**on prod**, never by `data_ingestion_log` (INSERT OR REPLACE rowcounts make a
-healthy rewrite indistinguishable from a stall). Read-only remit: a frozen
-`MAX(timestamp_utc)` has three inseparable causes (between passes / ingest
-error / upstream stopped) — the honest verdict is "frozen, cause not yet
-determined; upstream probe required". Grep `docs/claude/20-data-the-database-does-not-have.md`
-for the frozen timestamp first — known upstream cutoffs are on file there.
-**A read taken minutes after the cron minute is not a post-pass read** (ABL-554):
-the pass walks 39 countries in one sequential alphabetical loop — 17-55 min when
-ABL-494 measured it, 1-4 h since late August 2026 as upstream errors and their
-retries piled up (ABL-712) — so a country's refresh instant is its alphabetical
-position, not the cron minute: AL first, **UA** last. **An overrunning pass does
-not delay the next cron minute; two or three run concurrently and interleave in
-one log**, so pairing a `Countries to process` with the next `Total countries
-processed` mis-measures — attribute by alphabetical order instead. Before
-concluding a country was missed, check
-`GET /api/data-freshness/:cc/ingest` → `lastChecked` per stream (built by
-ABL-295): if it pre-dates the cron minute, the pass has not got there yet. That
-endpoint dates a check from any pass that **finished**, whatever
-`data_ingestion_log.status` says, because an erroring pass still went and looked
-(ABL-637); only delivery is judged on the row counts. A
-falling `Retrieved N` across passes is a window artifact, not row loss — the
-7-day window shrinks as old hours age out. Derive staleness from the pass
-**end** time, never the cron start.
-
-**The 21:00 UTC local-day boundary is an upstream signature** (ABL-551): CEST
-zones (AL, MK, BA, ME, RS) that stop cleanly at `21:00:00` UTC with 22 rows on
-the terminal date ran out their local day — upstream stopped; a real ingest
-break cuts at an arbitrary mid-pass hour. GB (2021-06-14) and UA (2022-02-25)
-are dead outright; small Balkan zones are chronically late and holey.
+**A clean stop at `21:00:00` UTC with 22 rows on the terminal date is an upstream
+local-day boundary, not an ingest break** (ABL-551) — CEST zones AL, MK, BA, ME,
+RS ran out their local day; a real break cuts at an arbitrary mid-pass hour. GB
+(2021-06-14) and UA (2022-02-25) are dead outright; small Balkan zones are
+chronically late and holey.
 
 **`publication_timestamp_utc` records when we fetched, not when the value was
 published** (ENTSO-E stamps documents at generation-on-request). Do not build
@@ -424,24 +411,18 @@ cd server && npx vitest run
   win32 paths) — that is the `maxSkipped` allowance, and a fifth skip fails the
   build.
 - **A green client suite is a claim about your Node major unless the run says
-  otherwise.** `dashboardStore` is a persisted zustand store; its middleware
-  resolves the bare global `localStorage` once, at import, and calls
-  `storage.setItem` on every `setState`. That global is broken in a *different*
-  way on each Node: absent on 24 and earlier (zustand catches the
-  ReferenceError and persist silently no-ops, so the suite is green but nothing
-  about persistence is exercised), and present-without-`setItem` on 25, which
-  threw `TypeError: storage.setItem is not a function` — 20 failures on the
-  same commit that was green on 24 (ABL-320). **`@vitest-environment jsdom`
-  does not fix this**: vitest aliases `window` to `globalThis`, Node's global
-  wins over jsdom's, and all 20 failures survive `environment: 'jsdom'`
-  (measured on 25.6.1 + jsdom 30). What fixes it is
-  `client/vite.config.ts:88`, whose `setupFiles` installs a real Storage
-  (`installMemoryStorage`, `client/src/test/memoryStorage.ts:105`) before any
-  test module is imported. Do not replace it with an environment switch, and
-  do not add a per-file `localStorage` shim — one existed in
-  `LoadTab.test.tsx` and hid the problem for every other file. On Node 25 the
-  run also prints a `--localstorage-file was provided without a valid path`
-  warning per worker; that is Node's, not ours, and is not a failure.
+  otherwise.** `dashboardStore` persists through the bare global `localStorage`,
+  resolved once at import: absent on Node 24 (zustand silently no-ops, so the
+  suite is green with persistence never exercised) and present-without-`setItem`
+  on 25 — 20 failures on a commit green on 24 (ABL-320). **`@vitest-environment
+  jsdom` does not fix it** (vitest aliases `window` to `globalThis`, so Node's
+  global wins). What fixes it is `client/vite.config.ts:88`, whose `setupFiles`
+  installs a real Storage (`installMemoryStorage`,
+  `client/src/test/memoryStorage.ts:105`) before any test module is imported. Do
+  not swap that for an environment switch, and do not add a per-file shim — one
+  in `LoadTab.test.tsx` hid this for every other file. Node 25's
+  `--localstorage-file` warning is Node's, not a failure. Evidence and the jsdom
+  measurement: `docs/claude/21-testing.md`.
 - **The client suite is Node-agnostic; the server suite is not — use Node 24
   for both.** `server/node_modules/better-sqlite3` is compiled for Node 24
   (ABI 137), so `cd server && npx vitest run` under Node 25 halts on the
@@ -502,16 +483,10 @@ type TimePreset = '24h' | '7d' | '30d' | 'today' | 'thisWeek'
 // Per stream (ABL-60). `ageHours` is signed and server-computed; negative is
 // normal for a day-ahead stream.
 type FreshnessStatus = 'live' | 'stale' | 'ended' | 'none';
-// `coverage` is ABL-632 and additive: absent on an old server, `null` when not
-// measurable. `status` reflects age AND coverage; see freshnessCoverage.ts.
-interface FreshnessCoverage {
-  windowStart: string; windowEnd: string; expectedDailyRows: number;
-  observed: number; expected: number; ratio: number;
-}
-interface FreshnessStream {
-  latest: string | null; ageHours: number | null; status: FreshnessStatus;
-  coverage?: FreshnessCoverage | null;
-}
+// `status` reflects age AND coverage (ABL-632). `coverage` is additive: absent on
+// an old server, `null` when not measurable — never 0. Shape: freshnessCoverage.ts
+interface FreshnessStream { latest: string | null; ageHours: number | null;
+  status: FreshnessStatus; coverage?: FreshnessCoverage | null; }
 interface DataFreshness {
   load: FreshnessStream; price: FreshnessStream; generation: FreshnessStream;
   tsoLoadForecast: FreshnessStream; tsoGenerationForecast: FreshnessStream;
@@ -590,9 +565,7 @@ Condensed diagnostics — full entries with the reasoning in
   model; needs daily `forecast_min_mw`/`forecast_max_mw` rows.
 - **Header pill "stale"/"tomorrow missing"/"gaps in recent data":** the signal
   working — read `/api/data-freshness/:cc`, then settle on prod (see Data
-  semantics). The third wording is coverage, not age (ABL-632): the stream *is*
-  updating and its recent window is short of rows, so `coverage.observed` /
-  `coverage.expected` is the number to act on, not `ageHours`.
+  semantics). The third is coverage, not age: act on `coverage`, not `ageHours`.
 - **Time navigation:** ranges come from `getDateRangeForPreset()`
   (`useDashboardData.ts:47`); a "stale" chart is often a shifted window
   (`timeOffset` is in ~10 query keys). Changed persisted shape → bump
