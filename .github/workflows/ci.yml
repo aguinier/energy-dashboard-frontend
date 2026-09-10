@@ -15,6 +15,17 @@ on:
 permissions:
   contents: read
 
+env:
+  # Pinned, not inherited — and pinned to UTC specifically because that is what
+  # the deployed containers run in (`docker/Dockerfile` sets no `TZ`, and the
+  # node base image is `Etc/UTC`). The workstation sits in Europe/Brussels, so a
+  # suite that only ever runs there cannot tell a genuine instant from one that
+  # merely agrees with the local clock. ABL-634 was exactly that gap: the
+  # blackout window read the process clock, matched on the workstation, and was
+  # dead code in the container for six days. Running CI in the deployment's zone
+  # is what makes that class visible here instead of in prod.
+  TZ: UTC
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
