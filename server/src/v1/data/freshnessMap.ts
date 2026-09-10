@@ -46,14 +46,29 @@ import type { EnergyQuery } from './energySource.js';
  *
  * ## `records_failed = 0`, never `status = 'completed'`
  *
- * `data_ingestion_log.status` is unusable as a success signal and this is the
- * single most likely thing to get wrong here. Measured: `'completed'` on
- * **114,982 of 114,983 rows** — there is no failure value in the vocabulary at
- * all. The 2026-08-06 ENTSO-E outage (484 HTTP 503s, nothing stored) is in that
- * table as five healthy-looking `completed` passes; the two that stored nothing
- * are distinguishable only by `records_failed` being 35 and 1. So the honest
- * predicate is `records_failed = 0`, and anyone deriving freshness from
- * `status` publishes the worst outage of the year as a green light.
+ * `data_ingestion_log.status` was unusable as a success signal, and this is the
+ * single most likely thing to get wrong here. Measured 2026-08-12: `'completed'`
+ * on **114,982 of 114,983 rows** — the writer set `"failed" if error_message
+ * else "completed"` and no caller ever passed a message, so no failure value
+ * reached the table. The 2026-08-06 ENTSO-E outage (484 HTTP 503s, nothing
+ * stored) is in it as five healthy-looking `completed` passes; the two that
+ * stored nothing are distinguishable only by `records_failed` being 35 and 1.
+ *
+ * ABL-633 has since made the column honest — `resolve_ingestion_status` derives
+ * `completed` / `partial_failure` / `failed` from the counts — but the predicate
+ * here stays `records_failed = 0` and this module is unchanged by it. It has to
+ * hold for the rows already in the table, which carry the old labels and will
+ * never be relabelled; a status test would read every pre-deploy outage as
+ * green. `records_failed` is the column both eras agree on, and it is the one
+ * ABL-633 derives its own answer from.
+ *
+ * (`services/ingestFreshnessService.ts` reads the same table and counts a failed
+ * pass as a check, deliberately — it answers "when did we last go and look", and
+ * a pass that errored did look. This module excludes it, so `source_checked_at`
+ * is in fact the last pass that failed nothing, which is narrower than the
+ * "an attempt, not a success claim" wording above it. The two are not reconciled
+ * here: ABL-637 changed only the internal service, and which of the two
+ * `source_checked_at` should mean is a `/v1` contract decision — ABL-660.)
  *
  * ## Why `publication_timestamp_utc` is not used, under any alias
  *
