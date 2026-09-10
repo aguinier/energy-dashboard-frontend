@@ -30,8 +30,12 @@ import type { OpsSnapshot } from './opsSnapshot.js';
 export interface OpsSnapshotConfig {
   /** Absolute path of the JSONL file. */
   path: string;
-  /** False when `OPS_SNAPSHOT_ENABLED` is explicitly off — no capture, reads still served. */
+  /** False when capture is switched off, or this process is not a collector — reads still served. */
   enabled: boolean;
+  /** Why `enabled` is false; `null` when capture is on. See `resolveSnapshotConfig`. */
+  disabledReason: 'env' | 'undesignated' | null;
+  /** Which env vars designated this process a collector, for the startup log. Empty on a dev checkout. */
+  designation: string[];
   retentionDays: number;
   intervalMinutes: number;
 }
@@ -41,6 +45,17 @@ const DEFAULT_INTERVAL_MINUTES = 15;
 const DEFAULT_FILENAME = 'ops-status-snapshots.jsonl';
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
+/**
+ * Env vars that say "this process is a deployed environment", any one of them
+ * enough. `COMMIT_SHA` is baked at image build (`docker/Dockerfile:52-53`) and
+ * is the signal `healthProvenance.ts:23` already uses to tell a container from
+ * a working tree; `OPS_PEER_URL` is set per environment in `docker/.env` and
+ * names the *other* lane; `OPS_SNAPSHOT_PATH` is an explicit destination, which
+ * is a deliberate choice however it was made. A `npm run dev` checkout has none
+ * of the three — `server/.env.example` ships all of them commented out.
+ */
+export const DESIGNATION_VARS = ['COMMIT_SHA', 'OPS_PEER_URL', 'OPS_SNAPSHOT_PATH'] as const;
+
 function positiveNumber(raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
   const value = Number(raw);
@@ -48,7 +63,19 @@ function positiveNumber(raw: string | undefined, fallback: number): number {
 }
 
 /**
- * Pure: where snapshots live and how often they are taken, for a given env.
+ * Pure: which of `DESIGNATION_VARS` this env actually carries, in order.
+ *
+ * Empty string counts as absent: `docker-compose.yml` passes every one of these
+ * as `${VAR:-}`, and `ENV COMMIT_SHA=${COMMIT_SHA}` in the Dockerfile leaves the
+ * variable *present and empty* when the build arg was not supplied.
+ */
+export function collectorDesignation(env: NodeJS.ProcessEnv = process.env): string[] {
+  return DESIGNATION_VARS.filter((name) => (env[name]?.trim() ?? '') !== '');
+}
+
+/**
+ * Pure: where snapshots live, how often they are taken, and whether this
+ * process is one of the ones that should be taking them.
  *
  * The default path sits next to the database — the `/data` volume in Docker
  * (`docker/docker-compose.yml`), which is already mounted read-write for the
@@ -56,23 +83,56 @@ function positiveNumber(raw: string | undefined, fallback: number): number {
  * is known to be able to write on every deployment. It is a *separate file*
  * owned by this repo, not a change to the shared database.
  *
- * Enabled by default, unlike the two DB-writing schedulers
- * (`coreNetPositionScheduler.ts`, `forecastVintageArchiveScheduler.ts`) which
- * are gated on explicit env vars: those write into the shared database, where
- * flipping ingest on is its own coordinated decision. This writes only its own
- * file, and a trend that needs a separate deploy-time flip before it starts
- * accumulating is a trend nobody has when they first need it. An unwritable
- * path degrades to "history unavailable, here is the error"; it never crashes
- * the process or blanks the live KPIs.
+ * WHY CAPTURE IS GATED ON BEING A COLLECTOR (ABL-736)
+ *
+ * That default path is derived from `ENERGY_DB_PATH`, and on the able
+ * workstation every worktree's dev server points `ENERGY_DB_PATH` at the same
+ * replica — so ~20 of them shared one snapshot file. Measured over the whole
+ * file on 2026-09-10 (9217 rows, 2026-08-27 onward): 768 of the 864 rows/day
+ * came from dev servers, arriving in sub-second bursts of seven, carrying
+ * `peer.reachable: false` and `commit: null`. 89% of the history was rows no
+ * reader could attribute to an environment, on the file that is the evidence
+ * source for ops trend reads.
+ *
+ * So capture is on for a process that has said which environment it is —
+ * `collectorDesignation` above — and for one that says `OPS_SNAPSHOT_ENABLED=true`
+ * outright. **This is not the deploy-time flip the next paragraph rules out**:
+ * prod and CAT are designated today, by variables their deployments already
+ * set, and neither needs anything added to keep accumulating (verified against
+ * prod 2026-09-10: `/api/ops/status` reports a `commit`, `/api/ops/status/combined`
+ * reports `peerConfigured: true`). What it rules out is an *undeclared* writer.
+ * A dev who wants a trend sets `OPS_SNAPSHOT_PATH` to their own file and gets
+ * one — a per-writer file rather than a shared one.
+ *
+ * Gating here rather than per row is deliberate: a designated collector whose
+ * peer is merely down still records — 12 such rows are in the file, and they
+ * are the honest record of a peer outage, which is exactly what a history view
+ * exists to show. Refusing by row content would have discarded them.
+ *
+ * Still on by default *for a deployed environment*, unlike the two DB-writing
+ * schedulers (`coreNetPositionScheduler.ts`, `forecastVintageArchiveScheduler.ts`)
+ * which are gated on explicit env vars: those write into the shared database,
+ * where flipping ingest on is its own coordinated decision. This writes only
+ * its own file, and a trend that needs a separate deploy-time flip before it
+ * starts accumulating is a trend nobody has when they first need it. An
+ * unwritable path degrades to "history unavailable, here is the error"; it
+ * never crashes the process or blanks the live KPIs.
  */
 export function resolveSnapshotConfig(env: NodeJS.ProcessEnv = process.env): OpsSnapshotConfig {
   const dbPath = env.ENERGY_DB_PATH || '/data/energy_dashboard.db';
   const configured = env.OPS_SNAPSHOT_PATH?.trim();
   const enabledRaw = env.OPS_SNAPSHOT_ENABLED?.trim().toLowerCase();
+  const forcedOff = enabledRaw === 'false' || enabledRaw === '0' || enabledRaw === 'off';
+  const forcedOn = enabledRaw === 'true' || enabledRaw === '1' || enabledRaw === 'on';
+
+  const designation = collectorDesignation(env);
+  const enabled = !forcedOff && (forcedOn || designation.length > 0);
 
   return {
     path: configured || path.join(path.dirname(dbPath), DEFAULT_FILENAME),
-    enabled: !(enabledRaw === 'false' || enabledRaw === '0' || enabledRaw === 'off'),
+    enabled,
+    disabledReason: enabled ? null : forcedOff ? 'env' : 'undesignated',
+    designation,
     retentionDays: positiveNumber(env.OPS_SNAPSHOT_RETENTION_DAYS, DEFAULT_RETENTION_DAYS),
     intervalMinutes: positiveNumber(env.OPS_SNAPSHOT_INTERVAL_MINUTES, DEFAULT_INTERVAL_MINUTES),
   };

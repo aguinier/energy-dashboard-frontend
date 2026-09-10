@@ -39,11 +39,14 @@ import { pathToFileURL } from 'node:url';
  * two-test `describe.skipIf`). That is exactly why `maxSkipped` has to exist
  * separately: the count floors below cannot see a `.skip`.
  *
- * Measured 2026-09-10 on Node 24.18.0, worktree ABL-647.
+ * Measured 2026-09-10 on Node 24.18.0 at origin/main, worktree ABL-736. The
+ * previous figures (client 73/904, server 129/2683) were measured the same day
+ * on ABL-647's branch point; almost all of the raise is base drift since, not
+ * the handful of tests ABL-736 added.
  */
 export const TEST_FLOORS = {
-  client: { files: 73, tests: 904, maxSkipped: 0 },
-  server: { files: 129, tests: 2683, maxSkipped: 4 },
+  client: { files: 75, tests: 919, maxSkipped: 0 },
+  server: { files: 136, tests: 2846, maxSkipped: 4 },
 };
 
 /**

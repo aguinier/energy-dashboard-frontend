@@ -59,6 +59,7 @@ function history(overrides: Partial<OpsStatusHistory> = {}): OpsStatusHistory {
     headroom: { local: headroom(), peer: headroom() },
     storage: {
       captureEnabled: true,
+      captureDisabledReason: null,
       intervalMinutes: 15,
       retentionDays: 14,
       storedSnapshots: 0,
@@ -233,12 +234,29 @@ describe('describeStorage', () => {
   });
 
   it('distinguishes capture being switched off from nothing captured yet', () => {
-    const off = describeStorage(history({ storage: { ...history().storage, captureEnabled: false } }));
+    const off = describeStorage(
+      history({ storage: { ...history().storage, captureEnabled: false, captureDisabledReason: 'env' } }),
+    );
     const empty = describeStorage(history());
 
     expect(off).toContain('switched off');
     expect(empty).toContain('No snapshots stored yet');
     expect(empty).toContain('every 15 minutes');
+  });
+
+  // ABL-736: a dev checkout stores nothing because it is not a collector, not
+  // because OPS_SNAPSHOT_ENABLED is off — that variable is unset there, and
+  // naming it would send the reader after the wrong switch.
+  it('blames the missing designation, not OPS_SNAPSHOT_ENABLED, on a non-collector', () => {
+    const result = describeStorage(
+      history({
+        storage: { ...history().storage, captureEnabled: false, captureDisabledReason: 'undesignated' },
+      }),
+    );
+
+    expect(result).toContain('not a snapshot collector');
+    expect(result).toContain('OPS_SNAPSHOT_PATH');
+    expect(result).not.toContain('OPS_SNAPSHOT_ENABLED');
   });
 
   it('summarises what is charted against what is stored', () => {

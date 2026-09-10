@@ -2312,10 +2312,23 @@ same mount works. The default path sits next to the database
 (`resolveSnapshotConfig`, `server/src/services/opsSnapshotStore.ts:68`) — so
 **deploying this makes a new `ops-status-snapshots.jsonl` appear in `/data`**,
 alongside the database, never inside it. Unlike the two DB-writing schedulers
-this one is **on by default**: it writes only its own file, and a trend that
-needs a deploy-time flag flipped before it starts accumulating is a trend
-nobody has when they first need it. `OPS_SNAPSHOT_ENABLED=false` turns capture
-off; reads are still served.
+this one is **on by default for a deployed environment**: it writes only its own
+file, and a trend that needs a deploy-time flag flipped before it starts
+accumulating is a trend nobody has when they first need it.
+`OPS_SNAPSHOT_ENABLED=false` turns capture off; reads are still served.
+
+**Capture requires the process to name its environment (ABL-736)** — any one of
+`COMMIT_SHA`, `OPS_PEER_URL` or `OPS_SNAPSHOT_PATH` (`collectorDesignation`,
+`server/src/services/opsSnapshotStore.ts:72`). Prod and CAT are designated by
+variables their deployments already set, so nothing changed for them; a `npm run
+dev` checkout has none and logs one line saying so instead of capturing. That
+default path is derived from `ENERGY_DB_PATH`, and every worktree on the
+workstation points that at the same replica: measured 2026-09-10 over 9217 rows,
+768 of 864 rows/day came from dev servers in sub-second bursts of seven, all
+`peer.reachable: false` and `commit: null`. The gate is per process, at startup,
+not per row — a designated collector whose peer is merely *down* still records,
+and those rows (12 in the file) are the honest record of an outage. A dev who
+wants a trend sets `OPS_SNAPSHOT_PATH` to their own file.
 
 The `days` figure is a **projection, not a measurement**, and
 `computeDiskHeadroom` (`server/src/lib/diskHeadroom.ts:179`) is written to
