@@ -112,11 +112,13 @@ describe('status is judged by the rule that fits the family', () => {
 
 describe('source_checked_at comes from records_failed, never from status', () => {
   it('ignores a pass that failed everything but is logged as completed', () => {
-    // `data_ingestion_log.status` is `'completed'` on 114,982 of 114,983 rows —
-    // there is no failure value in the vocabulary at all, and the 2026-08-06
-    // ENTSO-E outage (484 HTTP 503s, nothing stored) is in the table as five
-    // healthy-looking passes. Anyone deriving freshness from `status` publishes
-    // the worst outage of the year as a green light.
+    // `data_ingestion_log.status` was `'completed'` on 114,982 of 114,983 rows —
+    // no failure value ever reached the table — and the 2026-08-06 ENTSO-E
+    // outage (484 HTTP 503s, nothing stored) is in it as five healthy-looking
+    // passes. ABL-633 has since made the column derive from the counts, but
+    // those historical rows keep their old labels forever, so anyone deriving
+    // freshness from `status` still publishes the worst outage of the year as a
+    // green light. `records_failed` is the column both eras agree on.
     db.load('DE', '2026-08-12 11:00:00', 100);
     db.ingestPass({
       pipelineType: 'load',
