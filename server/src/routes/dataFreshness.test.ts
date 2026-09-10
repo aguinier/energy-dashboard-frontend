@@ -223,9 +223,9 @@ describe('GET /api/data-freshness/:cc/ingest — when did we last refresh it', (
     const { status, data } = await getIngest('DE');
     expect(status).toBe(200);
 
-    expect(data.load.delivery).toBe('flowing');
-    expect(data.load.lastStoredRows).toBe(data.load.lastChecked);
-    expect(data.load.lastChecked).toBe('2026-07-02T00:30:15.882895+00:00');
+    expect(data.netPosition.delivery).toBe('flowing');
+    expect(data.netPosition.lastStoredRows).toBe(data.netPosition.lastChecked);
+    expect(data.netPosition.lastChecked).toBe('2026-07-02T00:35:15.882895+00:00');
   });
 
   it('keeps "checked" and "brought data" apart when the last passes brought nothing', async () => {
@@ -279,15 +279,45 @@ describe('GET /api/data-freshness/:cc/ingest — when did we last refresh it', (
     expect(data.tsoLoadForecast.delivery).toBe('flowing');
   });
 
-  it('ignores failed and running passes when dating the last check', async () => {
-    // Both are dated after every completed DE pass. Counting a failed pass
-    // would let a stream erroring four times a day report itself freshly
-    // checked; counting an in-flight one would report a check that has not
-    // finished.
+  it('dates the last check from a failed pass — it ran, it just brought nothing', async () => {
+    // ABL-637. DE load's newest pass is `failed` (0 stored, 12 failed), dated a
+    // day after the last delivery. Excluding it — which is what this service did
+    // until ABL-633 made the status producible — freezes BOTH stamps on the last
+    // good pass, so `lastStoredRows === lastChecked` and the stream reads
+    // `flowing` with no attention flag while every pass is erroring. Replaying
+    // ABL-633's rule over the replica's own history put 114 of 216 country x
+    // stream pairs in exactly that state through the ABL-630 degradation, with
+    // `lastChecked` understated by up to 72.6 hours.
     const { data } = await getIngest('DE');
 
-    expect(data.load.lastChecked).toBe('2026-07-02T00:30:15.882895+00:00');
+    expect(data.load.lastChecked).toBe('2026-07-03T00:30:15.882895+00:00');
+    expect(data.load.lastStoredRows).toBe('2026-07-02T00:30:15.882895+00:00');
+    expect(data.load.delivery).toBe('checked_no_data');
+  });
+
+  it('counts a partial_failure pass as a delivery — its rows are in the table', async () => {
+    // The latent half of ABL-637. DE's newest `renewable` pass stored 18 rows and
+    // failed 6, so `partial_failure`. It delivered; withholding it would report a
+    // refresh that demonstrably happened as not having happened. Unreachable
+    // today (every fetcher's error path returns `(0, 0, 1)`), reachable by
+    // contract — `resolve_ingestion_status` splits partial from failed on exactly
+    // the `inserted + updated > 0` test this service already applies.
+    const { data } = await getIngest('DE');
+
+    expect(data.generation.delivery).toBe('flowing');
+    expect(data.generation.lastChecked).toBe('2026-07-03T00:32:15.882895+00:00');
+    expect(data.generation.lastStoredRows).toBe('2026-07-03T00:32:15.882895+00:00');
+  });
+
+  it('still ignores a running pass, which has not checked anything yet', async () => {
+    // The one exclusion left, and it needs no status test: `end_time` is NULL
+    // until `log_ingestion_complete` writes it alongside a terminal status. DE's
+    // in-flight `price` pass is dated after every finished one, so a service that
+    // counted it would visibly move the answer.
+    const { data } = await getIngest('DE');
+
     expect(data.price.lastChecked).toBe('2026-07-02T00:31:15.882895+00:00');
+    expect(data.price.delivery).toBe('flowing');
   });
 
   it('names the pipelines behind every stream, so the answer is auditable', async () => {
