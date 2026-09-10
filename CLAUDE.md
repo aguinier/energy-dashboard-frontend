@@ -194,7 +194,8 @@ line with no later `Done.` means the lock is held right now) before escalating
 
 ## Deployment
 
-Merging to `main` does **not** deploy — no CI/CD. Production is
+Merging to `main` does **not** deploy — CI checks a PR (see Testing), nothing
+deploys it. Production is
 **QuietlyConfident** (`ssh clavain@192.168.86.36`), checkout
 `/home/clavain/energy-dashboard/repos/energy-dashboard-frontend`, serving on
 port 3001. After the reviewed commit reaches GitHub:
@@ -386,8 +387,16 @@ cd server && npx vitest run
 - **Baselines rot; the delta is the durable half.** Re-measure after merging
   the base in, and again if the branch waits. A conflict-free merge is not a
   working merge — run the suite on the merged tree. Current tripwire absolutes
-  and their history: `docs/claude/21-testing.md`. Client at `6b2fe01` +
-  ABL-320: **55 files / 769 tests**, identical on Node 24 and Node 25.
+  and their history: `docs/claude/21-testing.md`.
+- **CI runs both suites and both typechecks on every PR**
+  (`.github/workflows/ci.yml`, ABL-647), on the Node major pinned in `.nvmrc` —
+  never float it; the client suite's meaning is Node-dependent (below).
+  `scripts/testFloor.mjs` then fails a run that went green on fewer tests than
+  the recorded floor, because vitest exits 0 having run nothing. Raise a floor
+  in the commit that adds the tests; lowering one needs its reason in the
+  message. Four server tests self-skip in CI (sibling checkout, local replica,
+  win32 paths) — that is the `maxSkipped` allowance, and a fifth skip fails the
+  build.
 - **A green client suite is a claim about your Node major unless the run says
   otherwise.** `dashboardStore` is a persisted zustand store; its middleware
   resolves the bare global `localStorage` once, at import, and calls

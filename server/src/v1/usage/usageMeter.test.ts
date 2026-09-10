@@ -85,10 +85,39 @@ async function harness(
   return { origin: `http://127.0.0.1:${addr.port}`, sink, meter };
 }
 
-/** Wait until the response's `close` handler has enqueued, which is not synchronous with fetch. */
+/**
+ * Wait until the response's `close` handler has enqueued, which is not synchronous with fetch.
+ *
+ * `expected` is a target to *reach*, so a test that expects events returns as
+ * soon as they land and costs a few milliseconds. A test that expects the meter
+ * to record nothing has no target to reach and would run the whole budget every
+ * time — use `settleQuiet` for that.
+ */
 async function settle(meter: UsageMeter, expected: number): Promise<void> {
   for (let i = 0; i < 200; i += 1) {
     if (meter.stats().pending + meter.stats().flushed + meter.stats().dropped >= expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/**
+ * Wait a bounded quiet period for an event that must never be recorded (ABL-647).
+ *
+ * The refused-request test used `settle(meter, 1)`, which by construction can
+ * never reach its target — so it always ran all 200 iterations. Nominally 1s;
+ * measured at 3.1s of the 5s default timeout on this workstation, because each
+ * 5ms timer stretches under load. It was the one test in the server suite that
+ * failed a full run and passed alone, which is precisely the shape that makes a
+ * new CI job look unreliable in its first week.
+ *
+ * The assertion is unchanged. This still gives the `close` handler an order of
+ * magnitude more time than the positive cases need to enqueue, and returns
+ * early the moment anything IS recorded, so a real regression fails fast
+ * instead of waiting out the budget.
+ */
+async function settleQuiet(meter: UsageMeter): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    if (meter.stats().pending + meter.stats().flushed + meter.stats().dropped > 0) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
@@ -169,7 +198,7 @@ describe('what one metered request records', () => {
     const res = await fetch(`${origin}/observations/load`);
     expect(res.status).toBe(401);
 
-    await settle(meter, 1);
+    await settleQuiet(meter);
     meter.flush();
     // Nothing to attribute it to. An unauthenticated request is not a
     // customer's usage, and counting it to nobody is how a table gets rows that

@@ -1,0 +1,116 @@
+# ABL-647. Until this existed, `statusCheckRollup` was empty on every PR in this
+# repo, so GitHub's MERGEABLE / CLEAN meant "applies without conflict" and
+# nothing more. Verifying a PR meant a human running two suites by hand, which
+# is why merging was expensive, which is why 14 PRs sat open.
+#
+# Two jobs, not one, so the rollup names which half broke and branch protection
+# can require them separately.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Pinned, not inherited — and pinned to UTC specifically because that is what
+  # the deployed containers run in (`docker/Dockerfile` sets no `TZ`, and the
+  # node base image is `Etc/UTC`). The workstation sits in Europe/Brussels, so a
+  # suite that only ever runs there cannot tell a genuine instant from one that
+  # merely agrees with the local clock. ABL-634 was exactly that gap: the
+  # blackout window read the process clock, matched on the workstation, and was
+  # dead code in the container for six days. Running CI in the deployment's zone
+  # is what makes that class visible here instead of in prod.
+  TZ: UTC
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Node major is pinned in .nvmrc and read from there, never written
+      # twice: `dashboardStore`'s persist middleware resolves the bare global
+      # `localStorage` at import, and that global is broken in a DIFFERENT way
+      # on each Node major — absent on 24, present-without-`setItem` on 25.
+      # The same commit was green on one and 20 failures on the next (ABL-263 /
+      # ABL-320). `client/src/test/setup.ts` fixes it, but a runner that floats
+      # its Node major is still a suite whose result means something different
+      # each week.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # Root install: npm workspaces, one lockfile, both workspaces installed.
+      # `better-sqlite3` is unhoisted under server/ and has no prebuild for this
+      # Node, so this step compiles it — that compile IS part of what CI proves.
+      - run: npm ci
+
+      # Production sources. tsconfig.json excludes src/**/*.test.ts, so this
+      # alone leaves every test file untypechecked (ABL-533).
+      - name: typecheck (server sources)
+        run: npx tsc --noEmit
+        working-directory: server
+
+      # ...which is what this covers. Green and enforcing as of ABL-587, so a
+      # red run here is a real regression, not pre-existing noise.
+      - name: typecheck (server tests)
+        run: npm run typecheck:test
+        working-directory: server
+
+      # Not piped, deliberately: `npx vitest run | tail` reports tail's exit
+      # status and a failing suite reads as green (docs/claude/21-testing.md).
+      # The JSON report is a second reporter, not a replacement for the human
+      # one — a run nobody can read is its own problem.
+      #
+      # No ENERGY_DB_PATH is set. Every route test hands the routers an
+      # in-memory fixture (server/src/test/fixtureDb.ts) and mocks
+      # config/database.ts out, so the shared SQLite file is never opened.
+      # If a test ever does reach for it, this job is where that shows up.
+      - name: test (server)
+        run: npx vitest run --reporter=default --reporter=json --outputFile.json=../vitest-server.json
+        working-directory: server
+
+      # `if: !cancelled()` so a failing suite still reports its counts. The
+      # floors and the skip allowance are measured ON THIS RUNNER, and a run
+      # that went red is exactly when you need to know whether it also ran
+      # short. Four server tests self-skip here and not on the Windows
+      # workstation — they are gated on the sibling checkout, the local replica
+      # and win32 path semantics; scripts/testFloor.mjs names each one.
+      - name: assert the test count did not drop
+        if: ${{ !cancelled() }}
+        run: node scripts/testFloor.mjs server vitest-server.json
+
+  client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: typecheck (client)
+        run: npx tsc -b
+        working-directory: client
+
+      - name: test (client)
+        run: npx vitest run --reporter=default --reporter=json --outputFile.json=../vitest-client.json
+        working-directory: client
+
+      - name: assert the test count did not drop
+        if: ${{ !cancelled() }}
+        run: node scripts/testFloor.mjs client vitest-client.json
