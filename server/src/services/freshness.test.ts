@@ -339,22 +339,29 @@ describe('classifyDayAheadStream — the deadline is per document class', () => 
   });
 
   it('still catches a genuinely missing A69 tomorrow once our own pass has landed', () => {
-    // 20:30 UTC: the 18:30 pass is over even on the slowest day measured. Nothing
-    // upstream and nothing in our schedule excuses a missing tomorrow now — this
-    // is the ABL-51 protection, intact, six hours later in the day.
-    const evening = new Date('2026-08-20T20:30:00Z');
+    // 21:30 UTC: past the p90 of the 18:30 pass as re-measured in ABL-712 (it was
+    // 20:30 here while the deadline was 20). Nothing upstream and nothing in our
+    // schedule excuses a missing tomorrow now — this is the ABL-51 protection,
+    // intact, seven hours later in the day.
+    const evening = new Date('2026-08-20T21:30:00Z');
     expect(classifyDayAheadStream(onlyToday, evening, 'tsoGenerationForecast').status).toBe(
       'stale',
     );
   });
 
   it('does not accuse the ingest while a slow 18:30 pass is still running', () => {
-    // The reason the hour is 20 and not 19. Measured pass durations run 16m55s
-    // to 55m10s (CEO, ABL-494), so 18:30 + worst case ends 19:25 — and because
-    // countries are fetched in one alphabetical loop, a 19:00 cutoff would fire
-    // on the tail of the alphabet on exactly the slow days. This case is what
-    // stops someone tightening it back.
+    // The reason the hour is not 19, and since ABL-712 not 20 either: the 18:30
+    // pass reaches its last country at a median of 19:49 and a p90 of 21:58, so
+    // 19:30 and 20:30 are both routinely mid-pass. Because countries are fetched
+    // in one alphabetical loop, an early cutoff fires on the tail of the alphabet
+    // on exactly the slow days. This case is what stops someone tightening it
+    // back; 20:30 is included because it is `live` only under 21, having read
+    // `stale` under both earlier candidates.
     const duringOverrun = new Date('2026-08-20T19:30:00Z');
+    const stillDuringOverrun = new Date('2026-08-20T20:30:00Z');
+    expect(
+      classifyDayAheadStream(onlyToday, stillDuringOverrun, 'tsoGenerationForecast').status,
+    ).toBe('live');
     expect(classifyDayAheadStream(onlyToday, duringOverrun, 'tsoGenerationForecast').status).toBe(
       'live',
     );
@@ -445,17 +452,57 @@ describe('classifyDayAheadStream — the deadline is per document class', () => 
     expect(classifyDayAheadStream('2026-01-15 22:45:00', winterGap, 'price').status).toBe('stale');
   });
 
-  it('sizes the A69 deadline past the slowest measured 18:30 pass, CET included', () => {
+  it('sizes the A69 deadline past the 18:30 pass in normal operation, CET included', () => {
     // Art. 14.1 is 16:00 UTC under CEST and 17:00 UTC under CET, so upstream
     // availability alone would allow 18. Our own ingest is the binding
-    // constraint: the 18:30 pass has been measured from 16m55s to 55m10s, ending
-    // as late as 19:25, so the first hour that cannot fire mid-pass is 20.
-    const worstPassEndsAtUtcHour = 18.5 + (55 + 10 / 60) / 60; // 19.42
+    // constraint. ABL-494 sized this against a 55m10s worst case measured by
+    // pairing a pass's start marker with the next end marker; passes run
+    // concurrently when one overruns, so that pairing under-measured by ~4x.
+    //
+    // Re-measured per pass over 2026-08-01..09-09 (ABL-712), the 18:30 pass
+    // reaches its last country at a median of 19:49 and a p90 of 21:58. The
+    // deadline must clear the p90 of normal operation, which is what 20 stopped
+    // doing when the pass slowed down in late August 2026.
+    const p90PassEndsAtUtcHour = 19 + 53 / 60; // 19:53, excluding the two storm evenings
     expect(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoGenerationForecast).toBeGreaterThan(
-      worstPassEndsAtUtcHour,
+      p90PassEndsAtUtcHour,
     );
-    // And inside the same UTC day, so the overnight 00:30/06:30 passes still
-    // leave a real miss visible for hours rather than minutes.
-    expect(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoGenerationForecast).toBeLessThan(24);
+    // And it must leave at least three hours of evening warning before the market
+    // day opens. This is the half of the trade that resists reflexive widening:
+    // 22 and 23 would each buy a little less false `stale` by sizing the badge to
+    // the worst upstream error storms on record (18:30 passes ending 21:58 and
+    // 22:36), at which point a country that genuinely has no tomorrow says
+    // nothing about it all evening.
+    expect(24 - DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoGenerationForecast).toBeGreaterThanOrEqual(3);
+  });
+
+  it('keeps a never-published market day stale overnight, so a later deadline costs warning and not detection', () => {
+    // The load-bearing fact behind ABL-712 choosing 21 over keeping 20. If the
+    // requirement expired at UTC midnight, every hour added to the deadline would
+    // be an hour of ABL-51 detection surrendered. It does not expire: at 00:00
+    // the day that was never published stops being "tomorrow" and becomes
+    // "today", which is required at every hour.
+    // 21:45 UTC is the last quarter-hour of the Brussels day of the 10th under
+    // CEST; the Brussels day of the 11th starts at 22:00 UTC on the 10th. So this
+    // row reaches the 10th in full and the 11th not at all.
+    const neverPublished = '2026-09-10 21:45:00';
+
+    // Before the deadline on the 10th, "today" is all that is asked, so live.
+    expect(
+      classifyDayAheadStream(neverPublished, new Date('2026-09-10T19:00:00Z'), 'tsoGenerationForecast')
+        .status,
+    ).toBe('live');
+    // From the deadline, and then straight through midnight and the next morning.
+    for (const at of [
+      '2026-09-10T21:00:00Z',
+      '2026-09-10T23:59:00Z',
+      '2026-09-11T00:01:00Z',
+      '2026-09-11T06:30:00Z',
+      '2026-09-11T19:00:00Z',
+    ]) {
+      expect(
+        classifyDayAheadStream(neverPublished, new Date(at), 'tsoGenerationForecast').status,
+      ).toBe('stale');
+    }
   });
 });

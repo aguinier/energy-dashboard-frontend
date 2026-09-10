@@ -321,9 +321,14 @@ error / upstream stopped) — the honest verdict is "frozen, cause not yet
 determined; upstream probe required". Grep `docs/claude/20-data-the-database-does-not-have.md`
 for the frozen timestamp first — known upstream cutoffs are on file there.
 **A read taken minutes after the cron minute is not a post-pass read** (ABL-554):
-the pass walks 39 countries in one sequential alphabetical loop over 17-55 min,
-so a country's refresh instant is its alphabetical position, not the cron minute
-— AL finishes first, RS last. Before concluding a country was missed, check
+the pass walks 39 countries in one sequential alphabetical loop — 17-55 min when
+ABL-494 measured it, 1-4 h since late August 2026 as upstream errors and their
+retries piled up (ABL-712) — so a country's refresh instant is its alphabetical
+position, not the cron minute: AL first, **UA** last. **An overrunning pass does
+not delay the next cron minute; two or three run concurrently and interleave in
+one log**, so pairing a `Countries to process` with the next `Total countries
+processed` mis-measures — attribute by alphabetical order instead. Before
+concluding a country was missed, check
 `GET /api/data-freshness/:cc/ingest` → `lastChecked` per stream (built by
 ABL-295): if it pre-dates the cron minute, the pass has not got there yet. A
 falling `Retrieved N` across passes is a window artifact, not row loss — the
