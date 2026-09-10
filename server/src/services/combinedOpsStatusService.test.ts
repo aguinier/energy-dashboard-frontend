@@ -27,8 +27,16 @@ const SAMPLE_STATUS: OpsStatus = {
   visitors: { countingSince: '2026-08-11T00:00:00.000Z', day: '2026-08-11', today: { page: 0, api: 0, asset: 0, automated: 0 }, window: { page: 0, api: 0, asset: 0, automated: 0 }, windowDaysCovered: 1, windowComplete: false, distinctClientsToday: 0 },
 };
 
-const NOON = new Date(2026, 7, 11, 12, 0, 0);
-const DURING_BLACKOUT = new Date(2026, 7, 11, 7, 5, 0);
+// Explicit offsets, not `new Date(y, m, d, …)` (ABL-647). The blackout verdict
+// is taken in `SYNC_HOST_TIME_ZONE` — deliberately, so it does not follow the
+// process's clock (ABL-657) — while the local-time constructor resolves against
+// whatever zone the host is in. The two agreed only because the workstation
+// happens to sit in that zone: on a UTC CI runner `(2026, 7, 11, 7, 5)` is
+// 09:05 in Paris, outside the ~07:00 window, and both blackout assertions in
+// this file failed. 2026-08-11 is CEST, so +02:00 is the workstation wall clock
+// these cases were written to mean.
+const NOON = new Date('2026-08-11T12:00:00+02:00');
+const DURING_BLACKOUT = new Date('2026-08-11T07:05:00+02:00');
 
 const reachablePeer = async (): Promise<SideStatus> => ({ reachable: true, latencyMs: 42, status: SAMPLE_STATUS });
 const unreachablePeer = async (): Promise<SideStatus> => ({

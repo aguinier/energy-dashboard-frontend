@@ -1169,7 +1169,7 @@
       "SeriesSource": {
         "type": "object",
         "title": "SeriesSource",
-        "description": "Where this series came from and under what licence you may redistribute it. Required on every series and every catalogue entry: Terms of Service §7.3 promises that attribution can be rendered programmatically rather than remembered, and §8.1 is why it is per series rather than per response — one response can mix provenance, and a generation response carries 21 series at once.",
+        "description": "Where this series came from and under what licence you may redistribute it. Required on every series and every catalogue entry, so that attribution can be rendered programmatically rather than remembered; carried per series rather than per response because one response can mix provenance, and a generation response carries 21 series at once.",
         "properties": {
           "id": {
             "type": "string",
@@ -1204,14 +1204,14 @@
           },
           "attribution_required": {
             "type": "boolean",
-            "description": "Whether you must attribute when you republish this series. **This is the field to branch on.** It is deliberately not derivable from `licence` without hardcoding a licence table, which is exactly the remembering §7.3 exists to remove. It is present and `false` on our own series too, so that \"no attribution needed\" and \"we forgot the field\" are not the same shape."
+            "description": "Whether you must attribute when you republish this series. **This is the field to branch on.** It is deliberately not derivable from `licence` without hardcoding a licence table, which is exactly the remembering this field exists to remove. It is present and `false` on our own series too, so that \"no attribution needed\" and \"we forgot the field\" are not the same shape."
           },
           "attribution": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The exact line to render, or `null` when none is required. Rendering this string verbatim discharges the obligation; it is taken word for word from Terms of Service §7.1 so that what we ask you to render and what we hand you cannot drift."
+            "description": "The exact line to render, or `null` when none is required. Rendering this string verbatim discharges the obligation: the wording you are asked to render and the wording we hand you here are one and the same string, so the two cannot drift."
           }
         },
         "required": [
@@ -1826,7 +1826,7 @@
               },
               "series": {
                 "type": "array",
-                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. One entry: load in MW.",
+                "description": "One entry per numeric field on a data row, carrying its unit and its source and licence. Required on every response that carries data. One entry: load in MW.",
                 "items": {
                   "$ref": "#/components/schemas/SeriesDescriptor"
                 },
@@ -1938,7 +1938,7 @@
               },
               "series": {
                 "type": "array",
-                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. One entry: price in EUR/MWh, and it is signed — negative prices are real.",
+                "description": "One entry per numeric field on a data row, carrying its unit and its source and licence. Required on every response that carries data. One entry: price in EUR/MWh, and it is signed — negative prices are real.",
                 "items": {
                   "$ref": "#/components/schemas/SeriesDescriptor"
                 },
@@ -2050,7 +2050,7 @@
               },
               "series": {
                 "type": "array",
-                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. Up to 21 entries, one per production type returned — the case ToS §8.1 exists for.",
+                "description": "One entry per numeric field on a data row, carrying its unit and its source and licence. Required on every response that carries data. Up to 21 entries, one per production type returned — the response that carries the most series at once, each with its own source and licence.",
                 "items": {
                   "$ref": "#/components/schemas/SeriesDescriptor"
                 },
@@ -2194,7 +2194,7 @@
               },
               "series": {
                 "type": "array",
-                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. One entry: our forecast value, marked as ours with `attribution_required: false`.",
+                "description": "One entry per numeric field on a data row, carrying its unit and its source and licence. Required on every response that carries data. One entry: our forecast value, marked as ours with `attribution_required: false`.",
                 "items": {
                   "$ref": "#/components/schemas/SeriesDescriptor"
                 },
@@ -2341,7 +2341,7 @@
               },
               "series": {
                 "type": "array",
-                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. One entry: our forecast value, marked as ours with `attribution_required: false`.",
+                "description": "One entry per numeric field on a data row, carrying its unit and its source and licence. Required on every response that carries data. One entry: our forecast value, marked as ours with `attribution_required: false`.",
                 "items": {
                   "$ref": "#/components/schemas/SeriesDescriptor"
                 },
@@ -2485,7 +2485,7 @@
               },
               "series": {
                 "type": "array",
-                "description": "One entry per numeric field on a data row, carrying its unit and its ToS §7.3 source and licence. Required on every response that carries data. Five entries and **two units** in one response — `mape`/`wape`/`smape` are percentages, `mae`/`rmse` are in the unit of whatever was forecast. All five are marked as our output: the reduction is our computation, and the ENTSO-E observation it was computed against is separately available under its own CC-BY series block at `/v1/observations`.",
+                "description": "One entry per numeric field on a data row, carrying its unit and its source and licence. Required on every response that carries data. Five entries and **two units** in one response — `mape`/`wape`/`smape` are percentages, `mae`/`rmse` are in the unit of whatever was forecast. All five are marked as our output: the reduction is our computation, and the ENTSO-E observation it was computed against is separately available under its own CC-BY series block at `/v1/observations`.",
                 "items": {
                   "$ref": "#/components/schemas/SeriesDescriptor"
                 },
