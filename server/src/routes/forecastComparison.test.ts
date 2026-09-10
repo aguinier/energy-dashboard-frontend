@@ -136,8 +136,12 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
       { timestamp: '2026-07-01T02:00:00', forecast_value: 1100, actual_value: 1200, error: 100, error_pct: 8.33, horizon_hours: 12 },
       { timestamp: '2026-07-01T03:00:00', forecast_value: 1200, actual_value: 1300, error: 100, error_pct: 7.69, horizon_hours: 12 },
     ]);
+    // `basis: 'comparable', basisNote: null` on every LOAD response since
+    // ABL-628 — the registry reporting no finding for DE, not a clearance.
+    // Absent on every other forecast type; see the BE solar case below.
     expect(body.metrics).toEqual({
       mae: 100, mape: 8.78, wape: 8.7, rmse: 100, bias: 100, dataPoints: 4, mapeSamples: 4,
+      basis: 'comparable', basisNote: null,
     });
     expect(body.meta).toMatchObject({
       count: 4,
@@ -204,6 +208,7 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
     const d2 = await get(`DE/ml-accuracy?${WINDOW}&forecastType=load&horizon=2`);
     expect(d2.body.metrics).toEqual({
       mae: 200, mape: 17.56, wape: 17.39, rmse: 200, bias: 200, dataPoints: 4, mapeSamples: 4,
+      basis: 'comparable', basisNote: null,
     });
   });
 
@@ -212,6 +217,7 @@ describe('GET /:countryCode/ml-accuracy — measured metrics', () => {
     // Four D+1 points at 100 MW error plus four D+2 points at 200 MW.
     expect(body.metrics).toEqual({
       mae: 150, mape: 13.17, wape: 13.04, rmse: 158.11, bias: 150, dataPoints: 8, mapeSamples: 8,
+      basis: 'comparable', basisNote: null,
     });
     expect((body.meta as Record<string, unknown>).horizon).toBeUndefined();
   });
@@ -258,8 +264,12 @@ describe('GET /:countryCode/ml-accuracy — disjoint model coverage', () => {
 
     expect(status).toBe(200);
     expect(body.data).toEqual([]);
+    // Nulls here mean "nothing paired", and `basis: 'comparable'` says the
+    // registry has no finding about AT — two different absences, and neither
+    // is the divergent-basis withholding (which keeps `dataPoints` truthful).
     expect(body.metrics).toEqual({
       mae: null, mape: null, wape: null, rmse: null, bias: null, dataPoints: 0, mapeSamples: 0,
+      basis: 'comparable', basisNote: null,
     });
     expect(body.meta).toMatchObject({
       model: 'catboost',
@@ -409,6 +419,170 @@ describe('GET /:countryCode/rolling', () => {
   it('clamps windowDays to the supported 1-30 range', async () => {
     const { body } = await get(`DE/rolling?${ROLLING}&forecastType=load&windowDays=999`);
     expect(body.windowDays).toBe(30);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ABL-628 — the divergent-basis rule on the ML side of this endpoint.
+//
+// The report (ABL-627, found during the ABL-626 weekly review) was one HTTP
+// response contradicting itself: `/forecast-comparison/NL/summary` withheld
+// `load.tso.dayAhead.mape` and published `load.ml.d1.mape: 25.6` in the block
+// beside it. The rule is a property of what ENTSO-E nets out of the country's
+// realized series, so it binds our forecast of that series exactly as it binds
+// the TSO's — and ABL-501 measured that ours carries MORE of the gap
+// (NL catboost +173.7% midday bias against the TSO's +123.2%).
+//
+// Every assertion below has a negative control beside it, because the failure
+// pointing the other way — a blanked NL price or solar figure, asserting a gap
+// nobody measured — is the same class of defect.
+// ---------------------------------------------------------------------------
+
+describe('divergent basis, ml side (ABL-628)', () => {
+  /** The sentence the registry prints in place of the numbers. */
+  const BASIS_NOTE = expect.stringContaining('behind-the-meter solar');
+
+  type Block = Record<string, unknown> | undefined;
+  type Unified = { tso: Record<string, Block>; ml: Record<string, Block>; meta: Record<string, unknown> };
+
+  it('withholds NL load ml measures while keeping the pair count truthful', async () => {
+    const { status, body } = await get(`NL?${NEXT_DAY_QS}&forecastType=load`);
+    expect(status).toBe(200);
+    const data = body.data as Unified;
+
+    // Every measure blanked, `dataPoints` untouched. The rows really did pair —
+    // we hold both series in full — so zeroing the count would assert "no data",
+    // a different and equally false claim.
+    expect(data.ml.d1).toEqual({
+      mae: null, mape: null, wape: null, rmse: null, bias: null,
+      dataPoints: 4, basis: 'divergent_basis', basisNote: BASIS_NOTE,
+    });
+    // Said explicitly, because `?? 0` on any of these is the regression this
+    // test exists for and it would still satisfy a `toBeFalsy`.
+    expect(data.ml.d1?.mae).not.toBe(0);
+    expect(data.ml.d1?.rmse).not.toBe(0);
+    expect(data.ml.d1?.bias).not.toBe(0);
+
+    // The TSO block was already blanked; it now names its verdict too, so the
+    // two sides of one response answer in the same vocabulary.
+    expect(data.tso.dayAhead).toMatchObject({
+      mae: null, mape: null, wape: null, rmse: null, bias: null,
+      dataPoints: 4, basis: 'divergent_basis', basisNote: BASIS_NOTE,
+    });
+
+    // Availability stays true: this is a withholding, not an absence.
+    expect(data.meta.dataAvailability).toEqual({
+      tso: { dayAhead: true, weekAhead: false },
+      ml: { d1: true, d2: false },
+    });
+  });
+
+  it('leaves NL price numeric — the control that proves the type gate', async () => {
+    // `mlForecastService` is shared across load, price, solar and both wind
+    // types. Ungated, the wrapper would blank all of them for NL and assert a
+    // basis gap nobody has measured. Nothing about NL's price pair is on file.
+    const { body } = await get(`NL?${NEXT_DAY_QS}&forecastType=price`);
+    const data = body.data as Unified;
+
+    expect(data.ml.d1).toEqual({
+      mae: 5, mape: 7.93, wape: 7.69, rmse: 5, bias: -5, dataPoints: 4,
+    });
+    // No verdict at all, rather than a stamped 'comparable': the registry has
+    // classified NL's load pair, not its price pair.
+    expect(data.ml.d1).not.toHaveProperty('basis');
+    expect(data.ml.d1).not.toHaveProperty('basisNote');
+  });
+
+  it('leaves DE load numeric — the control that proves the registry selects, not the code path', async () => {
+    const { body } = await get(`DE?${WINDOW}&forecastType=load`);
+    const data = body.data as Unified;
+
+    expect(data.ml.d1).toEqual({
+      mae: 100, mape: 8.78, wape: 8.7, rmse: 100, bias: 100, dataPoints: 4,
+      basis: 'comparable', basisNote: null,
+    });
+    // 'comparable' is the registry reporting NO FINDING — DE has never been
+    // probed upstream — and never that the pair was examined and cleared.
+    expect(data.tso.dayAhead).toMatchObject({ mae: 50, basis: 'comparable', basisNote: null });
+  });
+
+  it('reproduces the ABL-627 report: /summary no longer contradicts itself', async () => {
+    const { body } = await get(`NL/summary?${NEXT_DAY_QS}`);
+    const data = body.data as Record<string, Unified>;
+
+    // The exact two fields the Operations Engineer curled on the CAT container.
+    expect(data.load.tso.dayAhead?.mape).toBeNull();
+    expect(data.load.ml.d1?.mape).toBeNull();
+    expect(data.load.ml.d1?.basis).toBe('divergent_basis');
+    // ...and the control on the same response, so the fix cannot be "blank NL".
+    expect(data.price.ml.d1?.mape).toBe(7.93);
+  });
+
+  it('reports no best forecast for NL load, rather than handing it to ours by walkover', async () => {
+    // Before this fix the honest exclusion of the TSO series left our own
+    // contaminated model as the only rankable candidate, and `/best` announced
+    // it as the most accurate forecast for the Netherlands — the exact failure
+    // `recommendedModelService`'s header documents on the auto-selection side.
+    const { body } = await get(`NL/best?${NEXT_DAY_QS}&forecastType=load`);
+    expect(body.data).toBeNull();
+  });
+
+  it('withholds the ml-accuracy metrics block and keeps the hourly points', async () => {
+    const { status, body } = await get(`NL/ml-accuracy?${NEXT_DAY_QS}&forecastType=load&horizon=1`);
+    expect(status).toBe(200);
+
+    expect(body.metrics).toEqual({
+      mae: null, mape: null, wape: null, rmse: null, bias: null,
+      dataPoints: 4, mapeSamples: 4,
+      basis: 'divergent_basis', basisNote: BASIS_NOTE,
+    });
+    // The per-point rows are a different claim from the aggregate and stay
+    // served: each is a real forecast and a real measurement, and this endpoint
+    // is where the client's model-comparison panel reads `basis` from
+    // (`modelComparison.ts` renders the note instead of a row of em-dashes).
+    expect(body.data).toHaveLength(4);
+    expect((body.meta as Record<string, unknown>).coverage).toBe('served');
+  });
+
+  it('leaves the ml-accuracy metrics block numeric for NL price', async () => {
+    const { body } = await get(`NL/ml-accuracy?${NEXT_DAY_QS}&forecastType=price&horizon=1`);
+    expect(body.metrics).toEqual({
+      mae: 5, mape: 7.93, wape: 7.69, rmse: 5, bias: -5, dataPoints: 4, mapeSamples: 4,
+    });
+    expect(body.metrics).not.toHaveProperty('basis');
+  });
+});
+
+describe('GET /:countryCode/rolling — divergent basis (ABL-628, trap 1)', () => {
+  const NL_ROLLING = 'start=2026-06-21T00:00:00Z&end=2026-07-02T00:00:00Z';
+
+  it('reports a null ml MAE, never a flawless 0 MW', async () => {
+    // `ml_d1.mae` was typed `number` and assembled as `mlD1.mae ?? 0`, on the
+    // reasoning that null meant an empty window — which the `dataPoints > 0`
+    // guard already excluded. Routing the ml metrics through the basis rule
+    // made that coercion reachable, and it would have drawn the Netherlands as
+    // a flat zero-error line: a WORSE published number than the 25.6% MAPE
+    // ABL-627 was filed about. The TSO series carries the same scar (ABL-277).
+    const { status, body } = await get(`NL/rolling?${NL_ROLLING}&forecastType=load&windowDays=7`);
+    expect(status).toBe(200);
+
+    const data = body.data as Array<{
+      date: string;
+      tso?: { mape: number | null; mae: number | null };
+      ml_d1?: { mape: number | null; mae: number | null };
+    }>;
+    const day = data.find((d) => d.date === '2026-07-02');
+    expect(day).toBeDefined();
+
+    expect(day!.ml_d1).toEqual({ mape: null, mae: null });
+    expect(day!.ml_d1!.mae).not.toBe(0);
+    expect(day!.tso).toEqual({ mape: null, mae: null });
+  });
+
+  it('still reports a measured ml MAE for DE — the control', async () => {
+    const { body } = await get(`DE/rolling?start=2026-06-20T00:00:00Z&end=2026-07-01T00:00:00Z&forecastType=load&windowDays=7`);
+    const data = body.data as Array<{ date: string; ml_d1?: { mape: number | null; mae: number | null } }>;
+    expect(data.find((d) => d.date === '2026-07-01')?.ml_d1).toEqual({ mape: 8.78, mae: 100 });
   });
 });
 

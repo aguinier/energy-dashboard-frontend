@@ -45,7 +45,32 @@
  * change to `energy-data-gathering/scripts/workstation/sync-db-v2.ps1`,
  * outside this repo, and was left as a follow-up rather than folded into this
  * fix.
+ *
+ * **The window is host wall-clock, and it is evaluated as such (ABL-657).**
+ * The schedule is a Windows Scheduled Task on the acceptance workstation, so
+ * `07:00` and `16:30` below are that machine's local clock. This check used to
+ * read `now.getHours()` — *this process's* local clock — which is the same
+ * number only when the process happens to share the workstation's zone. The
+ * deployed acceptance container does not: `docker/Dockerfile` sets no `TZ` and
+ * `node:20-slim` is `Etc/UTC`, so 16:38 local read as 14:38 and **neither
+ * window ever matched inside the container**. The blackout hold was dead code
+ * on the one deployment it exists for, which is why ABL-634 saw the badge go
+ * `error` (not the intended `warn`) twice a day for six days. Verdicts are now
+ * taken in `SYNC_HOST_TIME_ZONE` via `Intl`, so they are independent of the
+ * container's `TZ` and follow CET/CEST across a DST change instead of drifting
+ * an hour twice a year.
  */
+
+/**
+ * The acceptance workstation's zone — Windows "Romance Standard Time", the zone
+ * whose wall clock the `able-db-sync` Scheduled Task fires on.
+ *
+ * A constant, not an env var: this is a fact about where the machine is, and a
+ * settable one would just be a second place for it to be wrong. Both deployed
+ * lanes may read it — prod is not synced by that script, so its blackout is
+ * simply never active, which is correct.
+ */
+export const SYNC_HOST_TIME_ZONE = 'Europe/Paris';
 
 export interface SyncBlackoutWindow {
   hour: number;
@@ -67,8 +92,62 @@ export interface BlackoutStatus {
   label: string | null;
 }
 
-export function checkSyncBlackoutWindow(now: Date): BlackoutStatus {
-  const minutesSinceMidnight = now.getHours() * 60 + now.getMinutes();
+const formatters = new Map<string, Intl.DateTimeFormat | null>();
+
+/** One formatter per zone, built once. `null` records a zone this runtime's ICU cannot resolve. */
+function formatterFor(timeZone: string): Intl.DateTimeFormat | null {
+  if (!formatters.has(timeZone)) {
+    let formatter: Intl.DateTimeFormat | null = null;
+    try {
+      formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      // A small-ICU runtime knows only UTC. Recorded, warned about once, and
+      // then treated as "cannot tell" below — never as "not in a window
+      // measured some other way".
+      console.warn(
+        `⚠️  Sync blackout window disabled: this runtime cannot resolve the time zone ${timeZone}. ` +
+          'Ops alerts will fire during the DB sync window rather than being held.',
+      );
+    }
+    formatters.set(timeZone, formatter);
+  }
+  return formatters.get(timeZone) ?? null;
+}
+
+/** Minutes past midnight `at` falls on in `timeZone`, or `null` if the zone is unresolvable. */
+function minutesSinceMidnightIn(timeZone: string, at: Date): number | null {
+  const formatter = formatterFor(timeZone);
+  if (formatter === null) return null;
+
+  const parts = formatter.formatToParts(at);
+  const hour = Number(parts.find((part) => part.type === 'hour')?.value);
+  const minute = Number(parts.find((part) => part.type === 'minute')?.value);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+
+  // `hour12: false` renders midnight as "24" on some ICU versions.
+  return (hour % 24) * 60 + minute;
+}
+
+/**
+ * `timeZone` is a parameter only so the tests can drive a second zone and prove
+ * the verdict does not come from the process's own clock. Production callers
+ * pass nothing.
+ *
+ * An unresolvable zone reports **inactive**. The pad only ever softens an
+ * alarm, so failing that way costs a red badge in a known window; failing the
+ * other way would silence a real outage for 62 minutes twice a day.
+ */
+export function checkSyncBlackoutWindow(
+  now: Date,
+  timeZone: string = SYNC_HOST_TIME_ZONE,
+): BlackoutStatus {
+  const minutesSinceMidnight = minutesSinceMidnightIn(timeZone, now);
+  if (minutesSinceMidnight === null) return { active: false, label: null };
 
   for (const window of WINDOWS) {
     const scheduled = window.hour * 60 + window.minute;

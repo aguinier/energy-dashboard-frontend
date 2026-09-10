@@ -50,6 +50,12 @@ function toSideSnapshot(side: SideStatus): OpsSideSnapshot {
   if (!side.reachable) return { ...UNREACHABLE, latencyMs: side.latencyMs };
 
   const { status } = side;
+  // ABL-657: a rollup the side could not measure stores as `null`, not as its
+  // empty shape. `'none'` with `staleCountryCount: 0` would draw on the trend
+  // as a clean fleet at the exact moments the database was unreadable — the
+  // "did not contain it, never zero" rule above, applied to the one section
+  // that can now come back unmeasured while the side itself answers.
+  const measured = status.freshness.unmeasured === undefined;
   return {
     reachable: true,
     latencyMs: side.latencyMs,
@@ -57,8 +63,8 @@ function toSideSnapshot(side: SideStatus): OpsSideSnapshot {
     diskTotalBytes: status.host.disk?.totalBytes ?? null,
     rssBytes: status.process.memory.rssBytes,
     uptimeSeconds: status.process.uptimeSeconds,
-    freshnessStatus: status.freshness.status,
-    staleCountryCount: status.freshness.staleCountries.length,
+    freshnessStatus: measured ? status.freshness.status : null,
+    staleCountryCount: measured ? status.freshness.staleCountries.length : null,
     commit: status.provenance.commit,
   };
 }

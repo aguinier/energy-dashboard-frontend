@@ -73,10 +73,27 @@ Runs client and server together. The server needs `server/.env` with
   `node_modules/.bin` is missing, use the entry points directly:
   `node ../node_modules/vitest/vitest.mjs run`,
   `node ../node_modules/typescript/bin/tsc --noEmit` (from `server/` or `client/`).
-- **Junction trap:** many worktrees reach the primary `node_modules` through an
-  NTFS junction, and `git worktree remove --force` (or any recursive delete)
-  walks *through* junctions and deletes the shared target. Drop the junction
-  first: `cmd /c rmdir "<worktree>\node_modules"`, then remove the worktree.
+- **Junction trap — now mechanically guarded (ABL-640).** Worktrees reach the
+  primary tree through **three** NTFS junctions: `node_modules`,
+  `client/node_modules` and `server/node_modules` (`better-sqlite3` is
+  unhoisted). `git worktree remove --force` walks *through* a junction and
+  deletes the target's contents — printing nothing and exiting 0 — and it is
+  the **only** recursive delete that does: `Remove-Item -Recurse`, `fs.rmSync`,
+  `rm -rf` and `rmdir /s /q` each drop the link and leave the target intact
+  (measured; the matrix is in `docs/claude/03-quick-start.md`). So:
+  - **Remove a worktree with `npm run worktree:remove -- <path>`**, which drops
+    all three junctions and only then calls git. Never aim the raw command at a
+    path that still holds one.
+  - A deny-DELETE ACE on the shared tree is the control that does not depend on
+    remembering the above (`npm run guard:node-modules status|apply|release`,
+    `PROTECTED_PATHS` in `scripts/worktreeGuard.mjs`). With it on, the raw
+    command **aborts with the tree intact**; reads, overwrites and the additive
+    donor repair still work, so it costs nothing you are allowed to do here.
+    Its one visible cost: a raw `--force` removal now fails and leaves the
+    worktree behind — deliberate, and far cheaper than a silent fleet outage.
+  - `npm run check:modules` (also `predev`) names the damage in seconds if it
+    ever recurs; `npm run repro:junction-delete` re-verifies the guard, which
+    rests on measured git behaviour rather than a documented guarantee.
 - Tree-completeness check (prints `missing packages: 0` on a healthy tree, no
   install needed):
 
@@ -177,7 +194,8 @@ line with no later `Done.` means the lock is held right now) before escalating
 
 ## Deployment
 
-Merging to `main` does **not** deploy — no CI/CD. Production is
+Merging to `main` does **not** deploy — CI checks a PR (see Testing), nothing
+deploys it. Production is
 **QuietlyConfident** (`ssh clavain@192.168.86.36`), checkout
 `/home/clavain/energy-dashboard/repos/energy-dashboard-frontend`, serving on
 port 3001. After the reviewed commit reaches GitHub:
@@ -263,7 +281,7 @@ a normalizer (three private copies once drifted apart and made endpoints
 disagree), and never put `REPLACE()`/`date()`/`strftime()` on the column alone
 in a filter or join — it forfeits the index (a 51-second scar lives in
 `docs/claude/25-common-issues.md`). Joins to actuals are separator-agnostic via
-`resolvedActualJoin()` (`mlForecastService.ts:128`) and `metricSelect()`
+`resolvedActualJoin()` (`mlForecastService.ts:153`) and `metricSelect()`
 (`crossCountryMetricsService.ts:121`). A series short by exactly one day at the
 window's end is this bug.
 
@@ -279,8 +297,13 @@ behind-the-meter solar, actuals net) gets every error measure **and** the
 forecast line itself withheld — the difference is definitional, not forecast
 error. The rule lives in `services/loadForecastBasis.ts` and every surface
 must route through it (country tab, portfolio, `/api/forecasts` — which
-reports `meta.withheldPoints`). Do not "fix" with a threshold; do not add
-countries without probing raw ENTSO-E A65 documents first.
+reports `meta.withheldPoints` — and `/api/forecast-comparison`, both providers).
+**It binds our ml forecast as well as the TSO's**: the finding is a property of
+the country's realized series, so apply it at the metrics choke point, gated on
+`DIVERGENT_BASIS_FORECAST_TYPE` wherever the caller serves more than one type,
+and never re-coerce a withheld measure with `?? 0` downstream. Do not "fix"
+with a threshold; do not add countries without probing raw ENTSO-E A65
+documents first.
 
 **Generation tables.** `energy_generation` (21 `*_mw` columns, full A75
 document) is the table for anything new. `energy_renewable` is **frozen**;
@@ -374,8 +397,16 @@ cd server && npx vitest run
 - **Baselines rot; the delta is the durable half.** Re-measure after merging
   the base in, and again if the branch waits. A conflict-free merge is not a
   working merge — run the suite on the merged tree. Current tripwire absolutes
-  and their history: `docs/claude/21-testing.md`. Client at `6b2fe01` +
-  ABL-320: **55 files / 769 tests**, identical on Node 24 and Node 25.
+  and their history: `docs/claude/21-testing.md`.
+- **CI runs both suites and both typechecks on every PR**
+  (`.github/workflows/ci.yml`, ABL-647), on the Node major pinned in `.nvmrc` —
+  never float it; the client suite's meaning is Node-dependent (below).
+  `scripts/testFloor.mjs` then fails a run that went green on fewer tests than
+  the recorded floor, because vitest exits 0 having run nothing. Raise a floor
+  in the commit that adds the tests; lowering one needs its reason in the
+  message. Four server tests self-skip in CI (sibling checkout, local replica,
+  win32 paths) — that is the `maxSkipped` allowance, and a fifth skip fails the
+  build.
 - **A green client suite is a claim about your Node major unless the run says
   otherwise.** `dashboardStore` is a persisted zustand store; its middleware
   resolves the bare global `localStorage` once, at import, and calls
@@ -505,6 +536,11 @@ duplicated at `tsoForecastService.ts:27`). Check which side you are on.
 Condensed diagnostics — full entries with the reasoning in
 `docs/claude/25-common-issues.md`.
 
+- **`git worktree remove` fails `error: failed to delete …: Invalid argument`:**
+  the ABL-640 guard working. That worktree still holds a `node_modules`
+  junction, and the shared tree refuses the delete rather than being eaten
+  through it. Remove it with `npm run worktree:remove -- <path>`. Do not
+  release the guard to get past it.
 - **"Cannot connect to database":** `ENERGY_DB_PATH` unset or pointing at a
   missing file.
 - **`database is locked` on the workstation replica:** `able-db-sync` is mid-run
@@ -512,6 +548,13 @@ Condensed diagnostics — full entries with the reasoning in
   Database Connection). Check the `.db-journal` mtime and
   `C:\Code\able\logs\sync-db-v2.log`; wait for the lock to clear. Not a bug
   (ABL-612).
+- **`attempt to write a readonly database` in the CAT container:** the *same*
+  event, seen from inside the bind mount, and **nothing wrote** — the container
+  cannot see the host writer's lock, so SQLite reads the journal as hot and
+  tries to roll it back on the readonly handle (`SQLITE_READONLY_ROLLBACK`;
+  measured both codes at one instant, ABL-657). Do not hunt for the write:
+  check `sync-db-v2.log` for an open transactional window. It throws on the
+  first read, not on connection open, so the handle recovers by itself.
 - **The load figure's accuracy badge reads "withheld" / the load figure draws
   no forecast line (NL):** the divergent-basis rule working — see Data
   semantics. Not missing data; do not "fix" it.

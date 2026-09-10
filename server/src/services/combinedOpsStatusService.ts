@@ -54,11 +54,18 @@ export interface CombinedOpsStatus {
 }
 
 /**
- * Wraps the synchronous, DB-touching `getOpsStatus()` the same way
- * `fetchPeerOpsStatus` wraps the peer HTTP call, so a locked DB during the
- * sync blackout (ABL-220) degrades this side to `reachable: false` instead of
- * throwing through the route and 500ing the whole combined payload — the
- * peer's KPIs must still render even when this process's own DB call fails.
+ * Wraps the synchronous `getOpsStatus()` the same way `fetchPeerOpsStatus`
+ * wraps the peer HTTP call, so a throw here degrades this side rather than
+ * 500ing the whole combined payload — the peer's KPIs must still render even
+ * when this process's own call fails.
+ *
+ * `getOpsStatus()` no longer throws on an unreadable database (ABL-657): that
+ * used to be *the* case this catch existed for, and turning it into
+ * `reachable: false` is what flapped the badge through every sync window. The
+ * catch stays because "does not throw" is a property of today's callee, not a
+ * guarantee this function can make for tomorrow's — but a locked database now
+ * arrives as a reachable side with an `unmeasured` freshness rollup, and
+ * anything still landing here is a genuine surprise.
  */
 function getLocalSideStatus(now: Date, getStatus: (now: Date) => OpsStatus): SideStatus {
   const startedAt = Date.now();
