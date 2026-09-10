@@ -1350,3 +1350,39 @@ Notes for when it fails:
 What it does **not** catch: a citation that lands on plausible but unrelated
 code, where the prose names no symbol. Line numbers stay in the doc because they
 are what make it fast to use; this check is the maintenance cost that buys them.
+
+## Why the client suite installs its own `localStorage` (ABL-320, moved from `CLAUDE.md` 2026-09-10)
+
+`dashboardStore` is a persisted zustand store; its middleware resolves the bare
+global `localStorage` **once, at import**, and calls `storage.setItem` on every
+`setState`. That global is broken in a *different* way on each Node major, which
+is why "the client suite is green" was, for a long time, a claim about the
+machine rather than about the code:
+
+- **Node 24 and earlier: absent.** `typeof localStorage === 'undefined'`,
+  zustand catches the ReferenceError and persist silently no-ops. The suite is
+  green and **nothing about persistence is exercised** — the worse of the two
+  failures, because it is invisible.
+- **Node 25: present without `setItem`.** `TypeError: storage.setItem is not a
+  function` — 20 failures on the same commit that was green on 24. Root cause
+  and the version detail are in the `storage.setItem is not a function` entry
+  above (ABL-311/ABL-263).
+
+**`@vitest-environment jsdom` does not fix it — measured, not assumed.** vitest
+aliases `window` to `globalThis`, so Node's own global wins over jsdom's, and
+all 20 failures survive `environment: 'jsdom'` (measured on Node 25.6.1 with
+jsdom 30). Anyone reaching for the environment switch is reaching for something
+that was already tried.
+
+What fixes it is `client/vite.config.ts`, whose `setupFiles` installs a real
+`Storage` implementation (`installMemoryStorage`,
+`client/src/test/memoryStorage.ts`) **before any test module is imported** —
+early enough to beat the store's import-time resolution, which a per-file shim
+is not. A per-file shim also hides the problem for every *other* file: one
+existed in `LoadTab.test.tsx` and did exactly that. So: do not replace the
+setup file with an environment switch, and do not add a per-file
+`localStorage` shim.
+
+On Node 25 the run additionally prints one
+`--localstorage-file was provided without a valid path` warning per worker.
+That warning is Node's, not ours, and is not a failure.

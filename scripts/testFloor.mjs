@@ -39,34 +39,37 @@ import { pathToFileURL } from 'node:url';
  * two-test `describe.skipIf`). That is exactly why `maxSkipped` has to exist
  * separately: the count floors below cannot see a `.skip`.
  *
- * Measured 2026-09-10 on Node 24.18.0, worktree ABL-728, against `origin/main`
- * at `b755f60` (PR #81 merged). Client from a local run (75 files / 918 tests,
- * matching CI exactly). Server from CI run 34466054189 (135 files / 2813
- * tests, 0 failed, 4 skipped) rather than a local run: `scripts/testFloor.test.ts`
- * itself fails to collect on this Windows worktree (`SyntaxError: Invalid or
- * unexpected token`, ABL-726, backlog — reproduces against `origin/main`
- * unmodified, so it is an environment gap, not something this branch caused).
- * The local run's 134 files / 2794 tests plus that file's CI-reported 1 file /
- * 19 tests reconciles to CI's 135 / 2813 exactly, which is the number that
- * actually gates CI (Ubuntu, where the file collects fine) and so is the
- * correct floor regardless of what a Windows run alone can see.
+ * Server re-measured 2026-09-10 on Node 24.18.0 in the ABL-739 release-train
+ * worktree, on the tree that merges ABL-736, ABL-728, ABL-631 and ABL-740's
+ * four `describeSizeHeadroom` tests: **136 files / 2,850 tests, 0 failed, 0
+ * skipped**, `numTotalTests` (which counts a `.skip`, so it is the same figure
+ * on Ubuntu, where 4 of them self-skip). Client left at ABL-728's 75 / 918;
+ * that branch added no client test and the +1 the tree ran was not its to
+ * baseline.
  *
- * **ABL-632 raises these by a measured delta, not by a local absolute.** This
- * branch adds 1 server file / 25 server tests (`freshnessCoverage.test.ts` 22,
- * `dataFreshness.test.ts` 21 → 24) and 2 client tests
- * (`freshnessPill.test.ts` 11 → 13), counted per file against `origin/main`, so
- * the floors move by exactly that much. A local absolute would have been the
- * wrong instrument in both directions: `scripts/testFloor.test.ts` *does*
- * collect in the ABL-632 worktree (137 files / 2871 tests / 0 skipped, the file
- * present in the report), so the note above does not describe every Windows
- * checkout — and a floor set from a run that collects a file CI might not, or
- * that runs the four `win32`/sibling-gated tests CI skips, fails CI on the gate
- * it was supposed to protect. Ratcheting the CI-measured baseline by a counted
- * delta is safe whichever way that environment gap falls.
+ * ABL-728 had to take the server figure from CI run 34466054189 instead,
+ * because `scripts/testFloor.test.ts` would not collect in its worktree
+ * (`SyntaxError: Invalid or unexpected token`, ABL-726). That is the CRLF
+ * stale-checkout symptom in `docs/claude/25-common-issues.md`, not a platform
+ * gap: the file collects fine in a worktree created after the `.gitattributes`
+ * pin, which is why a local run now reconciles with CI directly.
+ *
+ * **ABL-632 raises these by its own counted delta, on top of that baseline.**
+ * It adds 1 server file / 25 server tests (`freshnessCoverage.test.ts` 22,
+ * `dataFreshness.test.ts` 21 → 24) and 2 client tests (`freshnessPill.test.ts`
+ * 11 → 13), counted per file, so the floors move by exactly that much:
+ * 136 → 137 files, 2,850 → 2,875 server tests, 918 → 920 client tests.
+ * Confirmed against the merged tree (`origin/main` = `02bbdbc` merged in),
+ * which runs 137 / 2,875 server and 75 / 921 client — the extra client test is
+ * ABL-740's unbaselined +1, deliberately left as slack rather than claimed
+ * here. Ratchet by a counted delta rather than by a local absolute: a local run
+ * also executes the four `win32`/sibling-gated tests CI skips, and a floor set
+ * from an absolute that CI cannot reach fails the build on the gate it was
+ * supposed to protect.
  */
 export const TEST_FLOORS = {
   client: { files: 75, tests: 920, maxSkipped: 0 },
-  server: { files: 136, tests: 2838, maxSkipped: 4 },
+  server: { files: 137, tests: 2875, maxSkipped: 4 },
 };
 
 /**

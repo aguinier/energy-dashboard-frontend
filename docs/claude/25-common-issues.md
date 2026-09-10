@@ -188,6 +188,77 @@ sentence instead of numbers:**
   exist — it is gitignored and absent in a fresh checkout, which is why it
   survived. Create one, start the server, and curl an API path.
 
+**`gh auth status` says "not logged into any GitHub hosts" though the
+credential is intact (ABL-631, 2026-09-02):**
+- **Rule out a revoked/missing token first, then rule it back in.**
+  `cmdkey /list | findstr github` shows the Windows Credential Manager entries
+  from the ABL-512 `gh auth login` (`LegacyGeneric:target=gh:github.com:aguinier`
+  plus a machine-persistence twin) survive untouched. `git` push/fetch stay
+  unaffected the whole time — `credential.helper=manager` (Git Credential
+  Manager) is a wholly separate store from `gh`'s. A `git push --dry-run
+  origin main` that reaches GitHub and comes back an ordinary
+  `non-fast-forward` (not `403`, not `could not read Username`) is proof push
+  auth is fine; a bare `git fetch` proves nothing about push, so it is the
+  dry-run that is the check to repeat, not the fetch.
+- **Root cause: the agent-spawned shell is missing `APPDATA`/`LOCALAPPDATA`
+  entirely** — confirmed in both bash and PowerShell tool invocations
+  (`echo $APPDATA` / `echo $env:APPDATA` both empty), even though
+  `%APPDATA%\GitHub CLI\hosts.yml` exists on disk and is current. `gh`
+  resolves its config directory from `GH_CONFIG_DIR`, falling back to
+  `os.UserConfigDir()` (`%APPDATA%\GitHub CLI` on Windows) — with `APPDATA`
+  unset it silently resolves to a directory with no `hosts.yml`, which reads
+  identically to "never logged in." Explicitly passing the right directory
+  proves the credential path end to end:
+  `GH_CONFIG_DIR="C:\Users\<user>\AppData\Roaming\GitHub CLI" gh auth status`
+  returns `✓ Logged in ... (keyring)` with real token scopes. `APPDATA`/
+  `LOCALAPPDATA` are normally synthesized into an interactive logon session by
+  Windows, not stored in `HKCU\Environment` (`reg query HKCU\Environment`
+  confirmed neither key is there even for the interactively-authenticated
+  user) — whatever spawns the agent's shells does not go through that
+  interactive-logon path, so those two variables never arrive.
+- **`setx GH_CONFIG_DIR "C:\Users\<user>\AppData\Roaming\GitHub CLI"` only
+  reaches a freshly spawned process.** Proven empirically: setting it, then
+  checking `$env:GH_CONFIG_DIR` from the very next Bash/PowerShell tool call
+  in the *same* agent session, came back empty — the harness's already-running
+  shell-spawning process inherited its environment once, at its own startup,
+  and does not re-read `HKCU\Environment` per command. Neither shell sources a
+  profile file either (`~/.bashrc` / `$PROFILE`): writing a probe variable to
+  both and checking a fresh tool-invoked shell never saw it, so a
+  profile-based fix is also a dead end for this harness. The `setx` fixes the
+  **next** agent session (or the next interactive terminal), not the one
+  already open when it was run — it is what makes PowerShell agent shells
+  work once this harness process is next restarted.
+- **`C:\Users\<user>\bin\gh` is a bash-only shim that closes the gap
+  immediately, restart or not**, by setting `GH_CONFIG_DIR` and `exec`ing the
+  real `gh.exe`. It works only because `~/bin` resolves before `C:\Program
+  Files\GitHub CLI` in bash's `$PATH` (index 1 vs. 48, checked with `echo
+  $PATH | tr ':' '\n' | grep -n ...`) — the same trick does **not** shadow the
+  real binary for PowerShell, because there `C:\Program Files\GitHub CLI`
+  (index 39) resolves before `C:\Users\<user>\bin` (index 45), and that
+  index's already-frozen for the running session the same way `GH_CONFIG_DIR`
+  is. Do not try to "fix" PowerShell by reordering `PATH` or by shimming
+  inside `C:\Program Files\GitHub CLI` itself — that directory is a shared,
+  installer-owned location outside repo scope, and reordering the machine/user
+  `PATH` via the `setx` CLI risks silent truncation past 1024 characters on a
+  `PATH` this long. PowerShell agent shells get fixed by the `setx` above,
+  once this harness process restarts.
+- **One-command re-diagnosis for a recurrence:** `cmdkey /list | findstr
+  github` (is the credential still there?) vs `gh auth status` in the shell
+  agents actually use (is `gh` finding it?). If the first shows an entry and
+  the second says logged out, check `echo $APPDATA` (bash) / `echo
+  $env:APPDATA` (PowerShell) in that same shell — empty confirms this bug
+  class, not a revoked token. `reg query HKCU\Environment` shows whether
+  `GH_CONFIG_DIR` is still set; re-run the `setx` above if not, and expect it
+  to need a fresh session to take effect.
+- **Do not** bring back the ABL-512 `settings.json` token workaround (a raw
+  PAT embedded in a config file the harness reads directly, bypassing the OS
+  keyring). This fix only points `gh` at the config directory that already
+  holds its own correct, keyring-backed `hosts.yml` — no credential is
+  embedded anywhere in the repo or in agent config.
+- This is a workstation/OS environment gap, the same category as the
+  Node-version and `node_modules` gotchas in `docs/claude/03-quick-start.md`,
+  not an application or repo bug.
+
 **Every `/api/...` route returns an HTML 404 from `localhost:3001`:**
 - Read the response headers before debugging routes. If the same HTML 404
   appears through Vite and directly on `localhost:3001`, with a `Server:` header

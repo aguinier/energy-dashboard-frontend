@@ -10,6 +10,7 @@ import {
   checkSizeBudget,
   checkStatedBudget,
   classifyLine,
+  describeSizeHeadroom,
   findTopLevelDeclaration,
   formatProblems,
   isExternalPath,
@@ -461,6 +462,34 @@ describe('checkSizeBudget', () => {
   });
 });
 
+describe('describeSizeHeadroom', () => {
+  const budget: DocSize = { lines: 10, bytes: 100 };
+
+  it('reports what is left on both dimensions', () => {
+    expect(describeSizeHeadroom(docOf(6, 60), budget)).toBe(
+      '6 lines / 0.1 KB — headroom 4 lines / 40 B, bytes binding.'
+    );
+  });
+
+  it('names the dimension that runs out first, not the larger raw number', () => {
+    // 1 line left of 10 is tighter than 30 B left of 100, even though 30 > 1.
+    expect(describeSizeHeadroom(docOf(9, 70), budget)).toContain('lines binding');
+    expect(describeSizeHeadroom(docOf(6, 95), budget)).toContain('bytes binding');
+  });
+
+  it('keeps reporting once the budget is blown, so the number stays readable', () => {
+    // checkSizeBudget owns the verdict; this must not throw or print "-0.0 KB"
+    // beside it when a run is already red.
+    expect(describeSizeHeadroom(docOf(12, 130), budget)).toContain('headroom -2 lines / -30 B');
+  });
+
+  it('describes the real document against the real budget', () => {
+    // The ABL-740 shape: bytes have always been the binding dimension here, and
+    // a run that stopped saying so would be the first sign that changed.
+    expect(describeSizeHeadroom(readClaudeMd())).toContain('binding.');
+  });
+});
+
 describe('checkStatedBudget', () => {
   const budget: DocSize = { lines: 700, bytes: 35 * 1024 };
 
@@ -606,6 +635,10 @@ describe('CLAUDE.md citations', () => {
   });
 
   it('CLAUDE.md is within the ABL-536 size budget', () => {
+    // The headroom this leaves is `npm run claudemd:size -w server`, not a line
+    // printed here — vitest's default reporter drops both console output and
+    // annotations for a passing test, and a piped, non-TTY run is how CI and
+    // every agent reads this suite. See `src/docs/claudeMdSize.ts`.
     expect(checkSizeBudget(claudeMd) ?? '').toBe('');
   });
 

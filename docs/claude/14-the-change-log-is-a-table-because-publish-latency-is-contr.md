@@ -89,3 +89,24 @@ resolved through `resolveApiKeysDbPath` so the "never the energy database" guard
 stays singular. It is the fourth module in the public graph to open a database,
 and `publicAppGraph.test.ts` — which names a fourth as one of the three things it
 exists to catch — carries the argument for it.
+
+## What `buildDocsSite` refuses (ABL-522, moved from `CLAUDE.md` 2026-09-10)
+
+The no-assets rule above is enforced at build time, not by review.
+`buildDocsSite` refuses a document that
+
+- **cites a clause number**, or **names the Terms** — same reasoning as
+  `GATED_INFO_FIELDS` withholding `termsOfService`: a citation points a reader
+  at a document they cannot open while ABL-349 holds publication; and
+- **carries a URL off this origin** — the one header (`default-src 'none'`) that
+  makes "no third-party assets, no analytics" a property of the deployment
+  rather than a promise only holds if nothing in the rendered bytes wants to
+  leave.
+
+`/changelog` is **linked, never forked**: the docs site points at the change log
+the public app serves, and does not render its own copy. Two renderings of a
+contractual notice can disagree, and §9.3 makes the disagreement billable.
+
+The site is rendered from `docs/api/v1/openapi.json` and previewed with
+`npm run docs:preview -w server`, whose bind address is a constant in the source
+rather than configuration — there is no flag that exposes it by accident.
