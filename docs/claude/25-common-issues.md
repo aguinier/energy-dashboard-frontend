@@ -328,3 +328,60 @@ rule being conservative on stale input rather than a bug — AL's average really
 was missing its last 61 hours on that copy — but a country hatched on CAT and
 coloured on prod is the replica lag, not a divergence between the two
 deployments. Settle it on prod, per the read-only remit.
+
+## `SyntaxError: Invalid or unexpected token` collecting a `scripts/*.test.ts` (ABL-726)
+
+`cd server && npx vitest run` reported `Test Files 1 failed | 134 passed` with
+every test green, and the one failing file produced no results at all:
+
+```
+FAIL  ../scripts/testFloor.test.ts [ ../scripts/testFloor.test.ts ]
+SyntaxError: Invalid or unexpected token
+```
+
+No file, no line, no stack, and no frame naming the offending character. It
+reproduced on a clean tree on the Windows workstation and was **green on
+`ubuntu-latest`** — `testFloor.test.ts (19 tests) 8ms` in the same job that
+counted `135 files / 2813 tests`. So CI was never skipping it silently, and the
+ABL-647 gate was never weakened. What it cost was the local pre-merge check:
+`server/vitest.config.ts:11` pulls `../scripts/**/*.test.ts` into the server
+suite, and a collection-time failure yields no results, so nobody could read
+that suite green-or-red at a glance.
+
+**Root cause, and it is not in the test file.** `scripts/testFloor.mjs` — which
+the test imports — starts with `#!/usr/bin/env node`. Vite strips the hashbang
+line with `/^#!.*\n/`. In JavaScript `.` excludes `\r` as well as `\n`, so on a
+CRLF file `.*` halts before the CR and the pattern never matches: the `#!` line
+survives into the wrapped module body and V8 rejects the `#`. The error is
+attributed to the entry test file, which is why the shebang is not where anyone
+looks.
+
+Both halves are necessary, and the isolating control was already in the same
+directory: `scripts/worktreeGuard.mjs` is CRLF too and its test collects fine —
+it has no shebang. Rewriting the em dashes in `testFloor.test.ts` to ASCII
+changed nothing; converting `testFloor.mjs` to LF turned `1 failed / no tests`
+into `1 passed / 19 tests` with nothing else touched.
+
+**Why it is platform-split.** `core.autocrlf` is `true` on these checkouts.
+`.gitattributes` pinned `*.ts`/`*.tsx` to `eol=lf` but said nothing about
+`*.mjs`, so the blob is LF (verified with `git cat-file blob`) and the Windows
+working copy is CRLF. A Linux runner has no such conversion.
+
+**The trap in the fix.** Adding `*.mjs text eol=lf` fixes every checkout made
+after it lands and **no existing one**: the blobs were already LF, so the
+attribute commit touches no file, so a `git pull` never rewrites a working tree
+that already holds CRLF copies. `git status` stays clean the whole time, because
+the clean filter normalises CRLF back to LF before comparing — a tree can be
+broken, up to date and clean simultaneously, detectable only by reading the
+bytes. `git checkout-index -f` does **not** rewrite them either (measured; the
+stat cache calls them current). What works is deleting and restoring:
+
+```bash
+rm scripts/*.mjs client/*.config.js client/scripts/*.mjs && git checkout -- scripts client
+```
+
+That is why the fix is two parts: the `.gitattributes` pin for new checkouts,
+and `scripts/lineEndings.test.ts`, which reads the bytes of every tracked
+`.mjs`/`.cjs`/`.js` outside `node_modules` and fails with the file name and the
+command above. Before it, the failure named nothing; after it, an unrefreshed
+worktree explains itself.

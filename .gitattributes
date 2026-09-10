@@ -16,3 +16,17 @@ docs/api/v1/openapi.json text eol=lf
 # git from converting these files on checkout and makes any stray CR visible.
 *.ts  text eol=lf
 *.tsx text eol=lf
+
+# JavaScript sources get the same pin, for a sharper reason (ABL-726): a file
+# that starts with `#!` and ends its first line with CRLF does not survive
+# vitest's import. Vite strips the hashbang with `/^#!.*\n/`, and JS `.` does
+# not match `\r`, so on a Windows checkout the pattern never matches, the
+# shebang line survives into the wrapped module body, and V8 reports
+# `SyntaxError: Invalid or unexpected token` with no file, line or stack.
+# `scripts/testFloor.mjs` is LF in the repo and CRLF on a Windows working tree,
+# which is why `scripts/testFloor.test.ts` was green on ubuntu CI and a dead
+# suite locally. `scripts/lineEndings.test.ts` is the tripwire for the same
+# shape; this line is what stops it happening on a fresh checkout.
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.js  text eol=lf
