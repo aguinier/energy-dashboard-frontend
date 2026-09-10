@@ -50,10 +50,23 @@ import { pathToFileURL } from 'node:url';
  * 19 tests reconciles to CI's 135 / 2813 exactly, which is the number that
  * actually gates CI (Ubuntu, where the file collects fine) and so is the
  * correct floor regardless of what a Windows run alone can see.
+ *
+ * **ABL-632 raises these by a measured delta, not by a local absolute.** This
+ * branch adds 1 server file / 25 server tests (`freshnessCoverage.test.ts` 22,
+ * `dataFreshness.test.ts` 21 → 24) and 2 client tests
+ * (`freshnessPill.test.ts` 11 → 13), counted per file against `origin/main`, so
+ * the floors move by exactly that much. A local absolute would have been the
+ * wrong instrument in both directions: `scripts/testFloor.test.ts` *does*
+ * collect in the ABL-632 worktree (137 files / 2871 tests / 0 skipped, the file
+ * present in the report), so the note above does not describe every Windows
+ * checkout — and a floor set from a run that collects a file CI might not, or
+ * that runs the four `win32`/sibling-gated tests CI skips, fails CI on the gate
+ * it was supposed to protect. Ratcheting the CI-measured baseline by a counted
+ * delta is safe whichever way that environment gap falls.
  */
 export const TEST_FLOORS = {
-  client: { files: 75, tests: 918, maxSkipped: 0 },
-  server: { files: 135, tests: 2813, maxSkipped: 4 },
+  client: { files: 75, tests: 920, maxSkipped: 0 },
+  server: { files: 136, tests: 2838, maxSkipped: 4 },
 };
 
 /**
