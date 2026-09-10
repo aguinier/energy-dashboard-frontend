@@ -35,12 +35,16 @@ describe('checkSyncBlackoutWindow', () => {
     expect(checkSyncBlackoutWindow(at(7, 34)).active).toBe(true);
   });
 
-  it('is active at the padded 07:00 tail, 60 minutes out', () => {
-    expect(checkSyncBlackoutWindow(at(8, 0)).active).toBe(true);
+  it('is active 44m06s after 07:00 — the ABL-672 07:00 max (2026-09-02)', () => {
+    expect(checkSyncBlackoutWindow(at(7, 44)).active).toBe(true);
+  });
+
+  it('is active at the padded 07:00 tail, 75 minutes out', () => {
+    expect(checkSyncBlackoutWindow(at(8, 15)).active).toBe(true);
   });
 
   it('is inactive just past the padded 07:00 tail', () => {
-    expect(checkSyncBlackoutWindow(at(8, 1)).active).toBe(false);
+    expect(checkSyncBlackoutWindow(at(8, 16)).active).toBe(false);
   });
 
   it('is active at 16:30, the scheduled start of the second window', () => {
@@ -48,12 +52,16 @@ describe('checkSyncBlackoutWindow', () => {
     expect(status).toEqual({ active: true, label: '~16:30 daily DB sync' });
   });
 
-  it('is active at the padded 16:30 tail, 60 minutes out', () => {
-    expect(checkSyncBlackoutWindow(at(17, 30)).active).toBe(true);
+  it('is active 138m21s after 16:30 — the ABL-672 16:30 max (2026-08-28)', () => {
+    expect(checkSyncBlackoutWindow(at(18, 48)).active).toBe(true);
+  });
+
+  it('is active at the padded 16:30 tail, 180 minutes out', () => {
+    expect(checkSyncBlackoutWindow(at(19, 30)).active).toBe(true);
   });
 
   it('is inactive just past the padded 16:30 tail', () => {
-    expect(checkSyncBlackoutWindow(at(17, 31)).active).toBe(false);
+    expect(checkSyncBlackoutWindow(at(19, 31)).active).toBe(false);
   });
 });
 
