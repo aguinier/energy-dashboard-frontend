@@ -97,20 +97,39 @@ export type DayAheadStreamKey = 'price' | 'tsoLoadForecast' | 'tsoGenerationFore
  * class, not per country.
  *
  * **How long an ingest pass actually takes**, because every hour below is
- * "the pass that could carry it has finished". This file used to say ~11
- * minutes, inferred from the per-country fetch stamps of a single pass
- * (00:30:07 → 00:41:18). That was wrong by up to 5x. Measured on prod from
- * `cron_update.log`, pairing each `Countries to process: 39` with its
- * `Total countries processed: 36` (CEO, ABL-494, 2026-08-20):
+ * "the pass that could carry it has finished". Two earlier figures were wrong.
+ * ~11 minutes, inferred from the per-country fetch stamps of a single pass
+ * (00:30:07 → 00:41:18), was wrong by up to 5x. Then 17m–55m10s (ABL-494,
+ * `cron_update.log` over 2026-08-18..20), pairing each `Countries to process: 39`
+ * with the next `Total countries processed: 36`.
  *
- * | pass         | 08-18 18:30 | 08-19 00:30 | 06:30  | 13:30  | 18:30  | 08-20 00:30 | 06:30  | 13:30      |
- * |--------------|-------------|-------------|--------|--------|--------|-------------|--------|------------|
- * | duration     | 16m55s      | 23m00s      | 29m46s | 29m19s | 20m40s | 18m55s      | 23m43s | **55m10s** |
+ * **That pairing is unsound, and the number it produced is now 4x low.** An
+ * overrunning pass does not delay the next cron minute — the two run
+ * **concurrently**, interleaving in one log, so the next
+ * `Total countries processed` may belong to an earlier pass. On 2026-09-09 three
+ * passes were in flight at once and the 00:30 one did not finish until 09:38.
  *
- * The floor is ~17m and the observed maximum is 55m. Countries are fetched in
- * one sequential alphabetical loop, so an overrun does not fail uniformly — it
- * lands late on the tail of the alphabet. In that 55-minute pass NL was fetched
- * 14:07, PL 14:12, SE 14:19, SI 14:22, SK 14:23, UA 14:25, all after 14:00.
+ * Re-measured over every evening from 2026-08-01 to 09-09 (ABL-712) by
+ * attributing each per-country A69 fetch to a pass through the strictly
+ * alphabetical order a pass visits countries in — which reproduces ABL-494's
+ * 55m10s for the 08-20 13:30 pass, so the two measurements agree where they
+ * overlap. The instant the 18:30 pass reaches its **last** country (UA; IS, MT
+ * and TR are configured without A69 and skipped):
+ *
+ * | evenings     | n  | min      | median   | p90      | max      |
+ * |--------------|----|----------|----------|----------|----------|
+ * | 08-01..08-28 | 27 | 18:37:41 | 18:49:24 | 19:13:52 | 19:50:20 |
+ * | 08-29..09-09 |  9 | 18:55:08 | 19:49:19 | 21:58:57 | 22:36:38 |
+ *
+ * The pass got ~4x slower in late August 2026 and the cause is upstream, not
+ * ours: ENTSO-E 503/504/527/599 responses went from 2–6 a day through 08-28 to
+ * 500–2000 a day after, and the retries are the duration. Countries are fetched
+ * in one sequential loop, so an overrun does not fail uniformly — it lands late
+ * on the tail of the alphabet.
+ *
+ * Three of those evenings (08-31, 09-01, 09-07) stored **no** A69 at all: every
+ * fetch in the 18:30 pass errored. Those are real misses, correctly reported at
+ * any cutoff hour, and no deadline can or should paper over them.
  *
  * - **`price`** — A44, the SDAC auction result (`../energy-data-gathering/config.py`,
  *   `ENTSOE_API_CONFIG['price']`). The auction publishes ~12:45 Brussels (10:45
@@ -149,26 +168,56 @@ export type DayAheadStreamKey = 'price' | 'tsoLoadForecast' | 'tsoGenerationFore
  *   at 13:30 that set is NL, BE, AT, GR, HR, HU, LT, LU, NO and RO, not just
  *   NL/BE.
  *
- *   **20:00 UTC, not 19:00**, is therefore the first safe hour: 18:30 plus the
- *   observed worst case of 55m10s ends at **19:25**, so a 19:00 cutoff would
- *   re-create this very bug — smaller and later, on the tail of the alphabet,
- *   on exactly the slow days when the ingest least deserves an accusation.
- *   20:00 clears the worst measured pass with ~35 minutes to spare. Deliberately
- *   not DST-conditional: 20 clears the CET deadline as well, so one number is
- *   correct year-round.
+ *   **21:00 UTC** (ABL-712; ABL-494 set 20 against the 55m10s figure, which was
+ *   4x low). Upstream availability alone would allow 18; our own pass is the
+ *   binding constraint, and it now ends at a median of 19:49 rather than 18:49.
+ *   Cost of each candidate, as country-hours of *avoidable* false `stale` over
+ *   the 39 measured evenings — avoidable meaning the fetch succeeded, so a later
+ *   cutoff would have covered it — against the evening warning it keeps:
+ *
+ *   | cutoff | avoidable false-stale country-hours | evenings hit | warning |
+ *   |--------|-------------------------------------|--------------|---------|
+ *   | 19     | 162.9                               | 13 of 36     | 5h      |
+ *   | **20** | **45.4**                            | **3 of 36**  | **4h**  |
+ *   | **21** | **14.9**                            | **2 of 36**  | **3h**  |
+ *   | 22     | 1.9                                 | 1 of 36      | 2h      |
+ *
+ *   20 was right on the 08-01..08-28 distribution and is not any more: it now
+ *   misses 3 of the last 9 evenings, and every one of its 45.4 country-hours is
+ *   a pass that was merely slow, not broken (82–92% of its A69 fetches
+ *   succeeded). 21 covers every evening on record except the two worst upstream
+ *   storms — 09-08 (21:58:57) and 09-09 (22:36:38), 1587 and 298 errors, three
+ *   passes concurrent for ten hours. **22 and 23 are deliberately refused**:
+ *   they buy 13 and 15 further country-hours by sizing the badge to an incident,
+ *   and on an evening like 09-09 a country that genuinely has no tomorrow ought
+ *   to say so.
+ *
+ *   Deliberately not DST-conditional: 21 clears the CET deadline as well, so one
+ *   number is correct year-round.
  *
  * The honest consequence, written down rather than papered over: between 14:00
- * and 20:00 UTC we genuinely **cannot** distinguish "upstream never published
+ * and 21:00 UTC we genuinely **cannot** distinguish "upstream never published
  * A69" from "we have not fetched it yet", so this rule does not pretend to. That
- * is a real bound of a four-passes-a-day ingest, not a workaround. Two things
- * survive inside that window: a stream that fails to reach even *today* is still
- * `stale` at any hour, and from 20:00 UTC a genuinely absent tomorrow is caught
- * for the rest of the day — the ABL-51 protection this file exists for.
+ * is a real bound of a four-passes-a-day ingest, not a workaround. A stream that
+ * fails to reach even *today* is still `stale` at any hour inside it.
+ *
+ * **Moving one of these hours later does not lose a real miss, and that is what
+ * makes 20 → 21 affordable.** The instinct — one hour added is one hour of ABL-51
+ * detection surrendered — reads the rule as if the requirement expired at
+ * midnight. It does not: at 00:00 UTC the day that was never published stops
+ * being "tomorrow" and becomes "today", which this rule requires at *every*
+ * hour, so the same absent day keeps reading `stale` overnight and onward until
+ * data actually arrives (pinned by the UTC-midnight test in
+ * `freshness.test.ts`). What a deadline hour buys is therefore **earlier warning
+ * during the evening before the market day opens**, not detection — and it is
+ * paid for in false `stale` on every country the pass has not reached yet. That
+ * is a trade between hours of notice and country-hours of noise, which is why
+ * the table above is denominated in both.
  */
 export const DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR: Readonly<Record<DayAheadStreamKey, number>> = {
   price: 14,
   tsoLoadForecast: 14,
-  tsoGenerationForecast: 20,
+  tsoGenerationForecast: 21,
 };
 
 const BRUSSELS_TZ = 'Europe/Brussels';
@@ -225,6 +274,41 @@ export function brusselsDayStartUtc(now: Date, dayOffset: number): Date {
   const firstGuess = new Date(midnightWall - offset);
   const offsetThere = offsetMs(firstGuess);
   return offsetThere === offset ? firstGuess : new Date(midnightWall - offsetThere);
+}
+
+/**
+ * The UTC instant at which the market day **named by a UTC calendar date**
+ * begins in Brussels.
+ *
+ * This is the sibling of `brusselsDayStartUtc` and the difference between them
+ * is ABL-697. Both answer "when does a Brussels day start"; they disagree about
+ * *which* day, and only during the hours when the two calendars disagree —
+ * 22:00-24:00 UTC under CEST, 23:00-24:00 under CET.
+ *
+ * `brusselsDayStartUtc(now, 1)` means "the day after the Brussels day `now`
+ * falls in". `marketDayStartUtc(now, 1)` means "the day after the UTC date
+ * `now` falls in". At 22:30 UTC on the 9th those are the 11th and the 10th.
+ *
+ * `classifyDayAheadStream` needs the second, because its deadline is a **UTC
+ * hour** (`DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR`) and an hour-of-day only names a
+ * day together with the calendar it is counted in. Mixing the two made the rule
+ * demand D+2 for two hours every night — see that constant for the measurement.
+ *
+ * The offset is read twice for the same reason `brusselsDayStartUtc` reads it
+ * twice: the Brussels offset at 00:00 UTC is not necessarily the offset at the
+ * Brussels midnight up to two hours earlier.
+ */
+export function marketDayStartUtc(now: Date, dayOffset: number): Date {
+  const midnightWall = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate() + dayOffset,
+  );
+
+  const guessOffset = offsetMs(new Date(midnightWall));
+  const firstGuess = new Date(midnightWall - guessOffset);
+  const offsetThere = offsetMs(firstGuess);
+  return offsetThere === guessOffset ? firstGuess : new Date(midnightWall - offsetThere);
 }
 
 /** Brussels' UTC offset at a given instant, in milliseconds. */
@@ -286,6 +370,14 @@ export function classifyMeasuredStream(latest: string | null, now: Date): Freshn
  * `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` we require only that it reaches today;
  * after, that it reaches tomorrow.
  *
+ * **"Today" is the UTC calendar date, not the Brussels one** (`marketDayStartUtc`,
+ * ABL-697). The deadline above is a UTC hour, and an hour-of-day names a day
+ * only together with the calendar it is counted in; taking the hour from UTC
+ * and the day from Brussels made the rule demand D+2 — a market day nobody has
+ * ever published — from Brussels midnight until UTC midnight. Measured on prod
+ * and CAT alike, that was 33 of 39 countries reading `stale` for two hours
+ * every night, on all three day-ahead streams at once.
+ *
  * `stream` is required rather than defaulted, and that is the ABL-494 fix: the
  * three documents publish hours apart, so a stream that silently inherited
  * another's deadline would read `stale` every afternoon between the two — which
@@ -309,7 +401,7 @@ export function classifyDayAheadStream(
   if (!at) return { latest: null, ageHours: null, status: 'none' };
 
   const requiredDay = now.getUTCHours() >= DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR[stream] ? 1 : 0;
-  const mustReach = brusselsDayStartUtc(now, requiredDay);
+  const mustReach = marketDayStartUtc(now, requiredDay);
   const ageHours = (now.getTime() - at.getTime()) / MS_PER_HOUR;
 
   return {
