@@ -67,6 +67,16 @@ export const MAP_WINDOW_COVERAGE_HOURS = 48;
  * Unparseable in either argument returns `false` — withheld. Withholding is the
  * recoverable failure here (a hatched country reads as "we do not know"); the
  * unrecoverable one is painting a number that is not what the legend claims.
+ *
+ * Note the cutoff is measured from the window's end, while the survey above
+ * measured each country from the *fleet frontier*. On prod they coincide — the
+ * frontier trailed `now` by 0.2-4.2h across all four metrics on 2026-09-10 —
+ * but on a source that lags as a whole this reads stricter: on the CAT replica
+ * the same morning the `renewable_pct` frontier sat 18.6h back, putting AL at
+ * 61h from the window end against prod's 37h, and AL was withheld there and
+ * kept here. That is correct rather than a bug (AL's average on that copy
+ * really was missing its last 61 hours), but it is why a country hatched on
+ * acceptance and coloured on prod is replica lag, not a code difference.
  */
 export function reachesWindow(
   latest: string | null | undefined,

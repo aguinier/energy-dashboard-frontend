@@ -306,3 +306,25 @@ judge against the **window's end** and never `now` (a `timeOffset`-shifted
 historical window would otherwise hatch every country), and run **before** the
 DE→LU net-position aliasing, since DE_LU is one bidding zone and LU inherits
 DE's verdict including a withheld one.
+
+**Verified on prod 2026-09-10 10:24 UTC** by fetching `/api/dashboard/map`'s
+rows from prod (still the old code, but the rows carry their own
+`MAX(timestamp_utc)`) and applying the rule offline — which is what the fixed
+server would have served. It withholds `load` 30d IE (252h behind, the 3849 MW
+of this issue), `renewable_pct` 30d IE (252h), `net_position` 7d **and** 30d PT
+(133h, the -2702/-2255 pair), and nothing on `price` at any window. Everything
+else stays ranked, including AL at 37h on `renewable_pct` and MK at 13h on
+`load` — MK had recovered by then, so its 105.2h in the original measurement was
+a stall that has since cleared, not a permanent member of the withheld set.
+
+**One caveat, and it will get mis-triaged if it is not written down.** The
+cutoff is measured against the *window's end*, but the original threshold survey
+measured each country against the *fleet frontier*. Those coincide on prod,
+where the frontier trails `now` by only 0.2–4.2h. They do not coincide on a
+source that lags as a whole: on the CAT replica the same morning, the
+`renewable_pct` frontier sat 18.6h behind `now`, so AL read 61h from the window
+end instead of prod's 37h and was withheld there while prod kept it. That is the
+rule being conservative on stale input rather than a bug — AL's average really
+was missing its last 61 hours on that copy — but a country hatched on CAT and
+coloured on prod is the replica lag, not a divergence between the two
+deployments. Settle it on prod, per the read-only remit.
