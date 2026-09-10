@@ -198,7 +198,7 @@ port 3001. After the reviewed commit reaches GitHub:
 ```bash
 cd /home/clavain/energy-dashboard/repos/energy-dashboard-frontend
 git pull && cd docker
-docker compose build
+COMMIT_SHA=$(git rev-parse HEAD) docker compose build
 docker compose up -d --force-recreate
 ```
 
