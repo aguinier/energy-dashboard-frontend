@@ -39,21 +39,24 @@ import { pathToFileURL } from 'node:url';
  * two-test `describe.skipIf`). That is exactly why `maxSkipped` has to exist
  * separately: the count floors below cannot see a `.skip`.
  *
- * Measured 2026-09-10 on Node 24.18.0, worktree ABL-728, against `origin/main`
- * at `b755f60` (PR #81 merged). Client from a local run (75 files / 918 tests,
- * matching CI exactly). Server from CI run 34466054189 (135 files / 2813
- * tests, 0 failed, 4 skipped) rather than a local run: `scripts/testFloor.test.ts`
- * itself fails to collect on this Windows worktree (`SyntaxError: Invalid or
- * unexpected token`, ABL-726, backlog — reproduces against `origin/main`
- * unmodified, so it is an environment gap, not something this branch caused).
- * The local run's 134 files / 2794 tests plus that file's CI-reported 1 file /
- * 19 tests reconciles to CI's 135 / 2813 exactly, which is the number that
- * actually gates CI (Ubuntu, where the file collects fine) and so is the
- * correct floor regardless of what a Windows run alone can see.
+ * Server re-measured 2026-09-10 on Node 24.18.0 in the ABL-739 release-train
+ * worktree, on the tree that merges ABL-736, ABL-728, ABL-631 and ABL-740's
+ * four `describeSizeHeadroom` tests: **136 files / 2,850 tests, 0 failed, 0
+ * skipped**, `numTotalTests` (which counts a `.skip`, so it is the same figure
+ * on Ubuntu, where 4 of them self-skip). Client left at ABL-728's 75 / 918;
+ * this branch adds no client test and the +1 the tree now runs is not mine to
+ * baseline.
+ *
+ * ABL-728 had to take the server figure from CI run 34466054189 instead,
+ * because `scripts/testFloor.test.ts` would not collect in its worktree
+ * (`SyntaxError: Invalid or unexpected token`, ABL-726). That is the CRLF
+ * stale-checkout symptom in `docs/claude/25-common-issues.md`, not a platform
+ * gap: the file collects fine in a worktree created after the `.gitattributes`
+ * pin, which is why a local run now reconciles with CI directly.
  */
 export const TEST_FLOORS = {
   client: { files: 75, tests: 918, maxSkipped: 0 },
-  server: { files: 135, tests: 2813, maxSkipped: 4 },
+  server: { files: 136, tests: 2850, maxSkipped: 4 },
 };
 
 /**
