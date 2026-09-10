@@ -307,36 +307,38 @@ are written from **one** A75 fetch — never add a second request to fill one.
 (`services/freshness.ts`); `stale` load/generation means >18h; `ended` means
 >30 days and self-clears; both are derived, never hard-coded country lists. The
 ingest cron runs at `30 0,6,13,18` UTC and refetches a rolling 7-day window, so
-interior holes self-heal while inside it. Judge freshness by `MAX(timestamp_utc)`
-**on prod**, never by `data_ingestion_log` (INSERT OR REPLACE rowcounts make a
-healthy rewrite indistinguishable from a stall). Read-only remit: a frozen
-`MAX(timestamp_utc)` has three inseparable causes (between passes / ingest
-error / upstream stopped) — the honest verdict is "frozen, cause not yet
-determined; upstream probe required". Grep `docs/claude/20-data-the-database-does-not-have.md`
-for the frozen timestamp first — known upstream cutoffs are on file there.
-**A read taken minutes after the cron minute is not a post-pass read** (ABL-554):
-the pass walks 39 countries in one sequential alphabetical loop — 17-55 min when
-ABL-494 measured it, 1-4 h since late August 2026 as upstream errors and their
-retries piled up (ABL-712) — so a country's refresh instant is its alphabetical
-position, not the cron minute: AL first, **UA** last. **An overrunning pass does
-not delay the next cron minute; two or three run concurrently and interleave in
-one log**, so pairing a `Countries to process` with the next `Total countries
-processed` mis-measures — attribute by alphabetical order instead. Before
-concluding a country was missed, check
-`GET /api/data-freshness/:cc/ingest` → `lastChecked` per stream (built by
-ABL-295): if it pre-dates the cron minute, the pass has not got there yet. That
-endpoint dates a check from any pass that **finished**, whatever
-`data_ingestion_log.status` says, because an erroring pass still went and looked
-(ABL-637); only delivery is judged on the row counts. A
-falling `Retrieved N` across passes is a window artifact, not row loss — the
-7-day window shrinks as old hours age out. Derive staleness from the pass
-**end** time, never the cron start.
+interior holes self-heal while inside it — but only holes it is still reaching.
+**Age alone cannot see a pipeline that limps** (ABL-632): one surviving row per
+pass keeps a stream `live` while the window behind it empties, so `status` also
+reflects **coverage** — observed vs expected rows over a trailing window, at the
+resolution the stream's own recent best day demonstrates. Published as `coverage`;
+downgrades `live` only; `null` means not measurable, never zero. Both ratios live
+in `freshnessCoverage.ts` — add no second staleness cutoff, extend that file.
 
-**The 21:00 UTC local-day boundary is an upstream signature** (ABL-551): CEST
-zones (AL, MK, BA, ME, RS) that stop cleanly at `21:00:00` UTC with 22 rows on
-the terminal date ran out their local day — upstream stopped; a real ingest
-break cuts at an arbitrary mid-pass hour. GB (2021-06-14) and UA (2022-02-25)
-are dead outright; small Balkan zones are chronically late and holey.
+Judge freshness by `MAX(timestamp_utc)` **on prod**, never by
+`data_ingestion_log` (INSERT OR REPLACE rowcounts make a healthy rewrite
+indistinguishable from a stall). Read-only remit: a frozen `MAX` has three
+inseparable causes (between passes / ingest error / upstream stopped) — the
+honest verdict is "frozen, cause not yet determined; upstream probe required".
+Grep the known-gaps registry cited at the end of this section for the frozen
+timestamp first — known upstream cutoffs are on file there.
+**A read minutes after the cron minute is not a post-pass read** (ABL-554): the
+pass walks 39 countries in one sequential alphabetical loop taking hours, so a
+country's refresh instant is its position — AL first, **UA** last — and an
+overrun does not delay the next cron minute, so two or three passes interleave in
+one log and pairing a start line with the next end line mis-measures. Attribute
+alphabetically; durations rot, so re-measure (method and figures:
+`docs/claude/17-key-features.md` §7). Before concluding a country was missed,
+check `GET /api/data-freshness/:cc/ingest` → `lastChecked` (ABL-295): it dates any
+pass that **finished**, whatever `data_ingestion_log.status` says (ABL-637), and
+only delivery reads the row counts. A falling `Retrieved N` is the 7-day window
+ageing out, not row loss. Derive staleness from the pass **end** time.
+
+**A clean stop at `21:00:00` UTC with 22 rows on the terminal date is an upstream
+local-day boundary, not an ingest break** (ABL-551) — CEST zones AL, MK, BA, ME,
+RS ran out their local day; a real break cuts at an arbitrary mid-pass hour. GB
+(2021-06-14) and UA (2022-02-25) are dead outright; small Balkan zones are
+chronically late and holey.
 
 **`publication_timestamp_utc` records when we fetched, not when the value was
 published** (ENTSO-E stamps documents at generation-on-request). Do not build
@@ -464,7 +466,10 @@ type TimePreset = '24h' | '7d' | '30d' | 'today' | 'thisWeek'
 // Per stream (ABL-60). `ageHours` is signed and server-computed; negative is
 // normal for a day-ahead stream.
 type FreshnessStatus = 'live' | 'stale' | 'ended' | 'none';
-interface FreshnessStream { latest: string | null; ageHours: number | null; status: FreshnessStatus; }
+// `status` reflects age AND coverage (ABL-632). `coverage` is additive: absent on
+// an old server, `null` when not measurable — never 0. Shape: freshnessCoverage.ts
+interface FreshnessStream { latest: string | null; ageHours: number | null;
+  status: FreshnessStatus; coverage?: FreshnessCoverage | null; }
 interface DataFreshness {
   load: FreshnessStream; price: FreshnessStream; generation: FreshnessStream;
   tsoLoadForecast: FreshnessStream; tsoGenerationForecast: FreshnessStream;
@@ -552,8 +557,9 @@ Condensed diagnostics — full entries with the reasoning in
   instead (`:479`).
 - **D+7 band not showing:** the band draws only when D+7 is the *sole* checked
   model; needs daily `forecast_min_mw`/`forecast_max_mw` rows.
-- **Header pill "stale"/"tomorrow missing":** the signal working — read
-  `/api/data-freshness/:cc`, then settle on prod (see Data semantics).
+- **Header pill "stale"/"tomorrow missing"/"gaps in recent data":** the signal
+  working — read `/api/data-freshness/:cc`, then settle on prod (see Data
+  semantics). The third is coverage, not age: act on `coverage`, not `ageHours`.
 - **Time navigation:** ranges come from `getDateRangeForPreset()`
   (`useDashboardData.ts:47`); a "stale" chart is often a shifted window
   (`timeOffset` is in ~10 query keys). Changed persisted shape → bump

@@ -102,10 +102,17 @@ export function describeFreshness(
   // already moved its map scale off a red/green ramp for that reason.
   const measuredStale = stale.some(({ key }) => key === 'load' || key === 'generation');
 
+  // ABL-632. A stream can now be stale because its recent window is full of
+  // holes rather than because it stopped, and in that case its newest row is
+  // minutes old — so "stale, 1 hour ago" would be a contradiction printed in
+  // the header. The age is only the explanation when nothing is missing.
+  const gapped = stale.some(({ stream }) => hasGap(stream));
+
   return {
     tone,
-    label:
-      measuredStale && age
+    label: gapped
+      ? 'ENTSO-E · gaps in recent data'
+      : measuredStale && age
         ? `ENTSO-E · stale, ${age} ago`
         : measuredStale
           ? 'ENTSO-E · stale'
@@ -138,7 +145,28 @@ function humanise(ageHours: number, now: Date): string {
   return formatDistanceStrict(new Date(now.getTime() - ageHours * 3_600_000), now);
 }
 
+/**
+ * Is this stream short of rows over the window the server scored? ABL-632.
+ *
+ * Reads the published integers rather than re-deriving a threshold — the
+ * verdict is the server's (`services/freshnessCoverage.ts`), and a second copy
+ * of the cutoff over here is how two surfaces end up disagreeing about the same
+ * stream. `coverage` is absent on an older server and `null` when the data
+ * could not support a measurement; neither is a gap.
+ */
+function hasGap(stream: FreshnessStream): boolean {
+  const coverage = stream.coverage;
+  return !!coverage && coverage.observed < coverage.expected;
+}
+
 function explain(key: string, stream: FreshnessStream, now: Date): string {
+  // A gap is stated first and in its own words. "load has not updated for 40
+  // minutes" is true and useless next to an amber badge; "load is missing 26 of
+  // its last 48 readings" is what the badge is actually about.
+  const coverage = stream.coverage;
+  if (coverage && hasGap(stream)) {
+    return `${key} is missing ${coverage.expected - coverage.observed} of its last ${coverage.expected} readings (${coverage.windowStart} to ${coverage.windowEnd})`;
+  }
   if (key === 'price') {
     return 'the day-ahead price does not cover tomorrow';
   }

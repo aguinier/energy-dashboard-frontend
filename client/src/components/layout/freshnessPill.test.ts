@@ -138,6 +138,65 @@ describe('describeFreshness', () => {
     expect(pill.label).toBe('ENTSO-E · 1 hour ago');
   });
 
+  /**
+   * ABL-632. A stream can be stale because its recent window is full of holes
+   * rather than because it stopped, and then its newest row is minutes old. The
+   * age wording is a contradiction in that case — the prod degradation of
+   * 2026-08-30..09-02 had DE's load 41/96, 81/96 and 53/96 across three days
+   * with `MAX` never more than a few hours behind.
+   */
+  it('says what is missing, not how old it is, when a window is holey', () => {
+    const pill = describeFreshness(
+      healthy({
+        load: {
+          latest: '2026-08-07 06:45:00',
+          ageHours: 0.42,
+          status: 'stale',
+          coverage: {
+            windowStart: '2026-08-04',
+            windowEnd: '2026-08-05',
+            expectedDailyRows: 96,
+            observed: 134,
+            expected: 192,
+            ratio: 0.6979,
+          },
+        },
+      }),
+      NOW,
+    );
+
+    expect(pill.tone).toBe('stale');
+    expect(pill.label).toBe('ENTSO-E · gaps in recent data');
+    expect(pill.title).toContain('load is missing 58 of its last 192 readings');
+    expect(pill.title).toContain('2026-08-04 to 2026-08-05');
+    // The one thing it must never say: that a 25-minute-old stream has not updated.
+    expect(pill.title).not.toContain('has not updated');
+  });
+
+  it('still explains an age-driven stale by its age, coverage or not', () => {
+    // Complete window, stream simply stopped — the ABL-60 shape. A full
+    // `coverage` beside it must not rewrite the wording.
+    const pill = describeFreshness(
+      healthy({
+        load: {
+          ...stale(20),
+          coverage: {
+            windowStart: '2026-08-03',
+            windowEnd: '2026-08-04',
+            expectedDailyRows: 24,
+            observed: 48,
+            expected: 48,
+            ratio: 1,
+          },
+        },
+      }),
+      NOW,
+    );
+
+    expect(pill.label).toBe('ENTSO-E · stale, 1 hour ago');
+    expect(pill.title).toContain('load has not updated for 20 hours');
+  });
+
   it('claims nothing while the answer is still in flight', () => {
     const pill = describeFreshness(undefined, NOW);
 

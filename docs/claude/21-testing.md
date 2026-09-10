@@ -594,6 +594,41 @@ Two measurement notes worth having before you diagnose a "failure":
   the NODE_MODULE_VERSION section below**: `C:\Program Files\nodejs` (v25.6.1)
   shadowing the nvm v24.18.0 install. One `export PATH` fixes both suites.
 
+### How the `localStorage` split was actually fixed — and the fix that does not work
+
+*Archived from `CLAUDE.md` 2026-09-10 under ABL-632's ABL-536 trim; the durable
+rules stay in the root file, the evidence is here.*
+
+`dashboardStore`'s persist middleware resolves the **bare global**
+`localStorage` once, at import, and calls `storage.setItem` on every
+`setState`. That global is broken in a *different* way on each Node major —
+absent on 24 and earlier (zustand catches the `ReferenceError`, persist
+silently no-ops, so the suite is green but **nothing about persistence is
+exercised**), and present-without-`setItem` on 25, which threw
+`TypeError: storage.setItem is not a function`: **20 failures on the same
+commit that was green on 24** (ABL-320).
+
+**`@vitest-environment jsdom` does not fix this, and it looks like it should.**
+vitest aliases `window` to `globalThis`, so Node's own global wins over
+jsdom's, and **all 20 failures survive `environment: 'jsdom'`** — measured on
+Node 25.6.1 with jsdom 30. Anyone reaching for the environment switch as the
+obvious repair will measure a red suite and conclude the store is broken.
+
+What fixes it is `client/vite.config.ts`, whose `setupFiles` installs a real
+`Storage` implementation (`installMemoryStorage`,
+`client/src/test/memoryStorage.ts`) **before any test module is imported** —
+early enough that the middleware's one-shot resolution sees it. Two things
+follow, and both are rules rather than preferences:
+
+- **Do not replace it with an environment switch.** See the measurement above.
+- **Do not add a per-file `localStorage` shim.** One existed in
+  `LoadTab.test.tsx` and hid the problem for every other file in the suite —
+  the failure mode of a local fix for a global defect.
+
+On Node 25 the run also prints a `--localstorage-file was provided without a
+valid path` warning **per worker**. That is Node's, not ours, and is not a
+failure; do not chase it.
+
 ### NODE_MODULE_VERSION mismatch
 
 If `cd server && npx vitest run` fails ~24 files at *import* time with
