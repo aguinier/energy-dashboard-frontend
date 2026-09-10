@@ -54,6 +54,14 @@ const endOfTomorrowBrussels = spaceForm(
   new Date(brusselsDayStartUtc(new Date(), 2).getTime() - HOUR_MS),
 );
 
+/**
+ * IE's dead day-ahead row (ABL-663), pinned once rather than recomputed.
+ * `hoursAgo` reads the clock on every call and `spaceForm` truncates to the
+ * second, so seeding and asserting with two separate calls would disagree
+ * whenever the run straddled a second boundary.
+ */
+const ieDeadDayAhead = hoursAgo(8 * 24);
+
 beforeAll(() => {
   const load = fixtureDb.prepare(
     'INSERT INTO energy_load (country_code, timestamp_utc, load_mw) VALUES (?, ?, ?)'
@@ -87,6 +95,18 @@ beforeAll(() => {
   // The shared fixture dates are old too, but age-sensitive states must be
   // created on purpose so this test does not change verdict as the clock moves.
   generation.run('LU', hoursAgo(31 * 24), 200);
+
+  // IE is ABL-663's shape: `energy_load_forecast` carries two documents under
+  // one country code, and only the day-ahead half went dark. The week-ahead row
+  // is dated in the future — as a D+7 publication always is — so an unfiltered
+  // MAX over this table answers from it and never sees the outage.
+  const loadForecast = fixtureDb.prepare(
+    `INSERT INTO energy_load_forecast
+       (country_code, target_timestamp_utc, forecast_value_mw, forecast_type)
+     VALUES (?, ?, ?, ?)`
+  );
+  loadForecast.run('IE', ieDeadDayAhead, 3_400, 'day_ahead');
+  loadForecast.run('IE', endOfTomorrowBrussels, 3_600, 'week_ahead');
 });
 
 describe('GET /api/data-freshness/:cc — the pipeline states its own health', () => {
@@ -173,6 +193,29 @@ describe('GET /api/data-freshness/:cc — the pipeline states its own health', (
     // neither, so the verdict does not depend on when the suite runs.
     const { body } = await get('PT');
     expect((body.data as Freshness).price.status).toBe('stale');
+  });
+
+  it('does not let a live week-ahead forecast hide a dead day-ahead one', async () => {
+    // ABL-663. `energy_load_forecast` holds A65/A01 (day-ahead) and A65/A31
+    // (week-ahead) under one country code, and `tsoLoadForecast` is judged by
+    // `classifyDayAheadStream` — a day-ahead publication deadline. Week-ahead
+    // targets always sit further out, so an unfiltered MAX can only ever be
+    // answered by the week-ahead half: it cannot report the day-ahead half
+    // late, only hide it.
+    //
+    // On prod that hid a real outage for eight days. IE's day-ahead load
+    // forecast stopped upstream at 2026-09-01 22:30 and this endpoint kept
+    // reporting `live`, because the 00:30 pass went on re-storing week-ahead
+    // rows dated a week out (measured read-only 2026-09-10: day_ahead MAX
+    // 2026-09-01 22:30, week_ahead MAX 2026-09-09 23:00).
+    const { body } = await get('IE');
+    const stream = (body.data as Freshness).tsoLoadForecast;
+
+    expect(stream.status).toBe('stale');
+    // The sharp assertion: *which row answered*. The future-dated week-ahead
+    // row is present in the fixture and must not be the one reported.
+    expect(stream.latest).toBe(ieDeadDayAhead);
+    expect(stream.latest).not.toBe(endOfTomorrowBrussels);
   });
 
   it('returns every stream, so a caller cannot silently miss one', async () => {

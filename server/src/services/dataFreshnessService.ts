@@ -55,8 +55,30 @@ export function getDataFreshness(countryCode: string, now: Date = new Date()): D
     countryCode,
   );
 
+  // `forecast_type = 'day_ahead'`, because the verdict below is
+  // `classifyDayAheadStream(…, 'tsoLoadForecast')` — a *day-ahead publication
+  // deadline*. `energy_load_forecast` holds two documents under one country
+  // (A65/A01 day-ahead and A65/A31 week-ahead, `fetch_load_forecast.py:43-47`),
+  // and week-ahead targets always sit further out, so an unfiltered MAX can
+  // only ever be answered by the week-ahead half. It cannot report the
+  // day-ahead half late; it can only hide it.
+  //
+  // It did. ABL-663: IE's day-ahead load forecast stopped upstream at
+  // `2026-09-01 22:30` and this endpoint went on reporting `tsoLoadForecast:
+  // live` for eight days, because the 00:30 pass kept re-storing week-ahead
+  // rows dated a week out. Measured read-only on prod 2026-09-10 07:xx UTC:
+  //
+  //   IE day_ahead : 10,546 rows, MAX target 2026-09-01 22:30
+  //   IE week_ahead:    227 rows, MAX target 2026-09-09 23:00  <- what MAX returned
+  //
+  // Filtering cannot strand a country that only publishes week-ahead, because
+  // no such country exists: measured across all 34 countries in
+  // `energy_load_forecast` on the same read, every one has day-ahead rows
+  // (BA/MD/MK/SI have day-ahead and *no* week-ahead; none is the reverse). On
+  // that same read this changes exactly one verdict — IE's, to the true one.
   const tsoLoadForecast = newest(
-    `SELECT MAX(target_timestamp_utc) as latest FROM energy_load_forecast WHERE country_code = ?`,
+    `SELECT MAX(target_timestamp_utc) as latest FROM energy_load_forecast
+      WHERE country_code = ? AND forecast_type = 'day_ahead'`,
     countryCode,
   );
 
