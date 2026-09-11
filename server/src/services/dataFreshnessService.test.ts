@@ -121,11 +121,12 @@ describe('getDataFreshness — A69 asks whether we have looked, not what time it
 
   it('does not accuse a country the pass has not reached, while the pass is still on its way', () => {
     // SE's only finished attempt is the 13:30 pass's, which predates the
-    // obligation. That is also the format guard: compared as strings, a
-    // space-separated bound sorts *before* every `T`-form stamp of the same
-    // date, so `start_time >= '2026-09-09 16:00:00'` would admit this 13:39
-    // attempt and demand tomorrow all afternoon. The row the 18:30 pass is
-    // writing has no `end_time` yet, so it has not looked at anything.
+    // obligation. The row the 18:30 pass is writing has no `end_time` yet, so it
+    // has not looked at anything. This is NOT the format guard: a space-form
+    // `start_time >=` bound would let the 13:39 attempt through the SQL, but
+    // `classifyDayAheadStream` re-compares parsed instants and rejects it, so
+    // every test here still passes under that mutation (measured, ABL-717
+    // review). The guard that does fail is the upper-bound test below (SK).
     for (const at of ['2026-09-09T17:00:00Z', '2026-09-09T19:50:00Z', '2026-09-09T20:59:00Z']) {
       expect(a69('SE', at).status).toBe('live');
     }
@@ -146,7 +147,8 @@ describe('getDataFreshness — A69 asks whether we have looked, not what time it
   });
 
   it('reads the log as of `now`, never from attempts that had not finished by then', () => {
-    // The upper bound is formatted like the lower one. A space-separated
+    // This is the format guard; do not delete it believing SE covers it. The
+    // upper bound is formatted like the lower one. A space-separated
     // `end_time <= ?` would sort every `T`-form stamp of the date after it and
     // exclude the 19:38 finish, which would turn the negative control above
     // back to `live`.

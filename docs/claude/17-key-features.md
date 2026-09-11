@@ -2014,9 +2014,11 @@ alarm no ingest fix could clear is furniture.
     19:00 window start at 15-minute resolution, 684 rows end at *today's* 21:45,
     so its 14.9 "avoidable" country-hours were real misses. Measured by horizon,
     the clock rule costs 35.2 / 1.1 / 0.0 / 0.0 at 19 / 20 / 21 / 22, not 162.9
-    / 45.4 / 14.9 / 1.9. Prod's own ops history agrees: `staleCountryCount` held
-    at 34 from 16:00 to midnight on 09-09. 21 is kept as the backstop because it
-    costs 0.0. Moving to 20 would cost 0.5 country-hours for an extra hour of
+    / 45.4 / 14.9 / 1.9. Prod's ops history cannot corroborate this:
+    `staleCountryCount` read 34 at every hourly snapshot from 08:05 to 23:05 UTC
+    on 09-09, before any day-ahead requirement hour as well as after, so it did
+    not move with the evening A69. 21 is
+    kept as the backstop because it costs 0.0. Moving to 20 would cost 0.5 country-hours for an extra hour of
     warning on a dead-pass evening, and that call is left open.
 
   The bound is the **start** of the required Brussels day, not its end, and that

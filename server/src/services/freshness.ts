@@ -438,7 +438,10 @@ export function classifyMeasuredStream(latest: string | null, now: Date): Freshn
  * what keeps the tail of the alphabet quiet while a slow pass has not reached
  * it, and it is also why omitting the argument is safe: `null` reproduces the
  * pre-ABL-717 rule at every hour. A stream with no obligation listed ignores
- * the argument.
+ * the argument. One known false early `stale`: a manual `scripts/backfill.py`
+ * run started after the obligation writes `wind_solar_forecast` log rows for a
+ * historical window, which counts as a look without having asked for tomorrow,
+ * so the country can read `stale` before the 18:30 pass reaches it.
  *
  * The attempt answers only *when we looked*. Whether anything arrived is still
  * `latest`, the table's own `MAX`. A fetch that stored rows is not a fetch that
