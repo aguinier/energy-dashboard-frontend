@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { describeFreshness, freshnessPulses } from './freshnessPill';
+import { formatEndedDate } from '@/lib/endedSeriesNotice';
 import type { DataFreshness, FreshnessStream } from '@/types';
 
 const NOW = new Date('2026-08-07T07:10:00Z');
@@ -60,7 +61,10 @@ describe('describeFreshness', () => {
 
   it('shows a neutral ended state for a zone whose upstream series stopped', () => {
     // GB stops at 2021-06-14. This is distinct from both a live stream and an
-    // actionable ingest alarm, and the wording names upstream as the cause.
+    // actionable ingest alarm. ABL-764: `ended` (>30 days) rules out "between
+    // passes" but not "our ingest broke", so the wording states only what we
+    // hold and since when — never a cause, matching the map's
+    // `endedSeriesNotice` (ABL-763).
     const fiveYears = 45118;
     const pill = describeFreshness(
       healthy({ load: ended(fiveYears), generation: none, price: none }),
@@ -69,8 +73,9 @@ describe('describeFreshness', () => {
 
     expect(pill.tone).toBe('ended');
     expect(pill.label).toBe('ENTSO-E · series ended');
-    expect(pill.title).toContain('load stopped publishing upstream');
-    expect(pill.title).toContain('not an ingest alarm');
+    const at = new Date(NOW.getTime() - fiveYears * 3_600_000);
+    expect(pill.title).toBe(`load: no data since ${formatEndedDate(at)}`);
+    expect(pill.title).not.toMatch(/upstream|ingest alarm/);
     expect(freshnessPulses(pill.tone)).toBe(false);
   });
 
@@ -107,7 +112,8 @@ describe('describeFreshness', () => {
     const pill = describeFreshness(healthy({ generation: ended(1066) }), NOW);
 
     expect(pill.tone).toBe('ended');
-    expect(pill.title).toContain('generation stopped publishing upstream');
+    const at = new Date(NOW.getTime() - 1066 * 3_600_000);
+    expect(pill.title).toBe(`generation: no data since ${formatEndedDate(at)}`);
     expect(freshnessPulses(pill.tone)).toBe(false);
   });
 
