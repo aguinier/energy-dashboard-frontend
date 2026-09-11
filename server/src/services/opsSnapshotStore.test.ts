@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   appendSnapshot,
+  collectorDesignation,
+  DESIGNATION_VARS,
   parseSnapshotLines,
   pruneSnapshots,
   readSnapshots,
@@ -60,16 +62,25 @@ function memoryFs(initial: Record<string, string> = {}) {
 const CONFIG: OpsSnapshotConfig = {
   path: '/data/ops-status-snapshots.jsonl',
   enabled: true,
+  disabledReason: null,
+  designation: ['COMMIT_SHA'],
   retentionDays: 14,
   intervalMinutes: 15,
 };
 
+/** What a deployed lane's process actually carries: a baked SHA and the other lane's URL. */
+const DEPLOYED = { COMMIT_SHA: 'b755f606', OPS_PEER_URL: 'http://192.168.86.36:3001' };
+
 describe('resolveSnapshotConfig', () => {
-  it('defaults the file next to the database, keeps 14d, captures every 15m, and is on', () => {
-    const config = resolveSnapshotConfig({ ENERGY_DB_PATH: '/data/energy_dashboard.db' } as NodeJS.ProcessEnv);
+  it('defaults the file next to the database, keeps 14d, captures every 15m, and is on for a deployed lane', () => {
+    const config = resolveSnapshotConfig({
+      ENERGY_DB_PATH: '/data/energy_dashboard.db',
+      ...DEPLOYED,
+    } as NodeJS.ProcessEnv);
 
     expect(config.path.replace(/\\/g, '/')).toBe('/data/ops-status-snapshots.jsonl');
     expect(config.enabled).toBe(true);
+    expect(config.disabledReason).toBeNull();
     expect(config.retentionDays).toBe(14);
     expect(config.intervalMinutes).toBe(15);
   });
@@ -98,7 +109,10 @@ describe('resolveSnapshotConfig', () => {
   });
 
   it.each(['false', 'FALSE', '0', 'off'])('treats OPS_SNAPSHOT_ENABLED=%s as off', (value) => {
-    expect(resolveSnapshotConfig({ OPS_SNAPSHOT_ENABLED: value } as NodeJS.ProcessEnv).enabled).toBe(false);
+    const config = resolveSnapshotConfig({ ...DEPLOYED, OPS_SNAPSHOT_ENABLED: value } as NodeJS.ProcessEnv);
+
+    expect(config.enabled).toBe(false);
+    expect(config.disabledReason).toBe('env');
   });
 
   // docker-compose.yml passes all four as `${VAR:-}`, so an unset variable
@@ -109,6 +123,7 @@ describe('resolveSnapshotConfig', () => {
   it('treats the empty strings docker passes for unset vars as unset', () => {
     const config = resolveSnapshotConfig({
       ENERGY_DB_PATH: '/data/energy_dashboard.db',
+      COMMIT_SHA: 'b755f606',
       OPS_SNAPSHOT_ENABLED: '',
       OPS_SNAPSHOT_INTERVAL_MINUTES: '',
       OPS_SNAPSHOT_RETENTION_DAYS: '',
@@ -119,6 +134,62 @@ describe('resolveSnapshotConfig', () => {
     expect(config.intervalMinutes).toBe(15);
     expect(config.retentionDays).toBe(14);
     expect(config.path.replace(/\\/g, '/')).toBe('/data/ops-status-snapshots.jsonl');
+  });
+});
+
+// ABL-736: the default snapshot path is derived from ENERGY_DB_PATH, and every
+// worktree dev server on this workstation points that at the same replica — so
+// ~20 of them shared one file and 89% of its rows came from processes no reader
+// could attribute to an environment. Capture is on for a process that has said
+// which environment it is; a dev checkout has to say so.
+describe('collectorDesignation', () => {
+  it.each(DESIGNATION_VARS)('treats %s as designating this process a collector', (name) => {
+    const env = { ENERGY_DB_PATH: 'C:/Code/able/data/energy_dashboard.db', [name]: 'set' } as NodeJS.ProcessEnv;
+
+    expect(collectorDesignation(env)).toEqual([name]);
+    expect(resolveSnapshotConfig(env).enabled).toBe(true);
+  });
+
+  // `ENV COMMIT_SHA=${COMMIT_SHA}` in docker/Dockerfile leaves the variable
+  // PRESENT AND EMPTY when the build arg was not supplied, and compose passes
+  // OPS_PEER_URL the same way. Present-but-empty is not a designation.
+  it.each(DESIGNATION_VARS)('does not count a present-but-empty %s', (name) => {
+    expect(collectorDesignation({ [name]: '' } as NodeJS.ProcessEnv)).toEqual([]);
+    expect(collectorDesignation({ [name]: '   ' } as NodeJS.ProcessEnv)).toEqual([]);
+  });
+
+  it('reports every signal a deployed lane carries, so the startup log can name them', () => {
+    expect(collectorDesignation(DEPLOYED as NodeJS.ProcessEnv)).toEqual(['COMMIT_SHA', 'OPS_PEER_URL']);
+  });
+
+  it('does not capture from a worktree dev server, which has none of them', () => {
+    const config = resolveSnapshotConfig({
+      ENERGY_DB_PATH: 'C:/Code/able/data/energy_dashboard.db',
+    } as NodeJS.ProcessEnv);
+
+    expect(config.enabled).toBe(false);
+    expect(config.disabledReason).toBe('undesignated');
+    expect(config.designation).toEqual([]);
+    // Still resolves the path — reads of an existing history are unaffected.
+    expect(config.path.replace(/\\/g, '/')).toBe('C:/Code/able/data/ops-status-snapshots.jsonl');
+  });
+
+  it.each(['true', 'TRUE', '1', 'on'])(
+    'lets an undesignated process opt in with OPS_SNAPSHOT_ENABLED=%s',
+    (value) => {
+      const config = resolveSnapshotConfig({ OPS_SNAPSHOT_ENABLED: value } as NodeJS.ProcessEnv);
+
+      expect(config.enabled).toBe(true);
+      expect(config.designation).toEqual([]);
+    },
+  );
+
+  // An explicit `false` is somebody's decision and outranks designation, so a
+  // deployed lane can still be quietened without editing code.
+  it('lets OPS_SNAPSHOT_ENABLED=false switch off a designated collector', () => {
+    expect(resolveSnapshotConfig({ ...DEPLOYED, OPS_SNAPSHOT_ENABLED: 'false' } as NodeJS.ProcessEnv).enabled).toBe(
+      false,
+    );
   });
 });
 

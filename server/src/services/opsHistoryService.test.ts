@@ -11,6 +11,8 @@ import type { OpsSnapshotConfig } from './opsSnapshotStore.js';
 const CONFIG: OpsSnapshotConfig = {
   path: '/data/ops-status-snapshots.jsonl',
   enabled: true,
+  disabledReason: null,
+  designation: ['COMMIT_SHA'],
   retentionDays: 14,
   intervalMinutes: 15,
 };
@@ -139,12 +141,26 @@ describe('getOpsStatusHistory', () => {
 
   it('reports capture being switched off distinctly from an empty file', () => {
     const history = getOpsStatusHistory(NOW, undefined, {
-      config: { ...CONFIG, enabled: false },
+      config: { ...CONFIG, enabled: false, disabledReason: 'env' },
       read: readStub([]),
     });
 
     expect(history.storage.captureEnabled).toBe(false);
+    expect(history.storage.captureDisabledReason).toBe('env');
     expect(history.storage.error).toBeNull();
+  });
+
+  // ABL-736: the two off-reasons have different fixes, so the payload carries
+  // which one rather than leaving the caption to guess at OPS_SNAPSHOT_ENABLED.
+  it('reports a non-collector distinctly from capture being switched off, and still serves what is stored', () => {
+    const stored = [{ t: '2026-08-14T00:00:00.000Z', local: side(), peer: side() }];
+    const history = getOpsStatusHistory(NOW, undefined, {
+      config: { ...CONFIG, enabled: false, disabledReason: 'undesignated', designation: [] },
+      read: readStub(stored),
+    });
+
+    expect(history.storage.captureDisabledReason).toBe('undesignated');
+    expect(history.snapshots).toHaveLength(1);
   });
 
   it('reports damaged lines it skipped rather than hiding the loss', () => {

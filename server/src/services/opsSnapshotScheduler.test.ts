@@ -11,6 +11,8 @@ import type { OpsStatus } from './opsStatusService.js';
 const CONFIG: OpsSnapshotConfig = {
   path: '/data/ops-status-snapshots.jsonl',
   enabled: true,
+  disabledReason: null,
+  designation: ['COMMIT_SHA', 'OPS_PEER_URL'],
   retentionDays: 14,
   intervalMinutes: 15,
 };
@@ -65,20 +67,45 @@ afterEach(() => {
 });
 
 describe('describeSnapshotSchedulerStart', () => {
-  it('names the path, cadence and retention when on', () => {
+  it('names the path, cadence, retention and what designated this process when on', () => {
     const decision = describeSnapshotSchedulerStart(CONFIG);
 
     expect(decision.enabled).toBe(true);
     expect(decision.reason).toContain('every 15m');
     expect(decision.reason).toContain(CONFIG.path);
     expect(decision.reason).toContain('14d');
+    expect(decision.reason).toContain('designated by COMMIT_SHA, OPS_PEER_URL');
+  });
+
+  it('credits the explicit opt-in when there is no designation to name', () => {
+    const decision = describeSnapshotSchedulerStart({ ...CONFIG, designation: [] });
+
+    expect(decision.reason).toContain('OPS_SNAPSHOT_ENABLED is on');
   });
 
   it('says why it is off rather than starting silently', () => {
-    const decision = describeSnapshotSchedulerStart({ ...CONFIG, enabled: false });
+    const decision = describeSnapshotSchedulerStart({ ...CONFIG, enabled: false, disabledReason: 'env' });
 
     expect(decision.enabled).toBe(false);
     expect(decision.reason).toContain('OPS_SNAPSHOT_ENABLED');
+  });
+
+  // ABL-736: on a dev checkout this line is the only notice the developer gets,
+  // so it has to read as a decision with a way out, not as a fault — and it has
+  // to name the shared file it declined to write.
+  it('tells an undesignated process which file it declined and both ways to opt in', () => {
+    const decision = describeSnapshotSchedulerStart({
+      ...CONFIG,
+      enabled: false,
+      disabledReason: 'undesignated',
+      designation: [],
+    });
+
+    expect(decision.enabled).toBe(false);
+    expect(decision.reason).toContain('not a designated collector');
+    expect(decision.reason).toContain(CONFIG.path);
+    expect(decision.reason).toContain('OPS_SNAPSHOT_PATH');
+    expect(decision.reason).toContain('OPS_SNAPSHOT_ENABLED=true');
   });
 });
 
@@ -128,10 +155,45 @@ describe('startOpsSnapshotScheduler', () => {
   it('does not start, and returns null, when capture is switched off', () => {
     const capture = vi.fn();
 
-    const handle = startOpsSnapshotScheduler({ OPS_SNAPSHOT_ENABLED: 'false' } as NodeJS.ProcessEnv, { capture });
+    const handle = startOpsSnapshotScheduler(
+      { COMMIT_SHA: 'b755f606', OPS_SNAPSHOT_ENABLED: 'false' } as NodeJS.ProcessEnv,
+      { capture },
+    );
 
     expect(handle).toBeNull();
     expect(capture).not.toHaveBeenCalled();
+  });
+
+  // ABL-736. The immediate `tick()` is what made this expensive: ~20 worktree
+  // dev servers each captured on startup and every 15m thereafter, into the one
+  // file their shared ENERGY_DB_PATH resolves to.
+  it('does not capture even once from a worktree dev server that names no environment', () => {
+    const capture = vi.fn();
+
+    const handle = startOpsSnapshotScheduler(
+      { ENERGY_DB_PATH: 'C:/Code/able/data/energy_dashboard.db' } as NodeJS.ProcessEnv,
+      { capture },
+    );
+
+    expect(handle).toBeNull();
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('still captures for a deployed lane with nothing set beyond what its deployment already sets', () => {
+    const capture = vi.fn().mockResolvedValue({ snapshot: null, append: null, error: null });
+
+    const handle = startOpsSnapshotScheduler(
+      {
+        ENERGY_DB_PATH: '/data/energy_dashboard.db',
+        COMMIT_SHA: 'b755f606',
+        OPS_PEER_URL: 'http://192.168.86.36:3001',
+      } as NodeJS.ProcessEnv,
+      { capture },
+    );
+
+    expect(handle).not.toBeNull();
+    expect(capture).toHaveBeenCalledTimes(1);
+    handle?.stop();
   });
 
   it('captures immediately and then on the configured interval', async () => {

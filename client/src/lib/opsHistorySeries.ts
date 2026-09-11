@@ -162,7 +162,10 @@ export function describeHeadroomBasis(headroom: DiskHeadroom): string | null {
  *
  * `captureEnabled: false` and an unwritable file are reported distinctly from
  * "nothing captured yet" — three states that all render as an empty chart and
- * have three different fixes.
+ * have three different fixes. Capture-off splits again on `captureDisabledReason`
+ * (ABL-736): naming `OPS_SNAPSHOT_ENABLED` at a dev checkout, where that variable
+ * is unset and the real cause is that the process named no environment, would
+ * send the reader after a switch that is not the one holding capture off.
  */
 export function describeStorage(history: OpsStatusHistory): string {
   const { storage, snapshots, windowHours } = history;
@@ -171,6 +174,9 @@ export function describeStorage(history: OpsStatusHistory): string {
     return `History unavailable — the snapshot store could not be read: ${storage.error}`;
   }
   if (!storage.captureEnabled) {
+    if (storage.captureDisabledReason === 'undesignated') {
+      return 'This process is not a snapshot collector — it sets none of COMMIT_SHA, OPS_PEER_URL or OPS_SNAPSHOT_PATH, so it stores no new readings. Any already on disk are shown.';
+    }
     return 'Snapshot capture is switched off for this environment (OPS_SNAPSHOT_ENABLED), so no new readings are being stored.';
   }
   if (storage.storedSnapshots === 0) {

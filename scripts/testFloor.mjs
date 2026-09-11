@@ -39,11 +39,37 @@ import { pathToFileURL } from 'node:url';
  * two-test `describe.skipIf`). That is exactly why `maxSkipped` has to exist
  * separately: the count floors below cannot see a `.skip`.
  *
- * Measured 2026-09-10 on Node 24.18.0, worktree ABL-647.
+ * Server re-measured 2026-09-10 on Node 24.18.0 in the ABL-739 release-train
+ * worktree, on the tree that merges ABL-736, ABL-728, ABL-631 and ABL-740's
+ * four `describeSizeHeadroom` tests: **136 files / 2,850 tests, 0 failed, 0
+ * skipped**, `numTotalTests` (which counts a `.skip`, so it is the same figure
+ * on Ubuntu, where 4 of them self-skip). Client left at ABL-728's 75 / 918;
+ * that branch added no client test and the +1 the tree ran was not its to
+ * baseline.
+ *
+ * ABL-728 had to take the server figure from CI run 34466054189 instead,
+ * because `scripts/testFloor.test.ts` would not collect in its worktree
+ * (`SyntaxError: Invalid or unexpected token`, ABL-726). That is the CRLF
+ * stale-checkout symptom in `docs/claude/25-common-issues.md`, not a platform
+ * gap: the file collects fine in a worktree created after the `.gitattributes`
+ * pin, which is why a local run now reconciles with CI directly.
+ *
+ * **ABL-632 raises these by its own counted delta, on top of that baseline.**
+ * It adds 1 server file / 25 server tests (`freshnessCoverage.test.ts` 22,
+ * `dataFreshness.test.ts` 21 → 24) and 2 client tests (`freshnessPill.test.ts`
+ * 11 → 13), counted per file, so the floors move by exactly that much:
+ * 136 → 137 files, 2,850 → 2,875 server tests, 918 → 920 client tests.
+ * Confirmed against the merged tree (`origin/main` = `02bbdbc` merged in),
+ * which runs 137 / 2,875 server and 75 / 921 client — the extra client test is
+ * ABL-740's unbaselined +1, deliberately left as slack rather than claimed
+ * here. Ratchet by a counted delta rather than by a local absolute: a local run
+ * also executes the four `win32`/sibling-gated tests CI skips, and a floor set
+ * from an absolute that CI cannot reach fails the build on the gate it was
+ * supposed to protect.
  */
 export const TEST_FLOORS = {
-  client: { files: 73, tests: 904, maxSkipped: 0 },
-  server: { files: 129, tests: 2683, maxSkipped: 4 },
+  client: { files: 75, tests: 920, maxSkipped: 0 },
+  server: { files: 137, tests: 2875, maxSkipped: 4 },
 };
 
 /**
