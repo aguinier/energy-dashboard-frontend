@@ -82,10 +82,15 @@ import { pathToFileURL } from 'node:url';
  * file** (`NetPositionTab.test.tsx` 4 → 5, the Core view's UTC last-stored-hour
  * test), so 928 → 929 and 75 files stays 75. The tree (`origin/main` =
  * `c9eda98`) runs 75 / 930 client on Node 24.18.0 — ABL-740's +1 is still slack.
+ *
+ * **ABL-717 raises the server floor by its own counted delta: +1 file, +20
+ * tests** (new `dataFreshnessService.test.ts` 7, `freshness.test.ts` +13), so
+ * 137 → 138 files and 2,880 → 2,900 tests. The tree (`origin/main` =
+ * `82e830e`) runs 138 / 2,900 server tests on Node 24.18.0.
  */
 export const TEST_FLOORS = {
   client: { files: 75, tests: 929, maxSkipped: 0 },
-  server: { files: 137, tests: 2880, maxSkipped: 4 },
+  server: { files: 138, tests: 2900, maxSkipped: 4 },
 };
 
 /**

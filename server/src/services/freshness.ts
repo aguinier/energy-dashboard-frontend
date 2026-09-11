@@ -168,38 +168,52 @@ export type DayAheadStreamKey = 'price' | 'tsoLoadForecast' | 'tsoGenerationFore
  *   at 13:30 that set is NL, BE, AT, GR, HR, HU, LT, LU, NO and RO, not just
  *   NL/BE.
  *
- *   **21:00 UTC** (ABL-712; ABL-494 set 20 against the 55m10s figure, which was
- *   4x low). Upstream availability alone would allow 18; our own pass is the
- *   binding constraint, and it now ends at a median of 19:49 rather than 18:49.
- *   Cost of each candidate, as country-hours of *avoidable* false `stale` over
- *   the 39 measured evenings — avoidable meaning the fetch succeeded, so a later
- *   cutoff would have covered it — against the evening warning it keeps:
+ *   **Since ABL-717, 21:00 UTC is a backstop and our own attempt is the
+ *   deadline.** Once a `wind_solar_forecast` attempt for *this* country that
+ *   started after upstream's 18:00 Brussels obligation has finished, tomorrow
+ *   is required (`classifyDayAheadStream`'s `lastAttemptStart`). Over the period
+ *   below, a real miss is flagged at a median of 19:05 rather than 21:00. The
+ *   hour now decides only the country no such attempt has reached, whether the
+ *   pass is slow, hung, or never ran. On 08-11 and 09-03 no attempt reached 16
+ *   and 6 countries all evening, and every one was a real miss. Without the
+ *   backstop they would have read `live` until Brussels midnight.
  *
- *   | cutoff | avoidable false-stale country-hours | evenings hit | warning |
- *   |--------|-------------------------------------|--------------|---------|
- *   | 19     | 162.9                               | 13 of 36     | 5h      |
- *   | **20** | **45.4**                            | **3 of 36**  | **4h**  |
- *   | **21** | **14.9**                            | **2 of 36**  | **3h**  |
- *   | 22     | 1.9                                 | 1 of 36      | 2h      |
+ *   Re-measured by ABL-717 over 2026-08-01..09-10 (the replica's
+ *   `data_ingestion_log`, 1,101 country-evenings). The figures are country-hours
+ *   of false `stale`, where false means tomorrow did arrive later that same
+ *   evening:
  *
- *   20 was right on the 08-01..08-28 distribution and is not any more: it now
- *   misses 3 of the last 9 evenings, and every one of its 45.4 country-hours is
- *   a pass that was merely slow, not broken (82–92% of its A69 fetches
- *   succeeded). 21 covers every evening on record except the two worst upstream
- *   storms — 09-08 (21:58:57) and 09-09 (22:36:38), 1587 and 298 errors, three
- *   passes concurrent for ten hours. **22 and 23 are deliberately refused**:
- *   they buy 13 and 15 further country-hours by sizing the badge to an incident,
- *   and on an evening like 09-09 a country that genuinely has no tomorrow ought
- *   to say so.
+ *   | hour   | as the whole rule | as backstop behind the attempt rule |
+ *   |--------|-------------------|-------------------------------------|
+ *   | 19     | 35.2              | 32.7                                |
+ *   | 20     | 1.1               | 0.5                                 |
+ *   | **21** | **0.0**           | **0.0**                             |
+ *   | 22     | 0.0               | 0.0                                 |
  *
- *   Deliberately not DST-conditional: 21 clears the CET deadline as well, so one
- *   number is correct year-round.
+ *   The attempt rule has its own transient, 7.1 country-hours over the same
+ *   period: a post-deadline fetch errored or came back without tomorrow, and a
+ *   later fetch brought it. Each of those was true when it was said.
  *
- * The honest consequence, written down rather than papered over: between 14:00
- * and 21:00 UTC we genuinely **cannot** distinguish "upstream never published
- * A69" from "we have not fetched it yet", so this rule does not pretend to. That
- * is a real bound of a four-passes-a-day ingest, not a workaround. A stream that
- * fails to reach even *today* is still `stale` at any hour inside it.
+ *   **ABL-712's table for this constant (162.9 / 45.4 / 14.9 / 1.9) was wrong,
+ *   and the move from 20 to 21 was decided on it.** It counted a fetch that
+ *   *stored rows* as one that delivered tomorrow, which is the trap
+ *   `ingestLog.ts` documents. On 09-08 and 09-09 the evening fetches stored 684
+ *   rows apiece. 684 quarter-hours from a 19:00 window start end at *today's*
+ *   21:45, so all 14.9 of its country-hours were real misses. "Arrived" is now
+ *   read off each fetch's horizon (window start plus rows times resolution),
+ *   never off its row count. 21 is kept, not re-tuned, because it costs 0.0
+ *   here. Moving to 20 would buy an hour of warning on a dead-pass evening for
+ *   0.5 country-hours, and that trade is its own judgement.
+ *
+ *   Deliberately not DST-conditional: 21 clears the CET deadline as well, and
+ *   the attempt rule reads its obligation off the Brussels calendar.
+ *
+ * The honest consequence, written down rather than papered over: for `price`
+ * and `tsoLoadForecast`, and for A69 until our own post-deadline fetch has
+ * looked, we **cannot** distinguish "upstream never published it" from "we have
+ * not fetched it yet", so the rule does not pretend to. That is a real bound of
+ * a four-passes-a-day ingest, not a workaround. A stream that fails to reach
+ * even *today* is still `stale` at any hour.
  *
  * **Moving one of these hours later does not lose a real miss, and that is what
  * makes 20 → 21 affordable.** The instinct — one hour added is one hour of ABL-51
@@ -218,6 +232,29 @@ export const DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR: Readonly<Record<DayAheadStreamKe
   price: 14,
   tsoLoadForecast: 14,
   tsoGenerationForecast: 21,
+};
+
+/**
+ * The Brussels wall-clock hour by which upstream must have published tomorrow.
+ * Listed only for the day-ahead streams whose requirement our own ingest
+ * attempt may bring forward (ABL-717), which today is A69 alone.
+ *
+ * 18 is Reg. 543/2013 Art. 14.1's deadline for data item 14.1.D, day-ahead
+ * wind & solar: 18:00 Brussels D-1, which is 16:00 UTC under CEST and 17:00
+ * under CET. It is a legal obligation, not a measurement of anybody's latency,
+ * so unlike the hour above it does not rot when a pass slows down.
+ *
+ * `price` and `tsoLoadForecast` are deliberately absent, so an attempt never
+ * moves their requirement and both keep ABL-51's 14:00 tripwire exactly as it
+ * was. Keying them here would bring their requirement *forward*: onto the
+ * 11:15/12:15 price-only passes for A44, and onto the 13:30 pass for A65. That
+ * needs its own evidence about when upstream actually publishes, starting with
+ * an SDAC decoupling day, and ABL-717 did not measure it.
+ */
+export const DAY_AHEAD_PUBLISHED_BY_BRUSSELS_HOUR: Readonly<
+  Partial<Record<DayAheadStreamKey, number>>
+> = {
+  tsoGenerationForecast: 18,
 };
 
 const BRUSSELS_TZ = 'Europe/Brussels';
@@ -391,16 +428,40 @@ export function classifyMeasuredStream(latest: string | null, now: Date): Freshn
  * that day's local start — far more than the ≤3h spread between European market
  * timezones. Testing the day's *end* in Brussels terms would instead mark BG
  * (UTC+3, whose day ends 2h before Brussels') stale while it was complete.
+ *
+ * **`lastAttemptStart` brings A69's requirement forward, per country (ABL-717).**
+ * It is when the newest *finished* ingest attempt at this country's stream
+ * began. If that is at or after upstream's publication obligation for tomorrow
+ * (`publicationObligationUtc`), tomorrow is required now rather than at the
+ * clock hour: we have looked since upstream owed us the day, so a missing day
+ * is missing. Until then, the clock hour decides exactly as before. That is
+ * what keeps the tail of the alphabet quiet while a slow pass has not reached
+ * it, and it is also why omitting the argument is safe: `null` reproduces the
+ * pre-ABL-717 rule at every hour. A stream with no obligation listed ignores
+ * the argument. One known false early `stale`: a manual `scripts/backfill.py`
+ * run started after the obligation writes `wind_solar_forecast` log rows for a
+ * historical window, which counts as a look without having asked for tomorrow,
+ * so the country can read `stale` before the 18:30 pass reaches it.
+ *
+ * The attempt answers only *when we looked*. Whether anything arrived is still
+ * `latest`, the table's own `MAX`. A fetch that stored rows is not a fetch that
+ * brought tomorrow: on 2026-09-09 DE's evening fetch stored 684 rows, all of
+ * them up to today's 21:45.
  */
 export function classifyDayAheadStream(
   latest: string | null,
   now: Date,
   stream: DayAheadStreamKey,
+  lastAttemptStart: string | null = null,
 ): FreshnessStream {
   const at = parseStoredTimestamp(latest);
   if (!at) return { latest: null, ageHours: null, status: 'none' };
 
-  const requiredDay = now.getUTCHours() >= DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR[stream] ? 1 : 0;
+  const requiredDay =
+    now.getUTCHours() >= DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR[stream] ||
+    attemptedSinceObligation(stream, now, lastAttemptStart)
+      ? 1
+      : 0;
   const mustReach = marketDayStartUtc(now, requiredDay);
   const ageHours = (now.getTime() - at.getTime()) / MS_PER_HOUR;
 
@@ -414,6 +475,37 @@ export function classifyDayAheadStream(
           ? 'live'
           : 'stale',
   };
+}
+
+/**
+ * The instant upstream must have published the market day
+ * `classifyDayAheadStream` would require next, which is tomorrow as named by
+ * the UTC date. Returns `null` for a stream whose obligation this module does
+ * not key on (`DAY_AHEAD_PUBLISHED_BY_BRUSSELS_HOUR`).
+ *
+ * It is derived from the start of that very day, so the obligation and the
+ * requirement cannot name different days. Naming different days was ABL-697's
+ * defect. Brussels midnight is stepped back to the obligation hour of the
+ * evening before. A fixed subtraction is exact because both DST switches happen
+ * at 01:00 UTC, which is 02:00 or 03:00 in Brussels. That is after midnight, and
+ * never between 18:00 and the midnight that follows it. `freshness.test.ts` pins
+ * both switch weekends.
+ */
+export function publicationObligationUtc(now: Date, stream: DayAheadStreamKey): Date | null {
+  const hour = DAY_AHEAD_PUBLISHED_BY_BRUSSELS_HOUR[stream];
+  if (hour === undefined) return null;
+  return new Date(marketDayStartUtc(now, 1).getTime() - (24 - hour) * MS_PER_HOUR);
+}
+
+/** Has a finished attempt begun since upstream owed us tomorrow? See `classifyDayAheadStream`. */
+function attemptedSinceObligation(
+  stream: DayAheadStreamKey,
+  now: Date,
+  lastAttemptStart: string | null,
+): boolean {
+  const obligation = publicationObligationUtc(now, stream);
+  const attempt = parseStoredTimestamp(lastAttemptStart);
+  return obligation !== null && attempt !== null && attempt.getTime() >= obligation.getTime();
 }
 
 function classifyAge(ageHours: number): FreshnessStatus {

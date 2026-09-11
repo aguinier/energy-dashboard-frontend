@@ -305,8 +305,11 @@ are written from **one** A75 fetch — never add a second request to fill one.
 
 **Freshness and staleness.** Stream verdicts are `live | stale | ended | none`
 (`services/freshness.ts`); `stale` load/generation means >18h; `ended` means
->30 days and self-clears; both are derived, never hard-coded country lists. The
-ingest cron runs at `30 0,6,13,18` UTC and refetches a rolling 7-day window, so
+>30 days and self-clears; both are derived, never hard-coded country lists.
+A69 needs tomorrow once a finished attempt for that country *started* after
+18:00 Brussels, else from 21:00 UTC (ABL-717): the log dates the look, the
+table decides what came. The ingest cron runs at `30 0,6,13,18` UTC and
+refetches a rolling 7-day window, so
 interior holes self-heal while inside it — but only holes it is still reaching.
 **Age alone cannot see a pipeline that limps** (ABL-632): one surviving row per
 pass keeps a stream `live` while the window behind it empties, so `status` also

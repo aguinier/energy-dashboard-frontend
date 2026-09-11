@@ -3,6 +3,7 @@ import { measuredLoadClause } from './loadQuality.js';
 import {
   classifyMeasuredStream,
   classifyDayAheadStream,
+  publicationObligationUtc,
   type FreshnessStream,
 } from './freshness.js';
 import {
@@ -11,6 +12,7 @@ import {
   COVERAGE_WINDOW_DAYS,
   type DailyRowCount,
 } from './freshnessCoverage.js';
+import { INGEST_PIPELINES } from './ingestLog.js';
 import { rangeArgs, rangeClause, timestampRange } from '../utils/timestamp.js';
 
 /**
@@ -88,6 +90,71 @@ function dailyCounts(
   return rows.map(({ day, row_count }) => ({ day, rows: row_count }));
 }
 
+/**
+ * The log's own stamp shape, cut to the second: `2026-09-09T16:00:00`.
+ *
+ * `data_ingestion_log` writes Python's `datetime.now(pytz.UTC).isoformat()`:
+ * 32 characters, `T`-separated, ending `+00:00`. That is 20,635 of 20,635
+ * `wind_solar_forecast` rows on the replica on 2026-09-11. A bound in this prefix
+ * form sorts correctly against that fixed width. The space form every *data*
+ * table uses does not, because `'T' > ' '`. Measured on the replica,
+ * `start_time >= '2026-09-10 16:00:00'` also matched DE's 13:34 attempt, 4 rows
+ * where the correct answer is 1. That attempt was made before upstream owed us
+ * anything.
+ */
+function logStamp(at: Date): string {
+  return at.toISOString().slice(0, 19);
+}
+
+/**
+ * When the newest ingest attempt at a stream began, counting only attempts that
+ * started no earlier than `since` and had finished by `now`. Returns `null` if
+ * there are none.
+ *
+ * ABL-717. This reads `data_ingestion_log` for **when we looked**, never for
+ * whether rows landed. `records_inserted` is not consulted, and it would lie if
+ * it were: on 2026-09-09 DE's 18:30 fetch stored 684 rows and logged
+ * `completed`, and none of those rows was tomorrow's. Whether tomorrow is held
+ * is still decided by the table's own `MAX` above. Every finished attempt
+ * counts, including one that errored, because a fetch that got a 503 did go
+ * and look (ABL-637). A `running` row has no `end_time` yet, so it has not
+ * looked at anything.
+ *
+ * It uses `start_time`, not the `end_time` that ABL-295's `lastChecked`
+ * reports. A fetch issued before upstream's obligation cannot be expected to
+ * carry the day, however late it finished, and an overrunning 13:30 pass does
+ * reach countries after 16:00 UTC.
+ *
+ * The bounds only narrow the read. `classifyDayAheadStream` compares the
+ * instant against the obligation itself, so a bound that over-matched could not
+ * put a pre-obligation attempt into a verdict. A bound that under-matched would
+ * fall back to the 21:00 backstop, and the negative control in
+ * `dataFreshnessService.test.ts` fails if that happens. The query plan is
+ * `SEARCH … USING INDEX idx_ingestion_log_pipeline (pipeline_type=? AND
+ * start_time>?)`, and all 39 countries take 1.1 ms on the replica.
+ */
+function newestFinishedAttemptStart(
+  pipelines: readonly string[],
+  countryCode: string,
+  since: Date,
+  now: Date,
+): string | null {
+  const row = db
+    .prepare(
+      `SELECT MAX(start_time) AS started
+         FROM data_ingestion_log
+        WHERE pipeline_type IN (${pipelines.map(() => '?').join(', ')})
+          AND country_code = ?
+          AND start_time >= ?
+          AND end_time IS NOT NULL
+          AND end_time <= ?`,
+    )
+    .get(...pipelines, countryCode, logStamp(since), logStamp(now)) as
+    | { started: string | null }
+    | undefined;
+  return row?.started ?? null;
+}
+
 export function getDataFreshness(countryCode: string, now: Date = new Date()): DataFreshness {
   // `measuredLoadClause()` matters here as much as it does on a chart, and this
   // was the one `energy_load` read site without it. A national grid never draws
@@ -152,6 +219,23 @@ export function getDataFreshness(countryCode: string, now: Date = new Date()): D
     countryCode,
   );
 
+  // ABL-717. When our own ingest last looked at this country's A69, counting
+  // only attempts that began once upstream owed us tomorrow. It is read for A69
+  // alone: price and the A65 load forecast keep their clock deadline
+  // (`DAY_AHEAD_PUBLISHED_BY_BRUSSELS_HOUR`), so no read is spent on them.
+  // Before the obligation, which is 16:00 UTC under CEST, no attempt can
+  // qualify, so the read is skipped rather than run for an answer already known.
+  const a69Obligation = publicationObligationUtc(now, 'tsoGenerationForecast');
+  const tsoGenerationAttempt =
+    a69Obligation !== null && a69Obligation.getTime() <= now.getTime()
+      ? newestFinishedAttemptStart(
+          INGEST_PIPELINES.tsoGenerationForecast,
+          countryCode,
+          a69Obligation,
+          now,
+        )
+      : null;
+
   // ABL-632. Age alone is blind to a pipeline that limps: one surviving row per
   // pass keeps `MAX` recent while the window behind it fills with holes, which
   // is how a four-day prod degradation (2026-08-30..09-02) reported `live`
@@ -187,6 +271,12 @@ export function getDataFreshness(countryCode: string, now: Date = new Date()): D
     // wind & solar) has until 18:00 Brussels D-1, so one shared 14:00 UTC cutoff
     // flagged every country's generation forecast stale every afternoon
     // (ABL-494). See `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR` for the derivations.
+    //
+    // A69 alone also takes our newest post-deadline attempt (ABL-717), so its
+    // requirement moves when this country has been looked at, not when a
+    // pass-duration guess says it probably has. `price` and `tsoLoadForecast`
+    // are deliberately not given one; `DAY_AHEAD_PUBLISHED_BY_BRUSSELS_HOUR`
+    // says why.
     price: applyCoverage(
       classifyDayAheadStream(price, now, 'price'),
       dailyCounts('energy_price', 'timestamp_utc', countryCode, now),
@@ -204,7 +294,12 @@ export function getDataFreshness(countryCode: string, now: Date = new Date()): D
       'tsoLoadForecast',
     ),
     tsoGenerationForecast: applyCoverage(
-      classifyDayAheadStream(tsoGenerationForecast, now, 'tsoGenerationForecast'),
+      classifyDayAheadStream(
+        tsoGenerationForecast,
+        now,
+        'tsoGenerationForecast',
+        tsoGenerationAttempt,
+      ),
       dailyCounts('energy_generation_forecast', 'target_timestamp_utc', countryCode, now),
       'tsoGenerationForecast',
     ),
