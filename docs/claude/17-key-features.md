@@ -1860,7 +1860,7 @@ alarm no ingest fix could clear is furniture.
   |---|---|---|---|---|
   | `price` | A44 | 12.1.D | SDAC auction, ~12:45 Brussels (10:45 UTC CEST) | **14** |
   | `tsoLoadForecast` | A65 / A01 | 6.1 | around midday Brussels D-1 | **14** |
-  | `tsoGenerationForecast` | A69 / A01 | 14.1.D | **18:00 Brussels D-1** (Reg. 543/2013 Art. 14.1) = 16:00 UTC CEST, 17:00 UTC CET | **20** |
+  | `tsoGenerationForecast` | A69 / A01 | 14.1.D | **18:00 Brussels D-1** (Reg. 543/2013 Art. 14.1) = 16:00 UTC CEST, 17:00 UTC CET | **our attempt after 18:00 Brussels; backstop 21** (ABL-717) |
 
   Document types are `../energy-data-gathering/config.py`'s (`price`,
   `load_forecast_day_ahead`, `wind_solar_forecast`). `14.1.D` is quoted verbatim
@@ -1904,6 +1904,9 @@ alarm no ingest fix could clear is furniture.
   survive inside the window: a stream that fails to reach even today is still
   `stale` at any hour, and from 20:00 UTC a genuinely missing tomorrow is caught
   for the rest of the day — ABL-51's protection, intact.
+
+  *(ABL-717, below, corrects this section's cost table: it read "the fetch
+  stored rows" as "tomorrow arrived". The pass-duration figures stand.)*
 
   **ABL-712 (2026-09-10): the pass got ~4x slower, the measurement method was
   unsound, and the A69 hour moved 20 → 21.**
@@ -1963,13 +1966,58 @@ alarm no ingest fix could clear is furniture.
   `stale` on every country the pass has not yet reached. Both halves of that trade
   are now pinned by tests in `freshness.test.ts`.
 
-  **The structural fix this does not attempt.** A deadline hour is a proxy for
-  "has the 18:30 pass reached this country yet", and since ABL-295 we can ask that
-  question directly — `data_ingestion_log` carries a per-country, per-stream
-  `lastChecked`. Feeding that into `classifyDayAheadStream` would remove the
-  duration guess entirely and let the deadline sit at upstream's own 16:00/17:00
-  UTC obligation. That changes the function's signature and its caller, so it is a
-  separate issue, not a drive-by.
+  **ABL-717 (2026-09-11): A69 now keys on our own attempt, and 21 is only a
+  backstop.** A deadline hour stood in for "has the 18:30 pass reached this
+  country yet", and `data_ingestion_log` answers that per country. Tomorrow is
+  now required as soon as a finished `wind_solar_forecast` attempt for that
+  country *started* at or after upstream's obligation, 18:00 Brussels D-1 (Reg.
+  543/2013 Art. 14.1). The obligation is derived from the required day's own
+  start (`publicationObligationUtc`). 21:00 UTC now decides only the country no
+  such attempt has reached. `price` and `tsoLoadForecast` are deliberately
+  unchanged: keying them would bring their requirement forward onto the price-only
+  and 13:30 passes, which needs its own evidence about upstream timing.
+
+  - **The log is read for when we looked, never for whether rows landed.** The
+    attempt's `start_time` is used, not ABL-295's `end_time`, because a fetch
+    issued before the obligation cannot carry the day however late it finished.
+    Only finished attempts count, and every status counts, since an errored
+    fetch did look (ABL-637). Whether tomorrow is held is still
+    `MAX(target_timestamp_utc)`.
+  - **The format hazard, measured.** The log writes
+    `2026-09-09T16:15:15.914862+00:00`, and the data tables write the space
+    form. Because `'T' > ' '`, `start_time >= '2026-09-10 16:00:00'` also matched
+    DE's 13:34 attempt: 4 rows where the right answer is 1. The SQL bounds are
+    written in the log's own `T` form and only narrow the read. The verdict
+    compares parsed instants.
+  - **The replay, 2026-08-01..09-10, on the replica's log.** It covers 1,101
+    country-evenings that already held today at 16:00. Skipped: 213 that held
+    not even today, and 80 whose fetches could not be classified, mostly AT,
+    IE, CH and HR. "Arrived" is read off each fetch's horizon: the window start
+    (pass start minus 7 days, rounded up to the hour) plus rows times
+    resolution, and it must land within 1.5 h of a Brussels midnight.
+
+    | rule | stale country-h | false: not yet looked, tomorrow came that evening | first stale on the 134 real misses, median / p90 / max |
+    |---|---|---|---|
+    | clock 21 (before) | 402.0 | 0.0 | 21:00 / 21:00 / 21:00 |
+    | **attempt + backstop 21 (now)** | 636.7 | **0.0** | **19:05** / 21:00 / 21:00 |
+    | attempt, no backstop | 614.7 | 0.0 | 19:05 / 22:00 / 22:00 |
+
+    The extra stale hours are real misses flagged earlier, plus 7.1
+    country-hours of the attempt rule's own transient: a post-deadline fetch
+    errored or returned no tomorrow, and a later one brought it. Each was true
+    when said. The backstop is what flags the 22 real misses that no attempt
+    reached all evening (08-11: 16 countries, 09-03: 6). Without it they would
+    read `live` until Brussels midnight.
+  - **ABL-712's cost table above was wrong.** It counted a fetch that stored
+    rows as one that delivered tomorrow, which is `data_ingestion_log`'s own
+    trap. On 09-08 and 09-09 the evening fetches stored 684 rows each. From a
+    19:00 window start at 15-minute resolution, 684 rows end at *today's* 21:45,
+    so its 14.9 "avoidable" country-hours were real misses. Measured by horizon,
+    the clock rule costs 35.2 / 1.1 / 0.0 / 0.0 at 19 / 20 / 21 / 22, not 162.9
+    / 45.4 / 14.9 / 1.9. Prod's own ops history agrees: `staleCountryCount` held
+    at 34 from 16:00 to midnight on 09-09. 21 is kept as the backstop because it
+    costs 0.0. Moving to 20 would cost 0.5 country-hours for an extra hour of
+    warning on a dead-pass evening, and that call is left open.
 
   The bound is the **start** of the required Brussels day, not its end, and that
   is what makes one Brussels-framed test correct for every bidding zone from WET

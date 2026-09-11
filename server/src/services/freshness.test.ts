@@ -5,9 +5,11 @@ import {
   marketDayStartUtc,
   classifyMeasuredStream,
   classifyDayAheadStream,
+  publicationObligationUtc,
   MEASURED_STALE_AFTER_HOURS,
   ENDED_AFTER_HOURS,
   DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR,
+  DAY_AHEAD_PUBLISHED_BY_BRUSSELS_HOUR,
 } from './freshness.js';
 
 /**
@@ -452,27 +454,25 @@ describe('classifyDayAheadStream — the deadline is per document class', () => 
     expect(classifyDayAheadStream('2026-01-15 22:45:00', winterGap, 'price').status).toBe('stale');
   });
 
-  it('sizes the A69 deadline past the 18:30 pass in normal operation, CET included', () => {
-    // Art. 14.1 is 16:00 UTC under CEST and 17:00 UTC under CET, so upstream
-    // availability alone would allow 18. Our own ingest is the binding
-    // constraint. ABL-494 sized this against a 55m10s worst case measured by
-    // pairing a pass's start marker with the next end marker; passes run
+  it('sizes the A69 backstop past the 18:30 pass in normal operation, CET included', () => {
+    // Since ABL-717 this hour is a backstop. It decides only the country no
+    // post-deadline attempt has reached, so it must not fire on a pass that is
+    // merely slow. ABL-494 sized it against a 55m10s worst case, measured by
+    // pairing a pass's start marker with the next end marker. Passes run
     // concurrently when one overruns, so that pairing under-measured by ~4x.
     //
     // Re-measured per pass over 2026-08-01..09-09 (ABL-712), the 18:30 pass
     // reaches its last country at a median of 19:49 and a p90 of 21:58. The
-    // deadline must clear the p90 of normal operation, which is what 20 stopped
-    // doing when the pass slowed down in late August 2026.
+    // backstop must clear the p90 of normal operation.
     const p90PassEndsAtUtcHour = 19 + 53 / 60; // 19:53, excluding the two storm evenings
     expect(DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoGenerationForecast).toBeGreaterThan(
       p90PassEndsAtUtcHour,
     );
-    // And it must leave at least three hours of evening warning before the market
-    // day opens. This is the half of the trade that resists reflexive widening:
-    // 22 and 23 would each buy a little less false `stale` by sizing the badge to
-    // the worst upstream error storms on record (18:30 passes ending 21:58 and
-    // 22:36), at which point a country that genuinely has no tomorrow says
-    // nothing about it all evening.
+    // It must also leave at least three hours of evening warning for a country
+    // no pass reaches, the dead-pass evening (08-11, 09-03). ABL-712 refused 22
+    // and 23 citing false `stale` on the two storm nights. ABL-717 found those
+    // country-hours were real misses (see `DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR`),
+    // so this bound rests on the warning argument alone.
     expect(24 - DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoGenerationForecast).toBeGreaterThanOrEqual(3);
   });
 
@@ -504,5 +504,228 @@ describe('classifyDayAheadStream — the deadline is per document class', () => 
         classifyDayAheadStream(neverPublished, new Date(at), 'tsoGenerationForecast').status,
       ).toBe('stale');
     }
+  });
+});
+
+/**
+ * ABL-717. The A69 hour stood in for "has the 18:30 pass reached this country
+ * yet", and `data_ingestion_log` answers that per country. Tomorrow is now
+ * required the moment a finished attempt for this country that *started* after
+ * upstream's 18:00 Brussels obligation exists. 21:00 UTC decides only the
+ * country no such attempt has reached.
+ *
+ * The attempt is read for WHEN we looked, never for whether rows landed —
+ * that is still `latest`, the table's own MAX. The first case is the negative
+ * control, and it is the one a log-trusting rule gets wrong.
+ */
+describe('classifyDayAheadStream — A69 keys on our own attempt, not on a clock (ABL-717)', () => {
+  // Brussels day of the 9th, complete, and nothing of the 10th. Under CEST the
+  // 10th starts at 22:00 UTC on the 9th, and upstream owes it by 16:00 UTC.
+  const onlyToday = '2026-09-09 21:45:00';
+  const throughTomorrow = '2026-09-10 21:45:00';
+  const evening = new Date('2026-09-09T19:45:00Z');
+  // The log's real stamps: `datetime.now(pytz.UTC).isoformat()`, from the
+  // replica's 09-09 evening (DE in the 18:30 pass, then SK in the 13:30 one).
+  const reachedByTheEveningPass = '2026-09-09T19:37:43.280609+00:00';
+  const theThirteenThirtyPass = '2026-09-09T13:39:39.020417+00:00';
+
+  it('calls A69 stale once our post-deadline fetch has looked and tomorrow is still missing', () => {
+    // DE on 2026-09-09. The 18:30 pass reached it at 19:37 and stored 684 rows
+    // as `completed`, and 684 quarter-hours from the 19:00 window start end at
+    // today's 21:45. The log says rows landed; the table says tomorrow did not.
+    expect(
+      classifyDayAheadStream(onlyToday, evening, 'tsoGenerationForecast', reachedByTheEveningPass)
+        .status,
+    ).toBe('stale');
+    // With no attempt known this was `live` until 21:00. That is the warning
+    // ABL-717 buys: a median of 19:05 instead of 21:00 on 134 real misses.
+    expect(classifyDayAheadStream(onlyToday, evening, 'tsoGenerationForecast', null).status).toBe(
+      'live',
+    );
+  });
+
+  it('is satisfied when that fetch brought tomorrow', () => {
+    expect(
+      classifyDayAheadStream(
+        throughTomorrow,
+        evening,
+        'tsoGenerationForecast',
+        reachedByTheEveningPass,
+      ).status,
+    ).toBe('live');
+  });
+
+  it('does not accuse a country the pass has not reached, however slow the pass', () => {
+    // 09-09: the 18:30 pass reached SK at 22:36. All evening SK's newest
+    // finished attempt was the 13:30 pass's, which fetched before upstream
+    // owed anyone tomorrow and so says nothing about it.
+    for (const at of ['16:30', '18:00', '19:45', '20:59']) {
+      expect(
+        classifyDayAheadStream(
+          onlyToday,
+          new Date(`2026-09-09T${at}:00Z`),
+          'tsoGenerationForecast',
+          theThirteenThirtyPass,
+        ).status,
+      ).toBe('live');
+    }
+  });
+
+  it('still requires tomorrow from 21:00 UTC for a country no attempt has reached', () => {
+    // The backstop. On 08-11 and 09-03 no attempt reached 16 and 6 countries
+    // all evening, and every one was a real miss. Without it they would read
+    // `live` until Brussels midnight.
+    expect(
+      classifyDayAheadStream(
+        onlyToday,
+        new Date('2026-09-09T21:00:00Z'),
+        'tsoGenerationForecast',
+        theThirteenThirtyPass,
+      ).status,
+    ).toBe('stale');
+  });
+
+  it('reproduces the clock rule at every hour when no attempt is known', () => {
+    // Why the argument can be omitted safely: `null` is the pre-ABL-717 rule.
+    for (let hour = 0; hour < 24; hour += 1) {
+      const at = new Date(`2026-09-09T${String(hour).padStart(2, '0')}:30:00Z`);
+      const expected =
+        hour >= DAY_AHEAD_REQUIRED_AFTER_UTC_HOUR.tsoGenerationForecast ? 'stale' : 'live';
+      expect(classifyDayAheadStream(onlyToday, at, 'tsoGenerationForecast', null).status).toBe(
+        expected,
+      );
+    }
+  });
+
+  it('counts an attempt only if it STARTED at or after the obligation', () => {
+    // An overrunning 13:30 pass does reach countries after 16:00 UTC. One that
+    // fetched a microsecond before the obligation asked for a day nobody owed
+    // yet, and finishing afterwards does not change what it asked for.
+    const justAfter = new Date('2026-09-09T16:10:00Z');
+    expect(
+      classifyDayAheadStream(
+        onlyToday,
+        justAfter,
+        'tsoGenerationForecast',
+        '2026-09-09T15:59:59.999999+00:00',
+      ).status,
+    ).toBe('live');
+    expect(
+      classifyDayAheadStream(
+        onlyToday,
+        justAfter,
+        'tsoGenerationForecast',
+        '2026-09-09T16:00:00.000001+00:00',
+      ).status,
+    ).toBe('stale');
+  });
+
+  it('owes the day at 17:00 UTC under CET, without a second constant', () => {
+    const onlyTodayInWinter = '2026-01-15 22:45:00'; // Brussels day of the 15th, CET
+    const at = new Date('2026-01-15T17:30:00Z');
+
+    expect(
+      classifyDayAheadStream(
+        onlyTodayInWinter,
+        at,
+        'tsoGenerationForecast',
+        '2026-01-15T16:45:00.000000+00:00',
+      ).status,
+    ).toBe('live');
+    expect(
+      classifyDayAheadStream(
+        onlyTodayInWinter,
+        at,
+        'tsoGenerationForecast',
+        '2026-01-15T17:05:00.000000+00:00',
+      ).status,
+    ).toBe('stale');
+  });
+
+  it('reads 18:00 Brussels correctly on both DST switch weekends', () => {
+    // Both switches happen at 01:00 UTC, after Brussels midnight. The evening
+    // before each keeps the offset it started with, and the evening after takes
+    // the new one.
+    const obligation = (at: string) =>
+      publicationObligationUtc(new Date(at), 'tsoGenerationForecast')?.toISOString();
+
+    expect(obligation('2026-03-28T12:00:00Z')).toBe('2026-03-28T17:00:00.000Z'); // Sat, CET
+    expect(obligation('2026-03-29T12:00:00Z')).toBe('2026-03-29T16:00:00.000Z'); // Sun, CEST
+    expect(obligation('2026-10-24T12:00:00Z')).toBe('2026-10-24T16:00:00.000Z'); // Sat, CEST
+    expect(obligation('2026-10-25T12:00:00Z')).toBe('2026-10-25T17:00:00.000Z'); // Sun, CET
+  });
+
+  it("does not carry yesterday evening's attempt into today", () => {
+    // After 00:00 UTC the obligation belongs to the new UTC date, so last
+    // evening's 19:37 attempt must not demand D+2. That would be ABL-697's
+    // defect coming back by a different door.
+    for (const at of ['2026-09-10T00:30:00Z', '2026-09-10T15:59:00Z', '2026-09-10T17:00:00Z']) {
+      expect(
+        classifyDayAheadStream(
+          throughTomorrow,
+          new Date(at),
+          'tsoGenerationForecast',
+          reachedByTheEveningPass,
+        ).status,
+      ).toBe('live');
+    }
+  });
+
+  it('agrees with the clock rule across Brussels midnight once the attempt is in', () => {
+    // From 22:00 UTC the required day is the one already in progress in
+    // Brussels. With the attempt in or not, that is the day both rules ask for.
+    for (const at of ['2026-09-09T22:30:00Z', '2026-09-09T23:59:00Z']) {
+      for (const latest of [onlyToday, throughTomorrow]) {
+        expect(
+          classifyDayAheadStream(
+            latest,
+            new Date(at),
+            'tsoGenerationForecast',
+            reachedByTheEveningPass,
+          ).status,
+        ).toBe(classifyDayAheadStream(latest, new Date(at), 'tsoGenerationForecast', null).status);
+      }
+    }
+  });
+
+  it('leaves price and the A65 load forecast on their clock deadline', () => {
+    // An attempt at 11:20, from the price-only pass, must not bring either
+    // stream's requirement forward. Their 14:00 is ABL-51's tripwire, and
+    // neither lists an obligation.
+    const noon = new Date('2026-09-09T12:00:00Z');
+    const priceOnlyPass = '2026-09-09T11:20:04.118221+00:00';
+
+    for (const stream of ['price', 'tsoLoadForecast'] as const) {
+      expect(DAY_AHEAD_PUBLISHED_BY_BRUSSELS_HOUR[stream]).toBeUndefined();
+      expect(publicationObligationUtc(noon, stream)).toBeNull();
+      expect(classifyDayAheadStream(onlyToday, noon, stream, priceOnlyPass).status).toBe('live');
+    }
+  });
+
+  it("reads the log's own stamp shape as the instant it is", () => {
+    // The format guard. The log writes `T`-separated stamps with microseconds
+    // and `+00:00`, and the data tables write the space form. Comparing the two
+    // as strings is wrong because `'T' > ' '`. Measured on the replica,
+    // `start_time >= '2026-09-10 16:00:00'` also admitted DE's 13:34 attempt:
+    // 4 rows where the right answer is 1, and a check dated before upstream owed
+    // anything. The rule therefore compares parsed instants.
+    expect(parseStoredTimestamp('2026-09-09T16:15:15.914862+00:00')?.toISOString()).toBe(
+      '2026-09-09T16:15:15.914Z',
+    );
+    expect(
+      classifyDayAheadStream(
+        onlyToday,
+        new Date('2026-09-09T17:00:00Z'),
+        'tsoGenerationForecast',
+        theThirteenThirtyPass,
+      ).status,
+    ).toBe('live');
+  });
+
+  it('never turns "we hold nothing" into an accusation, however recently we looked', () => {
+    expect(
+      classifyDayAheadStream(null, evening, 'tsoGenerationForecast', reachedByTheEveningPass)
+        .status,
+    ).toBe('none');
   });
 });
