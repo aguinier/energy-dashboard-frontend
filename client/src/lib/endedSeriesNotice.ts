@@ -12,6 +12,9 @@
  * "the dashboard is broken", and the map has no other way to say that we are
  * fetching normally and there is nothing to fetch.
  *
+ * That claim is only ours to make for an ENTSO-E series. A stopped Core series
+ * gets `coreCaptureStalledNotice` below instead (ABL-761).
+ *
  * Dates render in **UTC**, because that is what the instant is — every
  * `timestamp_utc` in this database is UTC, and formatting one in the viewer's
  * zone moves the printed day across the boundary for anything published late
@@ -23,11 +26,41 @@
  * that is a different (weaker) sentence for the caller to render.
  */
 export function endedSeriesNotice(lastPublished: string | Date | null | undefined): string | null {
-  if (!lastPublished) return null;
-  const at = lastPublished instanceof Date ? lastPublished : new Date(lastPublished);
-  if (Number.isNaN(at.getTime())) return null;
+  const at = parseInstant(lastPublished);
+  if (!at) return null;
 
   return `No data published since ${formatEndedDate(at)}. The series has stopped upstream, not here.`;
+}
+
+/**
+ * The same fact for the Core view, without the cause (ABL-761).
+ *
+ * The Core figure is captured from JAO by us, and that capture can stall
+ * silently (`server/src/services/coreNetPositionService.ts`, the
+ * `getCoreNetPositionMap` doc). JAO publishes daily in lockstep across all 12
+ * hubs, so a Core zone gone quiet most plausibly means *our* capture stopped —
+ * exactly the failure the map's coverage rule exists to catch, and exactly the
+ * one "stopped upstream, not here" would deny. So this states what we hold and
+ * when it ends, and nothing about why.
+ *
+ * "captured" rather than "published": it is the only verb true whichever side
+ * stopped, and it is the word the Core country figure already uses for its
+ * never-switched-on state (`coreNetPositionNote.ts`). Same UTC date form and
+ * same `null` rule as `endedSeriesNotice`, for the same reasons.
+ */
+export function coreCaptureStalledNotice(
+  lastCaptured: string | Date | null | undefined,
+): string | null {
+  const at = parseInstant(lastCaptured);
+  if (!at) return null;
+
+  return `No Core net position captured since ${formatEndedDate(at)}.`;
+}
+
+function parseInstant(value: string | Date | null | undefined): Date | null {
+  if (!value) return null;
+  const at = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(at.getTime()) ? null : at;
 }
 
 /** The date form the notice prints, exported so a caller can match it. */
