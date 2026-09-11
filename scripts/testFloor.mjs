@@ -78,15 +78,22 @@ import { pathToFileURL } from 'node:url';
  * 920 → 928 and 75 files stays 75. The tree (`origin/main` = `f0fc303`) runs
  * 75 / 929 client on Node 24.18.0 — ABL-740's +1 is still left as slack.
  *
- * **ABL-763 raises the client floor by its own counted delta: +3 tests, no new
- * file** (`mapRows.test.ts` 15 → 16, `NetPositionTab.test.tsx` 4 → 6;
- * `endedSeriesNotice.test.ts` stays 7, its pinned sentence updated in place),
- * so 928 → 931 and 75 files stays 75. The tree (`origin/main` = `c9eda98`) runs
- * 75 / 932 client on Node 24.18.0 — ABL-740's +1 is still left as slack.
+ * **ABL-763 and ABL-762 each raise the client floor by their own counted delta
+ * off the same ABL-761 base of 928, on files each touches independently**
+ * (`NetPositionTab.test.tsx` 4 → 6 for ABL-763's cause-neutral-notice tests,
+ * 4 → 5 for ABL-762's Core-view UTC test, both landing on the merged tree as
+ * 4 → 7; `mapRows.test.ts` 15 → 16 is ABL-763 alone; `endedSeriesNotice.test.ts`
+ * stays 7, its pinned sentence updated in place). Combined: 928 + 3 + 1 = 932,
+ * 75 files stays 75.
+ *
+ * **ABL-717 raises the server floor by its own counted delta: +1 file, +20
+ * tests** (new `dataFreshnessService.test.ts` 7, `freshness.test.ts` +13), so
+ * 137 → 138 files and 2,880 → 2,900 tests. The tree (`origin/main` =
+ * `4630634`, ABL-717 merged) runs 138 / 2,900 server tests on Node 24.18.0.
  */
 export const TEST_FLOORS = {
-  client: { files: 75, tests: 931, maxSkipped: 0 },
-  server: { files: 137, tests: 2880, maxSkipped: 4 },
+  client: { files: 75, tests: 932, maxSkipped: 0 },
+  server: { files: 138, tests: 2900, maxSkipped: 4 },
 };
 
 /**

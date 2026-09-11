@@ -10,7 +10,7 @@ import type { NetPositionModelSeriesInput } from '@/lib/chartAdapters';
 import { summarizeVintages, capVintages } from '@/lib/netPositionProvenance';
 import { useMultiModelSelection } from '@/hooks/useForecastModels';
 import { describeForecastGap } from '@/lib/forecastGap';
-import { endedSeriesNotice } from '@/lib/endedSeriesNotice';
+import { endedSeriesNotice, formatEndedDate } from '@/lib/endedSeriesNotice';
 import { describeDegenerateActual, describeDegenerateForecast } from './degenerateForecastNote';
 import type { NetPositionResponse } from '@/types';
 import { netPositionTabDisclosure } from '@/lib/netPositionScope';
@@ -463,16 +463,11 @@ function CoreNetPositionView({
                 {/* Only for a zone that has published before — it dates the
                     gap. Absent for `out_of_core`/`not_captured`, where there
                     is no such date and printing one would imply the series
-                    had ended. */}
+                    had ended. In UTC, via the map's own formatter, so the
+                    two views of this zone print the same day (ABL-762). */}
                 {lastSeen && data?.meta.coverage === 'no_data' && (
                   <span className="text-micro text-ink-muted">
-                    Last stored hour:{' '}
-                    {lastSeen.toLocaleDateString([], {
-                      year: 'numeric',
-                      month: 'long',
-                      day: 'numeric',
-                    })}
-                    .
+                    Last stored hour: {formatEndedDate(lastSeen)}.
                   </span>
                 )}
               </>
