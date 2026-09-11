@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { NetPositionTab } from './NetPositionTab';
 import { useDashboardStore } from '@/store/dashboardStore';
+import { endedSeriesNotice } from '@/lib/endedSeriesNotice';
 
 const fx = vi.hoisted(() => {
   const HOUR = 60 * 60 * 1000;
@@ -141,5 +142,57 @@ describe('NetPositionTab — variant="figure"', () => {
     renderNetPositionTab();
     await screen.findByTestId('line-chart');
     expect(screen.queryByText('Net position')).not.toBeNull();
+  });
+});
+
+// ABL-763. A frozen last row has three causes this figure cannot tell apart —
+// between passes, our ingest stalled, the series stopped upstream — so neither
+// state it can show for one may name a cause. Both views, because each carries
+// its own copy of both states.
+describe('NetPositionTab — a series gone quiet names no cause', () => {
+  const ENDED_AT = fx.iso(-10 * 24);
+  const live = { actual: fx.netPosition.actual, last_seen: fx.netPosition.meta.last_seen };
+
+  beforeEach(() => {
+    useDashboardStore.setState({
+      selectedCountry: 'BE',
+      timePreset: '24h',
+      timeOffset: 0,
+      selectedModelsByType: {},
+      forecastHiddenByType: {},
+      netPositionScope: 'all_coupled',
+      showComparisonMode: false,
+      showTSOComparisonMode: false,
+    });
+    fx.netPosition.meta.last_seen = ENDED_AT;
+  });
+
+  afterEach(() => {
+    cleanup();
+    fx.netPosition.actual = live.actual;
+    fx.netPosition.meta.last_seen = live.last_seen;
+  });
+
+  it.each<[string, Record<string, string[]>]>([
+    ['NetPositionDefaultView', {}],
+    ['NetPositionSelectionView', { net_position: ['catboost'] }],
+  ])('%s: neither the empty state nor the stale footnote says where it stopped', async (_view, models) => {
+    useDashboardStore.setState({ selectedModelsByType: models });
+    const notice = endedSeriesNotice(ENDED_AT);
+    expect(notice).not.toBeNull();
+
+    // Nothing in the window: the empty state.
+    fx.netPosition.actual = [];
+    const { unmount } = renderNetPositionTab({ variant: 'figure' });
+    await screen.findByText(notice!);
+    expect(document.body.textContent).not.toMatch(/upstream|not here/);
+    unmount();
+
+    // Points in the window, the last of them ten days old: the footnote.
+    fx.netPosition.actual = [{ timestamp: ENDED_AT, net_position_mw: 120 }];
+    renderNetPositionTab({ variant: 'figure' });
+    await screen.findByTestId('line-chart');
+    await screen.findByText(notice!);
+    expect(document.body.textContent).not.toMatch(/upstream|not here/);
   });
 });

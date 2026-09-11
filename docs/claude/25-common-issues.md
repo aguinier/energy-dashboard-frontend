@@ -338,9 +338,11 @@ both fixed here:
 Not a regression and not a fetch failure: that country's series stopped
 publishing *before* the window ended, and `/api/dashboard/map` now withholds the
 average rather than painting the fragment that exists. Hover it — the card says
-`No data published since <date>. The series has stopped upstream, not here.`,
-the same sentence the country document's net position figure uses
-(`client/src/lib/endedSeriesNotice.ts`, one definition for both surfaces).
+`No data since <date>.`, the same sentence the country document's net position
+figure uses (`client/src/lib/endedSeriesNotice.ts`, one definition for both
+surfaces). It names no cause (ABL-763): `ended` rules out "between passes" but
+not "our ingest broke", so settle which it is on prod, per CLAUDE.md's
+freshness rules, before calling it an upstream stop.
 
 **What it looked like before.** Measured on prod 2026-09-10, with IE dark since
 2026-08-30 22:30 UTC and PT's net position dark since 2026-09-04 21:00 UTC:

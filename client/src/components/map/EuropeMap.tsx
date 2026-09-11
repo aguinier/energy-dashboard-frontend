@@ -175,9 +175,9 @@ export const EuropeMap = memo(function EuropeMap({ fullScreen = false, onCountry
   }, []);
 
   // `ranked` is the map's colour domain; `endedNotices` is every hatched
-  // country whose blank we can account for. See mapRows.ts. The source decides
-  // the sentence: a stalled Core zone is most plausibly our JAO capture, so it
-  // must not be told it "stopped upstream, not here" (ABL-761).
+  // country whose blank we can account for. See mapRows.ts. The source picks
+  // the wording (ABL-761); neither names a cause, because a frozen series
+  // cannot say whose side stopped (ABL-763).
   const { min, max, ranked, endedNotices } = useMemo(
     () => indexMapRows(mapData, coreView ? 'jao_core' : 'entsoe'),
     [mapData, coreView],

@@ -77,9 +77,15 @@ import { pathToFileURL } from 'node:url';
  * file** (`mapRows.test.ts` 10 → 15, `endedSeriesNotice.test.ts` 4 → 7), so
  * 920 → 928 and 75 files stays 75. The tree (`origin/main` = `f0fc303`) runs
  * 75 / 929 client on Node 24.18.0 — ABL-740's +1 is still left as slack.
+ *
+ * **ABL-763 raises the client floor by its own counted delta: +3 tests, no new
+ * file** (`mapRows.test.ts` 15 → 16, `NetPositionTab.test.tsx` 4 → 6;
+ * `endedSeriesNotice.test.ts` stays 7, its pinned sentence updated in place),
+ * so 928 → 931 and 75 files stays 75. The tree (`origin/main` = `c9eda98`) runs
+ * 75 / 932 client on Node 24.18.0 — ABL-740's +1 is still left as slack.
  */
 export const TEST_FLOORS = {
-  client: { files: 75, tests: 928, maxSkipped: 0 },
+  client: { files: 75, tests: 931, maxSkipped: 0 },
   server: { files: 137, tests: 2880, maxSkipped: 4 },
 };
 

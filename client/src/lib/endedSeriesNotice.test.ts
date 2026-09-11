@@ -2,13 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { coreCaptureStalledNotice, endedSeriesNotice, formatEndedDate } from './endedSeriesNotice';
 
 describe('endedSeriesNotice', () => {
-  it('names the last publication and says the stop is upstream', () => {
+  it('dates what we hold without naming a cause', () => {
     const notice = endedSeriesNotice('2026-08-30T22:30:00Z');
-    expect(notice).toBe(
-      `No data published since ${formatEndedDate(new Date('2026-08-30T22:30:00Z'))}. ` +
-        'The series has stopped upstream, not here.'
-    );
-    expect(notice).toContain('not here');
+    expect(notice).toBe(`No data since ${formatEndedDate(new Date('2026-08-30T22:30:00Z'))}.`);
+    // ABL-763: an `ended` verdict cannot tell our ingest stalling from the
+    // series stopping upstream, so the sentence may claim neither.
+    expect(notice).not.toContain('upstream');
+    expect(notice).not.toContain('not here');
+    // The same claim in a verb: that nothing was published after this date.
+    expect(notice).not.toContain('published');
   });
 
   it('prints the UTC day, not the viewer’s', () => {
