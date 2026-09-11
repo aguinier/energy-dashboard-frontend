@@ -77,9 +77,14 @@ import { pathToFileURL } from 'node:url';
  * file** (`mapRows.test.ts` 10 → 15, `endedSeriesNotice.test.ts` 4 → 7), so
  * 920 → 928 and 75 files stays 75. The tree (`origin/main` = `f0fc303`) runs
  * 75 / 929 client on Node 24.18.0 — ABL-740's +1 is still left as slack.
+ *
+ * **ABL-762 raises the client floor by its own counted delta: +1 test, no new
+ * file** (`NetPositionTab.test.tsx` 4 → 5, the Core view's UTC last-stored-hour
+ * test), so 928 → 929 and 75 files stays 75. The tree (`origin/main` =
+ * `c9eda98`) runs 75 / 930 client on Node 24.18.0 — ABL-740's +1 is still slack.
  */
 export const TEST_FLOORS = {
-  client: { files: 75, tests: 928, maxSkipped: 0 },
+  client: { files: 75, tests: 929, maxSkipped: 0 },
   server: { files: 137, tests: 2880, maxSkipped: 4 },
 };
 

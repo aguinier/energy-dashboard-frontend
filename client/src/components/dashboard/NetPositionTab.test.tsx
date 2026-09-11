@@ -15,6 +15,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { NetPositionTab } from './NetPositionTab';
 import { useDashboardStore } from '@/store/dashboardStore';
+import { fetchCoreNetPosition } from '@/services/api';
+import { formatEndedDate } from '@/lib/endedSeriesNotice';
 
 const fx = vi.hoisted(() => {
   const HOUR = 60 * 60 * 1000;
@@ -125,6 +127,32 @@ describe('NetPositionTab — variant="figure"', () => {
     await screen.findByTestId('line-chart');
     expect(screen.queryByText('Net position')).toBeNull();
     expect(await screen.findByText(/MW · positive = exporter/)).toBeTruthy();
+  });
+
+  it('CoreNetPositionView: prints the last stored hour as its UTC day, as the map does', async () => {
+    // JAO's day ends 21:45 UTC in summer; 22:45Z is already the 8th east of
+    // UTC+1. Istanbul is UTC+3 all year, so a viewer-zone format prints the
+    // wrong day here even on a UTC CI runner (ABL-762).
+    const savedTz = process.env.TZ;
+    process.env.TZ = 'Europe/Istanbul';
+    try {
+      const lastSeen = '2026-09-07T22:45:00Z';
+      vi.mocked(fetchCoreNetPosition).mockResolvedValueOnce({
+        actual: [],
+        meta: { country_code: 'BE', bidding_zone: 'BE', in_core: true, coverage: 'no_data', last_seen: lastSeen },
+      } as unknown as Awaited<ReturnType<typeof fetchCoreNetPosition>>);
+      useDashboardStore.setState({ netPositionScope: 'core' });
+
+      renderNetPositionTab({ variant: 'figure' });
+
+      const line = await screen.findByText(/Last stored hour:/);
+      expect(line.textContent).toBe(`Last stored hour: ${formatEndedDate(new Date(lastSeen))}.`);
+      expect(line.textContent).toContain('7');
+      expect(line.textContent).not.toContain('8');
+    } finally {
+      if (savedTz === undefined) delete process.env.TZ;
+      else process.env.TZ = savedTz;
+    }
   });
 
   it('default variant is unaffected: all three paths still get their card title', async () => {
