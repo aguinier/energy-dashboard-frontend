@@ -2,10 +2,10 @@ import { coreCaptureStalledNotice, endedSeriesNotice } from '@/lib/endedSeriesNo
 import type { MapDataPoint } from '@/types';
 
 /**
- * Who fetched the rows being indexed. It decides what a withheld row may say
- * about *why* it stopped: an ENTSO-E series we fetch normally can be said to
- * have stopped upstream; the JAO Core capture is ours, can stall silently, and
- * so gets a sentence that names no cause (ABL-761).
+ * Who fetched the rows being indexed. It picks the wording a withheld row gets:
+ * the Core view's names its figure and says "captured", because the JAO Core
+ * capture is ours (ABL-761). Neither names a cause — an `ended` row cannot say
+ * whether the source stopped or our fetch of it did (ABL-763).
  */
 export type MapRowSource = 'entsoe' | 'jao_core';
 
@@ -48,7 +48,7 @@ export interface MapRowIndex {
  * shape and very different facts.
  *
  * `source` has no default on purpose: the map draws from both, and a caller
- * that forgot to say which would get the upstream sentence for a stall of ours.
+ * that forgot to say which would describe one figure with the other's sentence.
  */
 export function indexMapRows(
   rows: MapDataPoint[] | undefined | null,

@@ -294,18 +294,10 @@ function NetPositionDefaultView({
               </>
             ) : lastSeen ? (
               <>
-                <span>
-                  {countryLabel} stopped publishing a net position on{' '}
-                  {lastSeen.toLocaleDateString([], {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                  })}
-                  .
-                </span>
-                <span className="text-micro text-ink-muted">
-                  The series ended upstream at ENTSO-E, not here.
-                </span>
+                {/* The footnote's sentence, so this state names no cause
+                    either (ABL-763). */}
+                <span>No net position for {countryLabel} in this window.</span>
+                <span className="text-micro text-ink-muted">{endedSeriesNotice(lastSeen)}</span>
               </>
             ) : (
               <>
@@ -628,13 +620,8 @@ function NetPositionSelectionView({
               </>
             ) : lastSeen ? (
               <>
-                <span>
-                  {countryLabel} stopped publishing a net position on{' '}
-                  {lastSeen.toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' })}.
-                </span>
-                <span className="text-micro text-ink-muted">
-                  The series ended upstream at ENTSO-E, not here.
-                </span>
+                <span>No net position for {countryLabel} in this window.</span>
+                <span className="text-micro text-ink-muted">{endedSeriesNotice(lastSeen)}</span>
               </>
             ) : (
               <>

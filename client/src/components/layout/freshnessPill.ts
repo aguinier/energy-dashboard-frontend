@@ -1,4 +1,5 @@
 import { formatDistanceStrict } from 'date-fns';
+import { formatEndedDate } from '@/lib/endedSeriesNotice';
 import type { DataFreshness, FreshnessStream } from '@/types';
 
 /**
@@ -89,11 +90,16 @@ export function describeFreshness(
     };
   }
 
+  // ABL-764. `ended` (>30 days, `server/src/services/freshness.ts`) rules out
+  // "between passes", not "our ingest broke" — a portfolio-wide ingest stall
+  // that outlived 30 days would have this pill assure every reader it is not
+  // an ingest problem, falsely. States what we hold and when it ends, nothing
+  // about why, matching the map's `endedSeriesNotice` (ABL-763).
   if (tone === 'ended') {
     return {
       tone,
       label: 'ENTSO-E · series ended',
-      title: `${ended.map(({ key }) => `${key} stopped publishing upstream`).join('; ')}. This is not an ingest alarm.`,
+      title: ended.map(({ key, stream }) => endedClause(key, stream, now)).join('; '),
     };
   }
 
@@ -119,7 +125,7 @@ export function describeFreshness(
           : 'ENTSO-E · tomorrow missing',
     title: `${[
       ...stale.map(({ key, stream }) => explain(key, stream, now)),
-      ...ended.map(({ key }) => `${key} stopped publishing upstream`),
+      ...ended.map(({ key, stream }) => endedClause(key, stream, now)),
     ].join('; ')}. Charts may be missing recent data.`,
   };
 }
@@ -140,9 +146,32 @@ function freshestMeasuredAge(freshness: DataFreshness): number | null {
   return ages.length > 0 ? Math.min(...ages) : null;
 }
 
+/**
+ * `ageHours` back into an instant. Never re-parse `stream.latest` for this —
+ * it is the raw database column and can hold the space-separated form, which
+ * `new Date` reads as **local** time (`types/index.ts:391-396`); `ageHours` is
+ * computed server-side and carries no such trap.
+ */
+function instantFromAge(ageHours: number, now: Date): Date {
+  return new Date(now.getTime() - ageHours * 3_600_000);
+}
+
 /** `ageHours` back into words, without consulting the clock a second time. */
 function humanise(ageHours: number, now: Date): string {
-  return formatDistanceStrict(new Date(now.getTime() - ageHours * 3_600_000), now);
+  return formatDistanceStrict(instantFromAge(ageHours, now), now);
+}
+
+/**
+ * The cause-neutral half of an `ended` stream's title (ABL-764): which stream,
+ * and since when we hold nothing new — never why. Shares `formatEndedDate`
+ * with the map's `endedSeriesNotice` so the same instant prints as the same
+ * date on both surfaces, but keeps its own phrasing because this line always
+ * names its stream and the map's never does.
+ */
+function endedClause(key: string, stream: FreshnessStream, now: Date): string {
+  return stream.ageHours === null
+    ? `${key}: no data held`
+    : `${key}: no data since ${formatEndedDate(instantFromAge(stream.ageHours, now))}`;
 }
 
 /**

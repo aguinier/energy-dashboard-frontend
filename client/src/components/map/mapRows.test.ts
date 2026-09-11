@@ -48,6 +48,34 @@ describe('indexMapRows', () => {
     expect(endedNotices.has('FR')).toBe(false);
   });
 
+  it('names no cause even when every country ends at the same instant', () => {
+    // ABL-763. An ingest stall across the portfolio (the ABL-630 shape) hatches
+    // every country at once. The map cannot tell that from a real upstream
+    // stop, so no hatched country may say where the stop happened.
+    const STALLED_AT = '2026-08-30T21:00:00Z';
+    const stall = [
+      ['FR', 'France'],
+      ['DE', 'Germany'],
+      ['ES', 'Spain'],
+      ['IE', 'Ireland'],
+    ].map(
+      ([country_code, country_name]): MapDataPoint => ({
+        country_code,
+        country_name,
+        value: null,
+        timestamp: STALLED_AT,
+        coverage: 'ended',
+      }),
+    );
+    const { ranked, endedNotices } = indexMapRows(stall, 'entsoe');
+    expect(ranked.size).toBe(0);
+    expect(endedNotices.size).toBe(4);
+    for (const notice of endedNotices.values()) {
+      expect(notice).not.toContain('upstream');
+      expect(notice).not.toContain('not here');
+    }
+  });
+
   it('separates an explained blank from a country we simply never held', () => {
     // GB is not in the payload at all — the SQL produced no group for it.
     const { ranked, endedNotices } = indexMapRows([FR, IE], 'entsoe');
@@ -116,9 +144,9 @@ describe('indexMapRows', () => {
 
 // ABL-761. The Core view's rows come from our own JAO capture, which can stall
 // silently — and because JAO publishes all 12 hubs in lockstep, a Core zone
-// gone `ended` most plausibly means that capture stopped. Telling the reader
-// the series "stopped upstream, not here" would deny the very failure the
-// ABL-727 coverage rule exists to surface.
+// gone `ended` most plausibly means that capture stopped — the very failure the
+// ABL-727 coverage rule exists to surface. Its sentence must not blame upstream
+// for that, nor borrow the all-coupled view's, which describes another figure.
 describe('indexMapRows on the Core view', () => {
   // A whole-region stall as `/core-net-position/map` serves it: every Core
   // zone withheld at the same instant, the end of JAO's last published day.
@@ -167,7 +195,7 @@ describe('indexMapRows on the Core view', () => {
     expect(endedNotices.size).toBe(0);
   });
 
-  it('leaves the all-coupled view’s sentence exactly as ABL-719 wrote it', () => {
+  it('gives the all-coupled view its own sentence for the same row', () => {
     // Same row, other source: the choice of sentence is the source's, not the row's.
     const row = coreEnded('FR', 'France');
     expect(indexMapRows([row], 'entsoe').endedNotices.get('FR')).toBe(endedSeriesNotice(STALLED_AT));
