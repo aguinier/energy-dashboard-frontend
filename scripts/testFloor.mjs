@@ -66,10 +66,16 @@ import { pathToFileURL } from 'node:url';
  * also executes the four `win32`/sibling-gated tests CI skips, and a floor set
  * from an absolute that CI cannot reach fails the build on the gate it was
  * supposed to protect.
+ *
+ * **ABL-727 raises the server floor by its own counted delta: +5 tests, no new
+ * file** (`coreNetPositionService.test.ts` gains the covered-row stamp test and
+ * four window-coverage tests), so 2,875 → 2,880 and 137 files stays 137.
+ * Confirmed against the merged tree (`origin/main` = `d6e7373` merged in),
+ * which runs 137 / 2,880 server tests on Node 24.18.0.
  */
 export const TEST_FLOORS = {
   client: { files: 75, tests: 920, maxSkipped: 0 },
-  server: { files: 137, tests: 2875, maxSkipped: 4 },
+  server: { files: 137, tests: 2880, maxSkipped: 4 },
 };
 
 /**
