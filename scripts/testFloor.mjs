@@ -72,9 +72,14 @@ import { pathToFileURL } from 'node:url';
  * four window-coverage tests), so 2,875 → 2,880 and 137 files stays 137.
  * Confirmed against the merged tree (`origin/main` = `d6e7373` merged in),
  * which runs 137 / 2,880 server tests on Node 24.18.0.
+ *
+ * **ABL-761 raises the client floor by its own counted delta: +8 tests, no new
+ * file** (`mapRows.test.ts` 10 → 15, `endedSeriesNotice.test.ts` 4 → 7), so
+ * 920 → 928 and 75 files stays 75. The tree (`origin/main` = `f0fc303`) runs
+ * 75 / 929 client on Node 24.18.0 — ABL-740's +1 is still left as slack.
  */
 export const TEST_FLOORS = {
-  client: { files: 75, tests: 920, maxSkipped: 0 },
+  client: { files: 75, tests: 928, maxSkipped: 0 },
   server: { files: 137, tests: 2880, maxSkipped: 4 },
 };
 

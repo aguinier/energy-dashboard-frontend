@@ -1,5 +1,13 @@
-import { endedSeriesNotice } from '@/lib/endedSeriesNotice';
+import { coreCaptureStalledNotice, endedSeriesNotice } from '@/lib/endedSeriesNotice';
 import type { MapDataPoint } from '@/types';
+
+/**
+ * Who fetched the rows being indexed. It decides what a withheld row may say
+ * about *why* it stopped: an ENTSO-E series we fetch normally can be said to
+ * have stopped upstream; the JAO Core capture is ours, can stall silently, and
+ * so gets a sentence that names no cause (ABL-761).
+ */
+export type MapRowSource = 'entsoe' | 'jao_core';
 
 /**
  * A point that actually carries a number, so it can be coloured and hovered.
@@ -38,10 +46,17 @@ export interface MapRowIndex {
  * but it throws away the only thing that separates "this series stopped on
  * 30 August" from "we have never held this country", which are the same blank
  * shape and very different facts.
+ *
+ * `source` has no default on purpose: the map draws from both, and a caller
+ * that forgot to say which would get the upstream sentence for a stall of ours.
  */
-export function indexMapRows(rows: MapDataPoint[] | undefined | null): MapRowIndex {
+export function indexMapRows(
+  rows: MapDataPoint[] | undefined | null,
+  source: MapRowSource,
+): MapRowIndex {
   const ranked = new Map<string, RankedPoint>();
   const endedNotices = new Map<string, string>();
+  const noticeFor = source === 'jao_core' ? coreCaptureStalledNotice : endedSeriesNotice;
 
   for (const row of rows ?? []) {
     if (row.value != null && Number.isFinite(row.value)) {
@@ -49,7 +64,7 @@ export function indexMapRows(rows: MapDataPoint[] | undefined | null): MapRowInd
       continue;
     }
     if (row.coverage !== 'ended') continue;
-    const notice = endedSeriesNotice(row.timestamp);
+    const notice = noticeFor(row.timestamp);
     if (notice) endedNotices.set(row.country_code, notice);
   }
 
