@@ -242,14 +242,36 @@ credential is intact (ABL-631, 2026-09-02):**
   `PATH` via the `setx` CLI risks silent truncation past 1024 characters on a
   `PATH` this long. PowerShell agent shells get fixed by the `setx` above,
   once this harness process restarts.
+- **Measured 2026-09-12 (ABL-784): the `setx` half never lands, restart or
+  not — the preceding bullet's "fixes the next agent session" is wrong.**
+  `GH_CONFIG_DIR` is still persisted in `HKCU\Environment` (it reads
+  `C:\Users\<user>\AppData\Roaming\GitHub CLI`), yet a freshly spawned run
+  sees it **empty in both shells**, and the harness has restarted since the
+  2026-09-02 `setx` (oldest `node` process started 2026-09-11 13:50). So a
+  persisted user variable is not reaching the shell at all: consistent with
+  the launcher handing down an explicit environment block — the same
+  mechanism that empties `APPDATA` — but that cause was not proven, only the
+  effect measured. What actually covers `gh` today is (a) the `~/bin/gh`
+  shim below for bash, and (b) for PowerShell, the project-level `env`
+  (ABL-784) that populates `APPDATA`/`LOCALAPPDATA` on a **project-attached**
+  run — with those set, `gh` resolves `%APPDATA%\GitHub CLI` unaided and
+  needs no `GH_CONFIG_DIR` (verified: PowerShell `gh auth status` read the
+  real `hosts.yml` and named the account). An **unattached** run still sees
+  both empty, so PowerShell `gh` stays broken there. Do not re-run the `setx`
+  expecting it to help; it is inert for this harness.
+- **"The token in default is invalid" is a different symptom from this
+  entry** — that one means `gh` found `hosts.yml` and the credential in it
+  failed, which is the token-expiry story, not this config-dir story. Reading
+  the account name back at all proves the config directory resolved.
 - **One-command re-diagnosis for a recurrence:** `cmdkey /list | findstr
   github` (is the credential still there?) vs `gh auth status` in the shell
   agents actually use (is `gh` finding it?). If the first shows an entry and
   the second says logged out, check `echo $APPDATA` (bash) / `echo
   $env:APPDATA` (PowerShell) in that same shell — empty confirms this bug
-  class, not a revoked token. `reg query HKCU\Environment` shows whether
-  `GH_CONFIG_DIR` is still set; re-run the `setx` above if not, and expect it
-  to need a fresh session to take effect.
+  class, not a revoked token. Read `GH_CONFIG_DIR` from the *shell*, never
+  from `reg query HKCU\Environment` — per ABL-784 the registry value is
+  present while the shell's is empty, so the registry answers a question you
+  are not asking.
 - **Do not** bring back the ABL-512 `settings.json` token workaround (a raw
   PAT embedded in a config file the harness reads directly, bypassing the OS
   keyring). This fix only points `gh` at the config directory that already
