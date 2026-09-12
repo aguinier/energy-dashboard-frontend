@@ -534,10 +534,10 @@ Condensed diagnostics — full entries with the reasoning in
   list`/`gh pr merge` unavailable:** the credential is not gone;
   `cmdkey /list | findstr github` still shows it, but `gh` can't find
   `%APPDATA%\GitHub CLI\hosts.yml` (the trap above). `git` is unaffected
-  (`credential.helper=manager` is a separate store). Fixed via
-  `setx GH_CONFIG_DIR` (ABL-631) for PowerShell, which only reaches
-  a **freshly spawned** agent shell, plus a `~/bin/gh` bash shim that closes
-  the gap immediately, restart or not. Re-diagnose and re-verify:
+  (`credential.helper=manager` is a separate store). Covered by the
+  `~/bin/gh` bash shim, which sets `GH_CONFIG_DIR` itself, and in PowerShell
+  by the project `env` above; ABL-631's `setx` reaches no agent shell,
+  restart or not (ABL-784). Re-diagnose and re-verify:
   `docs/claude/25-common-issues.md`. Do not restore the ABL-512
   `settings.json` token workaround.
 - **`attempt to write a readonly database` in the CAT container:** the *same*
