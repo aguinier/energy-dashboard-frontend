@@ -81,6 +81,37 @@
   until upstream resumes). Before that threshold, confirmation lives on the
   issue, not in this file — an entry written across the resumption boundary
   becomes wrong the moment the zone heals, as happened with AL generation.
+- **IE, upstream dark since 2026-08-30** (ABL-663). `energy_load` (A65/A16) and
+  `energy_generation` (A75/A16) both stop at `2026-08-30T23:00Z`; prod
+  `MAX(timestamp_utc)` is the last PT30M point of that document,
+  `2026-08-30 22:30` — **our stop edge is upstream's stop edge, ingest lost
+  nothing**. Day-ahead load forecast (A65/A01) stops `2026-09-01T23:00Z` (last
+  stored point `2026-09-01 22:30`). Confirmed by raw-HTTP probe from inside the
+  prod `energy-data-gathering` container, 2026-09-09 ~21:00Z and again
+  2026-09-10 10:20Z: BE/FR answered fully in the same requests, and IE itself
+  still returned 46 points for 2026-08-30 — the upstream document simply ends
+  there. `IE_SEM` (`10Y1001A1001A59C`) returns 0 points on 2026-08-30 too, so
+  this is not a zone-key migration (same check as ABL-35).
+
+  **Week-ahead load forecast (A65/A31) is still live** (re-confirmed
+  2026-09-13) — a suspension that keeps one document type alive, not dead
+  outright like GB (`2021-06-14`) or UA (`2022-02-25`); it may resume. No
+  backfill can fix the realised/day-ahead gap regardless: the rolling 7-day
+  refetch only reaches the week behind whenever IE resumes, never back to
+  2026-08-30. **Re-file rule:** a stall at `2026-08-30 22:30` /
+  `2026-09-01 22:30` is known — do not re-diagnose or reopen ABL-663 unless the
+  cutoff moves and re-freezes at a new timestamp.
+
+  **PT `net_position` was checked and dropped from this entry.** ABL-719
+  measured it frozen at `2026-09-04 21:00` (dark 6 days) on 2026-09-10; a
+  live prod re-check on 2026-09-13 (`GET /api/net-position/PT`) shows a
+  continuous, gap-free hourly series through `2026-09-13 00:00` — it healed in
+  the interim, the exact AL-generation resumption trap two paragraphs up warns
+  against. ABL-693, also cited as upstream evidence, turns out to be unrelated:
+  it is a Chronos forecast-serving bug (PT silently dropped from two ml
+  models' output from 2026-09-06), not an upstream `net_position` outage. No
+  registry entry follows for PT; re-check prod before writing one if it stalls
+  again.
 - **A real publication time.** `publication_timestamp_utc` exists on eight
   tables and **does not mean what its name says**. It is filled from the ENTSO-E
   response's `createdDateTime`, but ENTSO-E builds the document *on request* and
