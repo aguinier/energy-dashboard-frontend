@@ -36,9 +36,12 @@ export function buildPriceBars(
   const values = series ?? [];
   const present = values.filter((v): v is number => v !== null && v !== undefined);
 
-  // Height is relative to the zone's own peak. Negative prices happen and are
-  // not an error: the bar shrinks toward the baseline rather than inverting.
-  const peak = present.length ? Math.max(...present.map(Math.abs)) : 0;
+  // Height is relative to the zone's own highest price. Negative prices happen
+  // and are not an error: the bar shrinks toward the baseline rather than
+  // inverting. Measuring the height off the magnitude instead would make a
+  // deeply negative hour the tallest bar on the chart — the cheapest hour of
+  // the day drawn as though it were the dearest.
+  const peak = present.length ? Math.max(0, ...present) : 0;
 
   const lo = options?.scaleMin ?? (present.length ? Math.min(...present) : 0);
   const hi = options?.scaleMax ?? (present.length ? Math.max(...present) : 1);
@@ -50,7 +53,7 @@ export function buildPriceBars(
     if (value === null) {
       return { hour: h, value: null, height: 0, color: 'transparent', current: h === hour };
     }
-    const share = peak > 0 ? Math.abs(value) / peak : 0;
+    const share = peak > 0 ? Math.max(0, value) / peak : 0;
     return {
       hour: h,
       value,

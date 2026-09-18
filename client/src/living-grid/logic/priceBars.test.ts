@@ -54,6 +54,14 @@ describe('buildPriceBars', () => {
     expect(bars[3].height).toBeLessThan(bars[0].height);
   });
 
+  it('keeps the cheapest hour the shortest bar when the low beats the high in magnitude', () => {
+    // −60 is further from zero than +40, so a magnitude-based height would
+    // draw the cheapest hour of the day as the tallest bar on the chart.
+    const bars = buildPriceBars(series((h) => (h === 0 ? -60 : 40)), 0);
+
+    expect(bars[0].height).toBeLessThan(bars[1].height);
+  });
+
   it('survives a flat day without dividing by zero', () => {
     const bars = buildPriceBars(series(() => 50), 0);
 
