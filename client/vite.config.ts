@@ -41,16 +41,28 @@ export default defineConfig(({ mode }) => {
             // with the Living Grid: the classic map view pulls them either
             // way, and filing them under the lazy view only made that chunk
             // load for a view that is not the Living Grid.
+            //
+            // `d3-transition` and `d3-ease` MUST stay in this chunk, beside
+            // `d3-selection`. Splitting them out — they were a `vendor-living-grid`
+            // chunk of their own — made the two chunks import each other, because
+            // `d3-zoom` here needs `d3-transition` and `d3-transition` needs
+            // `d3-selection`. A circular chunk is evaluated innermost-first, so
+            // `d3-transition` ran `selection.prototype.transition = …` against the
+            // prototype object `d3-selection` had not yet replaced, and the
+            // `Selection.prototype = selection.prototype = {…}` that followed threw
+            // the augmentation away. Both `.transition()` and `.interrupt()` were
+            // then missing from every selection in a production build, while dev —
+            // unbundled, no chunks, no cycle — was fine. `chunkGraph.test.ts` pins
+            // this; do not separate them again.
             'vendor-maps': [
               'react-simple-maps',
               'd3-geo',
               'd3-selection',
               'd3-zoom',
               'topojson-client',
+              'd3-transition',
+              'd3-ease',
             ],
-            // What only the Living Grid's canvas layer adds on top, loaded
-            // with the lazy Living Grid view.
-            'vendor-living-grid': ['d3-ease', 'd3-transition'],
             // Animation library
             'vendor-animation': ['framer-motion'],
             // UI components (Radix)
