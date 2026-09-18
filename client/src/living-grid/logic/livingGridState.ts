@@ -123,6 +123,9 @@ export type LivingGridAction =
   // `adopting` is the view taking the server's clock, not the reader choosing
   // an hour — the same distinction `opening` draws for the zone panel.
   | { type: 'SET_HOUR'; hour: number; adopting?: boolean }
+  // The reader handing the timeline back to the clock. Distinct from SET_HOUR
+  // because it is the only thing that CLEARS the pin.
+  | { type: 'GO_LIVE'; hour: number }
   | { type: 'PLAY' }
   | { type: 'PAUSE' }
   | { type: 'TOGGLE_PLAY' }
@@ -168,6 +171,18 @@ export function livingGridReducer(
         ...state,
         hour: Math.max(0, Math.min(23, Math.round(action.hour))),
         hourPinned: state.hourPinned || !action.adopting,
+      };
+
+    case 'GO_LIVE':
+      // Clearing the pin is the whole point. Expressing this as a SET_HOUR
+      // would set one instead — the reader is moving the timeline, as far as
+      // that case can tell — and every later adopting dispatch would be
+      // discarded, so pressing Live would end liveness until a reload.
+      return {
+        ...state,
+        hour: Math.max(0, Math.min(23, Math.round(action.hour))),
+        hourPinned: false,
+        playing: false,
       };
 
     case 'PLAY':

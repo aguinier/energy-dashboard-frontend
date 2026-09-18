@@ -135,9 +135,16 @@ import { pathToFileURL } from 'node:url';
  * fallback that claimed the zone had published nothing all day — for a zone
  * whose fuels all read 0 MW, which is every night for a solar-only zone.
  * 1,134 → 1,138 and 89 files stays 89.
+ *
+ * **The Live button ended liveness: +2 client tests, no new file**
+ * (`livingGridState` 33 → 35). "Live" reached the hour through a plain
+ * `SET_HOUR`, which marks the hour as the reader's, so every later adopting
+ * dispatch was discarded and the view never followed the clock again — the one
+ * control whose whole purpose is liveness was the one that ended it. `GO_LIVE`
+ * is a distinct action because clearing the pin is the point. 1,138 → 1,140.
  */
 export const TEST_FLOORS = {
-  client: { files: 89, tests: 1138, maxSkipped: 0 },
+  client: { files: 89, tests: 1140, maxSkipped: 0 },
   server: { files: 143, tests: 2962, maxSkipped: 4 },
 };
 

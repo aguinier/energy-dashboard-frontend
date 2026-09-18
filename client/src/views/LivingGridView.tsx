@@ -165,10 +165,7 @@ export default function LivingGridView() {
         onHour={(hour) => dispatch({ type: 'SET_HOUR', hour })}
         onTogglePlay={() => dispatch({ type: 'TOGGLE_PLAY' })}
         onCycleStep={() => dispatch({ type: 'CYCLE_STEP' })}
-        onLive={() => {
-          dispatch({ type: 'PAUSE' });
-          dispatch({ type: 'SET_HOUR', hour: currentHour });
-        }}
+        onLive={() => dispatch({ type: 'GO_LIVE', hour: currentHour })}
       />
     </div>
   );

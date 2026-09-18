@@ -131,6 +131,24 @@ describe('the hour', () => {
     expect(run(played, { type: 'SET_HOUR', hour: 16, adopting: true }).hour).toBe(13);
   });
 
+  it('adopts the server clock again once the reader asks to go live', () => {
+    // Going live is the reader handing the timeline back to the clock, so it
+    // has to CLEAR the pin. Reaching it through a plain SET_HOUR would set one
+    // instead, and the button named Live would be the one thing that ends
+    // liveness for the rest of the session.
+    const scrubbed = run(initialState(12), { type: 'SET_HOUR', hour: 3 });
+    const live = run(scrubbed, { type: 'GO_LIVE', hour: 14 });
+
+    expect(live.hour).toBe(14);
+    expect(run(live, { type: 'SET_HOUR', hour: 15, adopting: true }).hour).toBe(15);
+  });
+
+  it('stops playback when the reader goes live', () => {
+    const playing = run(initialState(12), { type: 'PLAY' });
+
+    expect(run(playing, { type: 'GO_LIVE', hour: 14 }).playing).toBe(false);
+  });
+
   it('offers no two steps that advance the timeline by the same amount', () => {
     // A step the payload cannot serve is a chip that changes its label and
     // nothing else. The series is hourly, so every offered step must differ.
