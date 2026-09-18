@@ -38,6 +38,16 @@ export default defineConfig(({ mode }) => {
             'vendor-recharts': ['recharts'],
             // Map library
             'vendor-maps': ['react-simple-maps'],
+            // Living Grid's canvas map layer (d3 subset + topojson), loaded
+            // only with the lazy Living Grid view
+            'vendor-living-grid': [
+              'd3-ease',
+              'd3-geo',
+              'd3-selection',
+              'd3-transition',
+              'd3-zoom',
+              'topojson-client',
+            ],
             // Animation library
             'vendor-animation': ['framer-motion'],
             // UI components (Radix)
