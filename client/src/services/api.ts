@@ -39,6 +39,9 @@ import type {
   RecommendedModel,
   CombinedOpsStatus,
   OpsStatusHistory,
+  GridDay,
+  GridDayPayload,
+  GridDayMeta,
 } from '@/types';
 import { unwrap } from './unwrap';
 
@@ -629,6 +632,23 @@ export async function fetchOpsStatusHistory(hours: number): Promise<OpsStatusHis
     params: { hours },
   });
   return unwrap(data, '/ops/status/history');
+}
+
+/**
+ * Every stream the Living Grid renders, for every zone, for one
+ * Europe/Brussels calendar day. `date` defaults to today there.
+ *
+ * The envelope's `meta` carries the hour mapping, the shared-zone notes and
+ * the current local hour, all of which the view needs, so this returns them
+ * folded into the payload rather than dropping them at `unwrap`.
+ */
+export async function fetchGridDay(date?: string): Promise<GridDay> {
+  const { data } = await api.get<ApiResponse<GridDayPayload> & { meta: GridDayMeta }>(
+    '/grid/day',
+    { params: date ? { date } : undefined },
+  );
+  const payload = unwrap<GridDayPayload>(data, '/grid/day');
+  return { ...payload, meta: data.meta };
 }
 
 export default api;

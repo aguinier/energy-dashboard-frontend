@@ -1,0 +1,158 @@
+import { useEffect, useMemo, useReducer } from 'react';
+import { useGridDay } from '@/hooks/useGridDay';
+import { GridHeader } from '@/living-grid/components/GridHeader';
+import { LeftRail } from '@/living-grid/components/LeftRail';
+import { MapStage } from '@/living-grid/components/MapStage';
+import { FooterTimeline } from '@/living-grid/components/FooterTimeline';
+import { ZonePanel } from '@/living-grid/components/ZonePanel';
+import { ZoneSections } from '@/living-grid/components/ZoneSections';
+import { buildMapAttrs } from '@/living-grid/logic/mapAttrs';
+import { initialState, livingGridReducer } from '@/living-grid/logic/livingGridState';
+import { resolveNetSeries } from '@/living-grid/logic/netFromFlows';
+import { describeGridError } from '@/living-grid/logic/gridError';
+import { ZONES } from '@/living-grid/logic/zoneRegistry';
+import '@/living-grid/plex-fonts.css';
+import '@/living-grid/living-grid.css';
+
+/** How long one hour lasts while the timeline plays. */
+const PLAY_INTERVAL_MS = 900;
+
+export default function LivingGridView() {
+  const { data: day, isLoading, isError, error, refetch } = useGridDay();
+  const [state, dispatch] = useReducer(livingGridReducer, undefined, () => initialState());
+
+  // The server knows what hour it is where the data lives; adopt it once the
+  // payload lands so the timeline opens on "now" rather than on noon.
+  const currentHour = day?.meta.currentHour ?? 12;
+  const isToday = day?.meta.isToday ?? false;
+  useEffect(() => {
+    if (day?.meta.isToday) dispatch({ type: 'SET_HOUR', hour: day.meta.currentHour });
+  }, [day?.meta.isToday, day?.meta.currentHour]);
+
+  useEffect(() => {
+    if (!state.playing) return;
+    const timer = window.setInterval(() => dispatch({ type: 'TICK' }), PLAY_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [state.playing]);
+
+  const attrs = useMemo(() => buildMapAttrs(state, day), [state, day]);
+
+  const availableCodes = useMemo(
+    () => (day ? ZONES.map((z) => z.code).filter((c) => day.zones[c] !== undefined) : []),
+    [day],
+  );
+
+  // Legend extents are read off the hour on screen, so the scale describes
+  // this map rather than a fixed range the data may never reach.
+  const { priceRange, netExtent } = useMemo(() => {
+    if (!day) return { priceRange: null, netExtent: null };
+    const prices: number[] = [];
+    const nets: number[] = [];
+    for (const code of availableCodes) {
+      const price = day.zones[code]?.price[state.hour];
+      if (price !== null && price !== undefined) prices.push(price);
+      const net = resolveNetSeries(day, code).series[state.hour];
+      if (net !== null && net !== undefined) nets.push(Math.abs(net));
+    }
+    return {
+      priceRange: prices.length ? { min: Math.min(...prices), max: Math.max(...prices) } : null,
+      netExtent: nets.length ? Math.max(...nets) : null,
+    };
+  }, [day, availableCodes, state.hour]);
+
+  if (isLoading) {
+    return (
+      <div className="lg-splash">
+        <div className="lg-spinner" />
+        <div style={{ font: "400 12.5px 'IBM Plex Mono', monospace", color: '#5D7688', letterSpacing: '0.16em' }}>
+          LOADING THE GRID
+        </div>
+      </div>
+    );
+  }
+
+  if (isError || !day) {
+    return (
+      <div className="lg-splash">
+        <div style={{ font: "400 15px 'IBM Plex Sans'", color: '#DCEEF5' }}>
+          The grid data could not be loaded.
+        </div>
+        <div style={{ font: "400 12px 'IBM Plex Sans'", color: '#6E8A9C', maxWidth: 420, textAlign: 'center' }}>
+          {describeGridError(error)}
+        </div>
+        <button type="button" className="lg-chip-button" onClick={() => void refetch()}>
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="living-grid">
+      <GridHeader
+        tab={state.tab}
+        onTab={(tab) => dispatch({ type: 'SET_VIEW', tab })}
+        query={state.query}
+        onQuery={(query) => dispatch({ type: 'SET_QUERY', query, codes: availableCodes })}
+        date={day.meta.date}
+        hour={state.hour}
+      />
+
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <LeftRail
+          colourBy={state.colourBy}
+          onColourBy={(colourBy) => dispatch({ type: 'SET_COLOUR_BY', colourBy })}
+          layers={state.L}
+          onLayer={(key) => dispatch({ type: 'TOGGLE_LAYER', key })}
+          viz={state.V}
+          onViz={(key) => dispatch({ type: 'TOGGLE_VIZ', key })}
+        />
+
+        <MapStage
+          attrs={attrs}
+          tab={state.tab}
+          priceRange={priceRange}
+          netExtent={netExtent}
+          onPick={(code) => dispatch({ type: 'PICK_ZONE', code })}
+          onFlows={() => undefined}
+        />
+
+        <ZonePanel
+          day={day}
+          code={state.code}
+          hour={state.hour}
+          ptab={state.ptab}
+          onPanelTab={(ptab) => dispatch({ type: 'SET_PANEL_TAB', ptab })}
+          onClose={() => dispatch({ type: 'PICK_ZONE', code: null })}
+        >
+          {state.code && (
+            <ZoneSections
+              day={day}
+              code={state.code}
+              hour={state.hour}
+              ptab={state.ptab}
+              onHour={(hour) => dispatch({ type: 'SET_HOUR', hour })}
+              onPick={(code) => dispatch({ type: 'PICK_ZONE', code })}
+            />
+          )}
+        </ZonePanel>
+      </div>
+
+      <FooterTimeline
+        hour={state.hour}
+        playing={state.playing}
+        step={state.step}
+        date={day.meta.date}
+        currentHour={currentHour}
+        isToday={isToday}
+        onHour={(hour) => dispatch({ type: 'SET_HOUR', hour })}
+        onTogglePlay={() => dispatch({ type: 'TOGGLE_PLAY' })}
+        onCycleStep={() => dispatch({ type: 'CYCLE_STEP' })}
+        onLive={() => {
+          dispatch({ type: 'PAUSE' });
+          dispatch({ type: 'SET_HOUR', hour: currentHour });
+        }}
+      />
+    </div>
+  );
+}

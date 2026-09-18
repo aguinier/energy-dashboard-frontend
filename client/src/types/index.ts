@@ -1195,3 +1195,56 @@ export interface ForecastTypeConfig {
 }
 
 export type ForecastModelRegistry = Record<string, ForecastTypeConfig>;
+
+// ---------------------------------------------------------------- Living Grid
+
+/** The eight fuels the Living Grid legend, mix bars and donut rings use. */
+export type GridFuelKey =
+  | 'nuclear'
+  | 'hydro'
+  | 'wind'
+  | 'solar'
+  | 'gas'
+  | 'coal'
+  | 'biomass'
+  | 'other';
+
+export const GRID_FUEL_KEYS: readonly GridFuelKey[] = [
+  'nuclear', 'hydro', 'wind', 'solar', 'gas', 'coal', 'biomass', 'other',
+];
+
+/**
+ * A day of hourly values, indexed 0-23 in the local (Europe/Brussels) day.
+ * `null` is "not published", never zero — see the server's gridDayService.
+ */
+export type GridHourSeries = (number | null)[];
+
+export interface GridDayZone {
+  load: GridHourSeries;
+  price: GridHourSeries;
+  net: GridHourSeries;
+  mix: Record<GridFuelKey, GridHourSeries>;
+}
+
+export interface GridDayPayload {
+  zones: Record<string, GridDayZone>;
+  /** Signed MW per border, keyed alphabetically; + = the first zone exports. */
+  flows: Record<string, GridHourSeries>;
+}
+
+export interface GridDayMeta {
+  date: string;
+  timezone: string;
+  hoursUtc: (string | null)[];
+  /** Zones served another zone's series, and which bidding zone that is. */
+  sharedZones: Record<string, string>;
+  currentHour: number;
+  isToday: boolean;
+  zoneCount: number;
+  borderCount: number;
+}
+
+/** What `useGridDay` resolves to: the payload plus the meta the UI needs. */
+export interface GridDay extends GridDayPayload {
+  meta: GridDayMeta;
+}

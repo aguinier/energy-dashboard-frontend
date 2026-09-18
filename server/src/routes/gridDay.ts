@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getGridDay } from '../services/gridDayService.js';
 import { todayInGridTimezone } from '../services/livingGrid/brusselsDay.js';
 import { cacheMiddleware, TTL } from '../middleware/cache.js';
+import { isDatabaseLocked } from '../services/livingGrid/dbLock.js';
 
 const router = Router();
 
@@ -29,6 +30,19 @@ router.get('/day', cacheMiddleware(TTL.MEDIUM), (req, res) => {
         success: false,
         error: 'date must be a valid YYYY-MM-DD calendar date',
       });
+      return;
+    }
+    // On a workstation the replica is locked to every reader twice a day while
+    // `able-db-sync` rebuilds it inside one transaction — planned maintenance,
+    // not a fault, and it clears by itself. Saying so lets the client offer a
+    // retry instead of presenting a scheduled 30-minute window as a breakage.
+    if (isDatabaseLocked(error)) {
+      res.status(503)
+        .set('Retry-After', '120')
+        .json({
+          success: false,
+          error: 'The database is being refreshed. This is scheduled and clears on its own.',
+        });
       return;
     }
     console.error('Error building Living Grid day:', error);
