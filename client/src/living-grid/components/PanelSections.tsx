@@ -9,7 +9,9 @@ import { buildMixBreakdown, stackSegments } from '../logic/mixRows';
 import { buildPriceBars } from '../logic/priceBars';
 import { buildFlowRows, flowTotals } from '../logic/flowsPanel';
 import { alpha, TOKENS } from '../logic/ramps';
+import { anyOf, emptyMessage, emptyReason } from '../logic/emptyState';
 import { euro, gw, percent, seriesRange, signedGw } from '../logic/format';
+import { GRID_FUEL_KEYS } from '@/types';
 import type { GridDay, GridFuelKey, GridHourSeries } from '@/types';
 
 function SectionHeading({ title, note }: { title: string; note?: string }) {
@@ -21,8 +23,21 @@ function SectionHeading({ title, note }: { title: string; note?: string }) {
   );
 }
 
-function NoData({ what }: { what: string }) {
-  return <div className="lg-note">No {what} published for this zone today.</div>;
+/**
+ * Says which kind of nothing this is: a zone silent all day, or one whose
+ * data has simply not reached the hour on screen yet.
+ */
+function NoData({
+  what,
+  series,
+  hour,
+}: {
+  what: string;
+  series?: readonly (number | null)[];
+  hour: number;
+}) {
+  const reason = emptyReason(series, hour) ?? { kind: 'none-today' as const };
+  return <div className="lg-note">{emptyMessage(reason, what)}</div>;
 }
 
 /* ------------------------------------------------------------- sparkline */
@@ -40,7 +55,7 @@ export function NetSparkline({
     <div className="lg-section">
       <SectionHeading title="Net position" note={`±${spark.scale.toFixed(1)} GW`} />
       {spark.empty ? (
-        <NoData what="net position" />
+        <NoData what="net position" series={series} hour={hour} />
       ) : (
         <>
           <svg
@@ -107,7 +122,11 @@ export function MixSection({
         note={breakdown.empty ? undefined : `${gw(breakdown.totalMw)} GW`}
       />
       {breakdown.empty ? (
-        <NoData what="generation" />
+        <NoData
+          what="generation"
+          series={mix ? anyOf(GRID_FUEL_KEYS.map((f) => mix[f] ?? [])) : undefined}
+          hour={hour}
+        />
       ) : (
         <>
           <div className="lg-stack">
@@ -165,7 +184,7 @@ export function PriceBarsSection({
         note={range ? `${euro(range.min)} – ${euro(range.max)}` : undefined}
       />
       {!range ? (
-        <NoData what="day-ahead price" />
+        <NoData what="day-ahead price" series={series} hour={hour} />
       ) : (
         <>
           <div className="lg-price-bars">
@@ -222,12 +241,19 @@ export function FlowsSection({
   onPick: (code: string) => void;
 }) {
   const rows = buildFlowRows(day.flows, code, hour);
+  // Presence across every border this zone is on, so an hour with no flow can
+  // be told apart from a zone with no borders reporting at all today.
+  const borderPresence = anyOf(
+    Object.entries(day.flows)
+      .filter(([key]) => key.split('-').includes(code))
+      .map(([, s]) => s),
+  );
 
   return (
     <div className="lg-section">
       <SectionHeading title="Cross-border flows" note={rows.length ? 'top borders' : undefined} />
       {rows.length === 0 ? (
-        <NoData what="border flow" />
+        <NoData what="border flow" series={borderPresence} hour={hour} />
       ) : (
         <div>
           {rows.map((row) => {

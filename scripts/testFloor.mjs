@@ -111,9 +111,15 @@ import { pathToFileURL } from 'node:url';
  * `livingGridState.test.ts` 26 → 29 for the "has the reader chosen yet" flag
  * that keeps that default from overriding a deliberate dismissal), so
  * 1,103 → 1,110 and 88 files stays 88.
+ *
+ * **Living Grid empty-state honesty adds +1 client file / +11 tests**
+ * (`emptyState.test.ts`), which tell "this zone published nothing today" apart
+ * from "the day's ingest has not reached this hour yet" — the panel used to
+ * claim the first while only having checked the second. 88 → 89 files and
+ * 1,110 → 1,121 tests.
  */
 export const TEST_FLOORS = {
-  client: { files: 88, tests: 1110, maxSkipped: 0 },
+  client: { files: 89, tests: 1121, maxSkipped: 0 },
   server: { files: 143, tests: 2961, maxSkipped: 4 },
 };
 
