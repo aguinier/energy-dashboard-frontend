@@ -117,10 +117,20 @@ import { pathToFileURL } from 'node:url';
  * from "the day's ingest has not reached this hour yet" — the panel used to
  * claim the first while only having checked the second. 88 → 89 files and
  * 1,110 → 1,121 tests.
+ *
+ * **The Living Grid review fixes raise both floors, no new file.** Client +13
+ * (`emptyState` 11 → 14 for an interior gap read as a late update,
+ * `priceBars` 9 → 10 for a negative price drawn as the tallest bar,
+ * `livingGridState` 29 → 33 for the dead step setting and for the server clock
+ * dragging a reader off a scrubbed hour, `mapAttrs` 24 → 27 for a legend and a
+ * panel that each described a scale the map does not paint with, `flowsPanel`
+ * 13 → 15 for two ways of reading one border key), so 1,121 → 1,134. Server +1
+ * (`gridDay.test.ts` 19 → 20: both timestamp separator forms for one instant
+ * were averaged into a third number neither row holds), so 2,961 → 2,962.
  */
 export const TEST_FLOORS = {
-  client: { files: 89, tests: 1121, maxSkipped: 0 },
-  server: { files: 143, tests: 2961, maxSkipped: 4 },
+  client: { files: 89, tests: 1134, maxSkipped: 0 },
+  server: { files: 143, tests: 2962, maxSkipped: 4 },
 };
 
 /**
