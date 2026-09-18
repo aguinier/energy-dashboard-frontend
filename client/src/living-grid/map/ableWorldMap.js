@@ -52,6 +52,43 @@ const TOPO_URL = '/living-grid/countries-50m.json';
 const GRID_URL = '/living-grid/grid-lines.json';
 const PLACES_URL = '/living-grid/grid-places.json';
 
+// Particle stroke batching. Canvas 2D has no per-vertex colour, so the port drew
+// each of ~1,760 particles with its own beginPath/stroke — measured at 8.95 ms of
+// a 16.7 ms frame, of which the vector-field maths was 0.08 ms. Practically all
+// of it was the per-particle canvas calls.
+//
+// Quantising a particle's colour and alpha lets every particle sharing a bucket
+// go into one path with one stroke(). The cost of that is real but small: an
+// alpha is snapped to the nearest 1/32, a colour to the nearest 1/16 along the
+// theme's particle ramp. Positions, count, motion and lifetimes are untouched.
+const P_INTEN_STEPS = 16;
+const P_ALPHA_STEPS = 32;
+
+/** Add one particle segment to the bucket for its quantised colour and alpha. */
+function pushSegment(buckets, qi, alpha, x0, y0, x1, y1) {
+  const qa = Math.round(Math.max(0, Math.min(1, alpha)) * (P_ALPHA_STEPS - 1));
+  // qa 0 is alpha 0. Stroking it drew nothing, so skipping it is exact.
+  if (qa === 0) return;
+  const b = buckets[qi * P_ALPHA_STEPS + qa], v = b.v;
+  let n = b.n;
+  v[n++] = x0; v[n++] = y0; v[n++] = x1; v[n++] = y1;
+  b.n = n;
+}
+
+/** One path and one stroke() per non-empty bucket. */
+function strokeBuckets(ctx, buckets, T) {
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    if (!b.n) continue;
+    const qi = (i / P_ALPHA_STEPS) | 0, qa = i % P_ALPHA_STEPS;
+    ctx.strokeStyle = rgba(lerp(T.pFrom, T.pTo, qi / (P_INTEN_STEPS - 1)), qa / (P_ALPHA_STEPS - 1));
+    ctx.beginPath();
+    const v = b.v;
+    for (let j = 0; j < b.n; j += 4) { ctx.moveTo(v[j], v[j + 1]); ctx.lineTo(v[j + 2], v[j + 3]); }
+    ctx.stroke();
+  }
+}
+
   const NUM = { AL:'8', AT:'40', BA:'70', BE:'56', BG:'100', BY:'112', CH:'756', CY:'196', CZ:'203', DE:'276', DK:'208', EE:'233', ES:'724', FI:'246', FR:'250', GB:'826', UK:'826', GR:'300', HR:'191', HU:'348', IE:'372', IS:'352', IT:'380', LT:'440', LU:'442', LV:'428', MD:'498', ME:'499', MK:'807', NL:'528', NO:'578', PL:'616', PT:'620', RO:'642', RS:'688', RU:'643', SE:'752', SI:'705', SK:'703', TR:'792', UA:'804', XK:'-99' };
   Object.keys(NUM).forEach((k) => { if (NUM[k].charAt(0) !== '-') NUM[k] = NUM[k].padStart(3, '0'); });
   const ALPHA = {}; Object.keys(NUM).forEach((k) => { const v = NUM[k]; if (!ALPHA[v]) ALPHA[v] = k; const raw = String(Number(v)); if (!ALPHA[raw]) ALPHA[raw] = k; });
@@ -270,6 +307,11 @@ const PLACES_URL = '/living-grid/grid-places.json';
         if (this.getAttribute('demand') !== 'false') this._placesRaw.demand.forEach((d) => { if (vals[d.c] == null && !(d.c === 'GB' && vals.UK != null)) return; const xy = P2(d.ll); wells.push({ x: xy[0], y: xy[1], s: -1, w: d.mw * 0.45, sig: (7 + Math.sqrt(d.mw / 1000) * 6) * sc }); });
       }
       this._wells = wells;
+      // The sources (plants) alone, for spawn(). It used to recompute this
+      // filter over every well on each call — ~900 predicate calls and one array
+      // allocation per spawned particle, and in a hour with no published flows
+      // the whole population respawns every frame.
+      this._sources = wells.filter((w) => w.s > 0);
       // field
       const fx = new Float32Array(cols * rows), fy = new Float32Array(cols * rows), mag = new Float32Array(cols * rows);
       // bucket segments by grid cell for speed
@@ -319,7 +361,7 @@ const PLACES_URL = '/living-grid/grid-places.json';
     }
     spawn(seed) {
       const F = this._field, B = this._box; let x, y, tries = 0;
-      const src = this._wells && this._wells.filter((w) => w.s > 0);
+      const src = this._sources;
       if (src && src.length && hash(seed + 'f' + (this._gen || 0)) < 0.25) {
         const w = src[Math.floor(hash(seed + 'w' + (this._gen || 0)) * src.length)], a = hash(seed + 'ang' + (this._gen || 0)) * 6.2832, r = w.sig * 0.4 * hash(seed + 'r' + (this._gen || 0));
         return { x: w.x + Math.cos(a) * r, y: w.y + Math.sin(a) * r, age: 0, life: 200 + Math.floor(hash(seed + 'l') * 260) };
@@ -502,7 +544,10 @@ const PLACES_URL = '/living-grid/grid-places.json';
       const F = this._field, speed = this.num('speed', 1) * 150 / k / F.vmax * dt;
       const boost = active ? 1 : 1.5; // nothing selected: the flow field is the whole story
       if (T.additive) ctx.globalCompositeOperation = 'lighter';
-      ctx.lineWidth = W * 1.15 / k;
+      // Two batches, one per line width: the main stroke and the additive glow.
+      // Within a batch every segment shares a quantised colour and alpha, so a
+      // batch is one path and one stroke() instead of one of each per particle.
+      const main = this.particleBuckets('_pbufMain'), glow = this.particleBuckets('_pbufGlow');
       for (let i = 0; i < this._particles.length; i++) {
         const p = this._particles[i], v = this.sample(p.x, p.y);
         if (p.age++ > p.life || v.m < F.vmax * 0.01) { this._gen = (this._gen || 0) + 1; this._particles[i] = this.spawn(i); continue; }
@@ -510,21 +555,32 @@ const PLACES_URL = '/living-grid/grid-places.json';
         if ((i & 7) === 0 && this._wells) { const ws = this._wells; for (let q = 0; q < ws.length; q++) { const w = ws[q]; if (w.s < 0 && Math.hypot(nx - w.x, ny - w.y) < w.sig * 0.3) { p.age = p.life + 1; break; } } }
         const inten = Math.min(1, Math.sqrt(v.m / F.vmax));
         const fade = Math.min(1, p.age / 30) * Math.min(1, (p.life - p.age) / 30);
-        const col = lerp(T.pFrom, T.pTo, inten);
-        if (T.additive && inten > 0.42) {
-          ctx.lineWidth = W * 3.6 / k;
-          ctx.strokeStyle = rgba(col, 0.1 * inten * fade * boost);
-          ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(nx, ny); ctx.stroke();
-          ctx.lineWidth = W * 1.15 / k;
-        }
-        ctx.strokeStyle = rgba(col, Math.min(0.95, (0.24 + 0.55 * inten) * fade * boost));
-        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(nx, ny); ctx.stroke();
+        const qi = Math.round(inten * (P_INTEN_STEPS - 1));
+        if (T.additive && inten > 0.42) pushSegment(glow, qi, 0.1 * inten * fade * boost, p.x, p.y, nx, ny);
+        pushSegment(main, qi, Math.min(0.95, (0.24 + 0.55 * inten) * fade * boost), p.x, p.y, nx, ny);
         p.x = nx; p.y = ny;
       }
+      // Glow first, so it sits under the main stroke exactly as it did when the
+      // two were drawn per particle. Both only coexist in additive themes, where
+      // compositing is commutative anyway.
+      if (T.additive) { ctx.lineWidth = W * 3.6 / k; strokeBuckets(ctx, glow, T); }
+      ctx.lineWidth = W * 1.15 / k; strokeBuckets(ctx, main, T);
       ctx.globalCompositeOperation = 'source-over';
       // `|| zoomDirty` keeps the old guarantee that a zoom refreshes the places
       // canvas even when arcs are off, which the synchronous call used to give.
       if (this.getAttribute('arcs') === 'true' || zoomDirty) this.paintPlaces();
+    }
+    /**
+     * The reusable bucket array for one particle batch, emptied for this frame.
+     * Kept on the element and refilled in place: allocating ~500 arrays every
+     * frame would hand back in GC what the batching saves.
+     */
+    particleBuckets(prop) {
+      const size = P_INTEN_STEPS * P_ALPHA_STEPS;
+      let b = this[prop];
+      if (!b) { b = this[prop] = new Array(size); for (let i = 0; i < size; i++) b[i] = { n: 0, v: [] }; }
+      for (let i = 0; i < size; i++) b[i].n = 0;
+      return b;
     }
     plantMin(k) { return 6000 / Math.pow(k, 1.35); }
     markerFade(k) { const k0 = (this._kEurope || 6) * 1.35; return Math.max(0, Math.min(1, (k - k0) / (k0 * 0.5))); }
