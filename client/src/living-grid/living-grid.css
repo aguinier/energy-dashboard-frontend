@@ -668,6 +668,45 @@
     transform: rotate(360deg);
   }
 }
+/*
+ * The panel's bars grow from their left edge as a zone opens. The app's global
+ * `chartGrow` (index.css) does the same on the Y axis for column charts; this
+ * is its horizontal twin, which the mix stack and the per-fuel rows need.
+ * Timing comes from logic/drawOn.ts, not from here.
+ */
+@keyframes lg-grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+/*
+ * These two own BOTH ends deliberately. The app's global `chartDraw` and
+ * `chartFadeIn` only declare a `to`, so every caller has to hide the element
+ * itself with an inline `stroke-dashoffset` or `opacity: 0` and rely on the
+ * animation to undo it. An animation that never runs then leaves the element
+ * invisible for good — which is exactly what happened to the sparkline here
+ * when animations were disabled. Declaring `from` means the resting state is
+ * the visible one and the animation only adds the motion.
+ */
+@keyframes lg-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes lg-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .lg-spinner {
     animation-duration: 2.4s;

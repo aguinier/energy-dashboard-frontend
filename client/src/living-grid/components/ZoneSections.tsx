@@ -10,6 +10,8 @@ interface ZoneSectionsProps {
   ptab: PanelTab;
   onHour: (hour: number) => void;
   onPick: (code: string) => void;
+  /** True when the reader asked for reduced motion: render the final state. */
+  reduced: boolean;
 }
 
 /**
@@ -19,7 +21,7 @@ interface ZoneSectionsProps {
  * sparkline, the mix, the price profile and the flows together, while the
  * other three tabs each answer one question and close with the key figures.
  */
-export function ZoneSections({ day, code, hour, ptab, onHour, onPick }: ZoneSectionsProps) {
+export function ZoneSections({ day, code, hour, ptab, onHour, onPick, reduced }: ZoneSectionsProps) {
   const zone = day.zones[code];
   const { series: netSeries } = resolveNetSeries(day, code);
 
@@ -30,13 +32,13 @@ export function ZoneSections({ day, code, hour, ptab, onHour, onPick }: ZoneSect
 
   return (
     <>
-      {showNet && <NetSparkline series={netSeries} hour={hour} />}
-      {showMix && <MixSection mix={zone?.mix} hour={hour} />}
+      {showNet && <NetSparkline series={netSeries} hour={hour} reduced={reduced} />}
+      {showMix && <MixSection mix={zone?.mix} hour={hour} reduced={reduced} />}
       {showPrice && (
-        <PriceBarsSection day={day} series={zone?.price} hour={hour} onHour={onHour} />
+        <PriceBarsSection day={day} series={zone?.price} hour={hour} onHour={onHour} reduced={reduced} />
       )}
       {showFlows && <FlowsSection day={day} code={code} hour={hour} onPick={onPick} />}
-      <KeyFigures day={day} code={code} hour={hour} netSeries={netSeries} />
+      <KeyFigures day={day} code={code} hour={hour} netSeries={netSeries} reduced={reduced} />
     </>
   );
 }

@@ -11,6 +11,7 @@ import { priceScale } from '../logic/mapAttrs';
 import { borderTouches, buildFlowRows, flowTotals } from '../logic/flowsPanel';
 import { alpha, TOKENS } from '../logic/ramps';
 import { anyOf, emptyMessage, emptyReason } from '../logic/emptyState';
+import { drawOnDelayed, drawOnSweep } from '../logic/drawOn';
 import { euro, gw, percent, seriesRange, signedGw } from '../logic/format';
 import { GRID_FUEL_KEYS } from '@/types';
 import type { GridDay, GridFuelKey, GridHourSeries } from '@/types';
@@ -58,9 +59,11 @@ function NoData({
 export function NetSparkline({
   series,
   hour,
+  reduced,
 }: {
   series: GridHourSeries;
   hour: number;
+  reduced: boolean;
 }) {
   const spark = buildSparkline(series.map((v) => (v === null ? null : v / 1000)), hour);
 
@@ -81,8 +84,42 @@ export function NetSparkline({
             <line x1="0" y1={SPARK_MID - SPARK_REACH} x2={SPARK_WIDTH} y2={SPARK_MID - SPARK_REACH} stroke="#122230" strokeWidth="1" />
             <line x1="0" y1={SPARK_MID + SPARK_REACH} x2={SPARK_WIDTH} y2={SPARK_MID + SPARK_REACH} stroke="#122230" strokeWidth="1" />
             <line x1="0" y1={SPARK_MID} x2={SPARK_WIDTH} y2={SPARK_MID} stroke="#1C3040" strokeWidth="1" />
-            <path d={spark.area} fill={TOKENS.teal} fillOpacity="0.13" />
-            <path d={spark.line} fill="none" stroke={TOKENS.teal} strokeWidth="1.6" strokeLinejoin="round" />
+            {/*
+              One path per run rather than one for the whole series: the reveal
+              is a sweep across the day, and a dash-offset over the joined path
+              would measure geometric length, which a gap has none of — so it
+              would jump the hole instead of leaving it empty for its share of
+              the time. `pathLength={1}` normalises the dash maths, the same
+              trick AbleLineChart uses.
+            */}
+            {/*
+              Nothing here hides the path by itself: `lg-fade-in` and `lg-draw`
+              declare their own `from`, so with no animation the curve simply
+              renders. `pathLength={1}` normalises the dash maths, and a dash
+              array of 1 against that length is a single dash covering the whole
+              path — invisible at offset 1, complete at offset 0.
+            */}
+            {spark.runs.map((r) => (
+              <path
+                key={`a${r.startHour}`}
+                d={r.areaD}
+                fill={TOKENS.teal}
+                fillOpacity="0.13"
+                style={{ animation: drawOnSweep({ ...r, keyframes: 'lg-fade-in', reduced }) }}
+              />
+            ))}
+            {spark.runs.map((r) => (
+              <path
+                key={`l${r.startHour}`}
+                d={r.d}
+                fill="none"
+                stroke={TOKENS.teal}
+                strokeWidth="1.6"
+                strokeLinejoin="round"
+                pathLength={1}
+                style={{ strokeDasharray: 1, animation: drawOnSweep({ ...r, keyframes: 'lg-draw', reduced }) }}
+              />
+            ))}
             {spark.cursor && (
               <>
                 <line
@@ -121,9 +158,11 @@ export function NetSparkline({
 export function MixSection({
   mix,
   hour,
+  reduced,
 }: {
   mix: Record<GridFuelKey, GridHourSeries> | undefined;
   hour: number;
+  reduced: boolean;
 }) {
   const breakdown = buildMixBreakdown(mix, hour);
   const segments = stackSegments(mix, hour);
@@ -151,12 +190,26 @@ export function MixSection({
         <>
           <div className="lg-stack">
             {segments.map((s, i) => (
-              <span key={i} style={{ width: `${(s.share * 100).toFixed(2)}%`, background: s.color }} />
+              <span
+                key={i}
+                style={{
+                  width: `${(s.share * 100).toFixed(2)}%`,
+                  background: s.color,
+                  // Width stays the real value; the growth is a transform, so
+                  // the bar never reflows its neighbours while it animates.
+                  transformOrigin: 'left center',
+                  animation: drawOnDelayed({ index: i, count: segments.length, keyframes: 'lg-grow-x', reduced }),
+                }}
+              />
             ))}
           </div>
           <div style={{ marginTop: 10 }}>
-            {breakdown.rows.map((row) => (
-              <div key={row.fuel} className="lg-mix-row">
+            {breakdown.rows.map((row, i) => (
+              <div
+                key={row.fuel}
+                className="lg-mix-row"
+                style={{ animation: drawOnDelayed({ index: i, count: breakdown.rows.length, keyframes: 'chartFade', reduced }) }}
+              >
                 <span className="lg-mix-chip" style={{ background: row.color }} />
                 <span className="lg-mix-name">{row.label}</span>
                 <span className="lg-mix-bar">
@@ -166,6 +219,8 @@ export function MixSection({
                       height: '100%',
                       width: `${(row.share * 100).toFixed(1)}%`,
                       background: row.color,
+                      transformOrigin: 'left center',
+                      animation: drawOnDelayed({ index: i, count: breakdown.rows.length, keyframes: 'lg-grow-x', reduced }),
                     }}
                   />
                 </span>
@@ -190,11 +245,13 @@ export function PriceBarsSection({
   series,
   hour,
   onHour,
+  reduced,
 }: {
   day: GridDay;
   series: GridHourSeries | undefined;
   hour: number;
   onHour: (hour: number) => void;
+  reduced: boolean;
 }) {
   // Scaled across zones, not against this zone alone, so a bar and the country
   // it belongs to are painted the same colour by the same rule.
@@ -223,6 +280,10 @@ export function PriceBarsSection({
                   height: bar.height,
                   background: bar.color,
                   visibility: bar.value === null ? 'hidden' : 'visible',
+                  // The row is bottom-aligned, so growing from the baseline is
+                  // what reads as the price rising into place.
+                  transformOrigin: 'bottom center',
+                  animation: drawOnDelayed({ index: bar.hour, count: bars.length, keyframes: 'chartGrow', reduced }),
                 }}
                 onClick={() => onHour(bar.hour)}
                 title={
@@ -316,11 +377,13 @@ export function KeyFigures({
   code,
   hour,
   netSeries,
+  reduced,
 }: {
   day: GridDay;
   code: string;
   hour: number;
   netSeries: GridHourSeries;
+  reduced: boolean;
 }) {
   const zone = day.zones[code];
   const mix = buildMixBreakdown(zone?.mix, hour);
@@ -354,10 +417,11 @@ export function KeyFigures({
     <div className="lg-section">
       <SectionHeading title="Key figures" />
       <div>
-        {rows.map((row) => (
+        {rows.map((row, i) => (
           <div
             key={row.label}
             style={{
+              animation: drawOnDelayed({ index: i, count: rows.length, keyframes: 'chartFade', reduced }),
               display: 'flex',
               justifyContent: 'space-between',
               alignItems: 'baseline',

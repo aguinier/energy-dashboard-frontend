@@ -150,9 +150,19 @@ import { pathToFileURL } from 'node:url';
  * through it a map field rebuild measured in hundreds of milliseconds. The
  * guard returns the same reference; the second test pins the case it must NOT
  * swallow, where the hour is unchanged but `hourPinned` flips. 1,140 → 1,142.
+ *
+ * **The zone panel's draw-on entry adds +1 client file / +16 tests**
+ * (`drawOn.test.ts` 11, `sparkline` 11 → 16). `drawOn.ts` owns the timing so the
+ * sparkline, the bars and the figures cannot disagree about how long the panel
+ * takes to arrive, and so the stagger scales with the group's size — the app's
+ * older per-item constants assume small groups and would run a 24-bar row for
+ * 1.4s. `buildSparkline` gained `runs`, one per unbroken stretch of readings,
+ * because a dash-offset sweep over the joined path measures geometric length
+ * and the jump across a gap has none, so the reveal would skip the hole.
+ * 89 → 90 files and 1,142 → 1,158 tests.
  */
 export const TEST_FLOORS = {
-  client: { files: 89, tests: 1142, maxSkipped: 0 },
+  client: { files: 90, tests: 1158, maxSkipped: 0 },
   server: { files: 143, tests: 2962, maxSkipped: 4 },
 };
 

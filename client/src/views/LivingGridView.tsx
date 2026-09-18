@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useReducer } from 'react';
 import { useGridDay } from '@/hooks/useGridDay';
+import { useMediaQuery } from '@/lib/utils';
 import { GridHeader } from '@/living-grid/components/GridHeader';
 import { LeftRail } from '@/living-grid/components/LeftRail';
 import { MapStage } from '@/living-grid/components/MapStage';
@@ -48,6 +49,12 @@ export default function LivingGridView() {
     const timer = window.setInterval(() => dispatch({ type: 'TICK' }), PLAY_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [state.playing]);
+
+  // Reduced motion skips the panel's entry animation outright rather than
+  // slowing it, as the splash spinner does: a spinner that turns more slowly is
+  // still a spinner, but a panel-wide draw-on is exactly the kind of motion the
+  // setting exists to refuse.
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
 
   // Depends on the six fields `buildMapAttrs` actually reads, not on the whole
   // state object. The reducer returns a new object for nearly every action, so
@@ -145,7 +152,18 @@ export default function LivingGridView() {
           onFlows={() => undefined}
         />
 
+        {/*
+          Keyed on the zone code alone, so picking a country remounts the panel
+          and its entry animation runs again. Without a key React reconciles the
+          same `<aside>` in place and the animation would fire once, on the
+          first zone ever opened. The key must NOT include `ptab` or `hour`:
+          those change while a zone stays selected, and replaying a 500ms draw
+          on every timeline tick is the opposite of what this is for. Remounting
+          also resets the panel's scroll, which is wanted — a new country is
+          read from the top.
+        */}
         <ZonePanel
+          key={state.code ?? 'none'}
           day={day}
           code={state.code}
           hour={state.hour}
@@ -161,6 +179,7 @@ export default function LivingGridView() {
               ptab={state.ptab}
               onHour={(hour) => dispatch({ type: 'SET_HOUR', hour })}
               onPick={(code) => dispatch({ type: 'PICK_ZONE', code })}
+              reduced={reducedMotion}
             />
           )}
         </ZonePanel>

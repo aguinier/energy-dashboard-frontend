@@ -82,3 +82,41 @@ describe('buildSparkline', () => {
     expect(buildSparkline(series(() => 1), 99).cursor?.x).toBeDefined();
   });
 });
+
+describe('buildSparkline runs', () => {
+  // The runs exist so a draw-on animation can reveal the line left to right.
+  // A dash-offset sweep over the joined path measures progress by geometric
+  // length, and the invisible jump across a gap costs no length — so the reveal
+  // would teleport over a hole. One path per run, each given the slice of time
+  // its own hours occupy, spends real time on the gap instead.
+  it('is one run for a day with no gaps, spanning the whole day', () => {
+    const s = buildSparkline(series(() => 2), 12);
+
+    expect(s.runs).toHaveLength(1);
+    expect(s.runs[0]).toMatchObject({ startHour: 0, endHour: 23 });
+  });
+
+  it('splits into one run per stretch of readings, with the hours they cover', () => {
+    const s = buildSparkline(series((h) => (h >= 4 && h <= 6 ? null : 2)), 0);
+
+    expect(s.runs.map((r) => [r.startHour, r.endHour])).toEqual([[0, 3], [7, 23]]);
+  });
+
+  it('keeps a single-reading run, which has a column of area but no line', () => {
+    const s = buildSparkline(series((h) => (h === 5 ? 3 : null)), 5);
+
+    expect(s.runs).toHaveLength(1);
+    expect(s.runs[0]).toMatchObject({ startHour: 5, endHour: 5 });
+  });
+
+  it('draws exactly what the joined paths draw, so static and animated agree', () => {
+    const s = buildSparkline(series((h) => (h === 9 ? null : 4)), 0);
+
+    expect(s.runs.map((r) => r.d).join(' ')).toBe(s.line);
+    expect(s.runs.map((r) => r.areaD).join(' ')).toBe(s.area);
+  });
+
+  it('has no runs when there is nothing to draw', () => {
+    expect(buildSparkline(new Array<number | null>(24).fill(null), 12).runs).toEqual([]);
+  });
+});
