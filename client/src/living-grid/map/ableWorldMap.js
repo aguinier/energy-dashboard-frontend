@@ -40,6 +40,22 @@
 //     and disconnects the ResizeObserver — so a remount left a frozen map.
 //  5. `defineAbleWorldMap()` replaces the bare `customElements.define` call, so
 //     registration happens when the view mounts rather than on import.
+//  6. The wheel is eased. The handoff applied a wheel event to the transform in
+//     the same frame, which on a trackpad is smooth (many small deltas) and on
+//     a wheel mouse is a 35% jump per notch. The travel per notch is unchanged;
+//     only its delivery is now spread over a few frames by the existing loop.
+//  7. A resize re-frames the camera instead of snapping it, and preserves the
+//     reader's own framing when they have one. `resize()` refits the projection,
+//     so the previous code moved the world under a transform it left alone —
+//     opening the zone panel after a pan left you looking somewhere else.
+//  8. Labels are sized by how much of the screen their country actually covers
+//     and slide to stay over the visible part of it. They were a constant
+//     11.5 px pinned to a centroid, so Luxembourg's label was Germany's and
+//     neither moved.
+//
+// 6, 7 and 8 keep their arithmetic in `../logic/mapCamera` and `../logic/mapLabels`
+// — this file is excluded from `tsc` and has no tests, so decisions that can be
+// stated as numbers belong where they can be checked.
 
 import { geoMercator, geoPath } from 'd3-geo';
 import { select, pointer } from 'd3-selection';
@@ -47,10 +63,25 @@ import { zoom, zoomIdentity } from 'd3-zoom';
 import { easeCubicInOut } from 'd3-ease';
 import 'd3-transition';
 import { feature, neighbors } from 'topojson-client';
+import { reframeTransform, shouldAnimateResize, smoothScale, wheelTargetScale } from '../logic/mapCamera';
+import { fadeIn, fitAlpha, labelAnchor, labelFontPx } from '../logic/mapLabels';
 
 const TOPO_URL = '/living-grid/countries-50m.json';
 const GRID_URL = '/living-grid/grid-lines.json';
 const PLACES_URL = '/living-grid/grid-places.json';
+
+/**
+ * How quickly an eased wheel catches the scale it is aiming at, in seconds.
+ * Short enough that the gesture still feels direct, long enough that a notch
+ * reads as motion rather than a cut.
+ */
+const WHEEL_TAU = 0.085;
+/** How long the camera takes to re-frame itself after a discrete resize, in ms. */
+const REFRAME_MS = 380;
+/** Keep-out from the viewport edge for a country label, in CSS px. */
+const LABEL_MARGIN = 10;
+/** The zoom's scale extent, shared by the behaviour and the wheel smoothing. */
+const SCALE_EXTENT = [1, 24];
 
 // Particle stroke batching. Canvas 2D has no per-vertex colour, so the port drew
 // each of ~1,760 particles with its own beginPath/stroke — measured at 8.95 ms of
@@ -126,6 +157,10 @@ function strokeBuckets(ctx, buckets, T) {
       if (this._init) { this.reconnect(); return; }
       this._init = true;
       this._hover = null;
+      // The element has no React context, so it reads the query itself. The
+      // view honours the same one (LivingGridView), and the map used to be the
+      // one part of the Living Grid that ignored it outright.
+      this._reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
       const T = this.theme();
       this.style.cssText = 'display:block;position:relative;width:100%;height:100%;overflow:hidden;background:' + T.bg;
       this.innerHTML = '<svg style="display:block;position:absolute;inset:0;width:100%;height:100%;cursor:grab;touch-action:none"></svg>'
@@ -435,8 +470,7 @@ function strokeBuckets(ctx, buckets, T) {
       this._rimG = this._g.append('g').attr('pointer-events', 'none').attr('filter', 'url(#' + uid + 'r)');
       this._outline = this._g.append('path').attr('fill', 'none').attr('stroke', this.theme().outline).attr('stroke-linejoin', 'round').attr('pointer-events', 'none');
       this._zt = zoomIdentity;
-      this._zoom = zoom().scaleExtent([1, 24])
-        .wheelDelta((e) => -e.deltaY * (e.deltaMode === 1 ? 0.12 : e.deltaMode ? 1 : 0.003))
+      this._zoom = zoom().scaleExtent(SCALE_EXTENT)
         .on('start', (e) => { if (e.sourceEvent) { this._user = true; this._svg.style('cursor', 'grabbing'); } })
         .on('end', () => this._svg.style('cursor', 'grab'))
         // The transform is applied synchronously, so panning stays instant. The
@@ -445,8 +479,28 @@ function strokeBuckets(ctx, buckets, T) {
         // but the last was composited by nobody. strokes() and paintPlaces()
         // both read the current _zt when they run, so deferring cannot show a
         // stale transform.
-        .on('zoom', (e) => { this._zt = e.transform; this._g.attr('transform', e.transform); this._zoomDirty = true; });
+        .on('zoom', (e) => {
+          this._zt = e.transform; this._g.attr('transform', e.transform); this._zoomDirty = true;
+          // Anything that is not the wheel smoother — a drag, a dblclick, a
+          // preset, a re-frame — becomes the target, or the smoother would
+          // haul the camera back to where the wheel last left it.
+          if (!this._smoothing) this._kTarget = e.transform.k;
+        });
       svg.call(this._zoom).on('dblclick.zoom', (e) => { const [x, y] = pointer(e); this._user = true; svg.transition().duration(400).call(this._zoom.scaleBy, 2, [x, y]); });
+      // d3-zoom's own wheel handling lands the whole notch in one frame. Ours
+      // accumulates the same travel into a target and lets frame() ease toward
+      // it; `scaleTo` there re-applies the behaviour's own constraints, so the
+      // scale and translate extents keep working exactly as before.
+      svg.on('wheel.zoom', null).on('wheel', (e) => {
+        e.preventDefault();
+        this._user = true;
+        // A re-frame in flight is a named transition, so it survives the
+        // interrupt d3-zoom does for itself; without this the two would take
+        // turns writing the transform for the rest of the tween.
+        this._svg.interrupt('reframe');
+        this._wheelAt = pointer(e);
+        this._kTarget = wheelTargetScale(this._kTarget || this._zt.k, e.deltaY, e.deltaMode, SCALE_EXTENT);
+      }, { passive: false });
       svg.on('mousemove', (e) => this.hoverLine(e)).on('mouseleave', () => { this._tip.style.display = 'none'; });
       svg.on('click', (e) => { if (e.target === svg.node() || e.target.tagName === 'svg') window.dispatchEvent(new CustomEvent('able-map-pick', { detail: null })); });
       this.resize(); this.buildNetwork(); this.zoomTo('europe', 0);
@@ -476,10 +530,54 @@ function strokeBuckets(ctx, buckets, T) {
       this._rimPaths = this._rimG.selectAll('path').data(set).join('path')
         .attr('fill', 'none').attr('stroke-linejoin', 'round').attr('d', this._path);
     }
+    /**
+     * A country's projected bounds and area — its mainland's, not its whole
+     * feature's.
+     *
+     * `bounds(FR)` spans French Guiana, so a label sized or placed from the
+     * whole feature would be sized for the Atlantic. Taking the largest ring
+     * alone is the same judgement the nine hand-tuned centroid overrides above
+     * encode, generalised: for every country here the largest projected ring is
+     * the one worth labelling. Returns null for a feature that projects to
+     * nothing.
+     */
+    mainlandGeometry(f) {
+      const g = f.geometry; if (!g) return null;
+      const polys = g.type === 'MultiPolygon' ? g.coordinates : g.type === 'Polygon' ? [g.coordinates] : [];
+      if (!polys.length) return null;
+      // Which ring is the largest cannot change with the projection: `fitSize`
+      // only rescales and translates, and that multiplies every ring's area by
+      // the same factor. So the scan runs once per feature and every later
+      // resize measures the one ring it picked — worth having, since the coded
+      // countries carry 1,600-odd rings between them and resize is already the
+      // most expensive thing this element does.
+      const cache = this._mainRing || (this._mainRing = {});
+      let i = f.id == null ? undefined : cache[f.id];
+      if (i == null) {
+        let bestA = -1;
+        for (let j = 0; j < polys.length; j++) {
+          const a = Math.abs(this._path.area({ type: 'Polygon', coordinates: polys[j] }));
+          if (a > bestA) { bestA = a; i = j; }
+        }
+        if (f.id != null) cache[f.id] = i;
+      }
+      const one = { type: 'Polygon', coordinates: polys[i] };
+      const a = Math.abs(this._path.area(one));
+      if (!(a > 0)) return null;
+      const b = this._path.bounds(one);
+      if (!b || isNaN(b[0][0])) return null;
+      return { b, a };
+    }
     resize() {
       if (!this._proj) return;
       const w = this.clientWidth || 800, h = this.clientHeight || 480, dpr = window.devicePixelRatio || 1;
       const changed = w !== this._w || h !== this._h;
+      // Read the framing before `fitSize` below moves every projected
+      // coordinate: where the reader is looking, in lon/lat, and how far the
+      // projection itself was scaled. Both are needed to put them back.
+      const was = this._framed
+        ? { scale: this._proj.scale(), geo: this._proj.invert(this._zt.invert([this._w / 2, this._h / 2])), w: this._w, h: this._h }
+        : null;
       this._w = w; this._h = h; this._dpr = dpr;
       this._svg.attr('viewBox', '0 0 ' + w + ' ' + h);
       this._canvas.width = w * dpr; this._canvas.height = h * dpr; this._pc.width = w * dpr; this._pc.height = h * dpr;
@@ -494,8 +592,13 @@ function strokeBuckets(ctx, buckets, T) {
       this._netPaths.attr('d', this._path);
       this._placesDirty = true;
       if (this._features) {
-        const cen = {};
-        this._features.forEach((f) => { const c = ALPHA[f.id]; if (!c) return; const p = this._path.centroid(f); if (p && !isNaN(p[0])) cen[c] = p; });
+        const cen = {}, geo = {};
+        this._features.forEach((f) => {
+          const c = ALPHA[f.id]; if (!c) return;
+          const p = this._path.centroid(f); if (p && !isNaN(p[0])) cen[c] = p;
+          const g = this.mainlandGeometry(f); if (g) geo[c] = g;
+        });
+        this._geo = geo;
         cen.FR = this._proj([2.4, 46.6]); cen.NO = this._proj([9.2, 61.2]); cen.DK = this._proj([9.6, 56.1]);
         cen.GB = this._proj([-1.8, 53.2]); cen.IT = this._proj([12.4, 42.8]); cen.ES = this._proj([-3.7, 40.2]);
         cen.PT = this._proj([-8.2, 39.6]); cen.NL = this._proj([5.6, 52.2]); cen.GR = this._proj([22.5, 39.6]);
@@ -506,7 +609,45 @@ function strokeBuckets(ctx, buckets, T) {
       this._zoom.translateExtent([[0, 0], [w, h]]).extent([[0, 0], [w, h]]);
       this.paint();
       if (this._grid && changed && this._field) this.buildNetwork();
-      if (!this._user) this.zoomTo(this._view || 'europe', 0);
+      this.reframe(was, changed);
+    }
+    /**
+     * Put the camera back where it belongs for the new box.
+     *
+     * Two readers to serve. One has not touched the map, and wants the preset
+     * re-fitted to the box they now have. The other has panned or zoomed to a
+     * place, and wants that place — the old code left their transform untouched
+     * while `fitSize` moved the world beneath it, so opening the zone panel
+     * after a pan showed them somewhere else entirely.
+     *
+     * Either way it glides rather than cuts, when the step is big enough to be
+     * worth gliding — a panel, not a nudged window edge. `shouldAnimateResize`
+     * says which, and says there why the step and not the timing decides.
+     */
+    reframe(was, changed) {
+      // Refresh the Europe scale unconditionally: every zoom-dependent fade is
+      // measured against it, and it used to go stale for anyone who had panned.
+      const preset = this.viewTransform(this._view || 'europe');
+      if (!changed && was) return;
+      const delta = was ? Math.abs(this._w - was.w) + Math.abs(this._h - was.h) : 0;
+      const animate = shouldAnimateResize(delta, !was, this._reduced);
+      let t = preset;
+      if (this._user && was && was.geo) {
+        const anchor = this._proj(was.geo);
+        if (anchor && !isNaN(anchor[0])) {
+          const r = reframeTransform({
+            transform: this._zt,
+            from: { w: was.w, h: was.h },
+            to: { w: this._w, h: this._h },
+            projScale: { from: was.scale, to: this._proj.scale() },
+            anchor,
+            extent: SCALE_EXTENT,
+          });
+          t = zoomIdentity.translate(r.x, r.y).scale(r.k);
+        }
+      }
+      this._framed = true;
+      this.flyTo(t, animate ? REFRAME_MS : 0);
     }
     strokes() {
       const k = this._zt.k || 1;
@@ -567,14 +708,51 @@ function strokeBuckets(ctx, buckets, T) {
       this.clearCanvas(); this.paintPlaces();
     }
     clearCanvas() { if (this._ctx) { this._ctx.setTransform(1, 0, 0, 1, 0, 0); this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height); } }
+    /**
+     * One frame of the eased wheel.
+     *
+     * The wheel handler only records where the camera is going; this is what
+     * moves it there. Going through `scaleTo` rather than writing the transform
+     * means d3 applies its own `constrain` — the scale and translate extents
+     * keep holding — and fires an ordinary zoom event, so the `<g>`, `_zt` and
+     * the dirty flag all update through the single path a drag already uses.
+     */
+    stepWheel(dt) {
+      const target = this._kTarget;
+      if (!target || !this._zoom || !this._svg) return;
+      const before = this._zt.k;
+      const k = smoothScale(before, target, dt, this._reduced ? 0 : WHEEL_TAU);
+      if (k === before) return;
+      this._smoothing = true;
+      this._zoom.scaleTo(this._svg, k, this._wheelAt || [this._w / 2, this._h / 2]);
+      this._smoothing = false;
+      // If constrain refused the step there is nowhere left to go; adopt what
+      // it gave rather than asking again on every frame for the rest of time.
+      if (Math.abs(this._zt.k - before) < 1e-9) this._kTarget = this._zt.k;
+    }
     frame(ts) {
       const ctx = this._ctx; if (!ctx || !this._field) return;
-      const t = this._zt, dpr = this._dpr, active = this.getAttribute('active');
       const dt = Math.min(0.05, (ts - (this._last || ts)) / 1000); this._last = ts;
+      // Before the transform is read: stepWheel writes it, so reading first
+      // would draw this frame one step behind the camera it is easing.
+      this.stepWheel(dt);
+      const t = this._zt, dpr = this._dpr, active = this.getAttribute('active');
       // Zoom deferred its repaint to here (see the zoom handler). Consume the
       // flag before drawing so a zoom landing mid-frame is not dropped.
       const zoomDirty = this._zoomDirty; this._zoomDirty = false;
-      if (zoomDirty) { this.strokes(); this.clearCanvas(); }
+      if (zoomDirty) {
+        this.strokes();
+        // The particle trails accumulate in screen space while the particles
+        // themselves are drawn in map space, so any transform change smears the
+        // afterimage and clearing is the honest answer. The last frames of an
+        // eased wheel move by a fraction of a pixel, though, and wiping the
+        // field for those is a flicker that buys nothing.
+        const moved = this._lastDrawn
+          ? Math.abs(t.k - this._lastDrawn.k) * 400 + Math.abs(t.x - this._lastDrawn.x) + Math.abs(t.y - this._lastDrawn.y)
+          : Infinity;
+        if (moved > 0.3) this.clearCanvas();
+        this._lastDrawn = { k: t.k, x: t.x, y: t.y };
+      }
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalCompositeOperation = 'destination-in';
       ctx.fillStyle = 'rgba(0,0,0,' + (this.theme().additive ? 0.94 : 0.955) + ')'; ctx.fillRect(0, 0, this._canvas.width, this._canvas.height);
@@ -651,9 +829,11 @@ function strokeBuckets(ctx, buckets, T) {
       const T = this.theme(), active = this.getAttribute('active'), cen = this._cen || {};
       const ts = this._last || 0, net = this._net || {}, kE = this._kEurope || 6;
       const zoomFade = Math.max(0, Math.min(1, (k - kE * 0.55) / (kE * 0.35)));
-      // narrow map panes cannot carry every label: keep the active zone and the big ones only
+      // How much pane there is for the corridor arrows' own labels. Country
+      // labels used to be gated on this and on a hand-written list of large
+      // countries; they now measure themselves against the room their country
+      // actually has (see the labels block below).
       const room = Math.max(0, Math.min(1, ((this._w || 800) - 420) / 360));
-      const BIG = { DE:1, FR:1, ES:1, IT:1, PL:1, GB:1, SE:1, NO:1, FI:1, RO:1, GR:1 };
 
       if (this.getAttribute('seas') === 'true' && this._seas && zoomFade > 0.05) {
         ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -731,14 +911,41 @@ function strokeBuckets(ctx, buckets, T) {
 
       if (this.getAttribute('labels') === 'true' && Object.keys(cen).length) {
         const chips = this.json('chips'), donuts = this.json('donuts');
+        const G = this._geo || {};
         ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         Object.keys(vals).forEach((c) => {
           const p = cen[c] || (c === 'UK' ? cen.GB : null); if (!p) return;
           const on = c === active;
-          if (!on && !BIG[c] && room < 0.45 && k < kE * 1.5) return;
+          const g = G[c] || (c === 'UK' ? G.GB : null);
           const chip = chips && chips[c], ring = donuts && donuts[c];
-          const fs = (on ? 13 : 11.5) / k, lh = fs * 1.25;
-          let x = p[0], y = p[1];
+          // Size from the country's own footprint on screen, so the label grows
+          // as you zoom into it and a small zone never carries a large zone's
+          // type. A country we have no geometry for keeps the old fixed size.
+          const fsPx = g ? labelFontPx(Math.sqrt(g.a) * k, on) : (on ? 13 : 11.5);
+          const fs = fsPx / k, lh = fs * 1.25;
+          // What it needs, measured; what it has, from the same footprint. The
+          // context is scaled by k, so measureText answers in map units and
+          // everything compared below is brought back to CSS px by k.
+          ctx.font = '500 ' + fs + "px 'IBM Plex Mono', monospace";
+          const codeW = ctx.measureText(c).width * k;
+          const chipW = chip ? ctx.measureText(chip).width * 1.02 * k : 0;
+          const ringW = ring && ring.length ? (on ? 13 : 10.5) * 2.5 : 0;
+          const roomPx = g ? (g.b[1][0] - g.b[0][0]) * k : Infinity;
+          const codeAlpha = on ? 1 : fitAlpha(roomPx, codeW + ringW + 6);
+          if (codeAlpha <= 0.01) return;
+          // A number that will not fit is dropped before the code is: knowing
+          // which country you are looking at is worth more than a value that
+          // would be drawn across its neighbours.
+          const chipAlpha = chip ? (on ? 1 : fitAlpha(roomPx, chipW + ringW + 6)) : 0;
+          const showChip = chip && chipAlpha > 0.01;
+          // Slide onto whatever of the country is actually on screen, and give
+          // up only when none of it is.
+          const half = { w: Math.max(codeW, showChip ? chipW : 0) / 2 + ringW / 2, h: showChip ? fsPx * 1.2 : fsPx * 0.6 };
+          const at = g
+            ? labelAnchor({ home: p, bounds: g.b, transform: t, size: { w: this._w, h: this._h }, half, margin: LABEL_MARGIN })
+            : p;
+          if (!at) return;
+          let x = at[0], y = at[1];
           if (ring && ring.length) {
             const rr = (on ? 13 : 10.5) / k, thick = rr * 0.42;
             const gap = rr + 5 / k;
@@ -756,17 +963,17 @@ function strokeBuckets(ctx, buckets, T) {
             ctx.beginPath(); ctx.arc(cxr, cyr, rr, 0, 6.2832);
             ctx.lineWidth = 0.8 / k; ctx.strokeStyle = rgba(T.bg, 0.8); ctx.stroke();
           }
-          const cy0 = chip ? y - lh * 0.45 : y;
+          const cy0 = showChip ? y - lh * 0.45 : y;
           ctx.font = '500 ' + fs + "px 'IBM Plex Mono', monospace";
-          ctx.lineWidth = 3 / k; ctx.strokeStyle = rgba(T.bg, 0.75);
+          ctx.lineWidth = 3 / k; ctx.strokeStyle = rgba(T.bg, 0.75 * codeAlpha);
           ctx.strokeText(c, x, cy0);
-          ctx.fillStyle = on ? '#FFFFFF' : rgba(T.label || T.panelText, 0.8 * (0.45 + 0.55 * zoomFade));
+          ctx.fillStyle = on ? '#FFFFFF' : rgba(T.label || T.panelText, 0.8 * (0.45 + 0.55 * zoomFade) * codeAlpha);
           ctx.fillText(c, x, cy0);
-          if (chip) {
+          if (showChip) {
             ctx.font = '500 ' + (fs * 1.02) + "px 'IBM Plex Mono', monospace";
-            ctx.lineWidth = 3 / k; ctx.strokeStyle = rgba(T.bg, 0.8);
+            ctx.lineWidth = 3 / k; ctx.strokeStyle = rgba(T.bg, 0.8 * chipAlpha);
             ctx.strokeText(chip, x, cy0 + lh);
-            ctx.fillStyle = on ? '#FFFFFF' : rgba(T.label || T.panelText, 0.95 * (0.5 + 0.5 * zoomFade));
+            ctx.fillStyle = on ? '#FFFFFF' : rgba(T.label || T.panelText, 0.95 * (0.5 + 0.5 * zoomFade) * chipAlpha);
             ctx.fillText(chip, x, cy0 + lh);
           }
         });
@@ -777,7 +984,10 @@ function strokeBuckets(ctx, buckets, T) {
         const fade = this.markerFade(k);
         if (fade > 0.01) {
           const min = this.plantMin(k); ctx.lineWidth = 0.9 / k;
-          this._plants.forEach((p) => { if (p.mw < min) return; if (vals[p.c] == null && !(p.c === 'GB' && vals.UK != null)) return; const col = FAM[p.f] || '#0B0E12'; ctx.strokeStyle = rgba(col, 0.75 * fade); ctx.fillStyle = rgba(col, 0.16 * fade); ctx.beginPath(); ctx.arc(p.xy[0], p.xy[1], this.plantR(p.mw, k), 0, 6.2832); ctx.fill(); ctx.stroke(); });
+          // `min` falls as you zoom, and a plant used to arrive at full opacity
+          // the instant its MW cleared it — a field of markers blinking on one
+          // by one. The band fades each in over the last 40% of its wait.
+          this._plants.forEach((p) => { const a = fade * fadeIn(p.mw, min, min * 0.4); if (a <= 0.01) return; if (vals[p.c] == null && !(p.c === 'GB' && vals.UK != null)) return; const col = FAM[p.f] || '#0B0E12'; ctx.strokeStyle = rgba(col, 0.75 * a); ctx.fillStyle = rgba(col, 0.16 * a); ctx.beginPath(); ctx.arc(p.xy[0], p.xy[1], this.plantR(p.mw, k), 0, 6.2832); ctx.fill(); ctx.stroke(); });
         }
       }
     }
@@ -806,21 +1016,38 @@ function strokeBuckets(ctx, buckets, T) {
       this._tip.textContent = label; this._tip.style.display = 'block';
       this._tip.style.left = (mx + 12) + 'px'; this._tip.style.top = (my - 28) + 'px';
     }
+    /**
+     * The transform a preset asks for, and the Europe scale every fade is
+     * measured against.
+     *
+     * Separate from `zoomTo` because `resize()` needs the target without the
+     * side effects — it re-frames on the reader's behalf, so it must not
+     * declare that they stopped steering.
+     */
+    viewTransform(view) {
+      const w = this._w, h = this._h;
+      if (view === 'world') return zoomIdentity;
+      const pts = [[-11, 62], [33, 62], [-11, 36], [33, 36]].map((p) => this._proj(p));
+      const b = [[Math.min.apply(null, pts.map((p) => p[0])), Math.min.apply(null, pts.map((p) => p[1]))], [Math.max.apply(null, pts.map((p) => p[0])), Math.max.apply(null, pts.map((p) => p[1]))]];
+      const dx = b[1][0] - b[0][0], dy = b[1][1] - b[0][1], cx = (b[0][0] + b[1][0]) / 2, cy = (b[0][1] + b[1][1]) / 2;
+      const k = Math.min(SCALE_EXTENT[1], 0.98 / Math.max(dx / w, dy / h)); this._kEurope = k;
+      return zoomIdentity.translate(w / 2 - k * cx, h / 2 - k * cy).scale(k);
+    }
+    /**
+     * Put the camera on a transform, instantly or over `dur` ms.
+     *
+     * The transition is named, so a second flight interrupts the first cleanly
+     * and — the reason for the name — the wheel can interrupt it without
+     * d3-zoom's own unnamed interrupt taking it down as a side effect.
+     */
+    flyTo(t, dur) {
+      if (!dur || this._reduced) { this._svg.interrupt('reframe'); this._svg.call(this._zoom.transform, t); return; }
+      this._svg.transition('reframe').duration(dur).ease(easeCubicInOut).call(this._zoom.transform, t);
+    }
     zoomTo(view, dur) {
       if (!this._proj) return;
       this._view = view; if (dur !== 0) this._user = false;
-      const w = this._w, h = this._h;
-      let t;
-      if (view === 'world') t = zoomIdentity;
-      else {
-        const pts = [[-11, 62], [33, 62], [-11, 36], [33, 36]].map((p) => this._proj(p));
-        const b = [[Math.min.apply(null, pts.map((p) => p[0])), Math.min.apply(null, pts.map((p) => p[1]))], [Math.max.apply(null, pts.map((p) => p[0])), Math.max.apply(null, pts.map((p) => p[1]))]];
-        const dx = b[1][0] - b[0][0], dy = b[1][1] - b[0][1], cx = (b[0][0] + b[1][0]) / 2, cy = (b[0][1] + b[1][1]) / 2;
-        const k = Math.min(24, 0.98 / Math.max(dx / w, dy / h)); this._kEurope = k;
-        t = zoomIdentity.translate(w / 2 - k * cx, h / 2 - k * cy).scale(k);
-      }
-      const sel = dur === 0 ? this._svg : this._svg.transition().duration(dur == null ? 700 : dur).ease(easeCubicInOut);
-      sel.call(this._zoom.transform, t);
+      this.flyTo(this.viewTransform(view), dur === 0 ? 0 : (dur == null ? 700 : dur));
     }
   }
 /** Registers <able-world-map>. Idempotent — safe to call on every mount. */
