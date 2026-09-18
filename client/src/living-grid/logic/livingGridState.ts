@@ -165,13 +165,19 @@ export function livingGridReducer(
       // choice marks the selection as the reader's.
       return { ...state, code: action.code, touched: state.touched || !action.opening };
 
-    case 'SET_HOUR':
+    case 'SET_HOUR': {
+      // Stays first and separate from the guard below: a pinned reader is never
+      // moved by an adopting dispatch, whatever hour it carries.
       if (action.adopting && state.hourPinned) return state;
-      return {
-        ...state,
-        hour: Math.max(0, Math.min(23, Math.round(action.hour))),
-        hourPinned: state.hourPinned || !action.adopting,
-      };
+      const hour = Math.max(0, Math.min(23, Math.round(action.hour)));
+      const hourPinned = state.hourPinned || !action.adopting;
+      // A drag dispatches at pointer resolution but resolves to whole hours, so
+      // most of its dispatches ask for the hour already on screen. Handing back
+      // the same reference makes React skip the subtree — and spares the map
+      // element a field rebuild that costs hundreds of milliseconds.
+      if (hour === state.hour && hourPinned === state.hourPinned) return state;
+      return { ...state, hour, hourPinned };
+    }
 
     case 'GO_LIVE':
       // Clearing the pin is the whole point. Expressing this as a SET_HOUR

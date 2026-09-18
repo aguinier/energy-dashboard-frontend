@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { STEPS } from '../logic/livingGridState';
 import { hourAtPosition, isLive, progressPercent, ticks } from '../logic/timeline';
 import { dayLabel } from '../logic/format';
@@ -29,6 +29,8 @@ export function FooterTimeline({
   onLive,
 }: FooterTimelineProps) {
   const trackRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const pendingX = useRef<number | null>(null);
   const live = isLive(hour, currentHour, isToday);
 
   const seek = (clientX: number) => {
@@ -37,6 +39,25 @@ export function FooterTimeline({
     const rect = el.getBoundingClientRect();
     onHour(hourAtPosition(clientX - rect.left, rect.width));
   };
+
+  /**
+   * One seek per frame, not one per pointer event.
+   *
+   * A drag fires pointermove far faster than the screen refreshes, and each one
+   * read layout (`getBoundingClientRect`) and dispatched — while the map element
+   * runs its own animation loop in the same thread. Only the last position in a
+   * frame can be seen, so the rest was work nobody could observe.
+   */
+  const scheduleSeek = (clientX: number) => {
+    pendingX.current = clientX;
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      if (pendingX.current !== null) seek(pendingX.current);
+    });
+  };
+
+  useEffect(() => () => { if (rafRef.current !== null) cancelAnimationFrame(rafRef.current); }, []);
 
   return (
     <footer className="lg-footer">
@@ -78,7 +99,7 @@ export function FooterTimeline({
             seek(e.clientX);
           }}
           onPointerMove={(e) => {
-            if (e.buttons === 1) seek(e.clientX);
+            if (e.buttons === 1) scheduleSeek(e.clientX);
           }}
           onKeyDown={(e) => {
             if (e.key === 'ArrowLeft') onHour(hour - 1);

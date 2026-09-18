@@ -49,7 +49,18 @@ export default function LivingGridView() {
     return () => window.clearInterval(timer);
   }, [state.playing]);
 
-  const attrs = useMemo(() => buildMapAttrs(state, day), [state, day]);
+  // Depends on the six fields `buildMapAttrs` actually reads, not on the whole
+  // state object. The reducer returns a new object for nearly every action, so
+  // `[state, day]` rebuilt 28 zones and re-serialised six JSON blobs when the
+  // reader typed in the search box or switched panel tab. `state.L` and
+  // `state.V` are safe to name here because `{ ...state }` copies their
+  // references — they only change identity when a toggle or a view preset
+  // actually replaces them.
+  const attrs = useMemo(
+    () => buildMapAttrs(state, day),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [state.hour, state.tab, state.colourBy, state.code, state.L, state.V, day],
+  );
 
   const availableCodes = useMemo(
     () => (day ? ZONES.map((z) => z.code).filter((c) => day.zones[c] !== undefined) : []),

@@ -149,6 +149,28 @@ describe('the hour', () => {
     expect(run(playing, { type: 'GO_LIVE', hour: 14 }).playing).toBe(false);
   });
 
+  it('returns the same state when a scrub lands on the hour already showing', () => {
+    // A drag dispatches at pointer resolution but resolves to whole hours, so
+    // most of its dispatches ask for the hour already on screen. The identical
+    // reference is the point: React skips the subtree, and the map element is
+    // spared a field rebuild measured in hundreds of milliseconds.
+    const scrubbed = run(initialState(12), { type: 'SET_HOUR', hour: 3 });
+
+    expect(run(scrubbed, { type: 'SET_HOUR', hour: 3 })).toBe(scrubbed);
+    expect(run(scrubbed, { type: 'SET_HOUR', hour: 3.4 })).toBe(scrubbed);
+  });
+
+  it('still pins the hour when the reader first taps the one already showing', () => {
+    // Same hour, but `hourPinned` goes false -> true, so this is a real change
+    // and must not be swallowed by the guard above.
+    const fresh = initialState(12);
+    const tapped = run(fresh, { type: 'SET_HOUR', hour: 12 });
+
+    expect(tapped).not.toBe(fresh);
+    expect(tapped.hourPinned).toBe(true);
+    expect(run(tapped, { type: 'SET_HOUR', hour: 16, adopting: true }).hour).toBe(12);
+  });
+
   it('offers no two steps that advance the timeline by the same amount', () => {
     // A step the payload cannot serve is a chip that changes its label and
     // nothing else. The series is hourly, so every offered step must differ.

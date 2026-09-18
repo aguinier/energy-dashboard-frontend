@@ -142,9 +142,17 @@ import { pathToFileURL } from 'node:url';
  * dispatch was discarded and the view never followed the clock again — the one
  * control whose whole purpose is liveness was the one that ended it. `GO_LIVE`
  * is a distinct action because clearing the pin is the point. 1,138 → 1,140.
+ *
+ * **A scrub that lands on the hour already showing: +2 client tests, no new
+ * file** (`livingGridState` 35 → 37). `SET_HOUR` returned a fresh state object
+ * for every dispatch, and a drag dispatches at pointer resolution while
+ * resolving to whole hours — so most of a drag forced a full re-render, and
+ * through it a map field rebuild measured in hundreds of milliseconds. The
+ * guard returns the same reference; the second test pins the case it must NOT
+ * swallow, where the hour is unchanged but `hourPinned` flips. 1,140 → 1,142.
  */
 export const TEST_FLOORS = {
-  client: { files: 89, tests: 1140, maxSkipped: 0 },
+  client: { files: 89, tests: 1142, maxSkipped: 0 },
   server: { files: 143, tests: 2962, maxSkipped: 4 },
 };
 
