@@ -171,9 +171,16 @@ import { pathToFileURL } from 'node:url';
  * border's return leg is netted even when its far side is not a zone — FR-GB
  * served +250 gross while the real border was −896 the other way), so
  * 2,962 → 2,965.
+ *
+ * **The map camera and the country labels add +2 client files / +44 tests**
+ * (`mapCamera.test.ts` 20, `mapLabels.test.ts` 24). `ableWorldMap.js` is
+ * excluded from `tsc` by design and has no tests of its own, so the arithmetic
+ * these two changes turn on lives outside it: the eased wheel and the resize
+ * re-framing in `mapCamera.ts`, the adaptive label size, fit and anchor in
+ * `mapLabels.ts`. 90 → 92 files and 1,162 → 1,206 tests.
  */
 export const TEST_FLOORS = {
-  client: { files: 90, tests: 1162, maxSkipped: 0 },
+  client: { files: 92, tests: 1206, maxSkipped: 0 },
   server: { files: 143, tests: 2965, maxSkipped: 4 },
 };
 
