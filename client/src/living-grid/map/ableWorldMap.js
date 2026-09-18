@@ -337,6 +337,12 @@ function strokeBuckets(ctx, buckets, T) {
         fx[i] = sx; fy[i] = sy; mag[i] = Math.hypot(sx, sy); if (mag[i] > vmax) vmax = mag[i];
       }
       this._field = { fx: fx, fy: fy, mag: mag, cols: cols, rows: rows, cell: cell, ox: ox, oy: oy, vmax: vmax || 1, mask: raster };
+      // Whether the field carries anything at all. It does not when no flows are
+      // published for the hour: every segment weight falls under the `w < 1`
+      // floor, so `segs` is empty, so the cell loop above skips every cell at
+      // `if (!list) continue` — wells included — and `mag` is identically zero.
+      // `vmax` is stored as `vmax || 1` and cannot be tested for this.
+      this._fieldLive = vmax > 0;
       this._lines = lines; this._segs = segs; this._net = net; this._flows = flows;
       // one arrow per border: mean position of that border's crossing points
       const bg = {};
@@ -548,7 +554,13 @@ function strokeBuckets(ctx, buckets, T) {
       // Within a batch every segment shares a quantised colour and alpha, so a
       // batch is one path and one stroke() instead of one of each per particle.
       const main = this.particleBuckets('_pbufMain'), glow = this.particleBuckets('_pbufGlow');
-      for (let i = 0; i < this._particles.length; i++) {
+      // A dead field draws nothing, so skipping is exact rather than a shortcut:
+      // every `sample().m` is 0, so every particle fails `v.m < vmax * 0.01` and
+      // the loop's whole effect is to respawn the population — 1,760 spawns a
+      // frame, each up to 16 rejection rounds, measured at 8 ms of a 16.7 ms
+      // frame to put nothing on screen.
+      const n = this._fieldLive ? this._particles.length : 0;
+      for (let i = 0; i < n; i++) {
         const p = this._particles[i], v = this.sample(p.x, p.y);
         if (p.age++ > p.life || v.m < F.vmax * 0.01) { this._gen = (this._gen || 0) + 1; this._particles[i] = this.spawn(i); continue; }
         const nx = p.x + v.x * speed, ny = p.y + v.y * speed;
