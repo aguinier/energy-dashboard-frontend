@@ -317,6 +317,21 @@ function strokeBuckets(ctx, buckets, T) {
       // bucket segments by grid cell for speed
       const bucket = new Map(), BK = 12;
       segs.forEach((s, i) => { const c0 = Math.floor((Math.min(s.A[0], s.A[0] + s.dx) - ox) / cell / BK), c1 = Math.floor((Math.max(s.A[0], s.A[0] + s.dx) - ox) / cell / BK), r0 = Math.floor((Math.min(s.A[1], s.A[1] + s.dy) - oy) / cell / BK), r1 = Math.floor((Math.max(s.A[1], s.A[1] + s.dy) - oy) / cell / BK); for (let r = r0 - 1; r <= r1 + 1; r++) for (let c = c0 - 1; c <= c1 + 1; c++) { const k = r * 4096 + c; if (!bucket.has(k)) bucket.set(k, []); bucket.get(k).push(i); } });
+      // Bucket the wells the same way. Without this, every land cell tested every
+      // well — 244,576 x 897 = 219M hypot/exp rounds, measured at 6.4 s of blocked
+      // main thread per hour step. The reach test below is unchanged, so bucketing
+      // only narrows the candidates: a well is registered in every block its own
+      // `sig * 3` reach touches, which is why the padding is computed per well and
+      // not copied from the segments' fixed +/-1 (a large demand centre spans
+      // several blocks where a segment fits in one). A key collision would only
+      // add candidates the distance test then rejects.
+      const wellBucket = new Map();
+      wells.forEach((w, i) => {
+        const reach = w.sig * 3;
+        const c0 = Math.floor((w.x - reach - ox) / cell / BK), c1 = Math.floor((w.x + reach - ox) / cell / BK);
+        const r0 = Math.floor((w.y - reach - oy) / cell / BK), r1 = Math.floor((w.y + reach - oy) / cell / BK);
+        for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) { const k = r * 4096 + c; if (!wellBucket.has(k)) wellBucket.set(k, []); wellBucket.get(k).push(i); }
+      });
       let vmax = 0;
       for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
         const i = r * cols + c; if (!raster[i * 4 + 3]) continue;
@@ -329,8 +344,9 @@ function strokeBuckets(ctx, buckets, T) {
           const g = s.w * Math.exp(-(d * d) / (2 * s.sigma * s.sigma));
           sx += g * s.ux; sy += g * s.uy;
         }
-        for (let q = 0; q < wells.length; q++) {
-          const w = wells[q], ddx = x - w.x, ddy = y - w.y, d = Math.hypot(ddx, ddy); if (d > w.sig * 3 || d < 1e-6) continue;
+        const wlist = wellBucket.get(Math.floor(r / BK) * 4096 + Math.floor(c / BK));
+        for (let q = 0; wlist && q < wlist.length; q++) {
+          const w = wells[wlist[q]], ddx = x - w.x, ddy = y - w.y, d = Math.hypot(ddx, ddy); if (d > w.sig * 3 || d < 1e-6) continue;
           const g = w.w * Math.exp(-(d * d) / (2 * w.sig * w.sig)) * Math.min(1, d / (w.sig * 0.35));
           sx += w.s * g * ddx / d; sy += w.s * g * ddy / d;
         }
