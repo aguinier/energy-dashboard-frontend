@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { chipText, type ChipKind } from './mapChips';
+import type { MapAttrs } from './mapAttrs';
 import {
   buildMapAttrs,
   donutSegments,
@@ -17,6 +19,16 @@ const stateFor = (tab: ViewTab, hour = 12) =>
   livingGridReducer({ ...initialState(hour) }, { type: 'SET_VIEW', tab });
 
 const parse = (json: string) => JSON.parse(json) as Record<string, unknown>;
+
+/**
+ * What the map actually prints on a country.
+ *
+ * The attributes carry the figure and the kind separately so the element can
+ * count through them while an hour eases; these assertions go through the same
+ * formatter it uses, so they still pin the string a reader sees.
+ */
+const chip = (attrs: MapAttrs, code: string) =>
+  chipText(attrs['chip-kind'] as ChipKind, (parse(attrs['chip-values']) as Record<string, number>)[code]);
 
 describe('netReference', () => {
   it('takes the 70th percentile, not the maximum', () => {
@@ -158,7 +170,7 @@ describe('buildMapAttrs — the dataset', () => {
 
     expect(parse(attrs.values)).toEqual({});
     expect(parse(attrs.flows)).toEqual({});
-    expect(parse(attrs.chips)).toEqual({});
+    expect(parse(attrs['chip-values'])).toEqual({});
   });
 
   it('drops a border whose other end is not on the map', () => {
@@ -181,8 +193,9 @@ describe('buildMapAttrs — per view', () => {
     const attrs = buildMapAttrs(stateFor('Balance'), makeDay());
 
     expect(attrs.fillop).toBe('0.78');
-    expect(parse(attrs.chips).DE).toBe('+2.0');
-    expect(parse(attrs.chips).FR).toBe('−1.0');
+    expect(attrs['chip-kind']).toBe('signedGw');
+    expect(chip(attrs, 'DE')).toBe('+2.0');
+    expect(chip(attrs, 'FR')).toBe('−1.0');
     expect(EXPORT_RAMP).toContain(parse(attrs.fills).DE);
     expect(IMPORT_RAMP).toContain(parse(attrs.fills).FR);
     expect(attrs.scalars).toBe('');
@@ -193,7 +206,8 @@ describe('buildMapAttrs — per view', () => {
 
     expect(attrs.fillop).toBe('0.82');
     expect(attrs['scalar-colors']).toBe(PRICE_RAMP.join(','));
-    expect(parse(attrs.chips).DE).toBe('€90');
+    expect(attrs['chip-kind']).toBe('euro');
+    expect(chip(attrs, 'DE')).toBe('€90');
 
     // Normalised across the zones on screen: FR cheapest, IT dearest.
     const scalars = parse(attrs.scalars) as Record<string, number>;
@@ -210,7 +224,8 @@ describe('buildMapAttrs — per view', () => {
     expect(attrs.fillop).toBe('0.5');
     expect(parse(attrs.fills).DE).toBe(FUEL_COLORS.wind);
     expect(parse(attrs.fills).FR).toBe(FUEL_COLORS.nuclear);
-    expect(parse(attrs.chips).DE).toBe('35.0 GW');
+    expect(attrs['chip-kind']).toBe('gw');
+    expect(chip(attrs, 'DE')).toBe('35.0 GW');
     expect(parse(attrs.donuts).DE).toBeDefined();
   });
 
@@ -218,7 +233,7 @@ describe('buildMapAttrs — per view', () => {
     const attrs = buildMapAttrs(stateFor('Market'), makeDay());
 
     expect(attrs.fillop).toBe('0.78');
-    expect(parse(attrs.chips).DE).toBe('+2.0');
+    expect(chip(attrs, 'DE')).toBe('+2.0');
   });
 
   it('gives a zone with no published net position a flow-derived fill', () => {
@@ -227,7 +242,7 @@ describe('buildMapAttrs — per view', () => {
     const attrs = buildMapAttrs(stateFor('Balance'), makeDay());
 
     expect(parse(attrs.fills).IT).toBeDefined();
-    expect(parse(attrs.chips).IT).toBeDefined();
+    expect(parse(attrs['chip-values']).IT).toBeDefined();
   });
 
   it('paints a silent zone as no-data explicitly, and leaves it unlabelled', () => {
@@ -238,7 +253,7 @@ describe('buildMapAttrs — per view', () => {
     const attrs = buildMapAttrs(stateFor('Balance'), makeDay());
 
     expect(parse(attrs.fills).PT).toBe(NET_NO_DATA);
-    expect(parse(attrs.chips).PT).toBeUndefined();
+    expect(parse(attrs['chip-values']).PT).toBeUndefined();
   });
 
   it('paints a zone whose net is unpublished at this hour as no-data, not off the ramp', () => {
@@ -250,7 +265,7 @@ describe('buildMapAttrs — per view', () => {
     const attrs = buildMapAttrs(stateFor('Balance', 12), day);
 
     expect(parse(attrs.fills).DE).toBe(NET_NO_DATA);
-    expect(parse(attrs.chips).DE).toBeUndefined();
+    expect(parse(attrs['chip-values']).DE).toBeUndefined();
   });
 
   it('paints a zone with no reported generation as no-data on Generation', () => {
@@ -279,7 +294,7 @@ describe('buildMapAttrs — toggles reach the element', () => {
     const state = livingGridReducer(stateFor('Balance'), { type: 'TOGGLE_VIZ', key: 'values' });
     const attrs = buildMapAttrs(state, makeDay());
 
-    expect(parse(attrs.chips)).toEqual({});
+    expect(parse(attrs['chip-values'])).toEqual({});
   });
 
   it('carries the active zone and the theme', () => {

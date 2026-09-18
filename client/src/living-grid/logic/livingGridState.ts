@@ -51,6 +51,17 @@ export interface LivingGridState {
    */
   hourPinned: boolean;
   hour: number;
+  /**
+   * Whether the hour on screen arrived by a step worth animating.
+   *
+   * The map eases its colours and its numbers from one hour to the next, and
+   * this is the only thing that can tell it when to. A play tick or a single
+   * step is a move between neighbouring hours and reads well eased; a drag
+   * along the timeline is the reader steering, and a tween there only lags the
+   * knob. Everything else — adopting the server's clock, jumping back to Live —
+   * is a jump rather than a step, and cuts.
+   */
+  hourEases: boolean;
   playing: boolean;
   step: number;
   tab: ViewTab;
@@ -98,12 +109,26 @@ export const STEP_HOURS: Record<(typeof STEPS)[number], number> = {
   '3h': 3,
 };
 
+/**
+ * Whether two hours are close enough that moving between them is a step.
+ *
+ * The largest deliberate step is a 3h play tick, and the day is a ring, so 23
+ * to 0 is one hour apart and not twenty-three. Anything further is a jump —
+ * a click far down the timeline, or the clock being adopted — and cuts.
+ */
+function neighbouring(from: number, to: number): boolean {
+  const gap = Math.abs(to - from);
+  return Math.min(gap, 24 - gap) <= STEP_HOURS['3h'];
+}
+
 export function initialState(currentHour = 12, code: string | null = null): LivingGridState {
   return {
     code,
     touched: false,
     hourPinned: false,
     hour: Math.max(0, Math.min(23, currentHour)),
+    // The first paint has nothing to ease from.
+    hourEases: false,
     playing: false,
     step: STEPS.indexOf('1h'),
     tab: 'Balance',
@@ -122,7 +147,9 @@ export type LivingGridAction =
   | { type: 'PICK_ZONE'; code: string | null; opening?: boolean }
   // `adopting` is the view taking the server's clock, not the reader choosing
   // an hour — the same distinction `opening` draws for the zone panel.
-  | { type: 'SET_HOUR'; hour: number; adopting?: boolean }
+  // `via: 'drag'` marks a pointer scrub, which snaps rather than eases: the
+  // reader is steering, and a tween chasing them only trails the knob.
+  | { type: 'SET_HOUR'; hour: number; adopting?: boolean; via?: 'drag' | 'step' }
   // The reader handing the timeline back to the clock. Distinct from SET_HOUR
   // because it is the only thing that CLEARS the pin.
   | { type: 'GO_LIVE'; hour: number }
@@ -151,6 +178,10 @@ export function livingGridReducer(
         V: { ...state.V, values: true, labels: true },
         colourBy: preset.colourBy,
         ptab: preset.ptab,
+        // A view switch changes what the colours mean, not which hour they
+        // describe. Easing between two palettes would blend a net position
+        // into a price and pass through colours that say neither.
+        hourEases: false,
       };
     }
 
@@ -158,7 +189,8 @@ export function livingGridReducer(
       return { ...state, ptab: action.ptab };
 
     case 'SET_COLOUR_BY':
-      return { ...state, colourBy: action.colourBy };
+      // Same reason as SET_VIEW: the basis changes, not the hour.
+      return { ...state, colourBy: action.colourBy, hourEases: false };
 
     case 'PICK_ZONE':
       // `opening` is the view filling the panel on first load; only a real
@@ -176,7 +208,10 @@ export function livingGridReducer(
       // the same reference makes React skip the subtree — and spares the map
       // element a field rebuild that costs hundreds of milliseconds.
       if (hour === state.hour && hourPinned === state.hourPinned) return state;
-      return { ...state, hour, hourPinned };
+      // Adopting the clock can land anywhere, and a drag is the reader
+      // steering; only a deliberate step between neighbouring hours eases.
+      const hourEases = !action.adopting && action.via !== 'drag' && neighbouring(state.hour, hour);
+      return { ...state, hour, hourPinned, hourEases };
     }
 
     case 'GO_LIVE':
@@ -188,6 +223,9 @@ export function livingGridReducer(
         ...state,
         hour: Math.max(0, Math.min(23, Math.round(action.hour))),
         hourPinned: false,
+        // Live is a jump to now, which can be most of a day away. Easing across
+        // that would be a long slow wipe through hours nobody asked to see.
+        hourEases: false,
         playing: false,
       };
 
@@ -205,6 +243,10 @@ export function livingGridReducer(
         ...state,
         hour: (state.hour + STEP_HOURS[STEPS[state.step]]) % 24,
         hourPinned: true,
+        // The whole reason the tween exists: playback is a sequence of steps,
+        // and it is what makes the day read as one movement rather than a
+        // slideshow. True even across the midnight wrap — 23 to 0 is a step.
+        hourEases: true,
       };
 
     case 'CYCLE_STEP':
