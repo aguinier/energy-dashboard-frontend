@@ -160,10 +160,21 @@ import { pathToFileURL } from 'node:url';
  * because a dash-offset sweep over the joined path measures geometric length
  * and the jump across a gap has none, so the reveal would skip the hole.
  * 89 → 90 files and 1,142 → 1,158 tests.
+ *
+ * **The pre-merge review pass raises both floors, no new file.** Client +4
+ * (`livingGridState` 35 → 37: a zone reached through search is the reader's
+ * choice; `mapAttrs` 27 → 30 net: a zone the day carries always gets an
+ * explicit fill — the ramp or NET_NO_DATA — because an omitted fill is not
+ * neutral, the element then colours it from its own flow-derived net on its
+ * own scale), so 1,158 → 1,162. Server +3 (`gridDay` 20 → 23: the dateless
+ * "today" request folds the Brussels date and hour into its cache key, and a
+ * border's return leg is netted even when its far side is not a zone — FR-GB
+ * served +250 gross while the real border was −896 the other way), so
+ * 2,962 → 2,965.
  */
 export const TEST_FLOORS = {
-  client: { files: 90, tests: 1158, maxSkipped: 0 },
-  server: { files: 143, tests: 2962, maxSkipped: 4 },
+  client: { files: 90, tests: 1162, maxSkipped: 0 },
+  server: { files: 143, tests: 2965, maxSkipped: 4 },
 };
 
 /**

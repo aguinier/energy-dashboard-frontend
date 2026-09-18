@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getGridDay } from '../services/gridDayService.js';
-import { todayInGridTimezone } from '../services/livingGrid/brusselsDay.js';
+import { currentHourInGridTimezone, todayInGridTimezone } from '../services/livingGrid/brusselsDay.js';
 import { cacheMiddleware, TTL } from '../middleware/cache.js';
 import { isDatabaseLocked } from '../services/livingGrid/dbLock.js';
 
@@ -17,7 +17,19 @@ const router = Router();
  * the TTL is bounded by how soon a newly published hour should appear rather
  * than by how often the numbers change.
  */
-router.get('/day', cacheMiddleware(TTL.MEDIUM), (req, res) => {
+// The dateless request means "today in Brussels, now-ish", and both halves of
+// that move under a fixed URL: the date at Brussels midnight, `currentHour` at
+// every hour boundary — each inside one five-minute TTL. Folding them into the
+// cache key means a 23:58 payload cannot answer an 00:01 request with
+// yesterday labelled `isToday`, and the Live button cannot land a reader an
+// hour behind the clock it claims to follow. An explicit ?date= pins both, so
+// it needs no extra.
+const todayCacheKey = (req: { query: unknown }): string => {
+  const { date } = req.query as { date?: string };
+  return date ? '' : `${todayInGridTimezone()}:${currentHourInGridTimezone()}`;
+};
+
+router.get('/day', cacheMiddleware(TTL.MEDIUM, todayCacheKey), (req, res) => {
   const { date } = req.query as { date?: string };
   const requested = date ?? todayInGridTimezone();
 

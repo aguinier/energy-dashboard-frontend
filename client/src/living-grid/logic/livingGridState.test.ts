@@ -160,6 +160,22 @@ describe('the hour', () => {
     expect(run(scrubbed, { type: 'SET_HOUR', hour: 3.4 })).toBe(scrubbed);
   });
 
+  it('marks a zone found through search as the reader\'s own choice', () => {
+    // Typing a country name is as deliberate as clicking it. Without `touched`
+    // the state still claims the reader never chose, and the opening-zone
+    // default is allowed to override the searched selection.
+    const searched = run(initialState(12), { type: 'SET_QUERY', query: 'fr', codes: ['FR', 'DE'] });
+
+    expect(searched.code).toBe('FR');
+    expect(searched.touched).toBe(true);
+  });
+
+  it('does not claim a choice for a search that matched nothing', () => {
+    const missed = run(initialState(12), { type: 'SET_QUERY', query: 'zz', codes: ['FR', 'DE'] });
+
+    expect(missed.touched).toBe(false);
+  });
+
   it('still pins the hour when the reader first taps the one already showing', () => {
     // Same hour, but `hourPinned` goes false -> true, so this is a real change
     // and must not be swallowed by the guard above.

@@ -146,7 +146,12 @@ function strokeBuckets(ctx, buckets, T) {
       this._ask = () => { if (this._netOut) window.dispatchEvent(new CustomEvent('able-map-net', { detail: this._netOut })); };
       window.addEventListener('able-map-ask-net', this._ask);
     }
-    disconnectedCallback() { if (this._ro) this._ro.disconnect(); cancelAnimationFrame(this._raf); window.removeEventListener('able-map-ask-net', this._ask); }
+    // `_raf` must be cleared, not merely cancelled: reconnect() re-arms the loop
+    // behind `!this._raf`, and a stale id left here kept that guard false forever
+    // — the element came back from a remount as exactly the still image the
+    // reconnect docstring promises it will not be. Since the zoom handler now
+    // defers its repaint to the loop, a dead loop would also freeze zoom.
+    disconnectedCallback() { if (this._ro) this._ro.disconnect(); cancelAnimationFrame(this._raf); this._raf = null; window.removeEventListener('able-map-ask-net', this._ask); }
     /**
      * Re-arm after a detach. React can unmount and remount this element — a
      * lazy route, an error retry — and disconnectedCallback has torn down the
@@ -448,6 +453,29 @@ function strokeBuckets(ctx, buckets, T) {
       const loop = (ts) => { this.frame(ts); this._raf = requestAnimationFrame(loop); };
       this._raf = requestAnimationFrame(loop);
     }
+    /**
+     * The choropleth and rim selections, rebuilt when the zone set changes.
+     *
+     * These were built once, from whatever `values` held at the first resize —
+     * so a zone entering the payload later (the morning ingest reaching a
+     * country mid-session, delivered by the poll) was clickable but never got
+     * a fill or a rim: paint() only re-attrs the frozen selection. The coast
+     * selection is genuinely build-once — it covers every feature regardless
+     * of data. Keyed on the sorted codes, so the frequent no-change call is a
+     * string compare.
+     */
+    ensureZonePaths() {
+      if (!this._features || !this._netG) return;
+      const vals = this.values();
+      const key = Object.keys(vals).sort().join(',');
+      if (this._netPaths && this._zoneSetKey === key) return;
+      this._zoneSetKey = key;
+      const set = this._features.filter((f) => ALPHA[f.id] && vals[ALPHA[f.id]] != null);
+      this._netPaths = this._netG.selectAll('path').data(set).join('path')
+        .attr('stroke', 'none').attr('d', this._path);
+      this._rimPaths = this._rimG.selectAll('path').data(set).join('path')
+        .attr('fill', 'none').attr('stroke-linejoin', 'round').attr('d', this._path);
+    }
     resize() {
       if (!this._proj) return;
       const w = this.clientWidth || 800, h = this.clientHeight || 480, dpr = window.devicePixelRatio || 1;
@@ -457,12 +485,10 @@ function strokeBuckets(ctx, buckets, T) {
       this._canvas.width = w * dpr; this._canvas.height = h * dpr; this._pc.width = w * dpr; this._pc.height = h * dpr;
       this._proj.fitSize([w, h], { type: 'Polygon', coordinates: [[[-180, 83], [180, 83], [180, -58], [-180, -58], [-180, 83]]] });
       this._paths.attr('d', this._path);
-      if (!this._netPaths) {
-        const set = this._features.filter((f) => ALPHA[f.id] && this.values()[ALPHA[f.id]] != null);
-        this._netPaths = this._netG.selectAll('path').data(set).join('path').attr('stroke', 'none');
-        this._rimPaths = this._rimG.selectAll('path').data(set).join('path').attr('fill', 'none').attr('stroke-linejoin', 'round');
+      if (!this._coastPaths) {
         this._coastPaths = this._coastG.selectAll('path').data(this._features).join('path').attr('fill', 'none').attr('stroke-linejoin', 'round');
       }
+      this.ensureZonePaths();
       this._rimPaths.attr('d', this._path);
       this._coastPaths.attr('d', this._path);
       this._netPaths.attr('d', this._path);
@@ -511,6 +537,9 @@ function strokeBuckets(ctx, buckets, T) {
       }
     }
     paint() {
+      // A values change reaches here (attributeChangedCallback → buildNetwork →
+      // paint), so this is where a newly-arrived zone gets its fill paths.
+      this.ensureZonePaths();
       const vals = this.values(), active = this.getAttribute('active'), net = this._net || {}, mx = this._maxNet || 1;
       // flat two-tone: exporting / importing / near-balanced. No gradient, no blur.
       const T = this.theme();

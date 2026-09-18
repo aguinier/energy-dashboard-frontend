@@ -1,6 +1,7 @@
 import type { GridDay, GridDayZone, GridFuelKey } from '@/types';
 import { GRID_FUEL_KEYS } from '@/types';
-import { EXPORT_RAMP, FUEL_COLORS, IMPORT_RAMP, PRICE_RAMP } from './ramps';
+import { signedGw } from './format';
+import { EXPORT_RAMP, FUEL_COLORS, IMPORT_RAMP, NET_NO_DATA, PRICE_RAMP } from './ramps';
 import { resolveNetSeries } from './netFromFlows';
 import { ZONES } from './zoneRegistry';
 import type { LivingGridState, ViewTab } from './livingGridState';
@@ -20,11 +21,6 @@ const FILL_OPACITY: Record<ViewTab, string> = {
   Prices: '0.82',
   Generation: '0.5',
   Market: '0.78',
-};
-
-const signedGw = (mw: number): string => {
-  const gw = mw / 1000;
-  return (gw >= 0 ? '+' : '−') + Math.abs(gw).toFixed(1);
 };
 
 /** The fuel with the largest share, or null when the zone reports none. */
@@ -182,12 +178,16 @@ export function buildMapAttrs(state: LivingGridState, day: GridDay | undefined):
     const byGeneration = tab === 'Generation';
     const byPrice = colourBy === 'price';
 
+    // Every zone the day carries gets an explicit fill: the ramp when the hour
+    // is measurable, NET_NO_DATA when it is not. A zone merely omitted is not
+    // neutral — the element then colours it from its own flow-derived net on
+    // its own 0.72-quantile scale, mixing a second quantity and a second scale
+    // into a map the legend describes with netScaleTop().
     if (byGeneration) {
       for (const zoneCode of Object.keys(values)) {
         const mix = day.zones[zoneCode]?.mix;
-        if (!mix) continue;
-        const fuel = dominantFuel(mix, hour);
-        if (fuel) fills[zoneCode] = FUEL_COLORS[fuel];
+        const fuel = mix ? dominantFuel(mix, hour) : null;
+        fills[zoneCode] = fuel ? FUEL_COLORS[fuel] : NET_NO_DATA;
       }
     } else if (!byPrice) {
       const magnitudes = [...nets.values()]
@@ -195,8 +195,8 @@ export function buildMapAttrs(state: LivingGridState, day: GridDay | undefined):
         .map(Math.abs);
       const reference = netReference(magnitudes);
       for (const [zoneCode, value] of nets) {
-        if (value === null || value === undefined) continue;
-        fills[zoneCode] = netFillColor(value, reference);
+        fills[zoneCode] =
+          value === null || value === undefined ? NET_NO_DATA : netFillColor(value, reference);
       }
     }
 

@@ -524,6 +524,13 @@ function seed(db: DatabaseType): void {
   HOURS.forEach((h) => flow.run('BE', 'FR', at(h), 250));
   // DE/BE reports every hour but 01:00.
   HOURS.filter((h) => h !== 1).forEach((h) => flow.run('DE', 'BE', at(h), 900));
+  // A border whose far side is not a zone. GB publishes no load, price,
+  // generation or net position here — deliberately, as in production since
+  // 2021 — but BOTH legs of FR<->GB are in the table, because interconnector
+  // flows are reported by the border, not by the zone. A netting that only
+  // fetches exports FROM zones reads the FR leg alone and serves +700 gross
+  // as if it were the net.
+  HOURS.forEach((h) => { flow.run('FR', 'GB', at(h), 700); flow.run('GB', 'FR', at(h), 500); });
 
   // -------------------------------------------------------- ml forecasts
 

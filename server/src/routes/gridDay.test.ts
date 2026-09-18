@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import { buildFixtureDb } from '../test/fixtureDb.js';
 
 const fixtureDb = buildFixtureDb();
@@ -195,6 +195,16 @@ describe('GET /api/grid/day — cross-border flows', () => {
     expect(atSlots((body.data as Payload).flows['BE-FR'])).toEqual([250, 250, 250, 250]);
   });
 
+  it('nets the return leg of a border whose far side is not a zone', async () => {
+    // GB publishes nothing but flows, so it is not in `zones` — yet both legs
+    // of FR<->GB are in the table, stored by border, not by zone. Fetching
+    // exports only FROM zones served the FR leg gross, +700, as the net; the
+    // real border is 700 out against 500 back.
+    const { body } = await get(DAY);
+
+    expect(atSlots((body.data as Payload).flows['FR-GB'])).toEqual([200, 200, 200, 200]);
+  });
+
   it('leaves an hour with neither leg null, and a cancelling hour zero', async () => {
     const { body } = await get(DAY);
     const { flows } = body.data as Payload;
@@ -259,5 +269,37 @@ describe('GET /api/grid/day — request handling', () => {
     expect(body.success).toBe(true);
     expect((body.data as Payload).zones).toEqual({});
     expect((body.data as Payload).flows).toEqual({});
+  });
+});
+
+describe('GET /api/grid/day — the dateless request under the cache', () => {
+  // Only Date is faked: the harness talks to a real HTTP server, and faking
+  // the timer functions would stall it.
+  beforeEach(() => vi.useFakeTimers({ toFake: ['Date'] }));
+  afterEach(() => vi.useRealTimers());
+
+  it('does not serve yesterday across Brussels midnight from the cache', async () => {
+    // The dateless URL never changes, but what it means does — at Brussels
+    // midnight, inside the cache's five-minute TTL. A 23:58 payload answering
+    // an 00:01 request labels yesterday `isToday: true`.
+    vi.setSystemTime(new Date('2026-06-30T21:58:00Z')); // 23:58 Brussels, CEST
+
+    expect(((await get('')).body.meta as Meta).date).toBe('2026-06-30');
+
+    vi.setSystemTime(new Date('2026-06-30T22:01:00Z')); // 00:01 the next day
+
+    expect(((await get('')).body.meta as Meta).date).toBe('2026-07-01');
+  });
+
+  it('crosses an hour boundary without serving the old currentHour', async () => {
+    // GO_LIVE jumps to meta.currentHour, so a cached hour makes the Live
+    // button land the reader an hour behind the clock it claims to follow.
+    vi.setSystemTime(new Date('2026-07-01T10:59:00Z')); // 12:59 Brussels
+
+    expect(((await get('')).body.meta as Meta).currentHour).toBe(12);
+
+    vi.setSystemTime(new Date('2026-07-01T11:01:00Z')); // 13:01 Brussels
+
+    expect(((await get('')).body.meta as Meta).currentHour).toBe(13);
   });
 });

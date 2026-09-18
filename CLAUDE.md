@@ -144,7 +144,7 @@ energy-dashboard-frontend/
     │                             #   forecast, tsoForecast, forecastComparison,
     │                             #   crossCountryComparison, netPosition(+Ingest),
     │                             #   coreNetPosition, dataFreshness, countries,
-    │                             #   weather, opsStatus
+    │                             #   weather, opsStatus, gridDay
     ├── services/                 # one module per route group; pure verdict modules:
     │                             #   freshness, loadQuality, degenerateForecast,
     │                             #   freshnessRollup, hostMetrics, wape, loadForecastBasis;

@@ -10,7 +10,7 @@ import {
 } from './mapAttrs';
 import { buildPriceBars } from './priceBars';
 import { initialState, livingGridReducer, type ViewTab } from './livingGridState';
-import { EXPORT_RAMP, FUEL_COLORS, IMPORT_RAMP, PRICE_RAMP, sampleRamp } from './ramps';
+import { EXPORT_RAMP, FUEL_COLORS, IMPORT_RAMP, NET_NO_DATA, PRICE_RAMP, sampleRamp } from './ramps';
 import { emptyMix, makeDay, series } from './testFixture';
 
 const stateFor = (tab: ViewTab, hour = 12) =>
@@ -230,11 +230,33 @@ describe('buildMapAttrs — per view', () => {
     expect(parse(attrs.chips).IT).toBeDefined();
   });
 
-  it('leaves a silent zone unfilled and unlabelled', () => {
+  it('paints a silent zone as no-data explicitly, and leaves it unlabelled', () => {
+    // An omitted fill is not neutral: the element then colours the country
+    // from its own flow-derived net with its own scale — a different quantity
+    // than the legend describes. Absence of a chip is fine (no number, no
+    // claim); absence of a fill is a decision handed to the wrong layer.
     const attrs = buildMapAttrs(stateFor('Balance'), makeDay());
 
-    expect(parse(attrs.fills).PT).toBeUndefined();
+    expect(parse(attrs.fills).PT).toBe(NET_NO_DATA);
     expect(parse(attrs.chips).PT).toBeUndefined();
+  });
+
+  it('paints a zone whose net is unpublished at this hour as no-data, not off the ramp', () => {
+    // DE publishes all day except this hour. The hole must read as "not
+    // measurable now", never as a colour from either ramp — and never fall
+    // through to the element's internal colouring.
+    const day = makeDay();
+    day.zones.DE.net[12] = null;
+    const attrs = buildMapAttrs(stateFor('Balance', 12), day);
+
+    expect(parse(attrs.fills).DE).toBe(NET_NO_DATA);
+    expect(parse(attrs.chips).DE).toBeUndefined();
+  });
+
+  it('paints a zone with no reported generation as no-data on Generation', () => {
+    const attrs = buildMapAttrs(stateFor('Generation'), makeDay());
+
+    expect(parse(attrs.fills).PT).toBe(NET_NO_DATA);
   });
 });
 

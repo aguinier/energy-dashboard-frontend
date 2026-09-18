@@ -212,7 +212,15 @@ export function livingGridReducer(
 
     case 'SET_QUERY': {
       const match = matchZone(action.query, action.codes);
-      return { ...state, query: action.query, code: match ?? state.code };
+      // A zone reached by typing its name is as much the reader's choice as one
+      // reached by clicking it — without `touched` the opening-zone default was
+      // still allowed to override a searched selection.
+      return {
+        ...state,
+        query: action.query,
+        code: match ?? state.code,
+        touched: state.touched || match !== null,
+      };
     }
 
     case 'TOGGLE_LAYER':

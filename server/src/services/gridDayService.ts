@@ -165,8 +165,17 @@ const NET_POSITION_SQL = `
     GROUP BY hourKey
   `;
 
-/** Flows read per exporting zone, seeking idx_cbf_from. */
-const FLOWS_SQL = `
+/**
+ * Flows read per zone, one statement per direction.
+ *
+ * Both directions must be read because the table stores flows by BORDER, not
+ * by zone: GB publishes no load, price or net position — it is not a zone —
+ * yet its return legs (GB->FR, GB->NL, …) are current, and reading only
+ * exports FROM zones served those borders as the zone-side leg gross, as if
+ * it were the net. The table has no timestamp index, so each direction seeks
+ * its own country index (idx_cbf_from / idx_cbf_to) rather than scanning.
+ */
+const flowsSql = (direction: 'country_from' | 'country_to') => `
     SELECT country_from, country_to, hourKey, SUM(flow_mw) AS flow_mw
     FROM (
       SELECT
@@ -175,7 +184,7 @@ const FLOWS_SQL = `
         ${HOUR_KEY_SQL} AS hourKey,
         flow_mw,${separatorRank('country_from, country_to, ')}
       FROM crossborder_flows
-      WHERE country_from = ?
+      WHERE ${direction} = ?
         AND ${rangeClause('timestamp_utc')}
     )
     WHERE separatorRank = 1
@@ -294,14 +303,21 @@ export function getGridDay(date: string, db: DatabaseType = defaultDb): GridDayR
     zoneOf(code).net = series;
   }
 
-  // Flows, per exporting zone. The table is absent from some deployments'
-  // replicas, in which case the border layer is simply empty.
+  // Flows, per zone in both directions. The table is absent from some
+  // deployments' replicas, in which case the border layer is simply empty.
   let flows: Record<string, HourSeries> = {};
   if (tableExists(db, 'crossborder_flows')) {
-    const flowStatement = db.prepare(FLOWS_SQL);
+    const fromStatement = db.prepare(flowsSql('country_from'));
+    const toStatement = db.prepare(flowsSql('country_to'));
+    const zoneSet = new Set(Object.keys(zones));
     const flowRows: FlowRow[] = [];
-    for (const code of Object.keys(zones)) {
-      flowRows.push(...(flowStatement.all(code, ...args) as FlowRow[]));
+    for (const code of zoneSet) {
+      flowRows.push(...(fromStatement.all(code, ...args) as FlowRow[]));
+      // The mirror pass exists for exporters that are not zones (GB, UA);
+      // a row whose exporter IS a zone was already read by the pass above.
+      for (const row of toStatement.all(code, ...args) as FlowRow[]) {
+        if (!zoneSet.has(row.country_from)) flowRows.push(row);
+      }
     }
     flows = netFlows(flowRows, index);
   }

@@ -31,6 +31,17 @@ export const TOKENS = {
 } as const;
 
 /** Exporting, least to most. */
+/**
+ * The fill for a zone whose figure is not measurable at the shown hour.
+ *
+ * This is the map element's `living` theme `dnl` colour, kept in sync by hand
+ * (ableWorldMap.js, THEMES.living.dnl). It exists so the client can say
+ * "no data" explicitly: a zone merely *omitted* from the fills attribute is
+ * coloured by the element's own flow-derived net on its own scale — a
+ * different quantity than the legend describes.
+ */
+export const NET_NO_DATA = '#2B3C49';
+
 export const EXPORT_RAMP = ['#1D5F66', '#219A94', '#2FD3C0', '#8BF0E4'] as const;
 /** Importing, least to most. */
 export const IMPORT_RAMP = ['#5E2330', '#9B2E31', '#D14430', '#F0703C'] as const;
