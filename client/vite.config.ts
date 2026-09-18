@@ -36,8 +36,21 @@ export default defineConfig(({ mode }) => {
             'vendor-data': ['@tanstack/react-query', 'zustand', 'axios'],
             // Charting library - largest dependency
             'vendor-recharts': ['recharts'],
-            // Map library
-            'vendor-maps': ['react-simple-maps'],
+            // Map library. react-simple-maps depends on d3-geo, d3-selection,
+            // d3-zoom and topojson-client, so those belong here rather than
+            // with the Living Grid: the classic map view pulls them either
+            // way, and filing them under the lazy view only made that chunk
+            // load for a view that is not the Living Grid.
+            'vendor-maps': [
+              'react-simple-maps',
+              'd3-geo',
+              'd3-selection',
+              'd3-zoom',
+              'topojson-client',
+            ],
+            // What only the Living Grid's canvas layer adds on top, loaded
+            // with the lazy Living Grid view.
+            'vendor-living-grid': ['d3-ease', 'd3-transition'],
             // Animation library
             'vendor-animation': ['framer-motion'],
             // UI components (Radix)

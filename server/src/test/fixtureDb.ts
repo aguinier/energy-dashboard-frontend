@@ -225,6 +225,18 @@ CREATE TABLE net_position (
     UNIQUE(country_code, timestamp_utc)
 );
 
+CREATE TABLE crossborder_flows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    country_from TEXT NOT NULL,
+    country_to TEXT NOT NULL,
+    timestamp_utc TEXT NOT NULL,
+    flow_mw REAL NOT NULL,
+    data_quality TEXT DEFAULT 'actual',
+    publication_timestamp_utc TEXT,
+    fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(country_from, country_to, timestamp_utc)
+);
+
 CREATE TABLE energy_load_forecast (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     country_code TEXT NOT NULL,
@@ -480,6 +492,45 @@ function seed(db: DatabaseType): void {
   // existed. Left alone they render Luxembourg at -6201 MW beside Germany at
   // +175 MW: two contradictory colours for one bidding zone.
   netPosition.run('LU', at(0), -6201);
+
+  // ------------------------------------------------------ crossborder_flows
+  //
+  // ENTSO-E publishes each direction of a border as its own non-negative row,
+  // so the netting the Living Grid map does has to be exercised against all
+  // three shapes that actually occur:
+  //
+  // - DE/FR: BOTH legs present. Netted, DE->FR minus FR->DE, the border reads
+  //   +300 / -100 / +400 / 0 — including an hour where the legs cancel, which
+  //   is a real zero and must not read as missing.
+  // - BE/FR: ONE leg only. The border is still a number, not null.
+  // - DE/BE: NEITHER leg at 01:00. That hour is null, because a flow that has
+  //   not been published is not a flow of zero.
+  //
+  // The 'T' separator on one DE/FR hour is not decoration: this column carries
+  // both forms, and a window bound that only understood one of them silently
+  // dropped a day's worth of rows once already (ABL-21).
+  const flow = db.prepare(
+    'INSERT INTO crossborder_flows (country_from, country_to, timestamp_utc, flow_mw) VALUES (?, ?, ?, ?)'
+  );
+  const deFr = [500, 200, 400, 150];
+  const frDe = [200, 300, 0, 150];
+  HOURS.forEach((h, i) => {
+    // Hour 2 is stored 'T'-separated, the rest space-separated.
+    const stamp = h === 2 ? atT(h) : at(h);
+    flow.run('DE', 'FR', stamp, deFr[i]);
+    flow.run('FR', 'DE', stamp, frDe[i]);
+  });
+  // One-legged border: BE exports to FR every hour, FR never back.
+  HOURS.forEach((h) => flow.run('BE', 'FR', at(h), 250));
+  // DE/BE reports every hour but 01:00.
+  HOURS.filter((h) => h !== 1).forEach((h) => flow.run('DE', 'BE', at(h), 900));
+  // A border whose far side is not a zone. GB publishes no load, price,
+  // generation or net position here — deliberately, as in production since
+  // 2021 — but BOTH legs of FR<->GB are in the table, because interconnector
+  // flows are reported by the border, not by the zone. A netting that only
+  // fetches exports FROM zones reads the FR leg alone and serves +700 gross
+  // as if it were the net.
+  HOURS.forEach((h) => { flow.run('FR', 'GB', at(h), 700); flow.run('GB', 'FR', at(h), 500); });
 
   // -------------------------------------------------------- ml forecasts
 

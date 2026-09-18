@@ -90,10 +90,91 @@ import { pathToFileURL } from 'node:url';
  * tests** (new `dataFreshnessService.test.ts` 7, `freshness.test.ts` +13), so
  * 137 → 138 files and 2,880 → 2,900 tests. The tree (`origin/main` =
  * `4630634`, ABL-717 merged) runs 138 / 2,900 server tests on Node 24.18.0.
+ *
+ * **Living Grid M1 raises the server floor by its own counted delta: +4 files,
+ * +57 tests** — `brusselsDay.test.ts` 13, `fuelGroups.test.ts` 13,
+ * `flowNetting.test.ts` 12 and `gridDay.test.ts` 19, all new with the
+ * `/api/grid/day` route — so 138 → 142 files and 2,900 → 2,957 tests.
+ *
+ * **Living Grid M2 raises both floors.** Server +1 file / +4 tests
+ * (`dbLock.test.ts`), so 142 → 143 and 2,957 → 2,961. Client +13 files /
+ * +171 tests — the view's pure logic modules, each with its own sibling:
+ * `livingGridState` 26, `mapAttrs` 23, `sparkline` 11, `mixRows` 12,
+ * `priceBars` 9, `flowsPanel` 13, `netFromFlows` 11, `zoneRegistry` 11,
+ * `searchMatch` 8, `timeline` 13, `format` 14, `ramps` 11, `gridError` 5 —
+ * so 75 → 88 files and 932 → 1,103 tests. The canvas element and the React
+ * components are deliberately not among them: every number they render is
+ * computed in one of these modules, and the suite runs without a DOM.
+ *
+ * **Living Grid M4 raises the client floor by +7 tests, no new file**
+ * (`zoneRegistry.test.ts` 11 → 15 for the opening-zone choice,
+ * `livingGridState.test.ts` 26 → 29 for the "has the reader chosen yet" flag
+ * that keeps that default from overriding a deliberate dismissal), so
+ * 1,103 → 1,110 and 88 files stays 88.
+ *
+ * **Living Grid empty-state honesty adds +1 client file / +11 tests**
+ * (`emptyState.test.ts`), which tell "this zone published nothing today" apart
+ * from "the day's ingest has not reached this hour yet" — the panel used to
+ * claim the first while only having checked the second. 88 → 89 files and
+ * 1,110 → 1,121 tests.
+ *
+ * **The Living Grid review fixes raise both floors, no new file.** Client +13
+ * (`emptyState` 11 → 14 for an interior gap read as a late update,
+ * `priceBars` 9 → 10 for a negative price drawn as the tallest bar,
+ * `livingGridState` 29 → 33 for the dead step setting and for the server clock
+ * dragging a reader off a scrubbed hour, `mapAttrs` 24 → 27 for a legend and a
+ * panel that each described a scale the map does not paint with, `flowsPanel`
+ * 13 → 15 for two ways of reading one border key), so 1,121 → 1,134. Server +1
+ * (`gridDay.test.ts` 19 → 20: both timestamp separator forms for one instant
+ * were averaged into a third number neither row holds), so 2,961 → 2,962.
+ *
+ * **A measured zero is not an absence: +4 client tests, no new file**
+ * (`mixRows` 11 → 14 for a breakdown that reported zeros against one that
+ * reported nothing, `emptyState` 14 → 15 for the sentence that says so). The
+ * mix section's emptiness rule is stricter than presence, so it reached a
+ * fallback that claimed the zone had published nothing all day — for a zone
+ * whose fuels all read 0 MW, which is every night for a solar-only zone.
+ * 1,134 → 1,138 and 89 files stays 89.
+ *
+ * **The Live button ended liveness: +2 client tests, no new file**
+ * (`livingGridState` 33 → 35). "Live" reached the hour through a plain
+ * `SET_HOUR`, which marks the hour as the reader's, so every later adopting
+ * dispatch was discarded and the view never followed the clock again — the one
+ * control whose whole purpose is liveness was the one that ended it. `GO_LIVE`
+ * is a distinct action because clearing the pin is the point. 1,138 → 1,140.
+ *
+ * **A scrub that lands on the hour already showing: +2 client tests, no new
+ * file** (`livingGridState` 35 → 37). `SET_HOUR` returned a fresh state object
+ * for every dispatch, and a drag dispatches at pointer resolution while
+ * resolving to whole hours — so most of a drag forced a full re-render, and
+ * through it a map field rebuild measured in hundreds of milliseconds. The
+ * guard returns the same reference; the second test pins the case it must NOT
+ * swallow, where the hour is unchanged but `hourPinned` flips. 1,140 → 1,142.
+ *
+ * **The zone panel's draw-on entry adds +1 client file / +16 tests**
+ * (`drawOn.test.ts` 11, `sparkline` 11 → 16). `drawOn.ts` owns the timing so the
+ * sparkline, the bars and the figures cannot disagree about how long the panel
+ * takes to arrive, and so the stagger scales with the group's size — the app's
+ * older per-item constants assume small groups and would run a 24-bar row for
+ * 1.4s. `buildSparkline` gained `runs`, one per unbroken stretch of readings,
+ * because a dash-offset sweep over the joined path measures geometric length
+ * and the jump across a gap has none, so the reveal would skip the hole.
+ * 89 → 90 files and 1,142 → 1,158 tests.
+ *
+ * **The pre-merge review pass raises both floors, no new file.** Client +4
+ * (`livingGridState` 35 → 37: a zone reached through search is the reader's
+ * choice; `mapAttrs` 27 → 30 net: a zone the day carries always gets an
+ * explicit fill — the ramp or NET_NO_DATA — because an omitted fill is not
+ * neutral, the element then colours it from its own flow-derived net on its
+ * own scale), so 1,158 → 1,162. Server +3 (`gridDay` 20 → 23: the dateless
+ * "today" request folds the Brussels date and hour into its cache key, and a
+ * border's return leg is netted even when its far side is not a zone — FR-GB
+ * served +250 gross while the real border was −896 the other way), so
+ * 2,962 → 2,965.
  */
 export const TEST_FLOORS = {
-  client: { files: 75, tests: 932, maxSkipped: 0 },
-  server: { files: 138, tests: 2900, maxSkipped: 4 },
+  client: { files: 90, tests: 1162, maxSkipped: 0 },
+  server: { files: 143, tests: 2965, maxSkipped: 4 },
 };
 
 /**

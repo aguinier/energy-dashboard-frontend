@@ -97,11 +97,22 @@ export function buildCacheKey(method: string, originalUrl: string, bucketMs: num
   return `${method}:${path}?${params.toString()}`;
 }
 
-// Cache middleware factory
-export function cacheMiddleware(ttlMs: number = TTL.MEDIUM) {
+// Cache middleware factory.
+//
+// `keyExtra` folds request-derived state the URL does not carry into the key.
+// It exists for the one shape the URL cannot express: a dateless request that
+// means "now", whose meaning moves while the URL stays fixed — /api/grid/day
+// changes what it denotes at Brussels midnight and at every hour boundary,
+// both inside one TTL.
+export function cacheMiddleware(
+  ttlMs: number = TTL.MEDIUM,
+  keyExtra?: (req: Request) => string,
+) {
   const bucketMs = Math.min(60_000, ttlMs);
   return (req: Request, res: Response, next: NextFunction): void => {
-    const key = buildCacheKey(req.method, req.originalUrl, bucketMs);
+    const base = buildCacheKey(req.method, req.originalUrl, bucketMs);
+    const extra = keyExtra ? keyExtra(req) : '';
+    const key = extra ? `${base}#${extra}` : base;
     const cached = cache.get(key);
 
     if (cached) {
