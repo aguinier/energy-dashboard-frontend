@@ -235,6 +235,23 @@ describe('GET /api/grid/day — request handling', () => {
     expect(meta.currentHour).toBeLessThan(24);
   });
 
+  it('prefers the space-form row over the T-form one for the same instant', async () => {
+    // Both separator forms exist in these tables for the same country-hour —
+    // 107,047 conflicting pairs in energy_load alone — and the codebase's
+    // settled answer is to prefer the space form, never to combine them.
+    // Averaging the pair would serve 500, a number neither row holds.
+    const insert = fixtureDb.prepare(
+      'INSERT INTO energy_load (country_code, timestamp_utc, load_mw) VALUES (?, ?, ?)',
+    );
+    insert.run('DE', '2026-07-05 10:00:00', 100);
+    insert.run('DE', '2026-07-05T10:00:00', 900);
+
+    const { body } = await get('?date=2026-07-05');
+
+    // Brussels is CEST that day, so 10:00 UTC is the 12:00 local slot.
+    expect((body.data as Payload).zones.DE.load[12]).toBe(100);
+  });
+
   it('serves a day with no rows as an empty payload, not an error', async () => {
     const { status, body } = await get('?date=2020-01-01');
 

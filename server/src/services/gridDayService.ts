@@ -89,28 +89,60 @@ export interface GridDayResult {
 const HOUR_KEY_SQL = `substr(REPLACE(timestamp_utc, 'T', ' '), 1, 13)`;
 
 /**
+ * Rank the rows that describe one instant so the space form comes first.
+ *
+ * Both separator forms exist in these tables for the same country-hour, and
+ * they do not always agree — `utils/timestamp.ts` counts 107,047 conflicting
+ * pairs in `energy_load` alone. Normalising the separator in the GROUP BY is
+ * what makes an hour bucket correct; on its own it also drops both rows of a
+ * conflicting pair into that bucket, where `AVG` means them into a third
+ * number that neither row holds. Which of a pair is right is not knowable
+ * here, so this takes the same answer the rest of the codebase takes — prefer
+ * the space form — rather than inventing a reading.
+ *
+ * This ranks rows, not values: a space-form row whose value is NULL still
+ * wins, because "reported nothing" is a reading too.
+ */
+const separatorRank = (partition: string): string => `
+      ROW_NUMBER() OVER (
+        PARTITION BY ${partition}REPLACE(timestamp_utc, 'T', ' ')
+        ORDER BY (timestamp_utc LIKE '%T%')
+      ) AS separatorRank`;
+
+/**
  * Load, price and generation are published every 15 minutes, so an hour is the
  * mean of up to four readings. `AVG` skips NULLs and yields NULL only when
  * every reading in the hour is NULL, which is exactly the distinction between
  * "did not report" and "reported zero" this codebase refuses to collapse.
  */
 const zoneHourSql = (table: string, expression: string): string => `
-    SELECT
-      country_code AS zone,
-      ${HOUR_KEY_SQL} AS hourKey,
-      AVG(${expression}) AS value
-    FROM ${table}
-    WHERE ${rangeClause('timestamp_utc')}
+    SELECT zone, hourKey, AVG(value) AS value
+    FROM (
+      SELECT
+        country_code AS zone,
+        ${HOUR_KEY_SQL} AS hourKey,
+        ${expression} AS value,${separatorRank('country_code, ')}
+      FROM ${table}
+      WHERE ${rangeClause('timestamp_utc')}
+    )
+    WHERE separatorRank = 1
     GROUP BY zone, hourKey
   `;
 
 const GENERATION_SQL = `
     SELECT
-      country_code AS zone,
-      ${HOUR_KEY_SQL} AS hourKey,
+      zone,
+      hourKey,
       ${GENERATION_MW_COLUMNS.map((c) => `AVG(${c}) AS ${c}`).join(',\n      ')}
-    FROM energy_generation
-    WHERE ${rangeClause('timestamp_utc')}
+    FROM (
+      SELECT
+        country_code AS zone,
+        ${HOUR_KEY_SQL} AS hourKey,
+        ${GENERATION_MW_COLUMNS.join(',\n        ')},${separatorRank('country_code, ')}
+      FROM energy_generation
+      WHERE ${rangeClause('timestamp_utc')}
+    )
+    WHERE separatorRank = 1
     GROUP BY zone, hourKey
   `;
 
@@ -120,25 +152,33 @@ const GENERATION_SQL = `
  * 667k rows for a window predicate that cannot use that index.
  */
 const NET_POSITION_SQL = `
-    SELECT
-      ${HOUR_KEY_SQL} AS hourKey,
-      AVG(net_position_mw) AS value
-    FROM net_position
-    WHERE country_code = ?
-      AND ${rangeClause('timestamp_utc')}
+    SELECT hourKey, AVG(value) AS value
+    FROM (
+      SELECT
+        ${HOUR_KEY_SQL} AS hourKey,
+        net_position_mw AS value,${separatorRank('')}
+      FROM net_position
+      WHERE country_code = ?
+        AND ${rangeClause('timestamp_utc')}
+    )
+    WHERE separatorRank = 1
     GROUP BY hourKey
   `;
 
 /** Flows read per exporting zone, seeking idx_cbf_from. */
 const FLOWS_SQL = `
-    SELECT
-      country_from,
-      country_to,
-      ${HOUR_KEY_SQL} AS hourKey,
-      SUM(flow_mw) AS flow_mw
-    FROM crossborder_flows
-    WHERE country_from = ?
-      AND ${rangeClause('timestamp_utc')}
+    SELECT country_from, country_to, hourKey, SUM(flow_mw) AS flow_mw
+    FROM (
+      SELECT
+        country_from,
+        country_to,
+        ${HOUR_KEY_SQL} AS hourKey,
+        flow_mw,${separatorRank('country_from, country_to, ')}
+      FROM crossborder_flows
+      WHERE country_from = ?
+        AND ${rangeClause('timestamp_utc')}
+    )
+    WHERE separatorRank = 1
     GROUP BY country_from, country_to, hourKey
   `;
 
