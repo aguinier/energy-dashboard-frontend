@@ -27,8 +27,17 @@ export interface MixBreakdown {
   totalMw: number;
   /** Wind, solar, hydro and biomass as a fraction of the total. */
   renewableShare: number | null;
-  /** True when the zone reported no generation at all for this hour. */
+  /** True when there is no bar to draw for this hour. */
   empty: boolean;
+  /**
+   * True when the zone published a figure for at least one fuel this hour,
+   * even if everything it published is zero.
+   *
+   * `empty` covers both that case and a zone that published nothing at all,
+   * because neither draws a bar — but they are different claims and the panel
+   * owes them different sentences. A solar-only zone reports 0 MW every night.
+   */
+  reported: boolean;
 }
 
 /** Fuels counted as renewable for the panel's RES figure. */
@@ -41,7 +50,7 @@ export function buildMixBreakdown(
   mix: Record<GridFuelKey, GridHourSeries> | undefined,
   hour: number,
 ): MixBreakdown {
-  if (!mix) return { rows: [], totalMw: 0, renewableShare: null, empty: true };
+  if (!mix) return { rows: [], totalMw: 0, renewableShare: null, empty: true, reported: false };
 
   const reported: { fuel: GridFuelKey; mw: number }[] = [];
   for (const fuel of GRID_FUEL_KEYS) {
@@ -52,7 +61,13 @@ export function buildMixBreakdown(
 
   const totalMw = reported.reduce((sum, r) => sum + r.mw, 0);
   if (reported.length === 0 || totalMw <= 0) {
-    return { rows: [], totalMw: 0, renewableShare: null, empty: true };
+    return {
+      rows: [],
+      totalMw: 0,
+      renewableShare: null,
+      empty: true,
+      reported: reported.length > 0,
+    };
   }
 
   const rows = reported
@@ -70,7 +85,7 @@ export function buildMixBreakdown(
     .filter((r) => RENEWABLE.includes(r.fuel))
     .reduce((sum, r) => sum + r.mw, 0);
 
-  return { rows, totalMw, renewableShare: renewableMw / totalMw, empty: false };
+  return { rows, totalMw, renewableShare: renewableMw / totalMw, empty: false, reported: true };
 }
 
 /**

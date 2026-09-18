@@ -25,8 +25,11 @@ function SectionHeading({ title, note }: { title: string; note?: string }) {
 }
 
 /**
- * Says which kind of nothing this is: a zone silent all day, or one whose
- * data has simply not reached the hour on screen yet.
+ * Says which kind of nothing this is: a zone silent all day, one whose data
+ * has not reached the hour on screen yet, or a hole between hours that report.
+ *
+ * Only for a section whose emptiness IS "the hour has no value". A section
+ * with a stricter rule than that must answer for itself — see `MixSection`.
  */
 function NoData({
   what,
@@ -37,8 +40,17 @@ function NoData({
   series?: readonly (number | null)[];
   hour: number;
 }) {
-  const reason = emptyReason(series, hour) ?? { kind: 'none-today' as const };
-  return <div className="lg-note">{emptyMessage(reason, what)}</div>;
+  // A caller reaching here with a presence track that DOES carry this hour is
+  // asking a stricter question than presence answers, and only it knows the
+  // real answer. Say the little that is certain rather than defaulting to
+  // "nothing today" — the strongest claim available, and false every time the
+  // mix section used to reach it.
+  const reason = emptyReason(series, hour);
+  return (
+    <div className="lg-note">
+      {reason ? emptyMessage(reason, what) : `No ${what} to show for this hour.`}
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------- sparkline */
@@ -123,11 +135,18 @@ export function MixSection({
         note={breakdown.empty ? undefined : `${gw(breakdown.totalMw)} GW`}
       />
       {breakdown.empty ? (
-        <NoData
-          what="generation"
-          series={mix ? anyOf(GRID_FUEL_KEYS.map((f) => mix[f] ?? [])) : undefined}
-          hour={hour}
-        />
+        breakdown.reported ? (
+          // The zone published for this hour and what it published sums to
+          // nothing. That is a measured zero, not an absence, and the presence
+          // track cannot tell them apart — 0 is a value like any other.
+          <div className="lg-note">{emptyMessage({ kind: 'zero' }, 'generation')}</div>
+        ) : (
+          <NoData
+            what="generation"
+            series={mix ? anyOf(GRID_FUEL_KEYS.map((f) => mix[f] ?? [])) : undefined}
+            hour={hour}
+          />
+        )
       ) : (
         <>
           <div className="lg-stack">
@@ -309,7 +328,10 @@ export function KeyFigures({
   const priceRange = zone ? seriesRange(zone.price) : null;
 
   const rows: { label: string; value: string; color?: string }[] = [
-    { label: 'Generation', value: mix.empty ? '—' : `${gw(mix.totalMw)} GW` },
+    // Keyed on `reported`, not `empty`: a zone that published zeros reads
+    // "0.0 GW" here, matching what the mix section says two rows up. Only a
+    // zone that published nothing gets the em dash.
+    { label: 'Generation', value: mix.reported ? `${gw(mix.totalMw)} GW` : '—' },
     { label: 'Load', value: zone?.load[hour] == null ? '—' : `${gw(zone.load[hour])} GW` },
     {
       label: 'Net position',

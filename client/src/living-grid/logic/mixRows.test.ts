@@ -67,6 +67,27 @@ describe('buildMixBreakdown', () => {
     expect(b.renewableShare).toBeNull();
   });
 
+  it('tells a zone that reported zeros apart from one that reported nothing', () => {
+    // Both are `empty` — there is no bar to draw either way — but they are
+    // different claims about the zone, and the panel must not answer them with
+    // the same sentence. A solar-only zone reports 0 MW every night; saying it
+    // published nothing today is false for the other sixteen hours.
+    expect(buildMixBreakdown(mixOf({ wind: 0, solar: 0 }), 12).reported).toBe(true);
+    expect(buildMixBreakdown(emptyMix(), 12).reported).toBe(false);
+  });
+
+  it('counts a fuel reported as pumping as reported, not as absent', () => {
+    // Clamped to zero for the share maths, but the zone did publish a number.
+    const b = buildMixBreakdown(mixOf({ hydro: -50 }), 12);
+
+    expect(b.empty).toBe(true);
+    expect(b.reported).toBe(true);
+  });
+
+  it('has nothing reported when the mix is absent altogether', () => {
+    expect(buildMixBreakdown(undefined, 12).reported).toBe(false);
+  });
+
   it('survives a missing mix entirely', () => {
     expect(buildMixBreakdown(undefined, 12).empty).toBe(true);
   });

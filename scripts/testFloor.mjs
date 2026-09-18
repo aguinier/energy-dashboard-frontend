@@ -127,9 +127,17 @@ import { pathToFileURL } from 'node:url';
  * 13 → 15 for two ways of reading one border key), so 1,121 → 1,134. Server +1
  * (`gridDay.test.ts` 19 → 20: both timestamp separator forms for one instant
  * were averaged into a third number neither row holds), so 2,961 → 2,962.
+ *
+ * **A measured zero is not an absence: +4 client tests, no new file**
+ * (`mixRows` 11 → 14 for a breakdown that reported zeros against one that
+ * reported nothing, `emptyState` 14 → 15 for the sentence that says so). The
+ * mix section's emptiness rule is stricter than presence, so it reached a
+ * fallback that claimed the zone had published nothing all day — for a zone
+ * whose fuels all read 0 MW, which is every night for a solar-only zone.
+ * 1,134 → 1,138 and 89 files stays 89.
  */
 export const TEST_FLOORS = {
-  client: { files: 89, tests: 1134, maxSkipped: 0 },
+  client: { files: 89, tests: 1138, maxSkipped: 0 },
   server: { files: 143, tests: 2962, maxSkipped: 4 },
 };
 

@@ -13,12 +13,19 @@ import { hourLabel } from './format';
  * The third is an interior hole: the day reports either side of the hour on
  * screen. That is not an update running late, and saying "yet" while naming an
  * hour further down the day points the reader forward at data already in hand.
+ *
+ * The fourth is a measured zero, and it is the one `emptyReason` cannot see:
+ * "the zone published a number" and "the section has something to draw" are
+ * different questions, and a section whose own rule is stricter than presence
+ * — the mix needs a positive total before it has a bar — must supply this one
+ * itself. Nothing here derives it.
  */
 
 export type EmptyReason =
   | { kind: 'none-today' }
   | { kind: 'not-this-hour'; latestHour: number }
-  | { kind: 'gap'; resumesHour: number };
+  | { kind: 'gap'; resumesHour: number }
+  | { kind: 'zero' };
 
 /**
  * Classify a 24-slot series at `hour`, or `null` when there IS something to
@@ -52,6 +59,9 @@ export function emptyMessage(reason: EmptyReason, what: string): string {
   }
   if (reason.kind === 'gap') {
     return `No ${what} for this hour — a gap in the day; it resumes at ${hourLabel(reason.resumesHour)}.`;
+  }
+  if (reason.kind === 'zero') {
+    return `Reported ${what} for this hour is zero.`;
   }
   return `No ${what} for this hour yet — the latest today is ${hourLabel(reason.latestHour)}.`;
 }

@@ -72,6 +72,12 @@ describe('emptyMessage', () => {
       'No generation for this hour — a gap in the day; it resumes at 07:00.',
     );
   });
+
+  it('says a reported zero is a zero, not an absence', () => {
+    expect(emptyMessage({ kind: 'zero' }, 'generation')).toBe(
+      'Reported generation for this hour is zero.',
+    );
+  });
 });
 
 describe('anyOf', () => {
