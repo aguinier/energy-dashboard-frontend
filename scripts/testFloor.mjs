@@ -178,9 +178,19 @@ import { pathToFileURL } from 'node:url';
  * these two changes turn on lives outside it: the eased wheel and the resize
  * re-framing in `mapCamera.ts`, the adaptive label size, fit and anchor in
  * `mapLabels.ts`. 90 → 92 files and 1,162 → 1,206 tests.
+ *
+ * **The chunk graph adds +1 client file / +3 tests** (`chunkGraph.test.ts`).
+ * `d3-transition` had been split into its own chunk from `d3-selection`, which
+ * made the two chunks import each other; a circular chunk evaluates
+ * innermost-first, so `selection.prototype.transition = …` landed on the
+ * prototype object `d3-selection` then replaced wholesale. Production had no
+ * `.transition()` or `.interrupt()` on any selection while dev — unbundled, no
+ * chunks — was fine, and it took the Living Grid map down. The test reads the
+ * chunk map out of `vite.config.ts` and fails if they are separated again.
+ * 92 → 93 files and 1,206 → 1,209 tests.
  */
 export const TEST_FLOORS = {
-  client: { files: 92, tests: 1206, maxSkipped: 0 },
+  client: { files: 93, tests: 1209, maxSkipped: 0 },
   server: { files: 143, tests: 2965, maxSkipped: 4 },
 };
 
