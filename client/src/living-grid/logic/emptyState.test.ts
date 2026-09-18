@@ -31,6 +31,20 @@ describe('emptyReason', () => {
     expect(emptyReason(s, 12)).toEqual({ kind: 'not-this-hour', latestHour: 8 });
   });
 
+  it('calls an interior hole a gap, not an update that has not landed', () => {
+    // The zone reported all day either side of 03:00. "not yet" would point
+    // forward at 20:00 and blame the ingest for a hole it has already passed.
+    const s = series((h) => (h === 3 ? null : 10));
+
+    expect(emptyReason(s, 3)).toEqual({ kind: 'gap', resumesHour: 4 });
+  });
+
+  it('names the next hour that reports, not the next slot', () => {
+    const s = series((h) => (h >= 3 && h <= 6 ? null : 10));
+
+    expect(emptyReason(s, 3)).toEqual({ kind: 'gap', resumesHour: 7 });
+  });
+
   it('treats an absent series as a silent day', () => {
     expect(emptyReason(undefined, 12)).toEqual({ kind: 'none-today' });
   });
@@ -50,6 +64,12 @@ describe('emptyMessage', () => {
   it('names the latest hour when the data has simply not arrived yet', () => {
     expect(emptyMessage({ kind: 'not-this-hour', latestHour: 3 }, 'border flow')).toBe(
       'No border flow for this hour yet — the latest today is 03:00.',
+    );
+  });
+
+  it('says a gap is a hole in the day rather than a late update', () => {
+    expect(emptyMessage({ kind: 'gap', resumesHour: 7 }, 'generation')).toBe(
+      'No generation for this hour — a gap in the day; it resumes at 07:00.',
     );
   });
 });
