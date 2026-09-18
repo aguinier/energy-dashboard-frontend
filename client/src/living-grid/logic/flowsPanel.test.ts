@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildFlowRows, flowTotals, MAX_FLOW_ROWS } from './flowsPanel';
+import { borderTouches, buildFlowRows, flowTotals, MAX_FLOW_ROWS } from './flowsPanel';
 import { series } from './testFixture';
 
 const FLOWS = {
@@ -8,6 +8,23 @@ const FLOWS = {
   'DE-PL': series((h) => (h === 3 ? null : -200)),
   'AT-CH': series(() => 900),
 };
+
+describe('borderTouches', () => {
+  it('counts a border as touching a zone exactly when that zone gets a row', () => {
+    // The empty-state notice and the rows must read a key the same way, or the
+    // panel can report data on a border it then declines to list.
+    const flows = { 'DE-FR-XX': series(() => 100) };
+
+    expect(Object.keys(flows).filter((k) => borderTouches(k, 'XX'))).toEqual([]);
+    expect(buildFlowRows(flows, 'XX', 12)).toEqual([]);
+  });
+
+  it('reads the two zones a border joins', () => {
+    expect(borderTouches('DE-FR', 'DE')).toBe(true);
+    expect(borderTouches('DE-FR', 'FR')).toBe(true);
+    expect(borderTouches('DE-FR', 'BE')).toBe(false);
+  });
+});
 
 describe('buildFlowRows', () => {
   it('signs every border from the selected zone point of view', () => {

@@ -23,6 +23,19 @@ export interface FlowRow {
 /** How many borders the panel lists, per the design. */
 export const MAX_FLOW_ROWS = 7;
 
+/**
+ * Whether a border key joins `code` to somewhere.
+ *
+ * A key names exactly two zones, `from-to`. Anything that reads a key more
+ * loosely than the row builder does — testing every hyphen-separated segment,
+ * say — can count a border the rows path then ignores, and the panel ends up
+ * claiming data on a border it declines to list.
+ */
+export function borderTouches(key: string, code: string): boolean {
+  const [a, b] = key.split('-');
+  return a === code || b === code;
+}
+
 export function buildFlowRows(
   flows: Record<string, GridHourSeries>,
   code: string | null,
@@ -33,8 +46,8 @@ export function buildFlowRows(
 
   const rows: FlowRow[] = [];
   for (const [key, series] of Object.entries(flows)) {
+    if (!borderTouches(key, code)) continue;
     const [a, b] = key.split('-');
-    if (a !== code && b !== code) continue;
     const value = series[hour];
     if (value === null || value === undefined) continue;
 
