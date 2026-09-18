@@ -102,6 +102,23 @@ export function availableZones(day: GridDay | undefined): ZoneInfo[] {
   return ZONES.filter((z) => zoneAvailability(z.code, day.zones[z.code], day.meta.sharedZones).basis !== 'none');
 }
 
+/**
+ * The zone the view opens on, so the panel is not an empty third of the screen.
+ *
+ * The design opens on Belgium; that is kept where the data supports it, and
+ * otherwise the fullest-reporting zone stands in, so the first thing a reader
+ * sees is a panel with something in it rather than a row of dashes.
+ */
+export function openingZone(day: GridDay | undefined): string | null {
+  const available = availableZones(day);
+  if (available.length === 0) return null;
+  const full = available.filter(
+    (z) => zoneAvailability(z.code, day!.zones[z.code], day!.meta.sharedZones).basis === 'full',
+  );
+  const pool = full.length > 0 ? full : available;
+  return (pool.find((z) => z.code === 'BE') ?? pool[0]).code;
+}
+
 /** Short label for the basis pill; the design's DEMO pill, told the truth. */
 export function basisLabel(availability: ZoneAvailability): string {
   switch (availability.basis) {

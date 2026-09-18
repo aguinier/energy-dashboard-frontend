@@ -35,6 +35,13 @@ export interface VizToggles {
 
 export interface LivingGridState {
   code: string | null;
+  /**
+   * True once the reader has chosen a zone for themselves, including choosing
+   * to close one. The view opens on a zone so the panel is not empty, and this
+   * is what stops that default from re-applying itself over a deliberate
+   * dismissal.
+   */
+  touched: boolean;
   hour: number;
   playing: boolean;
   step: number;
@@ -87,6 +94,7 @@ export const STEP_HOURS: Record<(typeof STEPS)[number], number> = {
 export function initialState(currentHour = 12, code: string | null = null): LivingGridState {
   return {
     code,
+    touched: false,
     hour: Math.max(0, Math.min(23, currentHour)),
     playing: false,
     step: 1,
@@ -103,7 +111,7 @@ export type LivingGridAction =
   | { type: 'SET_VIEW'; tab: ViewTab }
   | { type: 'SET_PANEL_TAB'; ptab: PanelTab }
   | { type: 'SET_COLOUR_BY'; colourBy: ColourBy }
-  | { type: 'PICK_ZONE'; code: string | null }
+  | { type: 'PICK_ZONE'; code: string | null; opening?: boolean }
   | { type: 'SET_HOUR'; hour: number }
   | { type: 'PLAY' }
   | { type: 'PAUSE' }
@@ -140,7 +148,9 @@ export function livingGridReducer(
       return { ...state, colourBy: action.colourBy };
 
     case 'PICK_ZONE':
-      return { ...state, code: action.code };
+      // `opening` is the view filling the panel on first load; only a real
+      // choice marks the selection as the reader's.
+      return { ...state, code: action.code, touched: state.touched || !action.opening };
 
     case 'SET_HOUR':
       return { ...state, hour: Math.max(0, Math.min(23, Math.round(action.hour))) };

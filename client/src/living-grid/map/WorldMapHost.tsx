@@ -80,6 +80,11 @@ export function WorldMapHost({ attrs, onPick, onHover, onFlows }: WorldMapHostPr
   return (
     <able-world-map
       ref={ref as React.RefObject<HTMLElement>}
+      // Present on the tag, not only in the attribute effect: the element
+      // paints its own background when it connects, which happens before any
+      // effect runs. Without this it shows one frame of the default light
+      // theme behind every sea.
+      theme="living"
       style={{ display: 'block', width: '100%', height: '100%' }}
     />
   );

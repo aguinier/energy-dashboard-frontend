@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { availableZones, basisLabel, ZONE_BY_CODE, ZONES, zoneAvailability } from './zoneRegistry';
+import {
+  availableZones,
+  basisLabel,
+  openingZone,
+  ZONE_BY_CODE,
+  ZONES,
+  zoneAvailability,
+} from './zoneRegistry';
 import { emptyMix, makeDay, series, zone } from './testFixture';
 
 describe('the registry', () => {
@@ -65,6 +72,35 @@ describe('availableZones', () => {
 
   it('is empty before the payload arrives', () => {
     expect(availableZones(undefined)).toEqual([]);
+  });
+});
+
+describe('openingZone', () => {
+  it('opens on a zone so the panel is not an empty third of the screen', () => {
+    // The design opens on Belgium; the fixture has DE and FR reporting fully
+    // and no BE, so the fullest-reporting zone stands in.
+    expect(openingZone(makeDay())).toBe('DE');
+  });
+
+  it('prefers Belgium where its data supports it, as the design does', () => {
+    const day = makeDay();
+    day.zones.BE = day.zones.DE;
+
+    expect(openingZone(day)).toBe('BE');
+  });
+
+  it('never opens on a zone with nothing to show', () => {
+    const day = makeDay();
+    // Only the silent zone and the partial one remain.
+    delete day.zones.DE;
+    delete day.zones.FR;
+
+    expect(openingZone(day)).toBe('IT');
+  });
+
+  it('opens on nothing when there is nothing to open on', () => {
+    expect(openingZone(undefined)).toBeNull();
+    expect(openingZone({ ...makeDay(), zones: {} })).toBeNull();
   });
 });
 

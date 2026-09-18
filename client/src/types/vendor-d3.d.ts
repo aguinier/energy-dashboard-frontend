@@ -52,14 +52,17 @@ declare global {
     interface IntrinsicElements {
       /**
        * The `<able-world-map>` custom element defined in
-       * `src/living-grid/map/ableWorldMap.ts`. Every input is a string
-       * attribute set imperatively by `WorldMapHost`, so no prop surface is
-       * declared here beyond the standard HTML one.
+       * `src/living-grid/map/ableWorldMap.js`.
+       *
+       * `WorldMapHost` sets nearly every input imperatively, because writing an
+       * attribute makes the element re-parse and repaint. `theme` is the
+       * exception: it has to be on the tag, since the element paints its own
+       * background when it connects, which is before any effect runs.
        */
       'able-world-map': React.DetailedHTMLProps<
         React.HTMLAttributes<HTMLElement>,
         HTMLElement
-      >;
+      > & { theme?: string };
     }
   }
 }

@@ -105,9 +105,15 @@ import { pathToFileURL } from 'node:url';
  * so 75 → 88 files and 932 → 1,103 tests. The canvas element and the React
  * components are deliberately not among them: every number they render is
  * computed in one of these modules, and the suite runs without a DOM.
+ *
+ * **Living Grid M4 raises the client floor by +7 tests, no new file**
+ * (`zoneRegistry.test.ts` 11 → 15 for the opening-zone choice,
+ * `livingGridState.test.ts` 26 → 29 for the "has the reader chosen yet" flag
+ * that keeps that default from overriding a deliberate dismissal), so
+ * 1,103 → 1,110 and 88 files stays 88.
  */
 export const TEST_FLOORS = {
-  client: { files: 88, tests: 1103, maxSkipped: 0 },
+  client: { files: 88, tests: 1110, maxSkipped: 0 },
   server: { files: 143, tests: 2961, maxSkipped: 4 },
 };
 

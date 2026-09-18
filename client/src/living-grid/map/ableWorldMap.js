@@ -127,7 +127,29 @@ const PLACES_URL = '/living-grid/grid-places.json';
     }
     /** Repaint on demand — used once webfonts load, since canvas text does not reflow. */
     repaint() { if (this._paths) { this.paint(); this.paintPlaces(); } }
-    attributeChangedCallback(n) { if (!this._paths || !this._w) return; if (n === 'values' || n === 'density' || n === 'demand' || n === 'flows') this.buildNetwork(); this.paint(); this.paintPlaces(); }    values() { try { return JSON.parse(this.getAttribute('values') || '{}'); } catch (e) { return {}; } }
+    /**
+     * Re-apply the theme colours that live on DOM nodes rather than on canvas.
+     *
+     * connectedCallback bakes these in once, which was fine when the element
+     * was written by hand with its attributes already on the tag. Mounted by a
+     * framework, the attributes arrive in an effect AFTER the element has
+     * connected, so it would keep the default theme's near-white background
+     * behind every sea while the data layers repainted in the right palette.
+     */
+    applyChrome() {
+      const T = this.theme();
+      this.style.background = T.bg;
+      if (this._tip) { this._tip.style.background = T.tipBg; this._tip.style.color = T.tipText; }
+      const bar = this.querySelector('[data-bar]');
+      if (bar) {
+        bar.style.background = T.panel;
+        bar.style.borderColor = T.panelBorder;
+        bar.querySelectorAll('button').forEach((b) => { b.style.background = T.panel; b.style.color = T.panelText; });
+      }
+      const src = this.querySelector('[data-src]');
+      if (src) src.style.color = T.srcText;
+    }
+    attributeChangedCallback(n) { if (n === 'theme') this.applyChrome(); if (!this._paths || !this._w) return; if (n === 'values' || n === 'density' || n === 'demand' || n === 'flows') this.buildNetwork(); this.paint(); this.paintPlaces(); }    values() { try { return JSON.parse(this.getAttribute('values') || '{}'); } catch (e) { return {}; } }
     theme() { return THEMES[this.getAttribute('theme')] || THEMES.current; }
     json(n) { try { return JSON.parse(this.attr(n) || 'null'); } catch (e) { return null; } }
 

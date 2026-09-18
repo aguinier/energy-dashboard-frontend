@@ -10,7 +10,7 @@ import { buildMapAttrs } from '@/living-grid/logic/mapAttrs';
 import { initialState, livingGridReducer } from '@/living-grid/logic/livingGridState';
 import { resolveNetSeries } from '@/living-grid/logic/netFromFlows';
 import { describeGridError } from '@/living-grid/logic/gridError';
-import { ZONES } from '@/living-grid/logic/zoneRegistry';
+import { openingZone, ZONES } from '@/living-grid/logic/zoneRegistry';
 import '@/living-grid/plex-fonts.css';
 import '@/living-grid/living-grid.css';
 
@@ -28,6 +28,15 @@ export default function LivingGridView() {
   useEffect(() => {
     if (day?.meta.isToday) dispatch({ type: 'SET_HOUR', hour: day.meta.currentHour });
   }, [day?.meta.isToday, day?.meta.currentHour]);
+
+  // Open on a zone rather than on an empty third of the screen, as the design
+  // does. Only before the reader has chosen for themselves — `openingZone`
+  // returns null once anything is selected, so this cannot fight a click or
+  // re-select a zone the reader has just closed.
+  const opening = day && state.code === null && !state.touched ? openingZone(day) : null;
+  useEffect(() => {
+    if (opening) dispatch({ type: 'PICK_ZONE', code: opening, opening: true });
+  }, [opening]);
 
   useEffect(() => {
     if (!state.playing) return;

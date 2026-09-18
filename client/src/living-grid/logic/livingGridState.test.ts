@@ -143,6 +143,28 @@ describe('selection and search', () => {
     expect(run(picked, { type: 'PICK_ZONE', code: null }).code).toBeNull();
   });
 
+  it('marks the selection as the reader own once they choose', () => {
+    expect(initialState().touched).toBe(false);
+    expect(run(initialState(), { type: 'PICK_ZONE', code: 'FR' }).touched).toBe(true);
+  });
+
+  it('does not mark the view opening on a zone as a choice', () => {
+    // The view fills the panel on load; that must not count, or the default
+    // could never be distinguished from a click.
+    expect(run(initialState(), { type: 'PICK_ZONE', code: 'BE', opening: true }).touched).toBe(false);
+  });
+
+  it('treats closing the panel as a choice, so the default does not return', () => {
+    const s = run(
+      initialState(),
+      { type: 'PICK_ZONE', code: 'BE', opening: true },
+      { type: 'PICK_ZONE', code: null },
+    );
+
+    expect(s.code).toBeNull();
+    expect(s.touched).toBe(true);
+  });
+
   it('selects on a name prefix once two characters are typed', () => {
     const s = run(initialState(), { type: 'SET_QUERY', query: 'be', codes });
 
