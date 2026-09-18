@@ -6,7 +6,7 @@ import { MapStage } from '@/living-grid/components/MapStage';
 import { FooterTimeline } from '@/living-grid/components/FooterTimeline';
 import { ZonePanel } from '@/living-grid/components/ZonePanel';
 import { ZoneSections } from '@/living-grid/components/ZoneSections';
-import { buildMapAttrs } from '@/living-grid/logic/mapAttrs';
+import { buildMapAttrs, netScaleTop } from '@/living-grid/logic/mapAttrs';
 import { initialState, livingGridReducer } from '@/living-grid/logic/livingGridState';
 import { resolveNetSeries } from '@/living-grid/logic/netFromFlows';
 import { describeGridError } from '@/living-grid/logic/gridError';
@@ -21,12 +21,17 @@ export default function LivingGridView() {
   const { data: day, isLoading, isError, error, refetch } = useGridDay();
   const [state, dispatch] = useReducer(livingGridReducer, undefined, () => initialState());
 
-  // The server knows what hour it is where the data lives; adopt it once the
-  // payload lands so the timeline opens on "now" rather than on noon.
+  // The server knows what hour it is where the data lives; adopt it so the
+  // timeline opens on "now" rather than on noon, and keeps up with the clock
+  // as the poll brings newer payloads. `adopting` makes the reducer drop this
+  // the moment the reader scrubs or plays, so it cannot pull them off an hour
+  // they are reading.
   const currentHour = day?.meta.currentHour ?? 12;
   const isToday = day?.meta.isToday ?? false;
   useEffect(() => {
-    if (day?.meta.isToday) dispatch({ type: 'SET_HOUR', hour: day.meta.currentHour });
+    if (day?.meta.isToday) {
+      dispatch({ type: 'SET_HOUR', hour: day.meta.currentHour, adopting: true });
+    }
   }, [day?.meta.isToday, day?.meta.currentHour]);
 
   // Open on a zone rather than on an empty third of the screen, as the design
@@ -52,7 +57,10 @@ export default function LivingGridView() {
   );
 
   // Legend extents are read off the hour on screen, so the scale describes
-  // this map rather than a fixed range the data may never reach.
+  // this map rather than a fixed range the data may never reach. The net
+  // legend prints the ramp's saturation point, not the hour's largest zone:
+  // the fill stops brightening well below the maximum, so labelling the
+  // maximum would describe a gradient the map never draws.
   const { priceRange, netExtent } = useMemo(() => {
     if (!day) return { priceRange: null, netExtent: null };
     const prices: number[] = [];
@@ -65,7 +73,7 @@ export default function LivingGridView() {
     }
     return {
       priceRange: prices.length ? { min: Math.min(...prices), max: Math.max(...prices) } : null,
-      netExtent: nets.length ? Math.max(...nets) : null,
+      netExtent: nets.length ? netScaleTop(nets) : null,
     };
   }, [day, availableCodes, state.hour]);
 

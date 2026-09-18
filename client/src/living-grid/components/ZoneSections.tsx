@@ -32,7 +32,9 @@ export function ZoneSections({ day, code, hour, ptab, onHour, onPick }: ZoneSect
     <>
       {showNet && <NetSparkline series={netSeries} hour={hour} />}
       {showMix && <MixSection mix={zone?.mix} hour={hour} />}
-      {showPrice && <PriceBarsSection series={zone?.price} hour={hour} onHour={onHour} />}
+      {showPrice && (
+        <PriceBarsSection day={day} series={zone?.price} hour={hour} onHour={onHour} />
+      )}
       {showFlows && <FlowsSection day={day} code={code} hour={hour} onPick={onPick} />}
       <KeyFigures day={day} code={code} hour={hour} netSeries={netSeries} />
     </>

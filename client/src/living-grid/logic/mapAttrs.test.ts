@@ -5,9 +5,12 @@ import {
   dominantFuel,
   netFillColor,
   netReference,
+  netScaleTop,
+  priceScale,
 } from './mapAttrs';
+import { buildPriceBars } from './priceBars';
 import { initialState, livingGridReducer, type ViewTab } from './livingGridState';
-import { EXPORT_RAMP, FUEL_COLORS, IMPORT_RAMP, PRICE_RAMP } from './ramps';
+import { EXPORT_RAMP, FUEL_COLORS, IMPORT_RAMP, PRICE_RAMP, sampleRamp } from './ramps';
 import { emptyMix, makeDay, series } from './testFixture';
 
 const stateFor = (tab: ViewTab, hour = 12) =>
@@ -28,6 +31,48 @@ describe('netReference', () => {
   it('falls back to something usable on empty or all-zero input', () => {
     expect(netReference([])).toBe(1);
     expect(netReference([0, 0, 0])).toBe(1);
+  });
+});
+
+describe('priceScale', () => {
+  it('gives a panel bar the same colour its country has on the map', () => {
+    // A zone flat all day spans nothing of its own, so scaled against itself
+    // it paints as the cheapest hour on the ramp while the map — which scales
+    // across zones — paints it the dearest country on the continent.
+    const day = makeDay();
+    // The map hands the web component a 0–1 scalar per zone and lets it walk
+    // the same ramp, so that scalar is what a bar has to agree with.
+    const scalars = parse(buildMapAttrs(stateFor('Prices'), day).scalars) as Record<string, number>;
+    const scale = priceScale(day, 12);
+
+    const bars = buildPriceBars(day.zones.DE.price, 12, {
+      scaleMin: scale.lo,
+      scaleMax: scale.hi,
+    });
+
+    expect(bars[12].color).toBe(sampleRamp(PRICE_RAMP, scalars.DE));
+  });
+});
+
+describe('netScaleTop', () => {
+  it('is the magnitude at which the ramp stops brightening', () => {
+    // What the legend must print. One outlier zone does not set the scale,
+    // so the top label has to be the saturation point, not the day's maximum.
+    const magnitudes = [500, 700, 900, 1_100, 1_300, 1_500, 1_700, 1_900, 14_000];
+    const top = netScaleTop(magnitudes);
+
+    expect(top).toBeLessThan(Math.max(...magnitudes));
+    expect(netFillColor(top, netReference(magnitudes))).toBe(
+      EXPORT_RAMP[EXPORT_RAMP.length - 1],
+    );
+  });
+
+  it('is unmoved by a single outlier zone', () => {
+    // The whole reason the fill is not max-based: one −14 GW hour in one zone
+    // must not flatten the continent, so it must not set the legend either.
+    const base = [500, 700, 900, 1_100, 1_300, 1_500, 1_700, 1_900];
+
+    expect(netScaleTop([...base, 99_000])).toBe(netScaleTop([...base, 2_000]));
   });
 });
 

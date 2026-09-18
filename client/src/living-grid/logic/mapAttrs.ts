@@ -1,4 +1,4 @@
-import type { GridDay, GridFuelKey } from '@/types';
+import type { GridDay, GridDayZone, GridFuelKey } from '@/types';
 import { GRID_FUEL_KEYS } from '@/types';
 import { EXPORT_RAMP, FUEL_COLORS, IMPORT_RAMP, PRICE_RAMP } from './ramps';
 import { resolveNetSeries } from './netFromFlows';
@@ -75,9 +75,44 @@ export function netReference(magnitudes: number[]): number {
   return sorted[Math.floor(sorted.length * 0.7)] || sorted[sorted.length - 1] || 1;
 }
 
+/**
+ * The price ramp's bounds at one hour, across every zone the day reports.
+ *
+ * The map colours a country by where its price sits among its neighbours, so
+ * anything else drawing a price in the same colours has to scale the same way.
+ * A zone scaled against only itself paints a flat day as its own cheapest
+ * hour, which is a different claim from the one the map beside it is making.
+ */
+export function priceScale(day: GridDay, hour: number): { lo: number; hi: number } {
+  const prices = ZONES.map((z) => day.zones[z.code])
+    .filter((z): z is GridDayZone => z !== undefined)
+    .map((z) => z.price[hour])
+    .filter((v): v is number => v !== null && v !== undefined);
+
+  return {
+    lo: prices.length ? Math.min(...prices) : 0,
+    hi: prices.length ? Math.max(...prices) : 1,
+  };
+}
+
+/**
+ * Headroom above the reference before the ramp tops out. The fill and the
+ * legend must read this from the same place — a legend that prints a bound the
+ * ramp never uses describes a map that is not on screen.
+ */
+const NET_SCALE_HEADROOM = 1.15;
+
+/** The magnitude at which the ramp saturates: what the legend must print. */
+export function netScaleTop(magnitudes: number[]): number {
+  return netReference(magnitudes) * NET_SCALE_HEADROOM;
+}
+
 /** Position on the four-stop ramp for one zone's net position. */
 export function netFillColor(value: number, reference: number): string {
-  const t = Math.max(0, Math.min(0.999, Math.pow(Math.abs(value) / (reference * 1.15), 0.8)));
+  const t = Math.max(
+    0,
+    Math.min(0.999, Math.pow(Math.abs(value) / (reference * NET_SCALE_HEADROOM), 0.8)),
+  );
   const ramp = value >= 0 ? EXPORT_RAMP : IMPORT_RAMP;
   return ramp[Math.floor(t * ramp.length)];
 }
@@ -166,11 +201,7 @@ export function buildMapAttrs(state: LivingGridState, day: GridDay | undefined):
     }
 
     if (byPrice) {
-      const prices = Object.keys(values)
-        .map((c) => day.zones[c]?.price[hour])
-        .filter((v): v is number => v !== null && v !== undefined);
-      const lo = prices.length ? Math.min(...prices) : 0;
-      const hi = prices.length ? Math.max(...prices) : 1;
+      const { lo, hi } = priceScale(day, hour);
       for (const zoneCode of Object.keys(values)) {
         const price = day.zones[zoneCode]?.price[hour];
         if (price === null || price === undefined) continue;

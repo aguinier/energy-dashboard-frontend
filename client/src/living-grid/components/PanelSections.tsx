@@ -7,7 +7,8 @@ import {
 } from '../logic/sparkline';
 import { buildMixBreakdown, stackSegments } from '../logic/mixRows';
 import { buildPriceBars } from '../logic/priceBars';
-import { buildFlowRows, flowTotals } from '../logic/flowsPanel';
+import { priceScale } from '../logic/mapAttrs';
+import { borderTouches, buildFlowRows, flowTotals } from '../logic/flowsPanel';
 import { alpha, TOKENS } from '../logic/ramps';
 import { anyOf, emptyMessage, emptyReason } from '../logic/emptyState';
 import { euro, gw, percent, seriesRange, signedGw } from '../logic/format';
@@ -166,15 +167,20 @@ export function MixSection({
 /* ---------------------------------------------------------------- prices */
 
 export function PriceBarsSection({
+  day,
   series,
   hour,
   onHour,
 }: {
+  day: GridDay;
   series: GridHourSeries | undefined;
   hour: number;
   onHour: (hour: number) => void;
 }) {
-  const bars = buildPriceBars(series, hour);
+  // Scaled across zones, not against this zone alone, so a bar and the country
+  // it belongs to are painted the same colour by the same rule.
+  const scale = priceScale(day, hour);
+  const bars = buildPriceBars(series, hour, { scaleMin: scale.lo, scaleMax: scale.hi });
   const range = series ? seriesRange(series) : null;
 
   return (
@@ -245,7 +251,7 @@ export function FlowsSection({
   // be told apart from a zone with no borders reporting at all today.
   const borderPresence = anyOf(
     Object.entries(day.flows)
-      .filter(([key]) => key.split('-').includes(code))
+      .filter(([key]) => borderTouches(key, code))
       .map(([, s]) => s),
   );
 

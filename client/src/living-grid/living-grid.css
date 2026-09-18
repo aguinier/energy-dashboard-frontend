@@ -9,7 +9,15 @@
  * and every rule is a descendant selector.
  */
 
-.living-grid {
+/*
+ * The splash is rendered instead of `.living-grid`, not inside it, so it needs
+ * the same tokens: anything it borrows — the "Try again" chip button — would
+ * otherwise resolve every `--lg-*` to nothing, drop `border` and `background`
+ * to their initial values and discard the `font` shorthand outright, leaving
+ * a bare line of inherited text where a button should be.
+ */
+.living-grid,
+.lg-splash {
   /* Ground and structure */
   --lg-page: #07121c;
   --lg-panel: #08141f;

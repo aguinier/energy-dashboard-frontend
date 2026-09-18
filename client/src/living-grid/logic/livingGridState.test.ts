@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   initialState,
   livingGridReducer,
+  STEP_HOURS,
   STEPS,
   VIEW_TABS,
   type LivingGridState,
@@ -99,7 +100,7 @@ describe('the hour', () => {
   });
 
   it('advances by the step size', () => {
-    // step 2 is '3h'.
+    // one cycle from the default '1h' is '3h'.
     const stepped = run(initialState(10), { type: 'CYCLE_STEP' }, { type: 'TICK' });
 
     expect(STEPS[stepped.step]).toBe('3h');
@@ -112,13 +113,39 @@ describe('the hour', () => {
     expect(s.hour).toBe(2);
   });
 
+  it('adopts the server clock while the reader has not moved the timeline', () => {
+    expect(run(initialState(12), { type: 'SET_HOUR', hour: 15, adopting: true }).hour).toBe(15);
+  });
+
+  it('stops adopting the server clock once the reader has scrubbed', () => {
+    // A refetch landing in a new clock hour must not yank a reader who is
+    // inspecting 03:00 back to now.
+    const scrubbed = run(initialState(12), { type: 'SET_HOUR', hour: 3 });
+
+    expect(run(scrubbed, { type: 'SET_HOUR', hour: 16, adopting: true }).hour).toBe(3);
+  });
+
+  it('stops adopting the server clock once playback has moved the hour', () => {
+    const played = run(initialState(12), { type: 'TICK' });
+
+    expect(run(played, { type: 'SET_HOUR', hour: 16, adopting: true }).hour).toBe(13);
+  });
+
+  it('offers no two steps that advance the timeline by the same amount', () => {
+    // A step the payload cannot serve is a chip that changes its label and
+    // nothing else. The series is hourly, so every offered step must differ.
+    const advances = STEPS.map((s) => STEP_HOURS[s]);
+
+    expect(new Set(advances).size).toBe(advances.length);
+  });
+
   it('cycles the step setting back round', () => {
     let s = initialState();
     expect(STEPS[s.step]).toBe('1h');
     s = run(s, { type: 'CYCLE_STEP' });
     expect(STEPS[s.step]).toBe('3h');
     s = run(s, { type: 'CYCLE_STEP' });
-    expect(STEPS[s.step]).toBe('15min');
+    expect(STEPS[s.step]).toBe('1h');
   });
 });
 

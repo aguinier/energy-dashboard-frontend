@@ -11,7 +11,9 @@ import { matchZone } from './searchMatch';
 
 export const VIEW_TABS = ['Balance', 'Prices', 'Generation', 'Market'] as const;
 export const PANEL_TABS = ['Overview', 'Energy mix', 'Flows', 'Prices'] as const;
-export const STEPS = ['15min', '1h', '3h'] as const;
+// The payload is hourly, so an offered step finer than an hour would change
+// the chip's label and nothing else.
+export const STEPS = ['1h', '3h'] as const;
 
 export type ViewTab = (typeof VIEW_TABS)[number];
 export type PanelTab = (typeof PANEL_TABS)[number];
@@ -42,6 +44,12 @@ export interface LivingGridState {
    * dismissal.
    */
   touched: boolean;
+  /**
+   * True once the reader has moved the timeline themselves, by scrubbing or by
+   * playing it. The view follows the server's clock until then; afterwards a
+   * refetch landing in a new hour must not drag them off what they are reading.
+   */
+  hourPinned: boolean;
   hour: number;
   playing: boolean;
   step: number;
@@ -86,7 +94,6 @@ const VIEW_PRESETS: Record<ViewTab, { L: LayerToggles; colourBy: ColourBy; ptab:
 
 /** How many hours the play button advances per tick, per step setting. */
 export const STEP_HOURS: Record<(typeof STEPS)[number], number> = {
-  '15min': 1,
   '1h': 1,
   '3h': 3,
 };
@@ -95,9 +102,10 @@ export function initialState(currentHour = 12, code: string | null = null): Livi
   return {
     code,
     touched: false,
+    hourPinned: false,
     hour: Math.max(0, Math.min(23, currentHour)),
     playing: false,
-    step: 1,
+    step: STEPS.indexOf('1h'),
     tab: 'Balance',
     ptab: 'Overview',
     colourBy: 'net',
@@ -112,7 +120,9 @@ export type LivingGridAction =
   | { type: 'SET_PANEL_TAB'; ptab: PanelTab }
   | { type: 'SET_COLOUR_BY'; colourBy: ColourBy }
   | { type: 'PICK_ZONE'; code: string | null; opening?: boolean }
-  | { type: 'SET_HOUR'; hour: number }
+  // `adopting` is the view taking the server's clock, not the reader choosing
+  // an hour — the same distinction `opening` draws for the zone panel.
+  | { type: 'SET_HOUR'; hour: number; adopting?: boolean }
   | { type: 'PLAY' }
   | { type: 'PAUSE' }
   | { type: 'TOGGLE_PLAY' }
@@ -153,7 +163,12 @@ export function livingGridReducer(
       return { ...state, code: action.code, touched: state.touched || !action.opening };
 
     case 'SET_HOUR':
-      return { ...state, hour: Math.max(0, Math.min(23, Math.round(action.hour))) };
+      if (action.adopting && state.hourPinned) return state;
+      return {
+        ...state,
+        hour: Math.max(0, Math.min(23, Math.round(action.hour))),
+        hourPinned: state.hourPinned || !action.adopting,
+      };
 
     case 'PLAY':
       return { ...state, playing: true };
@@ -165,7 +180,11 @@ export function livingGridReducer(
       return { ...state, playing: !state.playing };
 
     case 'TICK':
-      return { ...state, hour: (state.hour + STEP_HOURS[STEPS[state.step]]) % 24 };
+      return {
+        ...state,
+        hour: (state.hour + STEP_HOURS[STEPS[state.step]]) % 24,
+        hourPinned: true,
+      };
 
     case 'CYCLE_STEP':
       return { ...state, step: (state.step + 1) % STEPS.length };
