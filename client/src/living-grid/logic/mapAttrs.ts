@@ -1,7 +1,7 @@
 import type { GridDay, GridDayZone, GridFuelKey } from '@/types';
 import { GRID_FUEL_KEYS } from '@/types';
-import { signedGw } from './format';
 import { EXPORT_RAMP, FUEL_COLORS, IMPORT_RAMP, NET_NO_DATA, PRICE_RAMP } from './ramps';
+import { TWEEN_MS } from './tween';
 import { resolveNetSeries } from './netFromFlows';
 import { ZONES } from './zoneRegistry';
 import type { LivingGridState, ViewTab } from './livingGridState';
@@ -119,10 +119,20 @@ export interface MapAttrs extends Record<string, string | undefined> {
   theme: string;
   flows: string;
   fills: string;
-  chips: string;
+  /**
+   * The numbers drawn on the countries, unformatted.
+   *
+   * Finished strings until the map learned to ease between hours — a string
+   * cannot be counted through, so the map takes the figures and formats
+   * whatever the tween is currently showing, via `chipText`.
+   */
+  'chip-values': string;
+  'chip-kind': string;
   donuts: string;
   scalars: string;
   'scalar-colors': string;
+  /** How long the map should take to reach this state. `0` is a cut. */
+  'tween-ms': string;
   fillop: string;
   speed: string;
   density: string;
@@ -152,7 +162,7 @@ export function buildMapAttrs(state: LivingGridState, day: GridDay | undefined):
   // than pretending to be a zero.
   const values: Record<string, number> = {};
   const fills: Record<string, string> = {};
-  const chips: Record<string, string> = {};
+  const chips: Record<string, number> = {};
   const donuts: Record<string, [string, number][]> = {};
   const scalars: Record<string, number> = {};
   const flows: Record<string, number> = {};
@@ -215,7 +225,7 @@ export function buildMapAttrs(state: LivingGridState, day: GridDay | undefined):
         if (!zone) continue;
         if (tab === 'Prices') {
           const price = zone.price[hour];
-          if (price !== null && price !== undefined) chips[zoneCode] = `€${Math.round(price)}`;
+          if (price !== null && price !== undefined) chips[zoneCode] = price;
           continue;
         }
         if (tab === 'Generation') {
@@ -223,13 +233,13 @@ export function buildMapAttrs(state: LivingGridState, day: GridDay | undefined):
             const v = zone.mix[fuel]?.[hour];
             return sum + (v === null || v === undefined ? 0 : Math.max(v, 0));
           }, 0);
-          if (total > 0) chips[zoneCode] = `${(total / 1000).toFixed(1)} GW`;
+          if (total > 0) chips[zoneCode] = total;
           const segments = donutSegments(zone.mix, hour);
           if (segments.length) donuts[zoneCode] = segments;
           continue;
         }
         const net = nets.get(zoneCode);
-        if (net !== null && net !== undefined) chips[zoneCode] = signedGw(net);
+        if (net !== null && net !== undefined) chips[zoneCode] = net;
       }
     }
   }
@@ -240,10 +250,15 @@ export function buildMapAttrs(state: LivingGridState, day: GridDay | undefined):
     theme: 'living',
     flows: JSON.stringify(flows),
     fills: JSON.stringify(fills),
-    chips: JSON.stringify(chips),
+    'chip-values': JSON.stringify(chips),
+    'chip-kind': tab === 'Prices' ? 'euro' : tab === 'Generation' ? 'gw' : 'signedGw',
     donuts: JSON.stringify(donuts),
     scalars: colourBy === 'price' ? JSON.stringify(scalars) : '',
     'scalar-colors': PRICE_RAMP.join(','),
+    // The map eases only when the reader stepped between neighbouring hours.
+    // It zeroes this itself when the reader asked for reduced motion, so that
+    // decision does not need threading through here.
+    'tween-ms': state.hourEases ? String(TWEEN_MS) : '0',
     fillop: FILL_OPACITY[tab],
     speed: V.anim ? '1' : '0',
     density: '0.8',

@@ -87,6 +87,58 @@ describe('SET_VIEW applies the whole preset in one update', () => {
   });
 });
 
+describe('whether an hour change eases', () => {
+  // The map eases its colours and its numbers between hours, and `hourEases`
+  // is the only thing that tells it when. Getting this wrong is visible: a
+  // tween chasing a drag trails the knob, and a tween across a jump wipes
+  // slowly through hours nobody asked to see.
+
+  it('eases a play tick, which is what the tween is for', () => {
+    expect(run(initialState(12), { type: 'TICK' }).hourEases).toBe(true);
+  });
+
+  it('eases a tick across midnight — 23 to 0 is a step, not a jump', () => {
+    expect(run(initialState(23), { type: 'TICK' }).hourEases).toBe(true);
+  });
+
+  it('eases a single step to a neighbouring hour', () => {
+    expect(run(initialState(12), { type: 'SET_HOUR', hour: 13 }).hourEases).toBe(true);
+    expect(run(initialState(0), { type: 'SET_HOUR', hour: 23 }).hourEases).toBe(true);
+  });
+
+  it('snaps a drag, so the map tracks the knob rather than trailing it', () => {
+    expect(run(initialState(12), { type: 'SET_HOUR', hour: 13, via: 'drag' }).hourEases).toBe(false);
+  });
+
+  it('snaps a jump far down the timeline', () => {
+    expect(run(initialState(3), { type: 'SET_HOUR', hour: 19 }).hourEases).toBe(false);
+  });
+
+  it('snaps the view adopting the server clock', () => {
+    expect(
+      run(initialState(12), { type: 'SET_HOUR', hour: 13, adopting: true }).hourEases,
+    ).toBe(false);
+  });
+
+  it('snaps back to Live, which can be most of a day away', () => {
+    const played = run(initialState(3), { type: 'TICK' });
+    expect(played.hourEases).toBe(true);
+    expect(run(played, { type: 'GO_LIVE', hour: 20 }).hourEases).toBe(false);
+  });
+
+  it('snaps a view switch — the palette changes, not the hour', () => {
+    // Easing from a net-position colour into a price colour would pass through
+    // colours that describe neither.
+    const played = run(initialState(12), { type: 'TICK' });
+    expect(run(played, { type: 'SET_VIEW', tab: 'Prices' }).hourEases).toBe(false);
+    expect(run(played, { type: 'SET_COLOUR_BY', colourBy: 'price' }).hourEases).toBe(false);
+  });
+
+  it('has nothing to ease from on the first paint', () => {
+    expect(initialState(12).hourEases).toBe(false);
+  });
+});
+
 describe('the hour', () => {
   it('clamps and rounds what it is given', () => {
     expect(run(initialState(), { type: 'SET_HOUR', hour: -4 }).hour).toBe(0);

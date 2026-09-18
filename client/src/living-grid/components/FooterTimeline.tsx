@@ -10,7 +10,11 @@ interface FooterTimelineProps {
   date: string;
   currentHour: number;
   isToday: boolean;
-  onHour: (hour: number) => void;
+  /**
+   * `via` tells the map whether this is a step worth easing. A scrub is the
+   * reader steering and snaps; the arrow keys step and ease.
+   */
+  onHour: (hour: number, via?: 'drag' | 'step') => void;
   onTogglePlay: () => void;
   onCycleStep: () => void;
   onLive: () => void;
@@ -37,7 +41,7 @@ export function FooterTimeline({
     const el = trackRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    onHour(hourAtPosition(clientX - rect.left, rect.width));
+    onHour(hourAtPosition(clientX - rect.left, rect.width), 'drag');
   };
 
   /**

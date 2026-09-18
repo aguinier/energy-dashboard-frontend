@@ -53,9 +53,18 @@
 //     11.5 px pinned to a centroid, so Luxembourg's label was Germany's and
 //     neither moved.
 //
-// 6, 7 and 8 keep their arithmetic in `../logic/mapCamera` and `../logic/mapLabels`
-// — this file is excluded from `tsc` and has no tests, so decisions that can be
-// stated as numbers belong where they can be checked.
+//  9. An hour eases into the next instead of cutting. Attribute changes are
+//     coalesced into one batch — an hour step rewrites four or five of them,
+//     and each used to do its own full repaint — and the batch then tweens
+//     from what is on screen to what the attributes now ask for. Colours,
+//     the numbers on the countries, the corridor arrows and the active glow
+//     all ride it; the particle field does not, because it is rebuilt from
+//     the hour's real flows and a half-way field is not a measurement. The
+//     caller says whether to ease at all, through `tween-ms`.
+//
+// 6, 7, 8 and 9 keep their arithmetic in `../logic/mapCamera`, `../logic/mapLabels`
+// and `../logic/tween` — this file is excluded from `tsc` and has no tests, so
+// decisions that can be stated as numbers belong where they can be checked.
 
 import { geoMercator, geoPath } from 'd3-geo';
 import { select, pointer } from 'd3-selection';
@@ -65,6 +74,8 @@ import 'd3-transition';
 import { feature, neighbors } from 'topojson-client';
 import { reframeTransform, shouldAnimateResize, smoothScale, wheelTargetScale } from '../logic/mapCamera';
 import { fadeIn, fitAlpha, labelAnchor, labelFontPx } from '../logic/mapLabels';
+import { easeProgress, lerpColorMap, lerpNumberMap } from '../logic/tween';
+import { chipText } from '../logic/mapChips';
 
 const TOPO_URL = '/living-grid/countries-50m.json';
 const GRID_URL = '/living-grid/grid-lines.json';
@@ -150,7 +161,7 @@ function strokeBuckets(ctx, buckets, T) {
   const FAM = { nuclear: '#8A6FC2', hydro: '#4A6FD4', gas: '#9AA3AE', coal: '#4B5563', wind: '#5FA8A0', solar: '#D08C3A', 'other renewable': '#7FA35A' };
 
   class AbleWorldMap extends HTMLElement {
-    static get observedAttributes() { return ['values', 'active', 'width', 'speed', 'density', 'grid', 'plants', 'demand', 'theme', 'labels', 'arcs', 'seas', 'borders', 'values-on', 'valueson', 'glow', 'chips', 'donuts', 'fills', 'fill-op', 'fillop', 'scalars', 'scalar-colors', 'scalarcolors', 'flows']; }
+    static get observedAttributes() { return ['values', 'active', 'width', 'speed', 'density', 'grid', 'plants', 'demand', 'theme', 'labels', 'arcs', 'seas', 'borders', 'values-on', 'valueson', 'glow', 'chip-values', 'chipvalues', 'chip-kind', 'chipkind', 'donuts', 'fills', 'fill-op', 'fillop', 'scalars', 'scalar-colors', 'scalarcolors', 'flows', 'tween-ms', 'tweenms']; }
     num(n, d) { const v = parseFloat(this.attr(n)); return isNaN(v) ? d : v; }
     attr(n) { const v = this.getAttribute(n); return v != null ? v : this.getAttribute(n.replace(/-/g, '')); }
     connectedCallback() {
@@ -226,19 +237,151 @@ function strokeBuckets(ctx, buckets, T) {
       const src = this.querySelector('[data-src]');
       if (src) src.style.color = T.srcText;
     }
+    /**
+     * Attribute changes are coalesced into one repaint per batch.
+     *
+     * An hour step rewrites four or five attributes in a row — flows, fills,
+     * chip-values, donuts, and scalars on Prices — and each used to do its own
+     * full repaint, so one step ran buildNetwork() once and then paint() and
+     * paintPlaces() three or four more times over for the identical frame.
+     * (The comment this replaces fixed the duplication *within* one callback;
+     * this fixes it *across* them.)
+     *
+     * Coalescing is not only cheaper, it is what makes the tween possible: the
+     * batch is one change with one before and one after, rather than four
+     * changes each restarting the animation a few milliseconds in.
+     */
     attributeChangedCallback(n) {
       if (n === 'theme') this.applyChrome();
       if (!this._paths || !this._w) return;
-      // Each of these already repaints at its own tail: buildNetwork() ends in
-      // paint(), and paint() ends in strokes() + clearCanvas() + paintPlaces().
-      // Calling them again here drew the identical frame two or three times —
-      // a flows change (every hour step) ran paint() twice and paintPlaces()
-      // three times, and a zone click ran paintPlaces() twice.
-      if (n === 'values' || n === 'density' || n === 'demand' || n === 'flows') { this.buildNetwork(); return; }
-      this.paint();
+      if (n === 'values' || n === 'density' || n === 'demand' || n === 'flows') this._needNetwork = true;
+      if (this._flushQueued) return;
+      this._flushQueued = true;
+      // A microtask, so the whole batch React just wrote lands before anything
+      // is drawn, and still within the same frame.
+      Promise.resolve().then(() => { this._flushQueued = false; this.flushAttrs(); });
+    }
+    /**
+     * Adopt whatever the attributes now say, easing into it when asked to.
+     *
+     * The snapshot taken first is what is *on screen*, not the previous
+     * target — so an hour landing mid-tween continues from where the last one
+     * had reached instead of snapping back to the whole hour behind it.
+     */
+    flushAttrs() {
+      if (!this._paths || !this._w) return;
+      const network = this._needNetwork; this._needNetwork = false;
+      const from = this.shown();
+      // buildNetwork() sets _flows and _net, which the target reads, and ends
+      // in paint() — which draws `shown`, so it cannot jump ahead of the tween.
+      if (network) this.buildNetwork(); else this.paint();
+      this.beginTween(from);
     }
     values() { return this.json('values') || {}; }
     theme() { return THEMES[this.getAttribute('theme')] || THEMES.current; }
+    /**
+     * What the hour's attributes are asking for.
+     *
+     * `flows` and `net` come off the element rather than out of the attribute,
+     * because buildNetwork() is what turns the border payload into the netted
+     * per-zone figure the glow reads — and it has already run by the time this
+     * is called.
+     */
+    target() {
+      return {
+        fills: this.json('fills') || {},
+        scalars: this.attr('scalars') ? (this.json('scalars') || {}) : null,
+        chips: this.json('chip-values') || {},
+        flows: this._flows || {},
+        net: this._net || {},
+      };
+    }
+    /** What is on screen: the tween's output, or the target when nothing is running. */
+    shown() { return this._shown || (this._shown = this.target()); }
+    /**
+     * Start easing from `from` to whatever the attributes now say.
+     *
+     * A zero duration — a drag, a view switch, a jump to Live, or a reader who
+     * asked for reduced motion — lands immediately, which is the same path the
+     * element took before it could ease at all.
+     */
+    beginTween(from) {
+      // buildNetwork() dispatches the net and flow events, React answers them
+      // with a render, and that writes the attributes a second time — so one
+      // hour step arrives as two batches. Without this the tween would restart
+      // partway through every step, at the same target it was already heading
+      // for, and lose the velocity it had built up.
+      const key = [this.attr('fills'), this.attr('scalars'), this.attr('chip-values'), this.attr('flows')].join(' ');
+      if (this._tweenTo && key === this._targetKey) return;
+      this._targetKey = key;
+      const to = this.target();
+      const ms = this._reduced ? 0 : Math.max(0, this.num('tween-ms', 0));
+      // Nothing to blend between two different colour bases: the Prices tab
+      // colours from `scalars` and the others from `fills`, and easing across
+      // the switch would pass through colours that mean neither.
+      const sameBasis = (from.scalars === null) === (to.scalars === null);
+      if (!ms || !sameBasis) { this._shown = to; this._tweenTo = null; this.repaintColours(); return; }
+      this._tweenFrom = from; this._tweenTo = to; this._tweenMs = ms; this._tweenAt = performance.now();
+      this.stepTween(this._tweenAt);
+      // rAF is paused in a background tab, so the loop cannot be the only thing
+      // that lands the final value. A timer is throttled there but still runs.
+      clearTimeout(this._tweenLand);
+      this._tweenLand = setTimeout(() => { if (this._tweenTo) { this._shown = this._tweenTo; this._tweenTo = null; this.repaintColours(); } }, ms + 60);
+    }
+    /**
+     * Advance the tween to `now`. Returns true while it still has somewhere to go.
+     */
+    stepTween(now) {
+      const to = this._tweenTo; if (!to) return false;
+      const from = this._tweenFrom;
+      const t = easeProgress(now - this._tweenAt, this._tweenMs);
+      this._shown = {
+        fills: lerpColorMap(from.fills, to.fills, t),
+        scalars: to.scalars === null ? null : lerpNumberMap(from.scalars || {}, to.scalars, t),
+        chips: lerpNumberMap(from.chips, to.chips, t),
+        flows: lerpNumberMap(from.flows, to.flows, t),
+        net: lerpNumberMap(from.net, to.net, t),
+      };
+      if (t >= 1) { this._shown = to; this._tweenTo = null; return false; }
+      return true;
+    }
+    /**
+     * Redraw only what a colour change touches.
+     *
+     * `paint()` also re-attrs ~240 base country paths and re-reads the zone
+     * set, none of which a tween frame changes. This is the fill, the rims and
+     * the canvas decoration — the parts that actually move.
+     */
+    repaintFills() {
+      if (!this._netPaths) return;
+      this._netPaths.attr('fill', (f) => this.fillOf(ALPHA[f.id]));
+      this.strokes();
+    }
+    /** The SVG half plus the canvas half, for callers outside the frame loop. */
+    repaintColours() {
+      this.repaintFills();
+      this.paintPlaces();
+    }
+    /**
+     * The colour of one zone, from whatever the tween is currently showing.
+     *
+     * The four branches are the handoff's, unchanged in order: an explicit
+     * fill wins, then a scalar against the ramp, then the element's own
+     * flow-derived net. The Living Grid always sends one of the first two, so
+     * the last two are the standalone element's fallback.
+     */
+    fillOf(c) {
+      const T = this.theme(), s = this.shown();
+      if (s.fills && s.fills[c]) return s.fills[c];
+      if (s.scalars) {
+        const stops = (this.attr('scalar-colors') || '').split(',').map((x) => x.trim()).filter(Boolean);
+        if (stops.length > 1) { const t = s.scalars[c]; return t == null ? T.dnl : ramp(stops, t); }
+      }
+      const v = (s.net || {})[c] || 0, mx = this._maxNet || 1;
+      if (!T.scale) { if (Math.abs(v) < mx * 0.06) return T.dnl; return v >= 0 ? T.exp : T.imp; }
+      const t = Math.max(0.14, Math.min(1, Math.pow(Math.abs(v) / (this._netScale || mx), 0.85)));
+      return lerp(T.dnl, v >= 0 ? T.exp : T.imp, t);
+    }
     // Parsed once per distinct attribute string. paintPlaces() runs every frame
     // and re-parsed `values`, `chips` and `donuts` on each one; paint() re-parsed
     // `fills` and `scalars` beside it. The cache key is the raw attribute, so a
@@ -590,7 +733,6 @@ function strokeBuckets(ctx, buckets, T) {
       this._rimPaths.attr('d', this._path);
       this._coastPaths.attr('d', this._path);
       this._netPaths.attr('d', this._path);
-      this._placesDirty = true;
       if (this._features) {
         const cen = {}, geo = {};
         this._features.forEach((f) => {
@@ -681,21 +823,14 @@ function strokeBuckets(ctx, buckets, T) {
       // A values change reaches here (attributeChangedCallback → buildNetwork →
       // paint), so this is where a newly-arrived zone gets its fill paths.
       this.ensureZonePaths();
-      const vals = this.values(), active = this.getAttribute('active'), net = this._net || {}, mx = this._maxNet || 1;
+      const vals = this.values(), active = this.getAttribute('active');
       // flat two-tone: exporting / importing / near-balanced. No gradient, no blur.
       const T = this.theme();
-      let sc = null, stops = null;
-      try { sc = JSON.parse(this.attr('scalars') || 'null'); } catch (e) { sc = null; }
-      if (sc) stops = (this.attr('scalar-colors') || '').split(',').map((s) => s.trim()).filter(Boolean);
-      const fx = this.json('fills');
-      const fill = (c) => {
-        if (fx && fx[c]) return fx[c];
-        if (sc && stops && stops.length > 1) { const t = sc[c]; return t == null ? T.dnl : ramp(stops, t); }
-        const v = net[c] || 0;
-        if (!T.scale) { if (Math.abs(v) < mx * 0.06) return T.dnl; return v >= 0 ? T.exp : T.imp; }
-        const t = Math.max(0.14, Math.min(1, Math.pow(Math.abs(v) / (this._netScale || mx), 0.85)));
-        return lerp(T.dnl, v >= 0 ? T.exp : T.imp, t);
-      };
+      // Colour comes from `shown` — the tween's current output, or the target
+      // when nothing is running — so a repaint from any source (a zoom, a
+      // resize, a webfont landing) draws the frame the tween is on rather than
+      // jumping to the hour it is heading for.
+      const fill = (c) => this.fillOf(c);
       this._fillOf = fill;
       if (this._netPaths) this._netPaths.attr('fill', (f) => fill(ALPHA[f.id])).attr('fill-opacity', this.num('fillop', T.fillOp));
       this._paths
@@ -736,6 +871,12 @@ function strokeBuckets(ctx, buckets, T) {
       // Before the transform is read: stepWheel writes it, so reading first
       // would draw this frame one step behind the camera it is easing.
       this.stepWheel(dt);
+      // The hour tween, on the same clock. Only the fill and the rims here —
+      // not the ~240 base country paths a full paint() re-attrs, none of which
+      // a tween frame changes. The canvas half rides the paintPlaces() call at
+      // the end of this frame rather than being drawn twice.
+      const tweening = !!this._tweenTo;
+      if (tweening) { this.stepTween(ts); this.repaintFills(); }
       const t = this._zt, dpr = this._dpr, active = this.getAttribute('active');
       // Zoom deferred its repaint to here (see the zoom handler). Consume the
       // flag before drawing so a zoom landing mid-frame is not dropped.
@@ -803,7 +944,7 @@ function strokeBuckets(ctx, buckets, T) {
       ctx.globalCompositeOperation = 'source-over';
       // `|| zoomDirty` keeps the old guarantee that a zoom refreshes the places
       // canvas even when arcs are off, which the synchronous call used to give.
-      if (this.getAttribute('arcs') === 'true' || zoomDirty) this.paintPlaces();
+      if (this.getAttribute('arcs') === 'true' || zoomDirty || tweening) this.paintPlaces();
     }
     /**
      * The reusable bucket array for one particle batch, emptied for this frame.
@@ -827,7 +968,13 @@ function strokeBuckets(ctx, buckets, T) {
       ctx.setTransform(k * dpr, 0, 0, k * dpr, t.x * dpr, t.y * dpr);
       const showP = this.getAttribute('plants') !== 'false', vals = this.values();
       const T = this.theme(), active = this.getAttribute('active'), cen = this._cen || {};
-      const ts = this._last || 0, net = this._net || {}, kE = this._kEurope || 6;
+      // The canvas draws from `shown`, so everything on it — the arrows, the
+      // glow, the numbers — eases with the fills instead of cutting under them.
+      // `_flows` and `_net` themselves stay at the hour's real values: they are
+      // what the vector field was built from and what the outgoing events
+      // report, and neither should ever carry a half-way figure.
+      const S = this.shown(), sFlows = S.flows || {};
+      const ts = this._last || 0, net = S.net || {}, kE = this._kEurope || 6;
       const zoomFade = Math.max(0, Math.min(1, (k - kE * 0.55) / (kE * 0.35)));
       // How much pane there is for the corridor arrows' own labels. Country
       // labels used to be gated on this and on a hand-written list of large
@@ -847,13 +994,13 @@ function strokeBuckets(ctx, buckets, T) {
 
       // corridor arrows: one per border, at the border itself, so the continental pattern reads at a glance
       if (this.getAttribute('arcs') === 'true' && this._flows && this._borderGeom) {
-        const G = this._borderGeom, keys = Object.keys(this._flows);
-        const ranked = keys.slice().sort((a, b) => Math.abs(this._flows[b]) - Math.abs(this._flows[a]));
+        const G = this._borderGeom, keys = Object.keys(sFlows);
+        const ranked = keys.slice().sort((a, b) => Math.abs(sFlows[b]) - Math.abs(sFlows[a]));
         const topN = active ? 0 : (room > 0.45 ? 8 : 4);
         const big = {}; ranked.slice(0, topN).forEach((kk) => { big[kk] = 1; });
         const draw = (kk) => {
           const g = G[kk]; if (!g) return;
-          const f = this._flows[kk], parts = kk.split('-');
+          const f = sFlows[kk], parts = kk.split('-');
           const from = f >= 0 ? parts[0] : parts[1], to = f >= 0 ? parts[1] : parts[0];
           const A = cen[from], B = cen[to]; if (!A || !B) return;
           const gw = Math.abs(f) / 1000;
@@ -910,14 +1057,20 @@ function strokeBuckets(ctx, buckets, T) {
       }
 
       if (this.getAttribute('labels') === 'true' && Object.keys(cen).length) {
-        const chips = this.json('chips'), donuts = this.json('donuts');
+        // The numbers arrive unformatted so the tween can count through them;
+        // `chipText` is the same formatter the rest of the app prints with, so
+        // the figure that lands is the one the panel would have written.
+        const chipVals = S.chips || {}, kind = this.attr('chip-kind') || '';
+        const donuts = this.json('donuts');
         const G = this._geo || {};
         ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         Object.keys(vals).forEach((c) => {
           const p = cen[c] || (c === 'UK' ? cen.GB : null); if (!p) return;
           const on = c === active;
           const g = G[c] || (c === 'UK' ? G.GB : null);
-          const chip = chips && chips[c], ring = donuts && donuts[c];
+          const raw = chipVals[c];
+          const chip = kind && raw !== undefined && raw !== null ? chipText(kind, raw) : '';
+          const ring = donuts && donuts[c];
           // Size from the country's own footprint on screen, so the label grows
           // as you zoom into it and a small zone never carries a large zone's
           // type. A country we have no geometry for keeps the old fixed size.

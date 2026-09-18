@@ -188,9 +188,19 @@ import { pathToFileURL } from 'node:url';
  * chunks — was fine, and it took the Living Grid map down. The test reads the
  * chunk map out of `vite.config.ts` and fails if they are separated again.
  * 92 → 93 files and 1,206 → 1,209 tests.
+ *
+ * **Easing an hour into the next adds +2 client files / +32 tests**
+ * (`tween.test.ts` 17, `mapChips.test.ts` 6, `livingGridState` +9 for which
+ * changes ease and which cut). The map used to cut every colour and number on
+ * a play step; `tween.ts` holds the interpolation — including the rule that a
+ * zone present in only one of the two hours takes that side rather than easing
+ * toward a zero nobody measured — and `mapChips.ts` is the one formatter both
+ * the attribute builder and the map element print through, now that the map
+ * receives figures rather than finished strings. 93 → 95 files and
+ * 1,209 → 1,241 tests.
  */
 export const TEST_FLOORS = {
-  client: { files: 93, tests: 1209, maxSkipped: 0 },
+  client: { files: 95, tests: 1241, maxSkipped: 0 },
   server: { files: 143, tests: 2965, maxSkipped: 4 },
 };
 

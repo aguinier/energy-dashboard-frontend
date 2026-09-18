@@ -45,8 +45,23 @@ export interface AbleWorldMapAttributes {
   scalars?: string;
   /** Comma-separated hex stops the `scalars` ramp interpolates. */
   'scalar-colors'?: string;
-  /** `{"DE": "+2.0"}` — the value printed under each zone label. */
-  chips?: string;
+  /**
+   * `{"DE": -2800}` — the figure printed under each zone label, unformatted.
+   *
+   * Numbers rather than finished strings so the element can count through them
+   * while an hour eases into the next; `chip-kind` says how to print them.
+   */
+  'chip-values'?: string;
+  /** How to print `chip-values`: `euro`, `gw` or `signedGw`. */
+  'chip-kind'?: string;
+  /**
+   * How long to take reaching this state, in ms. `0` cuts.
+   *
+   * The caller decides — a play step and a single-hour step ease, a timeline
+   * drag and a view switch do not. The element zeroes it by itself when the
+   * reader has asked for reduced motion.
+   */
+  'tween-ms'?: string;
   /** `{"DE": [["#B388EB", 0.3], …]}` — mix ring segments, colour and share. */
   donuts?: string;
   /** Fill opacity for the data layer. */
