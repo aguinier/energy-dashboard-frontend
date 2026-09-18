@@ -90,10 +90,15 @@ import { pathToFileURL } from 'node:url';
  * tests** (new `dataFreshnessService.test.ts` 7, `freshness.test.ts` +13), so
  * 137 → 138 files and 2,880 → 2,900 tests. The tree (`origin/main` =
  * `4630634`, ABL-717 merged) runs 138 / 2,900 server tests on Node 24.18.0.
+ *
+ * **Living Grid M1 raises the server floor by its own counted delta: +4 files,
+ * +57 tests** — `brusselsDay.test.ts` 13, `fuelGroups.test.ts` 13,
+ * `flowNetting.test.ts` 12 and `gridDay.test.ts` 19, all new with the
+ * `/api/grid/day` route — so 138 → 142 files and 2,900 → 2,957 tests.
  */
 export const TEST_FLOORS = {
   client: { files: 75, tests: 932, maxSkipped: 0 },
-  server: { files: 138, tests: 2900, maxSkipped: 4 },
+  server: { files: 142, tests: 2957, maxSkipped: 4 },
 };
 
 /**

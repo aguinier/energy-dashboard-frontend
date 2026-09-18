@@ -1,0 +1,300 @@
+import type { Database as DatabaseType } from 'better-sqlite3';
+import defaultDb from '../config/database.js';
+import { timestampRange, rangeClause, rangeArgs } from '../utils/timestamp.js';
+import {
+  brusselsDayWindow,
+  currentHourInGridTimezone,
+  todayInGridTimezone,
+  type GridDayWindow,
+} from './livingGrid/brusselsDay.js';
+import {
+  emptySeries,
+  hourSlotIndex,
+  isEmptySeries,
+  placeRows,
+  type HourSeries,
+} from './livingGrid/hourBuckets.js';
+import {
+  FUEL_KEYS,
+  GENERATION_MW_COLUMNS,
+  groupFuels,
+  type FuelKey,
+  type GenerationColumns,
+} from './livingGrid/fuelGroups.js';
+import { netFlows, type FlowRow } from './livingGrid/flowNetting.js';
+import { resolveBiddingZone } from './netPositionService.js';
+
+/**
+ * One day of every stream the Living Grid renders, for every zone at once.
+ *
+ * WHY ONE ROUTE INSTEAD OF THE EXISTING PER-COUNTRY ONES
+ *
+ * The view draws ~30 zones simultaneously and scrubs an hour slider across
+ * them. Composed from the per-country endpoints that is 30 x 4 requests for
+ * one screen, against a server whose SQLite handle is synchronous and
+ * single-threaded — the shape CLAUDE.md warns about under the retry policy.
+ * One payload per day is ~20 KB gzipped and the UI never asks again while the
+ * hour changes, because every stream is already indexed by hour.
+ *
+ * WHAT IT DOES NOT DO
+ *
+ * It serves no forecast. Load, price and net position exist day-ahead, but the
+ * generation mix does not (only wind and solar are forecast) and cross-border
+ * flows are realized physical values arriving about an hour late. Mixing a
+ * forecast mix into a realized one behind a single `date` parameter would put
+ * two different claims under one label, so every stream here is the measured
+ * one and a zone that has not reported yet reads `null`.
+ */
+
+/** Zone-level series. Any stream a zone does not publish is 24 nulls. */
+export interface GridDayZone {
+  load: HourSeries;
+  price: HourSeries;
+  net: HourSeries;
+  mix: Record<FuelKey, HourSeries>;
+}
+
+export interface GridDayPayload {
+  zones: Record<string, GridDayZone>;
+  /** Signed MW per border, keyed alphabetically; + = first zone exports. */
+  flows: Record<string, HourSeries>;
+}
+
+export interface GridDayMeta {
+  date: string;
+  timezone: string;
+  hoursUtc: (string | null)[];
+  /** Zones whose series is another zone's, and which one. */
+  sharedZones: Record<string, string>;
+  /** The hour it is right now in Brussels, so the client's Live button agrees. */
+  currentHour: number;
+  /** True when `date` is today — i.e. when `currentHour` is meaningful. */
+  isToday: boolean;
+  zoneCount: number;
+  borderCount: number;
+}
+
+export interface GridDayResult {
+  data: GridDayPayload;
+  meta: GridDayMeta;
+}
+
+/**
+ * The bucket key rows are grouped by: the UTC hour, separator-normalised.
+ *
+ * `REPLACE`/`substr` appear only in the SELECT and GROUP BY, never in the
+ * WHERE — the filter keeps the column bare so the range predicate can still
+ * seek its index, which is the 51-second scar recorded in CLAUDE.md.
+ */
+const HOUR_KEY_SQL = `substr(REPLACE(timestamp_utc, 'T', ' '), 1, 13)`;
+
+/**
+ * Load, price and generation are published every 15 minutes, so an hour is the
+ * mean of up to four readings. `AVG` skips NULLs and yields NULL only when
+ * every reading in the hour is NULL, which is exactly the distinction between
+ * "did not report" and "reported zero" this codebase refuses to collapse.
+ */
+const zoneHourSql = (table: string, expression: string): string => `
+    SELECT
+      country_code AS zone,
+      ${HOUR_KEY_SQL} AS hourKey,
+      AVG(${expression}) AS value
+    FROM ${table}
+    WHERE ${rangeClause('timestamp_utc')}
+    GROUP BY zone, hourKey
+  `;
+
+const GENERATION_SQL = `
+    SELECT
+      country_code AS zone,
+      ${HOUR_KEY_SQL} AS hourKey,
+      ${GENERATION_MW_COLUMNS.map((c) => `AVG(${c}) AS ${c}`).join(',\n      ')}
+    FROM energy_generation
+    WHERE ${rangeClause('timestamp_utc')}
+    GROUP BY zone, hourKey
+  `;
+
+/**
+ * Net position is hourly and its only index is (country_code, timestamp_utc),
+ * so it is read one zone at a time — a seek each, against a full scan of
+ * 667k rows for a window predicate that cannot use that index.
+ */
+const NET_POSITION_SQL = `
+    SELECT
+      ${HOUR_KEY_SQL} AS hourKey,
+      AVG(net_position_mw) AS value
+    FROM net_position
+    WHERE country_code = ?
+      AND ${rangeClause('timestamp_utc')}
+    GROUP BY hourKey
+  `;
+
+/** Flows read per exporting zone, seeking idx_cbf_from. */
+const FLOWS_SQL = `
+    SELECT
+      country_from,
+      country_to,
+      ${HOUR_KEY_SQL} AS hourKey,
+      SUM(flow_mw) AS flow_mw
+    FROM crossborder_flows
+    WHERE country_from = ?
+      AND ${rangeClause('timestamp_utc')}
+    GROUP BY country_from, country_to, hourKey
+  `;
+
+interface ZoneHourRow {
+  zone: string;
+  hourKey: string;
+  value: number | null;
+}
+
+interface GenerationRow extends GenerationColumns {
+  zone: string;
+  hourKey: string;
+  [column: string]: unknown;
+}
+
+function emptyMix(): Record<FuelKey, HourSeries> {
+  const mix = {} as Record<FuelKey, HourSeries>;
+  for (const fuel of FUEL_KEYS) mix[fuel] = emptySeries();
+  return mix;
+}
+
+function tableExists(db: DatabaseType, name: string): boolean {
+  const row = db
+    .prepare(`SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name = ?`)
+    .get(name) as { present: number } | undefined;
+  return row !== undefined;
+}
+
+/**
+ * Assemble one Living Grid day.
+ *
+ * `date` is a Brussels calendar date; an invalid one throws `RangeError`,
+ * which the route answers with 400.
+ */
+export function getGridDay(date: string, db: DatabaseType = defaultDb): GridDayResult {
+  const window: GridDayWindow = brusselsDayWindow(date);
+  const index = hourSlotIndex(window.hourKeys);
+  const range = timestampRange(window.startUtc, window.endUtc);
+  const args = rangeArgs(range);
+
+  const zones: Record<string, GridDayZone> = {};
+  const zoneOf = (code: string): GridDayZone => {
+    let zone = zones[code];
+    if (zone === undefined) {
+      zone = { load: emptySeries(), price: emptySeries(), net: emptySeries(), mix: emptyMix() };
+      zones[code] = zone;
+    }
+    return zone;
+  };
+
+  const loadRows = db.prepare(zoneHourSql('energy_load', 'load_mw')).all(...args) as ZoneHourRow[];
+  for (const row of loadRows) zoneOf(row.zone);
+  regroup(loadRows, index, zones, 'load');
+
+  const priceRows = db
+    .prepare(zoneHourSql('energy_price', 'price_eur_mwh'))
+    .all(...args) as ZoneHourRow[];
+  for (const row of priceRows) zoneOf(row.zone);
+  regroup(priceRows, index, zones, 'price');
+
+  const generationRows = db.prepare(GENERATION_SQL).all(...args) as GenerationRow[];
+  for (const row of generationRows) {
+    const slot = index.get(row.hourKey);
+    if (slot === undefined) continue;
+    const mix = zoneOf(row.zone).mix;
+    const grouped = groupFuels(row);
+    for (const fuel of FUEL_KEYS) {
+      mix[fuel][slot] = grouped[fuel];
+    }
+  }
+
+  // Net position, per zone. Candidates are the zones the streams above found,
+  // plus every zone the net_position table knows — a zone can publish a net
+  // position without appearing in any of them, and dropping it would blank a
+  // country the map is meant to colour. The candidate scan reads the
+  // (country_code, timestamp_utc) index only, so it costs a distinct walk of
+  // the index rather than a scan of the table.
+  const netStatement = db.prepare(NET_POSITION_SQL);
+  const sharedZones: Record<string, string> = {};
+  const netCache = new Map<string, HourSeries>();
+
+  const netSeriesFor = (code: string): HourSeries => {
+    const zoneId = resolveBiddingZone(code);
+    // DE_LU is stored under 'DE'; LU has its own contradictory rows that the
+    // bidding-zone map deliberately overrides.
+    const storage = zoneId === 'DE_LU' ? 'DE' : zoneId;
+    if (storage !== code) sharedZones[code] = zoneId;
+
+    let series = netCache.get(storage);
+    if (series === undefined) {
+      series = placeRows(netStatement.all(storage, ...args) as ZoneHourRow[], index, (r) => r.value);
+      netCache.set(storage, series);
+    }
+    return series.slice();
+  };
+
+  for (const code of Object.keys(zones)) {
+    zones[code].net = netSeriesFor(code);
+  }
+
+  const netCandidates = db
+    .prepare('SELECT DISTINCT country_code AS zone FROM net_position')
+    .all() as { zone: string }[];
+  for (const { zone: code } of netCandidates) {
+    if (zones[code] !== undefined) continue;
+    const series = netSeriesFor(code);
+    // Only admit a zone that actually published in this window; the candidate
+    // list spans all of history, and an empty zone is noise on the wire.
+    if (isEmptySeries(series)) {
+      delete sharedZones[code];
+      continue;
+    }
+    zoneOf(code).net = series;
+  }
+
+  // Flows, per exporting zone. The table is absent from some deployments'
+  // replicas, in which case the border layer is simply empty.
+  let flows: Record<string, HourSeries> = {};
+  if (tableExists(db, 'crossborder_flows')) {
+    const flowStatement = db.prepare(FLOWS_SQL);
+    const flowRows: FlowRow[] = [];
+    for (const code of Object.keys(zones)) {
+      flowRows.push(...(flowStatement.all(code, ...args) as FlowRow[]));
+    }
+    flows = netFlows(flowRows, index);
+  }
+
+  const today = todayInGridTimezone();
+  return {
+    data: { zones, flows },
+    meta: {
+      date: window.date,
+      timezone: window.timezone,
+      hoursUtc: window.hoursUtc,
+      sharedZones,
+      currentHour: currentHourInGridTimezone(),
+      isToday: window.date === today,
+      zoneCount: Object.keys(zones).length,
+      borderCount: Object.keys(flows).length,
+    },
+  };
+}
+
+/** Scatter one stream's rows across every zone's series. */
+function regroup(
+  rows: readonly ZoneHourRow[],
+  index: Map<string, number>,
+  zones: Record<string, GridDayZone>,
+  stream: 'load' | 'price',
+): void {
+  for (const row of rows) {
+    const slot = index.get(row.hourKey);
+    if (slot === undefined) continue;
+    const zone = zones[row.zone];
+    if (zone === undefined) continue;
+    const value = row.value;
+    zone[stream][slot] = value === null || Number.isNaN(value) ? null : value;
+  }
+}

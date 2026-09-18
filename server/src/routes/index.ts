@@ -16,6 +16,7 @@ import netPositionRouter from './netPosition.js';
 import netPositionIngestRouter from './netPositionIngest.js';
 import opsStatusRouter from './opsStatus.js';
 import coreNetPositionRouter from './coreNetPosition.js';
+import gridDayRouter from './gridDay.js';
 
 const router = Router();
 
@@ -41,6 +42,8 @@ router.use('/forecast-comparison', forecastComparisonRouter);
 router.use('/cross-country', crossCountryComparisonRouter);
 router.use('/weather', weatherRouter);
 router.use('/ops', opsStatusRouter);
+// The Living Grid dashboard's single per-day read across every zone.
+router.use('/grid', gridDayRouter);
 
 // Health check endpoint — includes provenance fields so an acceptance check can
 // prove it reached the container rather than a stray dev process on the same port.

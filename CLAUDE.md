@@ -403,7 +403,7 @@ cd server && npx vitest run
   global once, at import; that global is absent on Node 24 (persist silently
   no-ops — green, but nothing persisted is exercised) and truthy-without-
   `setItem` on Node 25 (20 failures on a commit green on 24, ABL-320). What
-  fixes both is `client/vite.config.ts:88`, whose `setupFiles` installs a real
+  fixes both is `client/vite.config.ts:98`, whose `setupFiles` installs a real
   Storage (`installMemoryStorage`, `client/src/test/memoryStorage.ts:105`)
   before any test module is imported. Do not swap it for
   `environment: 'jsdom'` (measured, does not fix it) and do not add a per-file
