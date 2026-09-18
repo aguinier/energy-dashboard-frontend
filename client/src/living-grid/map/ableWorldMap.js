@@ -149,9 +149,36 @@ const PLACES_URL = '/living-grid/grid-places.json';
       const src = this.querySelector('[data-src]');
       if (src) src.style.color = T.srcText;
     }
-    attributeChangedCallback(n) { if (n === 'theme') this.applyChrome(); if (!this._paths || !this._w) return; if (n === 'values' || n === 'density' || n === 'demand' || n === 'flows') this.buildNetwork(); this.paint(); this.paintPlaces(); }    values() { try { return JSON.parse(this.getAttribute('values') || '{}'); } catch (e) { return {}; } }
+    attributeChangedCallback(n) {
+      if (n === 'theme') this.applyChrome();
+      if (!this._paths || !this._w) return;
+      // Each of these already repaints at its own tail: buildNetwork() ends in
+      // paint(), and paint() ends in strokes() + clearCanvas() + paintPlaces().
+      // Calling them again here drew the identical frame two or three times —
+      // a flows change (every hour step) ran paint() twice and paintPlaces()
+      // three times, and a zone click ran paintPlaces() twice.
+      if (n === 'values' || n === 'density' || n === 'demand' || n === 'flows') { this.buildNetwork(); return; }
+      this.paint();
+    }
+    values() { return this.json('values') || {}; }
     theme() { return THEMES[this.getAttribute('theme')] || THEMES.current; }
-    json(n) { try { return JSON.parse(this.attr(n) || 'null'); } catch (e) { return null; } }
+    // Parsed once per distinct attribute string. paintPlaces() runs every frame
+    // and re-parsed `values`, `chips` and `donuts` on each one; paint() re-parsed
+    // `fills` and `scalars` beside it. The cache key is the raw attribute, so a
+    // changed attribute still re-parses on its next read.
+    //
+    // Callers share the returned object, so none of them may mutate it. Checked:
+    // every read site indexes it (`vals[c]`, `fx[c]`, `chips[c]`, `donuts[c]`)
+    // and none assigns into it.
+    json(n) {
+      const raw = this.attr(n);
+      const cache = this._jsonCache || (this._jsonCache = {});
+      const hit = cache[n];
+      if (hit && hit.raw === raw) return hit.val;
+      let val; try { val = JSON.parse(raw || 'null'); } catch (e) { val = null; }
+      cache[n] = { raw: raw, val: val };
+      return val;
+    }
 
     // ---- countries → grid lines → flows → vector field --------------------------------------------
     buildNetwork() {
@@ -343,7 +370,13 @@ const PLACES_URL = '/living-grid/grid-places.json';
         .wheelDelta((e) => -e.deltaY * (e.deltaMode === 1 ? 0.12 : e.deltaMode ? 1 : 0.003))
         .on('start', (e) => { if (e.sourceEvent) { this._user = true; this._svg.style('cursor', 'grabbing'); } })
         .on('end', () => this._svg.style('cursor', 'grab'))
-        .on('zoom', (e) => { this._zt = e.transform; this._g.attr('transform', e.transform); this.strokes(); this.clearCanvas(); this.paintPlaces(); });
+        // The transform is applied synchronously, so panning stays instant. The
+        // repaints it used to do here are deferred to the next frame instead:
+        // d3-zoom fires faster than vsync on a wheel fling, and every repaint
+        // but the last was composited by nobody. strokes() and paintPlaces()
+        // both read the current _zt when they run, so deferring cannot show a
+        // stale transform.
+        .on('zoom', (e) => { this._zt = e.transform; this._g.attr('transform', e.transform); this._zoomDirty = true; });
       svg.call(this._zoom).on('dblclick.zoom', (e) => { const [x, y] = pointer(e); this._user = true; svg.transition().duration(400).call(this._zoom.scaleBy, 2, [x, y]); });
       svg.on('mousemove', (e) => this.hoverLine(e)).on('mouseleave', () => { this._tip.style.display = 'none'; });
       svg.on('click', (e) => { if (e.target === svg.node() || e.target.tagName === 'svg') window.dispatchEvent(new CustomEvent('able-map-pick', { detail: null })); });
@@ -395,9 +428,8 @@ const PLACES_URL = '/living-grid/grid-places.json';
         .attr('stroke-width', (f) => { const c = ALPHA[f.id]; return (c && c === hv ? 1.4 : 0.8) / k; });
       this._outline.attr('stroke-width', 2.2 / k).attr('stroke', '#EAFFFB');
       if (this._coastPaths) {
-        const vv = this.values();
         this._coastPaths
-          .attr('stroke', (f) => { if (!glow) return 'none'; const c = ALPHA[f.id]; return rgba(T.glow || T.exp, c && vv[c] != null ? 0.55 : 0.16); })
+          .attr('stroke', (f) => { if (!glow) return 'none'; const c = ALPHA[f.id]; return rgba(T.glow || T.exp, c && vals[c] != null ? 0.55 : 0.16); })
           .attr('stroke-width', 2.2 / k);
         this._coastBlur.attr('stdDeviation', 1.9 / k);
       }
@@ -446,6 +478,10 @@ const PLACES_URL = '/living-grid/grid-places.json';
       const ctx = this._ctx; if (!ctx || !this._field) return;
       const t = this._zt, dpr = this._dpr, active = this.getAttribute('active');
       const dt = Math.min(0.05, (ts - (this._last || ts)) / 1000); this._last = ts;
+      // Zoom deferred its repaint to here (see the zoom handler). Consume the
+      // flag before drawing so a zoom landing mid-frame is not dropped.
+      const zoomDirty = this._zoomDirty; this._zoomDirty = false;
+      if (zoomDirty) { this.strokes(); this.clearCanvas(); }
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.globalCompositeOperation = 'destination-in';
       ctx.fillStyle = 'rgba(0,0,0,' + (this.theme().additive ? 0.94 : 0.955) + ')'; ctx.fillRect(0, 0, this._canvas.width, this._canvas.height);
@@ -486,7 +522,9 @@ const PLACES_URL = '/living-grid/grid-places.json';
         p.x = nx; p.y = ny;
       }
       ctx.globalCompositeOperation = 'source-over';
-      if (this.getAttribute('arcs') === 'true') this.paintPlaces();
+      // `|| zoomDirty` keeps the old guarantee that a zoom refreshes the places
+      // canvas even when arcs are off, which the synchronous call used to give.
+      if (this.getAttribute('arcs') === 'true' || zoomDirty) this.paintPlaces();
     }
     plantMin(k) { return 6000 / Math.pow(k, 1.35); }
     markerFade(k) { const k0 = (this._kEurope || 6) * 1.35; return Math.max(0, Math.min(1, (k - k0) / (k0 * 0.5))); }
