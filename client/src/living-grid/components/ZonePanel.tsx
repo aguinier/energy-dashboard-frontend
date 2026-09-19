@@ -1,7 +1,8 @@
 import { PANEL_TABS, type PanelTab } from '../logic/livingGridState';
 import { basisLabel, ZONE_BY_CODE, zoneAvailability } from '../logic/zoneRegistry';
-import { BASIS_NOTE, resolveNetSeries } from '../logic/netFromFlows';
-import { euro, gw, seriesRange, signedGw } from '../logic/format';
+import { dayRelation } from '../logic/dayRange';
+import { basisNote, resolveNetSeries } from '../logic/netFromFlows';
+import { dayLabel, euro, gw, seriesRange, signedGw } from '../logic/format';
 import { TOKENS } from '../logic/ramps';
 import type { GridDay } from '@/types';
 
@@ -26,16 +27,26 @@ function BasisPill({ basis, label }: { basis: string; label: string }) {
 }
 
 export function ZonePanel({ day, code, hour, ptab, onPanelTab, onClose, children }: ZonePanelProps) {
+  const relation = dayRelation(day.meta.date, day.meta.today);
+
   if (!code) {
+    // A day with no zones has nothing to pick, so the usual invitation would
+    // point at an affordance that is not there — the reader clicks an inert
+    // map and concludes the view is broken. Say which day is empty instead,
+    // and name the two ways out.
+    const nothingToPick = day.meta.zoneCount === 0;
     return (
       <aside className="lg-panel">
         <div className="lg-empty">
           <div style={{ font: "400 15px 'IBM Plex Sans'", color: TOKENS.textSecondary }}>
-            No zone selected
+            {nothingToPick ? 'Nothing published' : 'No zone selected'}
           </div>
           <div className="lg-note">
-            Pick a country on the map to read its net position, generation mix, day-ahead
-            price and cross-border flows for the selected hour.
+            {nothingToPick
+              ? `Nothing is published for ${dayLabel(day.meta.date)}${
+                  relation === 'future' ? ' yet' : ''
+                }, so there is no country to open. Step back to a day with data, or press Live.`
+              : 'Pick a country on the map to read its net position, generation mix, day-ahead price and cross-border flows for the selected hour.'}
           </div>
         </div>
       </aside>
@@ -107,14 +118,14 @@ export function ZonePanel({ day, code, hour, ptab, onPanelTab, onClose, children
           <div className="lg-kpi-label">Day-ahead</div>
           <div className="lg-kpi-value">{euro(price)}</div>
           <div className="lg-kpi-note">
-            {priceRange ? `${euro(priceRange.min)} – ${euro(priceRange.max)} today` : 'Not published'}
+            {priceRange ? `${euro(priceRange.min)} – ${euro(priceRange.max)} day range` : 'Not published'}
           </div>
         </div>
       </div>
 
       {netBasis !== 'scheduled' && (
         <div className="lg-section" style={{ paddingTop: 14, paddingBottom: 14 }}>
-          <div className="lg-note">{BASIS_NOTE[netBasis]}</div>
+          <div className="lg-note">{basisNote(netBasis, relation)}</div>
         </div>
       )}
 

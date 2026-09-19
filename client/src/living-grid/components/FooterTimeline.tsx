@@ -1,15 +1,28 @@
 import { useEffect, useRef } from 'react';
 import { STEPS } from '../logic/livingGridState';
-import { hourAtPosition, isLive, progressPercent, ticks } from '../logic/timeline';
-import { dayLabel } from '../logic/format';
+import { hourAtPosition, progressPercent, ticks } from '../logic/timeline';
+import { canStepDay, relativeDayLabel } from '../logic/dayRange';
+import { dayLabel, hourLabel } from '../logic/format';
 
 interface FooterTimelineProps {
   hour: number;
   playing: boolean;
   step: number;
+  /** The day on screen. */
   date: string;
-  currentHour: number;
-  isToday: boolean;
+  /** Today, whatever day is on screen — the anchor the arrows measure against. */
+  today: string;
+  /**
+   * True while the map still shows the previous day. The label leads the map by
+   * one fetch, and dimming it is how that beat is admitted rather than hidden.
+   */
+  pending: boolean;
+  /**
+   * Whether the view is on now — today's date AND the current hour. Computed by
+   * the view, not here: during a pending step the payload's `isToday` still
+   * describes the day being left, and would light this on the way out of today.
+   */
+  live: boolean;
   /**
    * `via` tells the map whether this is a step worth easing. A scrub is the
    * reader steering and snaps; the arrow keys step and ease.
@@ -18,6 +31,7 @@ interface FooterTimelineProps {
   onTogglePlay: () => void;
   onCycleStep: () => void;
   onLive: () => void;
+  onStepDay: (delta: number) => void;
 }
 
 export function FooterTimeline({
@@ -25,17 +39,18 @@ export function FooterTimeline({
   playing,
   step,
   date,
-  currentHour,
-  isToday,
+  today,
+  pending,
+  live,
   onHour,
   onTogglePlay,
   onCycleStep,
   onLive,
+  onStepDay,
 }: FooterTimelineProps) {
   const trackRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const pendingX = useRef<number | null>(null);
-  const live = isLive(hour, currentHour, isToday);
 
   const seek = (clientX: number) => {
     const el = trackRef.current;
@@ -83,8 +98,34 @@ export function FooterTimeline({
         )}
       </button>
 
-      <div style={{ font: "400 11.5px 'IBM Plex Mono', monospace", color: 'var(--lg-clock)', whiteSpace: 'nowrap' }}>
-        {dayLabel(date)}
+      <div className="lg-day" role="group" aria-label="Day">
+        <button
+          type="button"
+          className="lg-day-step"
+          onClick={() => onStepDay(-1)}
+          disabled={!canStepDay(date, today, -1)}
+          aria-label="Previous day"
+        >
+          ‹
+        </button>
+        {/*
+          The live region sits on the label, not on the buttons: after a step
+          focus stays on the arrow and nothing focused has changed, so without
+          it a screen-reader user gets silence where the whole view just moved.
+        */}
+        <div className="lg-day-label" data-pending={pending} aria-live="polite">
+          <div className="lg-day-date">{dayLabel(date)}</div>
+          <div className="lg-day-rel">{relativeDayLabel(date, today)}</div>
+        </div>
+        <button
+          type="button"
+          className="lg-day-step"
+          onClick={() => onStepDay(1)}
+          disabled={!canStepDay(date, today, 1)}
+          aria-label="Next day"
+        >
+          ›
+        </button>
       </div>
 
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -97,7 +138,7 @@ export function FooterTimeline({
           aria-valuemin={0}
           aria-valuemax={23}
           aria-valuenow={hour}
-          aria-valuetext={`${String(hour).padStart(2, '0')}:00`}
+          aria-valuetext={`${dayLabel(date)} ${hourLabel(hour)}`}
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId);
             seek(e.clientX);
@@ -128,13 +169,19 @@ export function FooterTimeline({
         {STEPS[step]}
       </button>
 
+      {/*
+        Never disabled. This is the way back from a pinned day, so disabling it
+        off today — as it once was — put the exit behind the door it unlocks.
+        `data-live` already says teal when you are on now, and GO_LIVE returns
+        the same state reference when nothing would change, so a redundant
+        press is free.
+      */}
       <button
         type="button"
         className="lg-chip-button"
         data-live={live}
         onClick={onLive}
-        disabled={!isToday}
-        title={isToday ? 'Jump to the current hour' : 'Only available for today'}
+        title="Jump to today at the current hour"
       >
         Live
       </button>

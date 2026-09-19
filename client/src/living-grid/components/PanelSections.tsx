@@ -11,6 +11,7 @@ import { priceScale } from '../logic/mapAttrs';
 import { borderTouches, buildFlowRows, flowTotals } from '../logic/flowsPanel';
 import { alpha, TOKENS } from '../logic/ramps';
 import { anyOf, emptyMessage, emptyReason } from '../logic/emptyState';
+import { dayRelation, type DayRelation } from '../logic/dayRange';
 import { drawOnDelayed, drawOnSweep } from '../logic/drawOn';
 import { euro, gw, percent, seriesRange, signedGw } from '../logic/format';
 import { GRID_FUEL_KEYS } from '@/types';
@@ -36,20 +37,23 @@ function NoData({
   what,
   series,
   hour,
+  relation,
 }: {
   what: string;
   series?: readonly (number | null)[];
   hour: number;
+  /** Which day this is, so the sentence gets its tense right. */
+  relation: DayRelation;
 }) {
   // A caller reaching here with a presence track that DOES carry this hour is
   // asking a stricter question than presence answers, and only it knows the
   // real answer. Say the little that is certain rather than defaulting to
   // "nothing today" — the strongest claim available, and false every time the
   // mix section used to reach it.
-  const reason = emptyReason(series, hour);
+  const reason = emptyReason(series, hour, relation);
   return (
     <div className="lg-note">
-      {reason ? emptyMessage(reason, what) : `No ${what} to show for this hour.`}
+      {reason ? emptyMessage(reason, what, relation) : `No ${what} to show for this hour.`}
     </div>
   );
 }
@@ -60,10 +64,12 @@ export function NetSparkline({
   series,
   hour,
   reduced,
+  relation,
 }: {
   series: GridHourSeries;
   hour: number;
   reduced: boolean;
+  relation: DayRelation;
 }) {
   const spark = buildSparkline(series.map((v) => (v === null ? null : v / 1000)), hour);
 
@@ -71,7 +77,7 @@ export function NetSparkline({
     <div className="lg-section">
       <SectionHeading title="Net position" note={`±${spark.scale.toFixed(1)} GW`} />
       {spark.empty ? (
-        <NoData what="net position" series={series} hour={hour} />
+        <NoData what="net position" series={series} hour={hour} relation={relation} />
       ) : (
         <>
           <svg
@@ -159,10 +165,12 @@ export function MixSection({
   mix,
   hour,
   reduced,
+  relation,
 }: {
   mix: Record<GridFuelKey, GridHourSeries> | undefined;
   hour: number;
   reduced: boolean;
+  relation: DayRelation;
 }) {
   const breakdown = buildMixBreakdown(mix, hour);
   const segments = stackSegments(mix, hour);
@@ -184,6 +192,7 @@ export function MixSection({
             what="generation"
             series={mix ? anyOf(GRID_FUEL_KEYS.map((f) => mix[f] ?? [])) : undefined}
             hour={hour}
+            relation={relation}
           />
         )
       ) : (
@@ -255,6 +264,7 @@ export function PriceBarsSection({
 }) {
   // Scaled across zones, not against this zone alone, so a bar and the country
   // it belongs to are painted the same colour by the same rule.
+  const relation = dayRelation(day.meta.date, day.meta.today);
   const scale = priceScale(day, hour);
   const bars = buildPriceBars(series, hour, { scaleMin: scale.lo, scaleMax: scale.hi });
   const range = series ? seriesRange(series) : null;
@@ -266,7 +276,7 @@ export function PriceBarsSection({
         note={range ? `${euro(range.min)} – ${euro(range.max)}` : undefined}
       />
       {!range ? (
-        <NoData what="day-ahead price" series={series} hour={hour} />
+        <NoData what="day-ahead price" series={series} hour={hour} relation={relation} />
       ) : (
         <>
           <div className="lg-price-bars">
@@ -326,6 +336,7 @@ export function FlowsSection({
   hour: number;
   onPick: (code: string) => void;
 }) {
+  const relation = dayRelation(day.meta.date, day.meta.today);
   const rows = buildFlowRows(day.flows, code, hour);
   // Presence across every border this zone is on, so an hour with no flow can
   // be told apart from a zone with no borders reporting at all today.
@@ -339,7 +350,7 @@ export function FlowsSection({
     <div className="lg-section">
       <SectionHeading title="Cross-border flows" note={rows.length ? 'top borders' : undefined} />
       {rows.length === 0 ? (
-        <NoData what="border flow" series={borderPresence} hour={hour} />
+        <NoData what="border flow" series={borderPresence} hour={hour} relation={relation} />
       ) : (
         <div>
           {rows.map((row) => {

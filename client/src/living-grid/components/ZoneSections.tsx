@@ -1,5 +1,6 @@
 import { FlowsSection, KeyFigures, MixSection, NetSparkline, PriceBarsSection } from './PanelSections';
 import { resolveNetSeries } from '../logic/netFromFlows';
+import { dayRelation } from '../logic/dayRange';
 import type { PanelTab } from '../logic/livingGridState';
 import type { GridDay } from '@/types';
 
@@ -24,6 +25,9 @@ interface ZoneSectionsProps {
 export function ZoneSections({ day, code, hour, ptab, onHour, onPick, reduced }: ZoneSectionsProps) {
   const zone = day.zones[code];
   const { series: netSeries } = resolveNetSeries(day, code);
+  // Derived once from the payload's own two dates, so every section's empty
+  // sentence names the day on screen rather than assuming it is today.
+  const relation = dayRelation(day.meta.date, day.meta.today);
 
   const showNet = ptab === 'Overview';
   const showMix = ptab === 'Overview' || ptab === 'Energy mix';
@@ -32,8 +36,8 @@ export function ZoneSections({ day, code, hour, ptab, onHour, onPick, reduced }:
 
   return (
     <>
-      {showNet && <NetSparkline series={netSeries} hour={hour} reduced={reduced} />}
-      {showMix && <MixSection mix={zone?.mix} hour={hour} reduced={reduced} />}
+      {showNet && <NetSparkline series={netSeries} hour={hour} reduced={reduced} relation={relation} />}
+      {showMix && <MixSection mix={zone?.mix} hour={hour} reduced={reduced} relation={relation} />}
       {showPrice && (
         <PriceBarsSection day={day} series={zone?.price} hour={hour} onHour={onHour} reduced={reduced} />
       )}

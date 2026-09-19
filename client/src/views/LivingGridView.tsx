@@ -8,6 +8,9 @@ import { FooterTimeline } from '@/living-grid/components/FooterTimeline';
 import { ZonePanel } from '@/living-grid/components/ZonePanel';
 import { ZoneSections } from '@/living-grid/components/ZoneSections';
 import { buildMapAttrs, netScaleTop } from '@/living-grid/logic/mapAttrs';
+import { dayRelation } from '@/living-grid/logic/dayRange';
+import { coverageNote, dayCoverage } from '@/living-grid/logic/dayCoverage';
+import { isLive } from '@/living-grid/logic/timeline';
 import { initialState, livingGridReducer } from '@/living-grid/logic/livingGridState';
 import { resolveNetSeries } from '@/living-grid/logic/netFromFlows';
 import { describeGridError } from '@/living-grid/logic/gridError';
@@ -19,16 +22,38 @@ import '@/living-grid/living-grid.css';
 const PLAY_INTERVAL_MS = 900;
 
 export default function LivingGridView() {
-  const { data: day, isLoading, isError, error, refetch } = useGridDay();
+  // The reducer comes first: it owns the day, and the query reads it.
   const [state, dispatch] = useReducer(livingGridReducer, undefined, () => initialState());
+  const { data: day, isLoading, isError, isPlaceholderData, error, refetch } = useGridDay(
+    state.date ?? undefined,
+  );
+
+  // Every date question is answered from the payload's own two dates. `today`
+  // is sent on every response whatever day it describes, so it stays correct
+  // while a day is pinned — which `date` alone cannot do.
+  const today = day?.meta.today ?? day?.meta.date ?? '';
+  // The day the reader asked for, which leads the payload by one fetch during
+  // a step. Both the header and the footer take this one, because two
+  // different dates on screen at once would read worse than a single beat of
+  // lag that the footer already admits by dimming.
+  const shownDate = state.date ?? day?.meta.date ?? '';
 
   // The server knows what hour it is where the data lives; adopt it so the
   // timeline opens on "now" rather than on noon, and keeps up with the clock
   // as the poll brings newer payloads. `adopting` makes the reducer drop this
   // the moment the reader scrubs or plays, so it cannot pull them off an hour
   // they are reading.
+  //
+  // It is the wall clock, not an hour of the day being shown: the server
+  // computes it unconditionally, so it is still the real now on a payload for
+  // next Tuesday. That is what lets Live mean "today at this hour" from
+  // anywhere in the reach.
   const currentHour = day?.meta.currentHour ?? 12;
   const isToday = day?.meta.isToday ?? false;
+  // Off today this correctly does nothing, and it re-fires on the way back
+  // because `isToday` flips false to true in the dep array — which is not
+  // obvious, and is why stepping home lands on the current hour for a reader
+  // who never scrubbed, while one who did keeps their pin.
   useEffect(() => {
     if (day?.meta.isToday) {
       dispatch({ type: 'SET_HOUR', hour: day.meta.currentHour, adopting: true });
@@ -95,6 +120,20 @@ export default function LivingGridView() {
     };
   }, [day, availableCodes, state.hour]);
 
+  // What this day does and does not carry, in one sentence, or nothing at all
+  // when the map can speak for itself.
+  //
+  // Measured against the PAYLOAD'''s own day, not the requested one. Mid-step the
+  // map still shows the previous day, and pairing its streams with the new
+  // day'''s tense would caption what is on screen with a sentence about
+  // somewhere else — briefly, and wrongly.
+  const note = day ? coverageNote(dayCoverage(day), dayRelation(day.meta.date, day.meta.today)) : null;
+
+  // Live is a fact about the reader's state, not the payload's: mid-step the
+  // payload still describes the day being left, and `meta.isToday` would light
+  // the chip on the way out of today.
+  const live = state.date === null && isLive(state.hour, currentHour, isToday);
+
   if (isLoading) {
     return (
       <div className="lg-splash">
@@ -115,9 +154,24 @@ export default function LivingGridView() {
         <div style={{ font: "400 12px 'IBM Plex Sans'", color: '#6E8A9C', maxWidth: 420, textAlign: 'center' }}>
           {describeGridError(error)}
         </div>
-        <button type="button" className="lg-chip-button" onClick={() => void refetch()}>
-          Try again
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" className="lg-chip-button" onClick={() => void refetch()}>
+            Try again
+          </button>
+          {/*
+            A day step that fails strands the reader here with no footer and so
+            no way back to a day that works. This is that way back.
+          */}
+          {state.date !== null && (
+            <button
+              type="button"
+              className="lg-chip-button"
+              onClick={() => dispatch({ type: 'GO_LIVE', hour: currentHour })}
+            >
+              Back to today
+            </button>
+          )}
+        </div>
       </div>
     );
   }
@@ -129,7 +183,7 @@ export default function LivingGridView() {
         onTab={(tab) => dispatch({ type: 'SET_VIEW', tab })}
         query={state.query}
         onQuery={(query) => dispatch({ type: 'SET_QUERY', query, codes: availableCodes })}
-        date={day.meta.date}
+        date={shownDate}
         hour={state.hour}
       />
 
@@ -150,6 +204,7 @@ export default function LivingGridView() {
           netExtent={netExtent}
           onPick={(code) => dispatch({ type: 'PICK_ZONE', code })}
           onFlows={() => undefined}
+          note={note}
         />
 
         {/*
@@ -189,13 +244,15 @@ export default function LivingGridView() {
         hour={state.hour}
         playing={state.playing}
         step={state.step}
-        date={day.meta.date}
-        currentHour={currentHour}
-        isToday={isToday}
+        date={shownDate}
+        today={today}
+        pending={isPlaceholderData}
+        live={live}
         onHour={(hour, via) => dispatch({ type: 'SET_HOUR', hour, via })}
         onTogglePlay={() => dispatch({ type: 'TOGGLE_PLAY' })}
         onCycleStep={() => dispatch({ type: 'CYCLE_STEP' })}
         onLive={() => dispatch({ type: 'GO_LIVE', hour: currentHour })}
+        onStepDay={(delta) => dispatch({ type: 'STEP_DAY', delta, today })}
       />
     </div>
   );

@@ -11,7 +11,7 @@ describe('emptyReason', () => {
     // This distinction is the whole point. Through the morning the day's
     // ingest has only covered a few hours, so "nothing today" would be false
     // for most zones most of the time.
-    expect(emptyReason(series(() => null), 12)).toEqual({ kind: 'none-today' });
+    expect(emptyReason(series(() => null), 12)).toEqual({ kind: 'none' });
     expect(emptyReason(series((h) => (h <= 3 ? 10 : null)), 12)).toEqual({
       kind: 'not-this-hour',
       latestHour: 3,
@@ -46,7 +46,7 @@ describe('emptyReason', () => {
   });
 
   it('treats an absent series as a silent day', () => {
-    expect(emptyReason(undefined, 12)).toEqual({ kind: 'none-today' });
+    expect(emptyReason(undefined, 12)).toEqual({ kind: 'none' });
   });
 
   it('does not mistake a measured zero for missing data', () => {
@@ -56,7 +56,7 @@ describe('emptyReason', () => {
 
 describe('emptyMessage', () => {
   it('says "today" only when the whole day is silent', () => {
-    expect(emptyMessage({ kind: 'none-today' }, 'generation')).toBe(
+    expect(emptyMessage({ kind: 'none' }, 'generation')).toBe(
       'No generation published for this zone today.',
     );
   });
@@ -98,5 +98,56 @@ describe('anyOf', () => {
     const track = anyOf([series((h) => (h < 2 ? 500 : null)), series(() => null)]);
 
     expect(emptyReason(track, 12)).toEqual({ kind: 'not-this-hour', latestHour: 1 });
+  });
+});
+
+describe('a day that has not happened', () => {
+  const allNull = series(() => null);
+
+  /**
+   * The distinction the whole day control rests on: an all-null series is a
+   * hole on a day that has been and a schedule on one that has not, and those
+   * are different facts about the world.
+   */
+  it('calls an all-null future day unpublished, not empty', () => {
+    expect(emptyReason(allNull, 12, 'future')).toEqual({ kind: 'not-yet-published' });
+    expect(emptyReason(allNull, 12, 'past')).toEqual({ kind: 'none' });
+    expect(emptyReason(allNull, 12, 'today')).toEqual({ kind: 'none' });
+  });
+
+  /**
+   * D+1 is the real case: the day-ahead auction has published prices and
+   * nothing realized exists, so the hour-level reasons still apply there.
+   */
+  it('still reports a gap and a late hour on a partly published future day', () => {
+    const holed = series((h) => (h === 12 ? null : 1));
+    expect(emptyReason(holed, 12, 'future')).toEqual({ kind: 'gap', resumesHour: 13 });
+
+    const stops = series((h) => (h <= 8 ? 1 : null));
+    expect(emptyReason(stops, 12, 'future')).toEqual({ kind: 'not-this-hour', latestHour: 8 });
+  });
+
+  it('never says "today" about another day', () => {
+    expect(emptyMessage({ kind: 'none' }, 'load', 'past')).not.toContain('today');
+    expect(emptyMessage({ kind: 'none' }, 'load', 'future')).not.toContain('today');
+    expect(emptyMessage({ kind: 'not-this-hour', latestHour: 8 }, 'load', 'past')).not.toContain('today');
+  });
+
+  it('never promises "yet" about a day that has already been', () => {
+    expect(emptyMessage({ kind: 'none' }, 'load', 'past')).not.toContain('yet');
+    expect(emptyMessage({ kind: 'not-this-hour', latestHour: 8 }, 'load', 'past')).not.toContain('yet');
+  });
+
+  it('says why a day ahead has nothing', () => {
+    expect(emptyMessage({ kind: 'not-yet-published' }, 'load')).toBe(
+      'No load for this day yet — it is not published this far ahead.',
+    );
+  });
+
+  it('leaves the tense-free reasons alone', () => {
+    expect(emptyMessage({ kind: 'zero' }, 'generation', 'future')).toBe(
+      'Reported generation for this hour is zero.',
+    );
+    expect(emptyMessage({ kind: 'gap', resumesHour: 13 }, 'load', 'future')).toContain('resumes at 13:00');
   });
 });

@@ -14,6 +14,12 @@ interface MapStageProps {
   netExtent: number | null;
   onPick: (code: string | null) => void;
   onFlows: (detail: { flows: Record<string, number>; net: Record<string, number> }) => void;
+  /**
+   * One sentence about what this day does and does not carry, or null when the
+   * map speaks for itself. A blank Europe is indistinguishable from a broken
+   * one, and this is what tells them apart.
+   */
+  note: string | null;
 }
 
 /** The two-tone net ramp, laid out importing-to-exporting for the legend. */
@@ -73,11 +79,20 @@ function GenerationLegend() {
   );
 }
 
-export function MapStage({ attrs, tab, priceRange, netExtent, onPick, onFlows }: MapStageProps) {
+export function MapStage({
+  attrs,
+  tab,
+  priceRange,
+  netExtent,
+  onPick,
+  onFlows,
+  note,
+}: MapStageProps) {
   const byPrice = attrs.scalars !== '';
   return (
     <div className="lg-stage">
       <WorldMapHost attrs={attrs} onPick={onPick} onFlows={onFlows} />
+      {note && <div className="lg-day-banner">{note}</div>}
       {tab === 'Generation' ? (
         <GenerationLegend />
       ) : byPrice ? (

@@ -82,9 +82,34 @@ export function makeDay(overrides: Partial<GridDay> = {}): GridDay {
       sharedZones: { LU: 'DE_LU' },
       currentHour: 14,
       isToday: true,
+      today: '2026-09-17',
       zoneCount: 4,
       borderCount: 3,
     },
     ...overrides,
   };
+}
+
+/**
+ * A day that carries nothing — the shape every date past D+1 returns.
+ *
+ * The server only creates a zone key once a row exists, so an unpublished day
+ * is not a day of null series but a payload with no zones at all. Several
+ * consumers read that as "no data anywhere" rather than "not yet", which is
+ * what the empty-day handling exists to get right, so the tests need the real
+ * shape rather than a day of nulls.
+ */
+export function makeEmptyDay(date = '2026-09-24', today = '2026-09-17'): GridDay {
+  return makeDay({
+    zones: {},
+    flows: {},
+    meta: {
+      ...makeDay().meta,
+      date,
+      today,
+      isToday: date === today,
+      zoneCount: 0,
+      borderCount: 0,
+    },
+  });
 }

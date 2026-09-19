@@ -635,10 +635,94 @@
 .lg-chip-button:hover {
   color: var(--lg-text);
 }
+/*
+ * A disabled control has to LOOK disabled. Without this a chip at the end of
+ * its range simply stops responding, which reads as a broken button rather
+ * than as the edge of the range.
+ */
+.lg-chip-button:disabled,
+.lg-day-step:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+.lg-chip-button:disabled:hover,
+.lg-day-step:disabled:hover {
+  color: var(--lg-text-muted);
+}
 .lg-chip-button[data-live='true'] {
   color: var(--lg-teal);
   border-color: var(--lg-teal);
   background: rgba(47, 211, 192, 0.12);
+}
+
+/* ----------------------------------------------------------- day stepper */
+
+.lg-day {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-day-step {
+  border: 1px solid var(--lg-border-control);
+  border-radius: 4px;
+  background: var(--lg-control);
+  color: var(--lg-text-muted);
+  font: 400 12px var(--lg-mono);
+  line-height: 1;
+  padding: 7px 9px;
+  cursor: pointer;
+}
+.lg-day-step:hover:not(:disabled) {
+  color: var(--lg-text);
+}
+
+/*
+ * Two lines, matching the track's own track-plus-ticks rhythm beside it, so
+ * the footer keeps one baseline grid and needs no extra height.
+ */
+.lg-day-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 104px;
+  text-align: center;
+  white-space: nowrap;
+  transition: opacity 160ms ease;
+}
+.lg-day-date {
+  font: 400 11.5px var(--lg-mono);
+  color: var(--lg-clock);
+}
+.lg-day-rel {
+  font: 400 9.5px var(--lg-mono);
+  color: var(--lg-label);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+/* The beat where the label has moved and the map has not. */
+.lg-day-label[data-pending='true'] {
+  opacity: 0.5;
+}
+
+/*
+ * The note over the map, for a day the map cannot speak for itself about.
+ * Top-LEFT because .lg-legend owns the top-right, and the max-width keeps the
+ * two from meeting on a narrow stage.
+ */
+.lg-day-banner {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  max-width: calc(100% - 260px);
+  padding: 8px 12px;
+  border: 1px solid var(--lg-border-control);
+  border-radius: 6px;
+  background: var(--lg-control);
+  color: var(--lg-text-secondary);
+  font: 400 11.5px var(--lg-sans);
+  pointer-events: none;
+  z-index: 2;
 }
 
 /* ------------------------------------------------------- loading / error */

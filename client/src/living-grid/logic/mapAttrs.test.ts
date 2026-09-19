@@ -13,7 +13,7 @@ import {
 import { buildPriceBars } from './priceBars';
 import { initialState, livingGridReducer, type ViewTab } from './livingGridState';
 import { EXPORT_RAMP, FUEL_COLORS, IMPORT_RAMP, NET_NO_DATA, PRICE_RAMP, sampleRamp } from './ramps';
-import { emptyMix, makeDay, series } from './testFixture';
+import { emptyMix, makeDay, makeEmptyDay, series } from './testFixture';
 
 const stateFor = (tab: ViewTab, hour = 12) =>
   livingGridReducer({ ...initialState(hour) }, { type: 'SET_VIEW', tab });
@@ -303,5 +303,45 @@ describe('buildMapAttrs — toggles reach the element', () => {
 
     expect(attrs.active).toBe('FR');
     expect(attrs.theme).toBe('living');
+  });
+});
+
+describe('a day that carries no zones', () => {
+  /**
+   * Every date past D+1 returns a payload with no zones at all, and this is
+   * the shape that must NOT be "fixed" by filling in the registry.
+   *
+   * `ableWorldMap.ensureZonePaths` builds its fill layer from the codes in
+   * `values` alone, and every other country is painted as plain land with no
+   * pointer cursor. So empty datasets are not a lapse of the "every zone gets
+   * an explicit fill" rule — they make it vacuous, and the map draws a
+   * uniform, inert Europe, which is the honest rendering of a day nothing is
+   * published for. Writing registry codes into `values` here would make 28
+   * countries clickable and data-filled on a day carrying nothing.
+   */
+  it('hands the element nothing rather than inventing zones', () => {
+    const attrs = buildMapAttrs(initialState(), makeEmptyDay());
+
+    expect(JSON.parse(attrs.values)).toEqual({});
+    expect(JSON.parse(attrs.fills)).toEqual({});
+    expect(JSON.parse(attrs.flows)).toEqual({});
+    expect(JSON.parse(attrs['chip-values'])).toEqual({});
+    expect(JSON.parse(attrs.donuts)).toEqual({});
+  });
+
+  it('does the same under the price basis, where scalars would be the fill', () => {
+    const state = { ...initialState(), colourBy: 'price' as const };
+    const attrs = buildMapAttrs(state, makeEmptyDay());
+
+    expect(JSON.parse(attrs.values)).toEqual({});
+    expect(JSON.parse(attrs.scalars)).toEqual({});
+  });
+
+  it('does the same under the generation view', () => {
+    const state = { ...initialState(), tab: 'Generation' as const };
+    const attrs = buildMapAttrs(state, makeEmptyDay());
+
+    expect(JSON.parse(attrs.fills)).toEqual({});
+    expect(JSON.parse(attrs.donuts)).toEqual({});
   });
 });

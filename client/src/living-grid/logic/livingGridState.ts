@@ -1,4 +1,5 @@
 import { matchZone } from './searchMatch';
+import { shiftDate, withinReach } from './dayRange';
 
 /**
  * The Living Grid's whole state, and the only thing allowed to change it.
@@ -37,6 +38,16 @@ export interface VizToggles {
 
 export interface LivingGridState {
   code: string | null;
+  /**
+   * The day on screen, or null for the rolling "today".
+   *
+   * Null is not a missing value — it is the live day, and it is what keeps the
+   * five-minute poll pointed at a moving target and the Live chip meaningful.
+   * Stepping onto today collapses back to null rather than pinning today's own
+   * date, so there is exactly one representation of now and a pinned today
+   * cannot drift from the rolling one.
+   */
+  date: string | null;
   /**
    * True once the reader has chosen a zone for themselves, including choosing
    * to close one. The view opens on a zone so the panel is not empty, and this
@@ -124,6 +135,7 @@ function neighbouring(from: number, to: number): boolean {
 export function initialState(currentHour = 12, code: string | null = null): LivingGridState {
   return {
     code,
+    date: null,
     touched: false,
     hourPinned: false,
     hour: Math.max(0, Math.min(23, currentHour)),
@@ -151,8 +163,12 @@ export type LivingGridAction =
   // reader is steering, and a tween chasing them only trails the knob.
   | { type: 'SET_HOUR'; hour: number; adopting?: boolean; via?: 'drag' | 'step' }
   // The reader handing the timeline back to the clock. Distinct from SET_HOUR
-  // because it is the only thing that CLEARS the pin.
+  // because it is the only thing that CLEARS the pin — and now the day too.
   | { type: 'GO_LIVE'; hour: number }
+  // `today` comes from the payload's own `meta.today`, which the server sends
+  // on every response whatever date it describes. The reducer stays pure and
+  // the reach is measured against the server's clock, not the viewer's.
+  | { type: 'STEP_DAY'; delta: number; today: string }
   | { type: 'PLAY' }
   | { type: 'PAUSE' }
   | { type: 'TOGGLE_PLAY' }
@@ -214,20 +230,63 @@ export function livingGridReducer(
       return { ...state, hour, hourPinned, hourEases };
     }
 
-    case 'GO_LIVE':
+    case 'GO_LIVE': {
       // Clearing the pin is the whole point. Expressing this as a SET_HOUR
       // would set one instead — the reader is moving the timeline, as far as
       // that case can tell — and every later adopting dispatch would be
       // discarded, so pressing Live would end liveness until a reload.
+      //
+      // Clearing `date` matters as much: now is a day as well as an hour, and
+      // this is the single "put me back on it" action. The button is never
+      // disabled, so it is also the only way back from a day that has nothing
+      // on it to say.
+      const hour = Math.max(0, Math.min(23, Math.round(action.hour)));
+      // Already live: hand back the same reference so React skips the subtree,
+      // exactly as SET_HOUR does for a scrub landing on the hour on screen.
+      // That is what makes an always-enabled button free to press twice.
+      if (state.date === null && state.hour === hour && !state.hourPinned && !state.playing) {
+        return state;
+      }
       return {
         ...state,
-        hour: Math.max(0, Math.min(23, Math.round(action.hour))),
+        date: null,
+        hour,
         hourPinned: false,
         // Live is a jump to now, which can be most of a day away. Easing across
         // that would be a long slow wipe through hours nobody asked to see.
         hourEases: false,
         playing: false,
       };
+    }
+
+    case 'STEP_DAY': {
+      // The step's origin is the pinned day, or today when nothing is pinned.
+      // Never the payload's date: while a step is in flight the payload in
+      // hand is still the previous day's, and stepping from it would stall.
+      const from = state.date ?? action.today;
+      const target = shiftDate(from, action.delta);
+      // Refuse rather than clamp. The arrow offering this step is already
+      // disabled at the bound, so a clamp here could only silently swallow a
+      // held key and make the control feel stuck rather than stopped.
+      if (!withinReach(target, action.today)) return state;
+      // `hour`, `hourPinned` and `code` are deliberately untouched: reading the
+      // same hour, and the same country, across two days is the whole point of
+      // the control. Leaving `hourPinned` alone also means a reader who never
+      // scrubbed still lands on the current hour when they step back onto
+      // today, while one who did keeps the hour they chose.
+      return {
+        ...state,
+        // One representation of now, so `date === null` alone answers "is this
+        // the live day" everywhere downstream.
+        date: target === action.today ? null : target,
+        // A day change swaps the whole dataset under the same hour. Easing
+        // would cross-fade one day's colours into another's, which describes
+        // no hour that ever happened — the same reason SET_VIEW cuts.
+        hourEases: false,
+        // The payload is about to change under the play loop.
+        playing: false,
+      };
+    }
 
     case 'PLAY':
       return { ...state, playing: true };
