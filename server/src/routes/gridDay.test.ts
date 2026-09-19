@@ -24,6 +24,7 @@ type Meta = {
   sharedZones: Record<string, string>;
   currentHour: number;
   isToday: boolean;
+  today: string;
   zoneCount: number;
   borderCount: number;
 };
@@ -301,5 +302,61 @@ describe('GET /api/grid/day — the dateless request under the cache', () => {
     vi.setSystemTime(new Date('2026-07-01T11:01:00Z')); // 13:01 Brussels
 
     expect(((await get('')).body.meta as Meta).currentHour).toBe(13);
+  });
+});
+
+describe('GET /api/grid/day — the day control needs an anchor', () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ['Date'] }));
+  afterEach(() => vi.useRealTimers());
+
+  /**
+   * `meta.today` exists because the client's day arrows have to decide whether
+   * one more step is still inside the reach, which is a question about a date
+   * the server was never asked for. Once a day is pinned, `meta.date` is that
+   * day and cannot answer it.
+   */
+  it('reports today alongside the day it served', async () => {
+    vi.setSystemTime(new Date('2026-07-01T10:00:00Z'));
+    const meta = (await get('')).body.meta as Meta;
+
+    expect(meta.today).toBe('2026-07-01');
+    expect(meta.date).toBe(meta.today);
+    expect(meta.isToday).toBe(true);
+  });
+
+  it('still reports today on a payload for another day', async () => {
+    vi.setSystemTime(new Date('2026-07-01T10:00:00Z'));
+    const meta = (await get('?date=2026-06-25')).body.meta as Meta;
+
+    expect(meta.date).toBe('2026-06-25');
+    expect(meta.today).toBe('2026-07-01');
+    expect(meta.isToday).toBe(false);
+  });
+
+  it('serves a date ahead of today as an empty payload, not an error', async () => {
+    vi.setSystemTime(new Date('2026-07-01T10:00:00Z'));
+    const { status, body } = await get('?date=2026-07-08');
+
+    expect(status).toBe(200);
+    expect(body.success).toBe(true);
+    expect((body.meta as Meta).today).toBe('2026-07-01');
+    expect((body.meta as Meta).isToday).toBe(false);
+    expect((body.data as Payload).zones).toEqual({});
+  });
+
+  /**
+   * The cache key had excluded dated requests, on the reasoning that an
+   * explicit ?date= pinned everything the payload said about time. `today`
+   * ended that: a dated payload cached at 23:58 and served at 00:01 would
+   * carry yesterday as the anchor and disable the forward arrow a day early.
+   */
+  it('does not serve a stale today on a dated request across Brussels midnight', async () => {
+    vi.setSystemTime(new Date('2026-06-30T21:58:00Z')); // 23:58 Brussels, CEST
+
+    expect(((await get('?date=2026-06-25')).body.meta as Meta).today).toBe('2026-06-30');
+
+    vi.setSystemTime(new Date('2026-06-30T22:01:00Z')); // 00:01 the next day
+
+    expect(((await get('?date=2026-06-25')).body.meta as Meta).today).toBe('2026-07-01');
   });
 });

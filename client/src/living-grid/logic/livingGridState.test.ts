@@ -367,3 +367,112 @@ describe('panel and colour basis', () => {
     expect(s.tab).toBe('Balance');
   });
 });
+
+describe('stepping days', () => {
+  const TODAY = '2026-09-19';
+  const step = (state: LivingGridState, delta: number) =>
+    run(state, { type: 'STEP_DAY', delta, today: TODAY });
+
+  it('opens on the rolling today rather than on a pinned date', () => {
+    expect(initialState().date).toBeNull();
+  });
+
+  it('steps forward and back from today', () => {
+    expect(step(initialState(), 1).date).toBe('2026-09-20');
+    expect(step(initialState(), -1).date).toBe('2026-09-18');
+  });
+
+  it('steps from the pinned day, not from today', () => {
+    const s = step(step(step(initialState(), 1), 1), 1);
+
+    expect(s.date).toBe('2026-09-22');
+  });
+
+  /**
+   * One representation of now. A pinned '2026-09-19' would look like a chosen
+   * day to everything downstream — the poll would stop and the Live chip would
+   * go dark on the live day.
+   */
+  it('collapses back to null when a step lands on today', () => {
+    const s = step(step(initialState(), 1), -1);
+
+    expect(s.date).toBeNull();
+  });
+
+  it('reaches exactly seven days either side', () => {
+    let forward = initialState();
+    for (let i = 0; i < 7; i++) forward = step(forward, 1);
+    expect(forward.date).toBe('2026-09-26');
+
+    let back = initialState();
+    for (let i = 0; i < 7; i++) back = step(back, -1);
+    expect(back.date).toBe('2026-09-12');
+  });
+
+  it('refuses the step past the bound, returning the same reference', () => {
+    let s = initialState();
+    for (let i = 0; i < 7; i++) s = step(s, 1);
+
+    expect(step(s, 1)).toBe(s);
+    expect(step(s, -1).date).toBe('2026-09-25');
+  });
+
+  it('keeps the hour, the pin and the selected zone across a day', () => {
+    const chosen = run(
+      initialState(),
+      { type: 'SET_HOUR', hour: 6 },
+      { type: 'PICK_ZONE', code: 'FR' },
+    );
+    const s = step(chosen, 1);
+
+    expect(s.hour).toBe(6);
+    expect(s.hourPinned).toBe(true);
+    expect(s.code).toBe('FR');
+  });
+
+  it('cuts rather than eases — two days are not neighbouring hours', () => {
+    const eased = run(initialState(12), { type: 'SET_HOUR', hour: 13 });
+    expect(eased.hourEases).toBe(true);
+
+    expect(step(eased, 1).hourEases).toBe(false);
+  });
+
+  it('stops playback, because the payload is about to change under it', () => {
+    const playing = run(initialState(), { type: 'PLAY' });
+
+    expect(step(playing, 1).playing).toBe(false);
+  });
+});
+
+describe('GO_LIVE and the day', () => {
+  it('clears the pinned day as well as the hour pin', () => {
+    const away = run(
+      initialState(12),
+      { type: 'STEP_DAY', delta: 3, today: '2026-09-19' },
+      { type: 'SET_HOUR', hour: 4 },
+    );
+    expect(away.date).toBe('2026-09-22');
+
+    const home = run(away, { type: 'GO_LIVE', hour: 14 });
+
+    expect(home.date).toBeNull();
+    expect(home.hour).toBe(14);
+    expect(home.hourPinned).toBe(false);
+  });
+
+  /**
+   * The button is never disabled now, so pressing it while already live must
+   * be free — otherwise every press rebuilds the map's whole field.
+   */
+  it('returns the same reference when already live', () => {
+    const live = initialState(14);
+
+    expect(livingGridReducer(live, { type: 'GO_LIVE', hour: 14 })).toBe(live);
+  });
+
+  it('still moves when only the hour differs', () => {
+    const scrubbed = run(initialState(14), { type: 'SET_HOUR', hour: 3 });
+
+    expect(livingGridReducer(scrubbed, { type: 'GO_LIVE', hour: 14 }).hour).toBe(14);
+  });
+});

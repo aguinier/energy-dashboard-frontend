@@ -199,9 +199,39 @@ import { pathToFileURL } from 'node:url';
  * receives figures rather than finished strings. 93 → 95 files and
  * 1,209 → 1,241 tests.
  */
+
+/**
+ * **Living Grid day navigation raises both floors.**
+ *
+ * The footer timeline reached only today; it now steps seven days either side,
+ * which made the empty day a first-class thing the view has to say something
+ * true about rather than a case that could not arise.
+ *
+ * Client **+2 files / +45 tests**: `dayRange.test.ts` (17 — the calendar
+ * arithmetic, including both DST transitions, which is what would catch a
+ * local-timezone parse creeping back in) and `dayCoverage.test.ts` (9 — the
+ * sentence that tells a blank map apart from a broken one). The rest land in
+ * three existing siblings: `livingGridState.test.ts` +13 for `STEP_DAY` and
+ * the day half of `GO_LIVE`, `emptyState.test.ts` +6 for the tense split
+ * between a hole and a schedule, and `mapAttrs.test.ts` +3 pinning that a
+ * zoneless day hands the map element nothing — that one guards against a
+ * plausible "fix" which would make 28 countries clickable on a day carrying
+ * nothing. So 95 → 97 files and 1,241 → 1,286 tests.
+ *
+ * Server **+4 tests, no new file** (`gridDay.test.ts` 23 → 27): `meta.today`
+ * on a dateless and a dated response, a date ahead of today served as an empty
+ * payload rather than an error, and the cache-key regression — a dated payload
+ * may no longer be reused across Brussels midnight, now that it carries the
+ * anchor the client measures its reach from. 143 files stays 143,
+ * 2,965 → 2,969 tests.
+ *
+ * Measured on Node 24.18.0: client 97 / 1,286 green, server 143 / 2,969 with
+ * 2 skipped (the sibling-checkout gates, which a worktree cannot satisfy —
+ * inside the existing `maxSkipped` allowance).
+ */
 export const TEST_FLOORS = {
-  client: { files: 95, tests: 1241, maxSkipped: 0 },
-  server: { files: 143, tests: 2965, maxSkipped: 4 },
+  client: { files: 97, tests: 1286, maxSkipped: 0 },
+  server: { files: 143, tests: 2969, maxSkipped: 4 },
 };
 
 /**

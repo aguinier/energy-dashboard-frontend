@@ -1,4 +1,5 @@
 import type { GridDay } from '@/types';
+import type { DayRelation } from './dayRange';
 
 /**
  * A zone's net position derived by summing its borders.
@@ -78,9 +79,22 @@ export function resolveNetSeries(
     : { series: new Array<number | null>(24).fill(null), basis: 'none' };
 }
 
-/** Human label for the basis, for the panel's note line. */
-export const BASIS_NOTE: Record<NetBasis, string> = {
-  scheduled: 'Day-ahead scheduled net position (ENTSO-E A25).',
-  derived: 'Derived from realized border flows — no day-ahead net position is published for this zone.',
-  none: 'No net position published for this zone today.',
-};
+/**
+ * Human label for the basis, for the panel's note line.
+ *
+ * Only the absent case needs the day: the other two describe where a number
+ * came from, which is true whenever it was published. "today" in an absence is
+ * a claim about which day is empty, and the day control can point anywhere.
+ */
+export function basisNote(basis: NetBasis, relation: DayRelation = 'today'): string {
+  if (basis === 'scheduled') return 'Day-ahead scheduled net position (ENTSO-E A25).';
+  if (basis === 'derived') {
+    return 'Derived from realized border flows — no day-ahead net position is published for this zone.';
+  }
+  if (relation === 'future') {
+    return 'No net position for this day yet — it is not published this far ahead.';
+  }
+  return relation === 'today'
+    ? 'No net position published for this zone today.'
+    : 'No net position published for this zone on this day.';
+}

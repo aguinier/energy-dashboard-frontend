@@ -1240,6 +1240,11 @@ export interface GridDayMeta {
   sharedZones: Record<string, string>;
   currentHour: number;
   isToday: boolean;
+  /**
+   * Today's date here, whatever date this payload describes — the anchor the
+   * day control measures its reach from. `isToday` is exactly `date === today`.
+   */
+  today: string;
   zoneCount: number;
   borderCount: number;
 }

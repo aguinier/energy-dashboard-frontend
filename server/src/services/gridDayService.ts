@@ -44,6 +44,12 @@ import { resolveBiddingZone } from './netPositionService.js';
  * forecast mix into a realized one behind a single `date` parameter would put
  * two different claims under one label, so every stream here is the measured
  * one and a zone that has not reported yet reads `null`.
+ *
+ * The route answers any valid calendar date, including one ahead of today, and
+ * that is not a loosening of the above: a future date returns these same
+ * measured streams, empty beyond what has been published. The absence is the
+ * answer. `energy_price` reaching D+1 is a published auction result, not a
+ * forecast, which is why tomorrow colours and the day after does not.
  */
 
 /** Zone-level series. Any stream a zone does not publish is 24 nulls. */
@@ -70,6 +76,15 @@ export interface GridDayMeta {
   currentHour: number;
   /** True when `date` is today — i.e. when `currentHour` is meaningful. */
   isToday: boolean;
+  /**
+   * Today's date here, whatever date was asked for.
+   *
+   * Sent unconditionally because the client's day control has to reason about
+   * dates the server has not been asked about — whether one more step forward
+   * is still inside the reach — and `date` alone cannot answer that once a day
+   * is pinned. `isToday` is exactly `date === today`.
+   */
+  today: string;
   zoneCount: number;
   borderCount: number;
 }
@@ -332,6 +347,7 @@ export function getGridDay(date: string, db: DatabaseType = defaultDb): GridDayR
       sharedZones,
       currentHour: currentHourInGridTimezone(),
       isToday: window.date === today,
+      today,
       zoneCount: Object.keys(zones).length,
       borderCount: Object.keys(flows).length,
     },
